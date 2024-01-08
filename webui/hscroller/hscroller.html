@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<meta charset='utf-8' />
+<style>
+#canvas {
+  display: block;
+  margin-left: auto;
+  margin-right: auto;
+  margin-top: 50px
+}
+#mode {
+  width: 200px;
+  display: inline-block;
+}
+#render {
+  margin-right: 20px;
+}
+p {
+  margin-top: 1rem;
+}
+</style>
+<body class='container'>
+  <div>
+    <h1 class='display-3'>Virgil horizontal scroll demo</h1>
+    <p class='lead'>A simple horizontal scrolling demo with Virgil and Wasm.</p>
+
+  <button id='step' class='btn btn-primary'>Step</button>
+  <button id='clear' class='btn btn-primary'>Clear</button>
+  <button id='animate' class='btn btn-primary'>Run</button>
+
+  <span>Render time</span> <span id='execution'>--</span><span>ms</span>
+  <p id='description' class='lead'></p>
+  <canvas id='canvas' width='1100' height='600'  style="border: 1px solid black;"></canvas>
+  <p>
+  <script>
+    // JavaScript goop
+
+    const WIDTH = 1100, HEIGHT = 600;
+
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d');
+    const stepButton = document.getElementById('step');
+    const clearButton = document.getElementById('clear');
+    const animateButton = document.getElementById('animate');
+
+    instance = undefined;
+    image = undefined;
+    memory = undefined;
+    enableAnimate = false;
+    tick = 0;
+    samples = [performance.now(), performance.now(), performance.now(), performance.now()];
+
+    function clearCanvas() {
+	ctx.fillStyle = 'white';
+	ctx.fillRect(0, 0, WIDTH, HEIGHT);
+	tick = 0;
+	if (instance != null) instance.exports.clear();
+    }
+
+    function step() {
+	if (instance == undefined) return;
+	var before = performance.now();
+	var last = samples.pop();
+	var fps = (1 + samples.length) * 1000 / (before - last);
+	samples.unshift(before);
+	instance.exports.animate();
+	tick++;
+        instance.exports.setColor(random(), random(), random());
+	instance.exports.drawSquare(10, 10, 5);
+	const imgData = ctx.createImageData(WIDTH, HEIGHT);
+	imgData.data.set(image);
+	ctx.putImageData(imgData, 0, 0);
+	ctx.font = "10px monospace";
+	ctx.fillText(fps.toFixed(2) + " fps", 20, 16);
+	var after = performance.now();
+	document.getElementById('execution').innerHTML = (after - before);
+    }
+
+    function animate() {
+	if (enableAnimate) {
+	    step();
+	    requestAnimationFrame(animate);
+	}
+    }
+
+    function random() {
+	return (Math.random() * 256) | 0;
+    }
+    
+    stepButton.addEventListener('click', step);
+    stepButton.disabled = true; // enabled when streaming completes
+    clearButton.addEventListener('click', clearCanvas);
+    animateButton.addEventListener('click', () => {
+	enableAnimate = !enableAnimate;
+	animateButton.textContent = enableAnimate ? "Stop" : "Run";
+	animate();
+    });
+
+    WebAssembly.instantiateStreaming(fetch("hscroller.wasm"), {
+	"console": {
+	    "log_int": v => console.log(v),
+	    "log_bytes": (offset, length) => {
+		if (length > 0) console.log(new TextDecoder().decode(new Uint8Array(memory.buffer, offset, length)));
+	    }
+	},
+        "Math": Math}).then(
+	    obj => {
+		instance = obj.instance;
+		memory = instance.exports.memory;
+		var offset = obj.instance.exports.makeImage(WIDTH, HEIGHT);
+		image = new Uint8Array(memory.buffer, offset, WIDTH * HEIGHT * 4);
+		stepButton.disabled = false;
+	    }
+	).catch(e => console.log(e));
+  </script>
+</body>

@@ -1,0 +1,127 @@
+// Copyright 2023 Virgil authors. All rights reserved.
+// See LICENSE for details of Apache 2.0 license.
+
+// JavaScript imports.
+import component console {
+	def log_int(i: int);
+	def log_bytes(p: Pointer, len: int);
+
+	def log_str(s: string) {
+		log_bytes(Pointer.atContents(s), s.length);
+	}
+	def log_u32(u: u32) {
+		log_int(int.view(u));
+	}
+}
+import component Math {
+	def random() -> double;
+}
+
+// Global image data.
+var image: Image;
+var color = Ref<RGB>.of("\xFF\x00\x00\xFF");
+
+// Layout for RGB data.
+layout RGB {
+	+0	red:	byte;
+	+1	green:	byte;
+	+2	blue:	byte;
+	+3	alpha:	byte;
+	=4;
+}
+
+// Represents a 32-bit color image with fixed dimensions.
+class Image(width: u31, height: u31) {
+	def data = Array<byte>.new(RGB.size * width * height);
+
+	def pixel(x: u32, y: u32) -> Ref<RGB> {
+		return Ref<RGB>.at(data, int.!(x + y * width) * RGB.size);
+	}
+}
+
+// Unused.
+def main() {
+}
+
+// Creates the initial image storage.
+export def makeImage(width: int, height: int) -> Pointer {
+	image = Image.new(u31.!(width), u31.!(height));
+	return Pointer.atContents(image.data);
+}
+
+export def setColor(red: byte, green: byte, blue: byte) {
+	color.red = red;
+	color.green = green;
+	color.blue = blue;
+}
+
+export def clear() {
+	if (image == null) return;
+	var d = image.data;
+	for (i < d.length) d[i] = 0;
+}
+
+export def drawSquare(x: u32, y: u32, size: u32) {
+	var xmax = x + size;
+	var ymax = y + size;
+	if (x > image.width) return;
+	if (y > image.height) return;
+	if (xmax > image.width) return;
+	if (ymax > image.height) return;
+	for (i = x; i < xmax; i++) {
+		for (j = y; j < ymax; j++) {
+			var p = image.pixel(i, j);
+			p.red = color.red;
+			p.green = color.green;
+			p.blue = color.blue;
+			p.alpha = 255;
+		}
+	}
+}
+
+// right-to-left animation
+def NUM_SQUARES = 100;
+def SQUARE_SIZE = 15u;
+def MOVE = 7u;
+var squares: Array<Square>;
+
+class Square(var x: u32, var y: u32) {
+}
+
+export def animate() {
+	def xmax = u31.!((image.width / SQUARE_SIZE) - 1) * SQUARE_SIZE;
+	def xhalf = u32.!(image.width / 2);
+	if (squares == null) {
+		squares = Array.new(NUM_SQUARES);
+		for (i < squares.length) {
+			var x = u32.truncd(Math.random() * (xmax + 1));
+			var y = u32.truncd(Math.random() * (image.height + 1));
+			squares[i] = Square.new(x, y);
+		}
+	}
+	// Erase last positions
+	for (s in squares) {
+		color.red = 255;
+		color.green = 255;
+		color.blue = 255;
+		color.alpha = 255;
+		drawSquare(s.x, s.y, SQUARE_SIZE);
+	}
+	// Draw new positions
+	for (s in squares) {
+		s.x -= MOVE;
+		if (s.x > xmax) s.x = xmax;
+		color.red = if(s.x < xhalf, 255, 0);
+		color.green = 0;
+		color.blue = if(s.x >= xhalf, 255, 0);
+		drawSquare(s.x, s.y, SQUARE_SIZE);
+	}
+	// Draw vertical separator
+	for (y < image.height) {
+		var p = image.pixel(xhalf, y);
+		p.red = 0;
+		p.green = 0;
+		p.blue = 0;
+		p.alpha = 255;
+	}
+}
