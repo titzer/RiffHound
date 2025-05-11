@@ -1,0 +1,29 @@
+- What does/could the UI display?
+  - BPM
+  - Song
+  - Place in song structure
+  - Tab for current sequence
+  - Riff loops
+  - Scrolling spectrograph
+- What does the UI control?
+  - Tempo
+  - Practice mode(s)
+  - Start/stop/groove/ride/tick
+  - Enable/disable tracks
+  - switch to
+    - Riff mode
+    - Playalong mode
+    - Performance mode
+    - Practice mode
+    - Jam mode
+    - Record riff/solo mode
+    - Writing mode
+    - Drum machine
+    - Bass machine
+    - Singing mode
+    - Clarinet mode?
+  
+- Largest area: most relevant information to present
+
+
+

@@ -1,0 +1,18 @@
+.tab-editor {
+    display: grid;
+    grid-template-columns: repeat(16, 60px); /* Example for 16 time positions */
+    grid-auto-rows: 20px;
+    gap: 2px;
+}
+
+.tab-editor div {
+    border: 1px solid black;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    cursor: pointer; /* Indicates editable/draggable item */
+    font-size: 20px; /* Larger text size */
+    padding: 3px; /* Adds padding to prevent text clipping */
+    user-select: none; /* Prevents text selection during drag */
+    cursor: pointer; /* Indicates editable/draggable item */
+}
