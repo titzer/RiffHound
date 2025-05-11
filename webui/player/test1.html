@@ -1,0 +1,44 @@
+<input type="file" accept="audio/mpeg,audio/aac" id="fileInput">
+<button onclick="play()">Play</button>
+<button onclick="pause()">Pause</button>
+<button onclick="seekTo(10.5)">Seek to 10.5s</button>
+<script>
+  let audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  let sourceNode;
+  let audioBuffer;
+  let startTime = 0;
+  let pauseOffset = 0;
+
+  document.getElementById('fileInput').addEventListener('change', async (e) => {
+    let file = e.target.files[0];
+    let arrayBuffer = await file.arrayBuffer();
+    audioBuffer = await audioCtx.decodeAudioData(arrayBuffer);
+  });
+
+  function play() {
+    if (!audioBuffer) return;
+
+    sourceNode = audioCtx.createBufferSource();
+    sourceNode.buffer = audioBuffer;
+    sourceNode.connect(audioCtx.destination);
+
+    startTime = audioCtx.currentTime - pauseOffset;
+    sourceNode.start(0, pauseOffset);
+
+    sourceNode.onended = () => {
+      pauseOffset = 0;
+    };
+  }
+
+  function pause() {
+    if (!sourceNode) return;
+    sourceNode.stop();
+    pauseOffset = audioCtx.currentTime - startTime;
+  }
+
+  function seekTo(seconds) {
+    pause();
+    pauseOffset = seconds;
+    play();
+  }
+</script>

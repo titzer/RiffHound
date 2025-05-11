@@ -1,0 +1,181 @@
+<input type="file" accept="audio/mpeg" id="fileInput">
+Duration:
+<input id='duration' disabled='true' size=6>
+Tempo:
+<input id='tempo' disabled='true' size=4>
+Pos:
+<input id='position' disabled='true' size=5>
+<br>
+<canvas id="timeline" width=800 height="100"></canvas>
+<br>
+<button id='play' onclick="play()">Play</button>
+<button id='pause' onclick="pause()">Pause</button>
+<button id='forward' onclick="forward()">Forward</button>
+<input type="checkbox" id="loop" name="loop" value="Loop">
+<label for="loop">Loop</label><br>
+<script>
+
+  const playButton = document.getElementById("play");
+  const pauseButton = document.getElementById("pause");
+  const forwardButton = document.getElementById("forward");
+  const loopCheckbox = document.getElementById("loop");
+  
+  const durationField = document.getElementById("duration");
+  const tempoField = document.getElementById("tempo");
+  const positionField = document.getElementById("position");
+
+  let audioBuffer;
+  let playing = false;
+  const canvas = document.getElementById("timeline");
+  const ctx = canvas.getContext("2d");
+  
+  let audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  let startTime = 0, pauseOffset = 0;
+  let beats = []; // Seconds
+  let sourceNode;
+  let animationFrameId;
+  let duration = 1;
+
+  function updateButtons() {
+      pauseButton.disabled = !audioBuffer || !playing;
+      playButton.disabled = !audioBuffer || playing;
+      forwardButton.disabled = pauseButton.disabled;
+  }
+  
+  updateButtons(); 
+  
+  document.getElementById('fileInput').addEventListener('change', async (e) => {
+      let file = e.target.files[0];
+      let arrayBuffer = await file.arrayBuffer();
+      audioBuffer = await audioCtx.decodeAudioData(arrayBuffer);
+      duration = audioBuffer.duration; // fallback to 1 to avoid NaN
+      updateButtons();
+//      loadBeatTimestamps();
+      createBeatTimestampsFromTempo(100);
+      tempoField.value = 100;
+      updateTimeline();
+      drawTimeline();
+  });
+
+  function updateTimeline() {
+      var time = duration | 0;
+      durationField.value = Math.floor(time / 60) + ':' + Math.floor(time % 60);
+  }
+  
+  function loadBeatTimestamps() {
+      // TODO: load from metadata
+      let count = 120;
+      beats = [];
+      for (let i = 0; i < count; i++) {
+	  beats.push((i / count) * duration);
+      }
+  }
+
+  function createBeatTimestampsFromTempo(tempo) {
+      beats = [];
+      let current = 0, inc = 60 / tempo;
+      while (current < duration) {
+	  beats.push(current);
+	  current += inc;
+      }
+  }
+  
+  function play() {
+      if (!audioBuffer) return;
+      if (playing) return;
+      playing = true;
+      updateButtons(); 
+      sourceNode = audioCtx.createBufferSource();
+      sourceNode.buffer = audioBuffer;
+      sourceNode.connect(audioCtx.destination);
+      startTime = audioCtx.currentTime - pauseOffset;
+      sourceNode.start(0, pauseOffset);
+      animate();
+  }
+  
+  function pause() {
+      if (!sourceNode) return;
+      playing = false;
+      updateButtons();
+      sourceNode.stop();
+      pauseOffset = audioCtx.currentTime - startTime;
+      cancelAnimationFrame(animationFrameId);
+  }
+
+  function forward() {
+      if (!sourceNode) return;
+      pause();
+      let seconds = 5;
+      pauseOffset = Math.min(audioBuffer.duration, pauseOffset + seconds);
+      play();
+  }
+  
+  function getCurrentTime() {
+      return audioCtx.currentTime - startTime;
+  }
+
+  function drawTimeline() {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.fillStyle = "#ccc";
+      for (beat of beats) {
+	  ctx.fillRect(timestampToX(beat), 40, 2, 20);
+      }
+  }
+
+  function timestampToX(t) {
+      return (t / duration) * canvas.width;
+  }
+  
+  function animate() {
+      const current = getCurrentTime();
+      if (current > duration) {
+	  if (loopCheckbox.checked) loop();
+	  else finish();
+	  return;
+      }
+      positionField.value = current.toFixed(2);
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      drawTimeline();
+      
+      // Playhead
+      ctx.fillStyle = "red";
+      ctx.fillRect(timestampToX(current), 20, 2, 60);
+      
+      // Highlight beat marker if within threshold
+      ctx.fillStyle = "yellow";
+
+      const next = findNextBeat(current);
+      if (next > 0) {
+	  const prevBeat = beats[next - 1], nextBeat = beats[next];
+	  const y = getBounceY(current, prevBeat, nextBeat);
+	  ctx.fillRect(timestampToX(prevBeat), 100 - y * 100, 10, 10);
+      }
+      
+      animationFrameId = requestAnimationFrame(animate);
+  }
+
+  function finish() {
+      pause();
+      pauseOffset = 0;
+  }
+
+  function loop() {
+      pause();
+      pauseOffset = 0;
+      play();
+  }
+  
+  function findNextBeat(t) {
+      // TODO: binary search, since beats is sorted
+      for (let i = 0; i < beats.length; i++) {
+	  if (beats[i] > t) return i;
+      }
+      return -1;
+  }
+  
+  function getBounceY(current, prevBeat, nextBeat) {
+      const t = (current - prevBeat) / (nextBeat - prevBeat);
+      if (t < 0 || t > 1) return 0; // outside the bounce window
+      return 4 * t * (1 - t); // peak at t=0.5, range [0, 1]
+  }
+</script>

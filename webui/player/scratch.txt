@@ -1,0 +1,30 @@
+Song chart - verse 1 / chorus 1 / bridge
+Chord chart - A C E with fingerings
+Beat chart | -- |
+Riff / solo - tab
+Strum patterns
+
+Difference between riff and melody and solos:
+- Riff is rhythmic, repeats, with variations
+- Melody may repeat with variations, follows chords more closely
+- Solo mostly does not repeat
+
+Track information
+Duration
+Tempo
+Key
+
+state machine
+
+start:
+ +load => paused
+
+paused:
+ +play => playing
+
+playing:
+ +pause => paused
+ +finish => finished
+
+finished:
+ +play => playing
