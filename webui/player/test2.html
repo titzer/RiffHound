@@ -6,24 +6,34 @@ Tempo:
 Pos:
 <input id='position' disabled='true' size=5>
 <br>
-<canvas id="timeline" width=800 height="100"></canvas>
+<canvas id="timeline" width=1100 height="100"></canvas>
 <br>
+<button id='reset' onclick="reset()">Reset</button>
 <button id='play' onclick="play()">Play</button>
 <button id='pause' onclick="pause()">Pause</button>
 <button id='forward' onclick="forward()">Forward</button>
 <input type="checkbox" id="loop" name="loop" value="Loop">
 <label for="loop">Loop</label><br>
+<br>
+<input type="range" min="2" max="15" value="10" class="slider" id="zoomSlider">
+<label for="zoomSlider">Zoom</label><br>
+
 <script>
 
+  const resetButton = document.getElementById("reset");
   const playButton = document.getElementById("play");
   const pauseButton = document.getElementById("pause");
   const forwardButton = document.getElementById("forward");
   const loopCheckbox = document.getElementById("loop");
+  const zoomSlider = document.getElementById("zoomSlider");
   
   const durationField = document.getElementById("duration");
   const tempoField = document.getElementById("tempo");
   const positionField = document.getElementById("position");
 
+  const zoomDuration = 10;
+  const zooWidth = 300;
+  
   let audioBuffer;
   let playing = false;
   const canvas = document.getElementById("timeline");
@@ -32,6 +42,7 @@ Pos:
   let audioCtx = new (window.AudioContext || window.webkitAudioContext)();
   let startTime = 0, pauseOffset = 0;
   let beats = []; // Seconds
+  let timeline;
   let sourceNode;
   let animationFrameId;
   let duration = 1;
@@ -48,18 +59,29 @@ Pos:
       let file = e.target.files[0];
       let arrayBuffer = await file.arrayBuffer();
       audioBuffer = await audioCtx.decodeAudioData(arrayBuffer);
-      duration = audioBuffer.duration; // fallback to 1 to avoid NaN
+      updateTimeline(audioBuffer.duration);
       updateButtons();
 //      loadBeatTimestamps();
       createBeatTimestampsFromTempo(100);
+      timeline.setCurrent(0);
       tempoField.value = 100;
       pauseOffset = 0;
-      updateTimeline();
-      drawTimeline();
+      timeline.draw(beats);
   });
 
-  function updateTimeline() {
-      var time = duration | 0;
+  zoomSlider.addEventListener('change', e => {
+      if (timeline) updateTimeline(timeline.duration);
+  });
+  
+  function updateTimeline(duration) {
+      let zoom = zoomSlider.value | 0;
+      if (duration > 3 * zoom) {
+	  // use zoom
+	  timeline = new Timeline(duration, canvas.width, zoom, canvas.width / 3);
+      } else {
+	  timeline = new Timeline(duration, canvas.width, 0, 0);
+      }
+      var time = timeline.duration | 0;
       durationField.value = Math.floor(time / 60) + ':' + Math.floor(time % 60);
   }
   
@@ -68,18 +90,32 @@ Pos:
       let count = 120;
       beats = [];
       for (let i = 0; i < count; i++) {
-	  beats.push((i / count) * duration);
+	  beats.push((i / count) * timeline.duration);
       }
   }
 
   function createBeatTimestampsFromTempo(tempo) {
       beats = [];
       let current = 0, inc = 60 / tempo;
-      while (current < duration) {
+      while (current < timeline.duration) {
 	  beats.push(current);
 	  current += inc;
       }
   }
+
+  function reset() {
+      if (!audioBuffer) return;
+      if (playing) {
+	  pause();
+	  pauseOffset = 0;
+	  play();
+      } else {
+	  pauseOffset = 0;
+	  timeline.setCurrent(0);
+	  timeline.draw(beats);
+      }
+  }
+
   
   function play() {
       if (!audioBuffer) return;
@@ -115,32 +151,67 @@ Pos:
       return audioCtx.currentTime - startTime;
   }
 
-  function drawTimeline() {
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-      ctx.fillStyle = "#ccc";
-      for (beat of beats) {
-	  ctx.fillRect(timestampToX(beat), 40, 2, 20);
+  // Encapsulates the state for the timeline.
+  class Timeline {
+      constructor(duration, width, zoomDuration, zoomWidth) {
+	  this.duration = duration;
+	  this.width = width;
+	  this.zoomDuration = zoomDuration;
+	  this.zoomWidth = zoomWidth;
+	  this.zoomStart = 0;
+	  this.zoomEnd = 0;
+	  this.zoomX = 0;
       }
-  }
-
-  function timestampToX(t) {
-      return (t / duration) * canvas.width;
+      setCurrent(t) {
+	  this.current = t;
+	  if (this.zoomWidth > 0) {
+	      this.zoomStart = t; //Math.max(0, t - (this.zoomDuration / 2));
+	      this.zoomEnd = Math.min(this.duration, t + this.zoomDuration);
+	      this.zoomX = (t / (this.duration - this.zoomDuration)) * (this.width - this.zoomWidth);
+	  }
+      }
+      toX(t) {
+	  if (t < this.zoomStart) return this.toUnzoomedX(t);
+	  if (t < this.zoomEnd) return this.zoomX + ((t - this.zoomStart) / this.zoomDuration) * this.zoomWidth;
+	  return this.toUnzoomedX(this.zoomStart) + this.zoomWidth + this.toUnzoomedX(t - this.zoomEnd);
+      }
+      toUnzoomedX(t) {
+	  return (t / (this.duration - this.zoomDuration)) * (this.width - this.zoomWidth);
+      }
+      inZoom(t) {
+	  return t >= this.zoomStart && t < this.zoomEnd;
+      }
+      draw(beats) {
+	  ctx.clearRect(0, 0, canvas.width, canvas.height);
+	  ctx.fillStyle = "#ccc";
+	  ctx.strokeStyle = "black";
+	  if (this.zoomWidth > 0) {
+	      ctx.strokeRect(this.toX(this.zoomStart), 10, this.zoomWidth, canvas.height - 20);
+	  }
+	  for (let i = 0; i < beats.length; i++) {
+	      let beat = beats[i];
+	      let y = 40, height = 20;
+	      if (this.inZoom(beat)) { y = 30; height = 40; }
+	      ctx.fillRect(this.toX(beat), y, 2, height);
+	  }
+      }
   }
   
   function animate() {
       const current = getCurrentTime();
-      if (current > duration) {
+      if (current > timeline.duration) {
 	  if (loopCheckbox.checked) loop();
 	  else finish();
 	  return;
       }
+      timeline.setCurrent(current);
       positionField.value = current.toFixed(2);
       ctx.clearRect(0, 0, canvas.width, canvas.height);
-      drawTimeline();
+      timeline.draw(beats);
       
       // Playhead
       ctx.fillStyle = "red";
-      ctx.fillRect(timestampToX(current), 20, 2, 60);
+      ctx.fillRect(timeline.toX(current), 20, 2, 60);
       
       // Highlight beat marker if within threshold
       ctx.fillStyle = "yellow";
@@ -149,7 +220,7 @@ Pos:
       if (next > 0) {
 	  const prevBeat = beats[next - 1], nextBeat = beats[next];
 	  const y = getBounceY(current, prevBeat, nextBeat);
-	  ctx.fillRect(timestampToX(prevBeat), 100 - y * 100, 10, 10);
+	  ctx.fillRect(timeline.toX(prevBeat), 100 - y * 100, 10, 10);
       }
       
       animationFrameId = requestAnimationFrame(animate);
