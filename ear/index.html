@@ -1,0 +1,478 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Ear Training Quiz</title>
+  <style>
+    :root {
+      --bg: #0f172a; /* slate-900 */
+      --fg: #e2e8f0; /* slate-200 */
+      --muted: #94a3b8; /* slate-400 */
+      --card: #111827cc; /* translucent slate-900 */
+      --accent: #22c55e; /* green-500 */
+      --accent-2: #6366f1; /* indigo-500 */
+      --danger: #ef4444; /* red-500 */
+      --warning: #f59e0b; /* amber-500 */
+      --btn: #1f2937; /* gray-800 */
+      --btn-hover: #374151; /* gray-700 */
+    }
+    html, body {
+      height: 100%;
+    }
+    body {
+      margin: 0;
+      background: radial-gradient(1200px 800px at 20% -10%, #1f2937 0%, var(--bg) 40%),
+                  radial-gradient(1200px 800px at 120% 110%, #1e293b 0%, var(--bg) 40%);
+      color: var(--fg);
+      font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Ubuntu,
+                   Cantarell, Noto Sans, Helvetica Neue, Arial, "Apple Color Emoji",
+                   "Segoe UI Emoji";
+      display: grid;
+      place-items: center;
+      padding: 24px;
+    }
+    .app {
+      width: min(900px, 100%);
+      background: #0b1220aa;
+      backdrop-filter: blur(6px);
+      border: 1px solid #1f2937;
+      border-radius: 20px;
+      box-shadow: 0 20px 60px rgba(0,0,0,0.35);
+      overflow: hidden;
+    }
+    header {
+      padding: 20px 24px 16px;
+      border-bottom: 1px solid #1f2937;
+      display: flex;
+      gap: 12px;
+      align-items: baseline;
+      justify-content: space-between;
+    }
+    header h1 {
+      margin: 0;
+      font-size: 20px;
+      letter-spacing: 0.3px;
+    }
+    header .sub {
+      color: var(--muted);
+      font-size: 12px;
+    }
+    main {
+      display: grid;
+      grid-template-columns: 1fr 320px;
+      gap: 0;
+    }
+    @media (max-width: 840px) {
+      main { grid-template-columns: 1fr; }
+      .panel { border-left: none !important; border-top: 1px solid #1f2937; }
+    }
+    .stage {
+      padding: 24px;
+      min-height: 300px;
+      display: grid;
+      align-content: start;
+      gap: 16px;
+    }
+    .panel {
+      padding: 16px 16px 20px;
+      border-left: 1px solid #1f2937;
+      background: #0b1220a0;
+    }
+    fieldset {
+      border: 1px solid #1f2937;
+      border-radius: 14px;
+      padding: 12px 12px 6px;
+      margin: 0 0 12px 0;
+    }
+    legend { color: var(--muted); font-size: 12px; padding: 0 6px; }
+    .row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .row3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+    label { font-size: 12px; color: var(--muted); display: block; margin-bottom: 6px; }
+    select, input[type="number"], input[type="range"], button {
+      width: 100%;
+      background: var(--btn);
+      color: var(--fg);
+      border: 1px solid #374151;
+      border-radius: 10px;
+      padding: 10px 12px;
+      font-size: 14px;
+      box-sizing: border-box;
+    }
+    input[type="range"] { padding: 0; height: 34px; }
+    button { cursor: pointer; }
+    button:hover { background: var(--btn-hover); }
+    .primary { border-color: #334155; background: #0b1220; }
+    .accent { background: var(--accent-2); border-color: transparent; }
+    .accent:hover { filter: brightness(1.05); }
+    .choices { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    .choice {
+      background: #0b1220;
+      border: 1px solid #1f2937;
+      border-radius: 14px;
+      padding: 14px 14px;
+      text-align: left;
+      transition: transform .05s ease;
+    }
+    .choice:hover { transform: translateY(-1px); }
+    .choice.correct { outline: 2px solid var(--accent); }
+    .choice.wrong { outline: 2px solid var(--danger); }
+    .pill {
+      display: inline-block; padding: 4px 8px; border-radius: 999px;
+      font-size: 12px; border: 1px solid #1f2937; background: #0b1220; color: var(--muted);
+    }
+    .kbd { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
+    .seq { letter-spacing: .6px; }
+    .footer { display:flex; gap: 12px; align-items:center; }
+    .score { font-variant-numeric: tabular-nums; }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <header>
+      <div>
+        <h1>Ear Training Quiz</h1>
+        <div class="sub">Hear a sequence (in-key), then pick the matching notes.</div>
+      </div>
+      <div class="sub">Web Audio • No samples • Works offline</div>
+    </header>
+    <main>
+      <section class="stage">
+        <div>
+          <div class="pill">Key: <span id="label-key">C major</span> · Length: <span id="label-len">3</span> · Tempo: <span id="label-bpm">90</span>bpm</div>
+        </div>
+        <div class="footer">
+          <button id="btn-play" class="accent" title="Play the current question (space)">▶︎ Play</button>
+          <button id="btn-replay" class="primary" title="Replay the sequence (r)">↺ Replay</button>
+          <button id="btn-next" class="primary" title="Skip and get a new question (n)">⤴︎ New</button>
+          <span class="pill score">Score: <span id="score">0</span>/<span id="total">0</span></span>
+        </div>
+        <div id="question" class="choices" aria-live="polite" aria-atomic="true"></div>
+        <div id="feedback" class="sub"></div>
+      </section>
+      <aside class="panel">
+        <fieldset>
+          <legend>Key & Range</legend>
+          <div class="row">
+            <div>
+              <label for="key">Key</label>
+              <select id="key">
+                <option value="C">C major</option>
+                <option value="G">G major</option>
+                <option value="D">D major</option>
+                <option value="A">A major</option>
+                <option value="E">E major</option>
+                <option value="F">F major</option>
+                <option value="Bb">Bb major</option>
+              </select>
+            </div>
+            <div>
+              <label for="octave">Octave (tonic)</label>
+              <input id="octave" type="number" min="2" max="6" value="4" />
+            </div>
+          </div>
+        </fieldset>
+        <fieldset>
+          <legend>Question</legend>
+          <div class="row">
+            <div>
+              <label for="length">Sequence length</label>
+              <input id="length" type="number" min="2" max="5" value="3" />
+            </div>
+            <div>
+              <label for="maxStep">Max step (scale degrees)</label>
+              <input id="maxStep" type="number" min="1" max="4" value="2" />
+            </div>
+          </div>
+          <div style="margin-top:8px">
+            <label><input type="checkbox" id="allowDown" checked /> Allow downward steps</label>
+          </div>
+        </fieldset>
+        <fieldset>
+          <legend>Sound</legend>
+          <div class="row3">
+            <div>
+              <label for="wave">Waveform</label>
+              <select id="wave">
+                <option>sine</option>
+                <option>triangle</option>
+                <option>square</option>
+                <option>sawtooth</option>
+              </select>
+            </div>
+            <div>
+              <label for="bpm">Tempo (BPM)</label>
+              <input id="bpm" type="number" min="40" max="200" value="90" />
+            </div>
+            <div>
+              <label for="sustain">Note length</label>
+              <select id="sustain">
+                <option value="0.8">Legato</option>
+                <option value="0.6" selected>Normal</option>
+                <option value="0.4">Staccato</option>
+              </select>
+            </div>
+          </div>
+          <div style="margin-top:8px">
+            <label for="volume">Volume</label>
+            <input id="volume" type="range" min="0" max="1" step="0.01" value="0.2" />
+          </div>
+        </fieldset>
+      </aside>
+    </main>
+  </div>
+
+  <script>
+    // --- Music theory helpers -------------------------------------------------
+    const NOTE_ORDER = ["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"]; // enharmonic simple
+    const MAJOR_SCALE_ST = [0,2,4,5,7,9,11]; // scale degrees (0..6) offsets in semitones from tonic
+
+    const KEY_TO_SEMITONES = {
+      C: 0, G: 7, D: 2, A: 9, E: 4, F: 5, Bb: 10,
+    };
+
+    function midiToFreq(midi){ return 440 * Math.pow(2, (midi - 69)/12); }
+    function nameForMidi(midi){ return NOTE_ORDER[midi % 12]; }
+
+    function buildMajorScale(keyName = 'C', octave = 4) {
+      const tonicSemis = KEY_TO_SEMITONES[keyName];
+      const tonicMidi = 12 * (octave + 1) + tonicSemis; // MIDI note number for tonic (C4=60)
+      const scaleMidi = MAJOR_SCALE_ST.map(st => tonicMidi + st);
+      const scaleNames = MAJOR_SCALE_ST.map(st => NOTE_ORDER[(tonicSemis + st) % 12]);
+      return { tonicMidi, scaleMidi, scaleNames };
+    }
+
+    // Generate a sequence of scale degrees starting at 1 (tonic)
+    function generateSequence(len, maxStep, allowDown=true) {
+      const degrees = [0]; // 0-based degree index: 0..6 (0 = tonic)
+      while (degrees.length < len) {
+        const step = Math.ceil(Math.random() * maxStep); // 1..maxStep
+        const dir = allowDown ? (Math.random() < 0.5 ? -1 : 1) : 1;
+        let next = degrees[degrees.length - 1] + dir * step;
+        // wrap within 0..6 (stay in one octave of the key)
+        next = Math.max(0, Math.min(6, next));
+        if (next === degrees[degrees.length - 1]) continue; // avoid repeats if clamped
+        degrees.push(next);
+      }
+      return degrees; // array of degree indices
+    }
+
+    function degreesToMidi(degrees, scaleMidi) {
+      return degrees.map(d => scaleMidi[d]);
+    }
+    function degreesToNames(degrees, scaleNames) {
+      return degrees.map(d => scaleNames[d]);
+    }
+
+    // Create distractor sequences by subtle edits
+    function makeDistractors(correctDegrees) {
+      const out = new Set();
+      const key = (arr)=>arr.join("-");
+      out.add(key(correctDegrees));
+      const n = correctDegrees.length;
+      const tryPush = (arr)=>{ const k=key(arr); if(!out.has(k)) out.add(k); };
+
+      // 1) Flip one step direction if possible
+      for (let i=1;i<n;i++){
+        const prev = correctDegrees[i-1];
+        const cur = correctDegrees[i];
+        const delta = cur - prev;
+        if (delta !== 0){
+          const alt = correctDegrees.slice();
+          alt[i] = prev - delta; // mirror step
+          if (alt[i] >= 0 && alt[i] <= 6) tryPush(alt);
+        }
+      }
+      // 2) Nudge one interior note by +/-1 degree
+      for (let i=1;i<n;i++){
+        for (const d of [-1, +1]){
+          const alt = correctDegrees.slice();
+          alt[i] = Math.max(0, Math.min(6, alt[i] + d));
+          tryPush(alt);
+        }
+      }
+      // 3) Reverse sequence (excluding first tonic) if different
+      if (n > 2){
+        const alt = [correctDegrees[0], ...correctDegrees.slice(1).reverse()];
+        tryPush(alt);
+      }
+      // Collect 3 distractors
+      const all = [...out].map(s=>s.split('-').map(Number));
+      const filtered = all.filter(a => key(a) !== key(correctDegrees));
+      // Shuffle and take first 3
+      for (let i=filtered.length-1;i>0;i--){ const j=Math.floor(Math.random()*(i+1)); [filtered[i],filtered[j]]=[filtered[j],filtered[i]]; }
+      return filtered.slice(0,3);
+    }
+
+    // --- Audio engine (Web Audio API) ----------------------------------------
+    class Synth {
+      constructor(){ this.ctx = null; this.master = null; this.wave = 'sine'; this.volume = 0.2; }
+      ensure(){
+        if (!this.ctx){
+          const ctx = new (window.AudioContext || window.webkitAudioContext)();
+          const master = ctx.createGain();
+          master.gain.value = this.volume;
+          master.connect(ctx.destination);
+          this.ctx = ctx; this.master = master;
+        }
+      }
+      setWave(w){ this.wave = w; }
+      setVolume(v){ this.ensure(); this.master.gain.value = v; this.volume = v; }
+      now(){ this.ensure(); return this.ctx.currentTime; }
+      playNote(freq, start, dur, sustain=0.6){
+        this.ensure();
+        const ctx = this.ctx;
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = this.wave;
+        osc.frequency.value = freq;
+        osc.connect(gain);
+        gain.connect(this.master);
+        // simple ADSR-ish envelope
+        const a = 0.01, d = 0.05, s = sustain, r = 0.08;
+        const t0 = start, t1 = t0 + a, t2 = t1 + d, t3 = start + dur, t4 = t3 + r;
+        gain.gain.setValueAtTime(0.0001, t0);
+        gain.gain.exponentialRampToValueAtTime(1.0, t1);
+        gain.gain.exponentialRampToValueAtTime(s, t2);
+        gain.gain.setValueAtTime(s, t3);
+        gain.gain.exponentialRampToValueAtTime(0.0001, t4);
+        osc.start(t0);
+        osc.stop(t4 + 0.02);
+      }
+      async playSequence(midiNotes, bpm=90, sustainRatio=0.6){
+        const beatSec = 60 / bpm; // one beat per note
+        const dur = beatSec; // note duration
+        const start = this.now() + 0.05;
+        midiNotes.forEach((m,i)=>{
+          const t = start + i * beatSec;
+          const freq = midiToFreq(m);
+          this.playNote(freq, t, dur, sustainRatio);
+        });
+        // Return a promise that resolves when finished
+        const totalDur = start + midiNotes.length * beatSec + 0.2 - this.now();
+        return new Promise(res => setTimeout(res, Math.max(0, totalDur*1000)));
+      }
+    }
+
+    // --- App logic ------------------------------------------------------------
+    const el = (id)=>document.getElementById(id);
+    const $ = {
+      key: el('key'), octave: el('octave'), length: el('length'), maxStep: el('maxStep'),
+      allowDown: el('allowDown'), wave: el('wave'), bpm: el('bpm'), sustain: el('sustain'), volume: el('volume'),
+      labelKey: el('label-key'), labelLen: el('label-len'), labelBpm: el('label-bpm'),
+      btnPlay: el('btn-play'), btnReplay: el('btn-replay'), btnNext: el('btn-next'),
+      question: el('question'), feedback: el('feedback'), score: el('score'), total: el('total'),
+    };
+
+    const synth = new Synth();
+
+    let current = {
+      degrees: null,
+      midi: null,
+      names: null,
+      options: [], // array of {degrees, names}
+      correctIndex: 0,
+      scaleMidi: null,
+      scaleNames: null,
+    };
+
+    function updateLabels(){
+      $.labelKey.textContent = `${$.key.value} major`;
+      $.labelLen.textContent = String($.length.value);
+      $.labelBpm.textContent = String($.bpm.value);
+    }
+
+    function makeQuestion(){
+      updateLabels();
+      const { scaleMidi, scaleNames } = buildMajorScale($.key.value, Number($.octave.value));
+      current.scaleMidi = scaleMidi; current.scaleNames = scaleNames;
+      const len = Number($.length.value);
+      const maxStep = Number($.maxStep.value);
+      const allowDown = !!$.allowDown.checked;
+      const degrees = generateSequence(len, maxStep, allowDown);
+      const midi = degreesToMidi(degrees, scaleMidi);
+      const names = degreesToNames(degrees, scaleNames);
+
+      // Build options
+      const distractorDegs = makeDistractors(degrees);
+      const options = [degrees, ...distractorDegs];
+      // Shuffle options
+      for (let i=options.length-1;i>0;i--){ const j=Math.floor(Math.random()*(i+1)); [options[i],options[j]]=[options[j],options[i]]; }
+      const correctIndex = options.findIndex(o => o.join('-') === degrees.join('-'));
+
+      current.degrees = degrees; current.midi = midi; current.names = names;
+      current.options = options.map(dd => ({ degrees: dd, names: degreesToNames(dd, scaleNames) }));
+      current.correctIndex = correctIndex;
+
+      renderChoices();
+      $.feedback.textContent = '';
+      // Auto play on new question
+      playCurrent();
+    }
+
+    function renderChoices(){
+      $.question.innerHTML = '';
+      current.options.forEach((opt, idx) => {
+        const btn = document.createElement('button');
+        btn.className = 'choice';
+        btn.innerHTML = `<div class="seq kbd">${opt.names.join(' – ')}</div>`;
+        btn.addEventListener('click', () => submitAnswer(idx, btn));
+        $.question.appendChild(btn);
+      });
+    }
+
+    async function playCurrent(){
+      $.btnPlay.disabled = true; $.btnReplay.disabled = true;
+      try {
+        synth.setWave($.wave.value);
+        synth.setVolume(Number($.volume.value));
+        await synth.playSequence(current.midi, Number($.bpm.value), Number($.sustain.value));
+      } finally {
+        $.btnPlay.disabled = false; $.btnReplay.disabled = false;
+      }
+    }
+
+    function submitAnswer(index, btn){
+      const correct = index === current.correctIndex;
+      const choiceButtons = Array.from($.question.children);
+      choiceButtons.forEach((b,i)=>{
+        b.classList.toggle('correct', i===current.correctIndex);
+        if (i===index && !correct) b.classList.add('wrong');
+        b.disabled = true;
+      });
+      const s = Number($.score.textContent); const t = Number($.total.textContent);
+      $.total.textContent = String(t+1);
+      if (correct) {
+        $.score.textContent = String(s+1);
+        $.feedback.textContent = `Nice! It was ${current.names.join(' – ')}.`;
+      } else {
+        $.feedback.textContent = `Not quite. Correct was ${current.names.join(' – ')}.`;
+      }
+    }
+
+    // --- Events ---------------------------------------------------------------
+    $.btnPlay.addEventListener('click', playCurrent);
+    $.btnReplay.addEventListener('click', playCurrent);
+    $.btnNext.addEventListener('click', makeQuestion);
+
+    [$.key, $.octave, $.length, $.maxStep, $.allowDown, $.wave, $.bpm, $.sustain].forEach(ctrl => {
+      ctrl.addEventListener('change', () => {
+        updateLabels();
+        makeQuestion();
+      });
+    });
+    $.volume.addEventListener('input', () => synth.setVolume(Number($.volume.value)));
+
+    // Keyboard shortcuts
+    window.addEventListener('keydown', (e) => {
+      if (e.target && ['INPUT','SELECT','TEXTAREA'].includes(e.target.tagName)) return;
+      if (e.code === 'Space') { e.preventDefault(); playCurrent(); }
+      else if (e.key === 'r') { playCurrent(); }
+      else if (e.key === 'n') { makeQuestion(); }
+    });
+
+    // Startup
+    makeQuestion();
+  </script>
+</body>
+</html>
