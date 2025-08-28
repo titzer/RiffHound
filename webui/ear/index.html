@@ -415,7 +415,7 @@
         const btn = document.createElement('button');
         btn.className = 'choice';
         btn.innerHTML = `<div class="seq kbd">${opt.names.join(' – ')}</div>`;
-        btn.addEventListener('click', () => submitAnswer(idx, btn));
+        btn.addEventListener('click', () => submitAnswer(idx));
         $.question.appendChild(btn);
       });
     }
@@ -431,7 +431,7 @@
       }
     }
 
-    function submitAnswer(index, btn){
+    function submitAnswer(index){
       const correct = index === current.correctIndex;
       const choiceButtons = Array.from($.question.children);
       choiceButtons.forEach((b,i)=>{
@@ -463,10 +463,15 @@
 
     // Keyboard shortcuts
     window.addEventListener('keydown', (e) => {
-      if (e.target && ['INPUT','SELECT','TEXTAREA'].includes(e.target.tagName)) return;
-      if (e.code === 'Space') { e.preventDefault(); playCurrent(); }
-      else if (e.key === 'r') { playCurrent(); }
-      else if (e.key === 'n') { makeQuestion(); }
+	if (e.target && ['INPUT','SELECT','TEXTAREA'].includes(e.target.tagName)) return;
+	if (e.code === 'Space') { e.preventDefault(); playCurrent(); }
+	// TODO 1-4 keys should be the choices
+	else if (e.key === '1') { submitAnswer(0); }
+	else if (e.key === '2') { submitAnswer(1); }
+	else if (e.key === '3') { submitAnswer(2); }
+	else if (e.key === '4') { submitAnswer(3); }
+	else if (e.key === 'r') { playCurrent(); }
+	else if (e.key === 'n') { makeQuestion(); }
     });
 
     // Startup
