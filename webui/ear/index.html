@@ -143,7 +143,6 @@
         </div>
         <div class="footer">
           <button id="btn-play" class="accent" title="Play the current question (space)">▶︎ Play</button>
-          <button id="btn-replay" class="primary" title="Replay the sequence (r)">↺ Replay</button>
           <button id="btn-next" class="primary" title="Skip and get a new question (n)">⤴︎ New</button>
           <span class="pill score">Score: <span id="score">0</span>/<span id="total">0</span></span>
         </div>
@@ -360,7 +359,7 @@
       key: el('key'), octave: el('octave'), length: el('length'), maxStep: el('maxStep'),
       allowDown: el('allowDown'), wave: el('wave'), bpm: el('bpm'), sustain: el('sustain'), volume: el('volume'),
       labelKey: el('label-key'), labelLen: el('label-len'), labelBpm: el('label-bpm'),
-      btnPlay: el('btn-play'), btnReplay: el('btn-replay'), btnNext: el('btn-next'),
+      btnPlay: el('btn-play'), btnNext: el('btn-next'),
       question: el('question'), feedback: el('feedback'), score: el('score'), total: el('total'),
     };
 
@@ -422,13 +421,13 @@
     }
 
     async function playCurrent(){
-      $.btnPlay.disabled = true; $.btnReplay.disabled = true;
+      $.btnPlay.disabled = true;
       try {
         synth.setWave($.wave.value);
         synth.setVolume(Number($.volume.value));
         await synth.playSequence(current.midi, Number($.bpm.value), Number($.sustain.value));
       } finally {
-        $.btnPlay.disabled = false; $.btnReplay.disabled = false;
+        $.btnPlay.disabled = false;
       }
     }
 
@@ -452,7 +451,6 @@
 
     // --- Events ---------------------------------------------------------------
     $.btnPlay.addEventListener('click', playCurrent);
-    $.btnReplay.addEventListener('click', playCurrent);
     $.btnNext.addEventListener('click', makeQuestion);
 
     [$.key, $.octave, $.length, $.maxStep, $.allowDown, $.wave, $.bpm, $.sustain].forEach(ctrl => {
