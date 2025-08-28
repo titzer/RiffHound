@@ -125,6 +125,10 @@
     .seq { letter-spacing: .6px; }
     .footer { display:flex; gap: 12px; align-items:center; }
     .score { font-variant-numeric: tabular-nums; }
+    #btn-play {
+	height: 38px;      /* whatever looks right in your design */
+	line-height: 1.2;  /* control vertical centering */
+    }
   </style>
 </head>
 <body>
@@ -421,13 +425,15 @@
     }
 
     async function playCurrent(){
-      $.btnPlay.disabled = true;
+	$.btnPlay.disabled = true;
+	$.btnPlay.textContent = '♫ Playing...';
       try {
-        synth.setWave($.wave.value);
-        synth.setVolume(Number($.volume.value));
-        await synth.playSequence(current.midi, Number($.bpm.value), Number($.sustain.value));
+          synth.setWave($.wave.value);
+          synth.setVolume(Number($.volume.value));
+          await synth.playSequence(current.midi, Number($.bpm.value), Number($.sustain.value));
       } finally {
-        $.btnPlay.disabled = false;
+          $.btnPlay.disabled = false;
+	  $.btnPlay.textContent = '▶︎ Play';
       }
     }
 
