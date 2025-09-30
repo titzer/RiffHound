@@ -1,0 +1,540 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Scrolling Spectrogram Player</title>
+  <style>
+    :root {
+      --bg: #0f1115;
+      --fg: #e8ebf1;
+      --muted: #9aa3b2;
+      --accent: #4cc9f0;
+      --playhead: #ff3366;
+      --card: #161a22;
+      --border: #222838;
+    }
+    html, body { height: 100%; }
+    body {
+      margin: 0;
+      font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, Apple Color Emoji, Segoe UI Emoji;
+      background: var(--bg);
+      color: var(--fg);
+      display: grid;
+      grid-template-rows: auto 1fr auto;
+      gap: 10px;
+    }
+    header {
+      padding: 14px 16px;
+      border-bottom: 1px solid var(--border);
+      display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+      background: linear-gradient(180deg, #0f1115 0%, #0f1115 60%, #0b0d12 100%);
+    }
+    header h1 { font-size: 16px; font-weight: 600; margin: 0 8px 0 0; color: var(--fg);}
+    .controls { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+    .controls > * { flex: none; }
+    .btn {
+      background: var(--card);
+      color: var(--fg);
+      border: 1px solid var(--border);
+      padding: 8px 12px;
+      border-radius: 12px;
+      cursor: pointer;
+      transition: transform .02s ease, background .2s ease, border-color .2s ease;
+      user-select: none;
+    }
+    .btn:hover { background: #1a2030; border-color: #2b334a; }
+    .btn:active { transform: translateY(1px); }
+    input[type="file"] { color: var(--muted); }
+    .panel {
+      margin: 0 16px;
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      overflow: clip;
+      display: grid;
+      grid-template-rows: auto 1fr;
+      min-height: 280px;
+    }
+    .panel header { border: 0; background: #141823; padding: 10px 12px; }
+    #spec-wrap { position: relative; width: 100%; height: 100%; background: #05070b; }
+    canvas { display: block; width: 100%; height: 100%; }
+    .status { font-size: 12px; color: var(--muted); }
+    footer {
+      color: var(--muted);
+      padding: 8px 16px 16px;
+      font-size: 12px;
+    }
+    .range {
+      display: inline-flex; align-items: center; gap: 8px; padding: 0 8px;
+    }
+    .range input[type="range"] { width: 160px; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Scrolling Spectrogram Player</h1>
+    <div class="controls">
+      <input id="file" type="file" accept="audio/*" />
+      <button id="play" class="btn" disabled>Play</button>
+      <button id="stop" class="btn" disabled>Stop</button>
+      <span class="status" id="status">Load an audio file…</span>
+      <span class="range">
+        Zoom X
+        <input id="zoomX" type="range" min="0.5" max="4" step="0.1" value="1" title="Horizontal zoom" />
+      </span>
+      <span class="range">
+        FFT
+        <select id="fftSize" title="FFT size">
+          <option>1024</option>
+          <option selected>2048</option>
+          <option>4096</option>
+          <option>8192</option>
+        </select>
+      </span>
+      <span class="range">
+        Overlap
+        <select id="hopDiv" title="Hop = FFT / hopDiv">
+          <option value="4">75%</option>
+          <option value="2" selected>50%</option>
+          <option value="1">0%</option>
+        </select>
+      </span>
+    </div>
+  </header>
+
+  <section class="panel">
+    <header>
+      <div class="status" id="meta">No file loaded</div>
+    </header>
+    <div id="spec-wrap">
+      <canvas id="spectrogram"></canvas>
+    </div>
+  </section>
+
+  <footer>
+    Tip: The vertical axis is frequency (low at bottom → high at top). The view scrolls while playing; the red line is the playhead. Try different FFT sizes and overlaps for trade‑offs between time and frequency resolution.
+  </footer>
+
+<script>
+(() => {
+  /* -------------------- DOM -------------------- */
+  const fileInput = document.getElementById('file');
+  const playBtn = document.getElementById('play');
+  const stopBtn = document.getElementById('stop');
+  const statusEl = document.getElementById('status');
+  const metaEl = document.getElementById('meta');
+  const zoomX = document.getElementById('zoomX');
+  const fftSizeSelect = document.getElementById('fftSize');
+  const hopDivSelect = document.getElementById('hopDiv');
+
+  const canvas = document.getElementById('spectrogram');
+  const ctx = canvas.getContext('2d', { alpha: false });
+
+  // Offscreen full spectrogram image
+  let specCanvas = document.createElement('canvas');
+  let specCtx = specCanvas.getContext('2d', { alpha: false });
+
+  // Audio + playback state
+  let ac; // AudioContext
+  let buffer; // AudioBuffer
+  let srcNode = null; // BufferSourceNode
+  let startTime = 0; // context.currentTime when playback started
+  let startOffset = 0; // seconds into buffer when started
+
+  // Analysis state
+  let specReady = false;
+  let specFrames = 0; // columns
+  let specBins = 0;   // rows
+  let samplesPerHop = 0;
+  let secondsPerFrame = 0; // hop/sr
+
+  // View state
+  let rafId = 0;
+
+  // Resize handling
+  const resize = () => {
+    const wrap = document.getElementById('spec-wrap');
+    const dpr = Math.max(1, window.devicePixelRatio || 1);
+    const w = Math.max(320, wrap.clientWidth);
+    const h = Math.max(180, wrap.clientHeight);
+    canvas.width = w * dpr;
+    canvas.height = h * dpr;
+    canvas.style.width = w + 'px';
+    canvas.style.height = h + 'px';
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    draw();
+  };
+  new ResizeObserver(resize).observe(document.getElementById('spec-wrap'));
+  window.addEventListener('orientationchange', resize);
+
+  /* -------------------- UI wiring -------------------- */
+  fileInput.addEventListener('change', async (e) => {
+    const file = e.target.files && e.target.files[0];
+    if (!file) return;
+    cleanupAudio();
+    specReady = false;
+    updateStatus('Decoding…');
+
+    try {
+      if (!ac) ac = new (window.AudioContext || window.webkitAudioContext)();
+      const arr = await file.arrayBuffer();
+      buffer = await ac.decodeAudioData(arr);
+
+      metaEl.textContent = `${file.name} — ${(buffer.duration).toFixed(2)}s — ${buffer.sampleRate} Hz — ${buffer.numberOfChannels} ch`;
+
+      await computeSpectrogram();
+      playBtn.disabled = false;
+      stopBtn.disabled = false;
+      updateStatus('Ready');
+    } catch (err) {
+      console.error(err);
+      updateStatus('Failed to decode file');
+    }
+  });
+
+  playBtn.addEventListener('click', async () => {
+    if (!buffer) return;
+    if (!ac) ac = new (window.AudioContext || window.webkitAudioContext)();
+    if (ac.state === 'suspended') await ac.resume();
+
+    if (srcNode) {
+      // Pause → resume
+      pause();
+    } else {
+      // Start from current offset
+      start();
+    }
+  });
+
+  stopBtn.addEventListener('click', () => {
+    stop();
+  });
+
+  fftSizeSelect.addEventListener('change', async () => {
+    if (!buffer) return;
+    await computeSpectrogram();
+  });
+  hopDivSelect.addEventListener('change', async () => {
+    if (!buffer) return;
+    await computeSpectrogram();
+  });
+  zoomX.addEventListener('input', () => draw());
+
+  function updateStatus(text) { statusEl.textContent = text; }
+
+  /* -------------------- Playback -------------------- */
+  function start() {
+    if (srcNode) return;
+    srcNode = ac.createBufferSource();
+    srcNode.buffer = buffer;
+    srcNode.connect(ac.destination);
+    startTime = ac.currentTime;
+    srcNode.start(0, startOffset);
+    playBtn.textContent = 'Pause';
+    loop();
+  }
+
+  function pause() {
+    if (!srcNode) return;
+    // compute current offset, then stop
+    const t = currentPlayTime();
+    startOffset = Math.min(buffer.duration, Math.max(0, t));
+    srcNode.stop();
+    srcNode.disconnect();
+    srcNode = null;
+    playBtn.textContent = 'Play';
+    draw(); // draw final frame
+  }
+
+  function stop() {
+    startOffset = 0;
+    if (srcNode) { srcNode.stop(); srcNode.disconnect(); srcNode = null; }
+    playBtn.textContent = 'Play';
+    draw();
+  }
+
+  function currentPlayTime() {
+    if (!buffer) return 0;
+    if (!srcNode) return startOffset;
+    return (ac.currentTime - startTime) + startOffset;
+  }
+
+  /* -------------------- Spectrogram -------------------- */
+  async function computeSpectrogram() {
+    specReady = false;
+    draw();
+
+    const fftSize = parseInt(fftSizeSelect.value, 10);
+    const hopDiv = parseInt(hopDivSelect.value, 10);
+    const hopSize = Math.max(1, fftSize / hopDiv | 0);
+
+    const sr = buffer.sampleRate | 0;
+
+    // Mix to mono
+    const chs = buffer.numberOfChannels;
+    const len = buffer.length;
+    let mono = new Float32Array(len);
+    for (let c = 0; c < chs; c++) {
+      const data = buffer.getChannelData(c);
+      for (let i = 0; i < len; i++) mono[i] += data[i] / chs;
+    }
+
+    samplesPerHop = hopSize;
+    secondsPerFrame = hopSize / sr;
+
+    const frames = 1 + Math.max(0, ((len - fftSize) / hopSize | 0));
+    const bins = (fftSize / 2) | 0;
+
+    specCanvas.width = frames;
+    specCanvas.height = bins;
+
+    specCtx.fillStyle = '#000';
+    specCtx.fillRect(0, 0, frames, bins);
+
+    const img = specCtx.getImageData(0, 0, frames, bins);
+    const pix = img.data; // RGBA
+
+    const windowHann = makeHann(fftSize);
+    const re = new Float32Array(fftSize);
+    const im = new Float32Array(fftSize);
+
+    // Pre-allocate FFT object
+    const fft = makeFFT(fftSize);
+
+    // To compute dB scaling, track max magnitude
+    let globalMax = 1e-12;
+
+    // First pass to find max (for nicer normalization)
+    const passCount = 2;
+    for (let pass = 0; pass < passCount; pass++) {
+      let x = 0;
+      for (let f = 0; f < frames; f++) {
+        // slice + window
+        for (let i = 0; i < fftSize; i++) {
+          const s = mono[x + i] || 0;
+          re[i] = s * windowHann[i];
+          im[i] = 0;
+        }
+        x += hopSize;
+
+        fft.fft(re, im);
+
+        if (pass === passCount - 1) {
+          // Write column f into image data (bottom = low freq)
+          for (let k = 0; k < bins; k++) {
+            const mag = Math.hypot(re[k], im[k]);
+            const db = 20 * Math.log10(mag / globalMax + 1e-12); // ~[-120, 0]
+            const [r, g, b] = colormap(db);
+            const row = bins - 1 - k; // flip vertical so high at top
+            const idx = (row * frames + f) * 4;
+            pix[idx + 0] = r;
+            pix[idx + 1] = g;
+            pix[idx + 2] = b;
+            pix[idx + 3] = 255;
+          }
+        } else {
+          // max pass
+          for (let k = 0; k < bins; k++) {
+            const mag = Math.hypot(re[k], im[k]);
+            if (mag > globalMax) globalMax = mag;
+          }
+        }
+
+        // Yield occasionally to keep UI responsive
+        if ((f & 63) === 0) await nextFrame();
+      }
+    }
+
+    specCtx.putImageData(img, 0, 0);
+
+    specFrames = frames;
+    specBins = bins;
+    specReady = true;
+    draw();
+  }
+
+  function draw() {
+    const w = canvas.width / (window.devicePixelRatio || 1);
+    const h = canvas.height / (window.devicePixelRatio || 1);
+
+    ctx.fillStyle = '#05070b';
+    ctx.fillRect(0, 0, w, h);
+
+    if (!specReady) {
+      ctx.fillStyle = '#6c7488';
+      ctx.font = '12px ui-sans-serif, system-ui, -apple-system, Segoe UI';
+      ctx.fillText('Loading / computing spectrogram…', 12, 22);
+      return;
+    }
+
+    const zx = parseFloat(zoomX.value);
+
+    // How many frames fit into the viewport width (before zoom)?
+    const framesVisibleBase = Math.max(1, Math.round(w));
+    const framesVisible = Math.max(1, Math.round(framesVisibleBase / zx));
+
+    const tNow = currentPlayTime();
+    const curFrame = Math.floor(tNow / secondsPerFrame);
+
+    // Keep playhead at 10% of view width (or at end if near start)
+    const playheadPx = Math.round(w * 0.1);
+    const leftMostFrame = Math.max(0, Math.min(specFrames - framesVisible, curFrame - Math.floor(framesVisible * 0.1)));
+
+    // Source slice → dest rect
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(specCanvas,
+      leftMostFrame, 0, framesVisible, specBins,
+      0, 0, w, h);
+
+    // Grid lines (time markers every ~1s)
+    const secPerGrid = chooseNiceStep(secondsPerFrame * framesVisible, 8);
+    const pxPerSec = (w) / (secondsPerFrame * framesVisible);
+    ctx.globalAlpha = 0.25;
+    ctx.strokeStyle = '#9aa3b2';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    const tLeft = leftMostFrame * secondsPerFrame;
+    for (let t = Math.ceil(tLeft / secPerGrid) * secPerGrid; t < tLeft + secondsPerFrame * framesVisible; t += secPerGrid) {
+      const x = Math.round((t - tLeft) * pxPerSec) + 0.5;
+      ctx.moveTo(x, 0); ctx.lineTo(x, h);
+    }
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+
+    // Playhead
+    ctx.save();
+    ctx.strokeStyle = getComputedStyle(document.documentElement).getPropertyValue('--playhead') || '#ff3366';
+    ctx.lineWidth = 2;
+    ctx.setLineDash([6, 4]);
+    ctx.beginPath();
+    ctx.moveTo(playheadPx + 0.5, 0);
+    ctx.lineTo(playheadPx + 0.5, h);
+    ctx.stroke();
+    ctx.restore();
+
+    // Labels
+    ctx.fillStyle = '#c7ccd8';
+    ctx.font = '12px ui-sans-serif, system-ui, -apple-system, Segoe UI';
+    ctx.fillText(`t = ${tNow.toFixed(2)} s`, 10, h - 10);
+  }
+
+  function loop() {
+    cancelAnimationFrame(rafId);
+    const step = () => {
+      draw();
+      if (srcNode) {
+        if (currentPlayTime() >= buffer.duration - 1e-3) {
+          // finished
+          srcNode.stop(); srcNode.disconnect(); srcNode = null; startOffset = 0; playBtn.textContent = 'Play'; draw();
+          return;
+        }
+        rafId = requestAnimationFrame(step);
+      }
+    };
+    step();
+  }
+
+  function cleanupAudio() {
+    stop();
+    if (ac && ac.state !== 'closed') {
+      // keep context for reuse; don't close to avoid resume issues on Safari
+    }
+  }
+
+  /* -------------------- Utilities -------------------- */
+  function chooseNiceStep(rangeSeconds, approxLines) {
+    const raw = rangeSeconds / approxLines;
+    const pow10 = Math.pow(10, Math.floor(Math.log10(raw)));
+    const cand = [1, 2, 5, 10];
+    for (let m of cand) { if (raw <= m * pow10) return m * pow10; }
+    return 10 * pow10;
+  }
+
+  function nextFrame() { return new Promise(r => requestAnimationFrame(r)); }
+
+  function makeHann(N) {
+    const win = new Float32Array(N);
+    for (let n = 0; n < N; n++) win[n] = 0.5 * (1 - Math.cos(2 * Math.PI * n / (N - 1)));
+    return win;
+  }
+
+  // Simple, real-input radix-2 FFT wrapper
+  function makeFFT(N) {
+    if (N & (N - 1)) throw new Error('FFT size must be power of two');
+
+    const cosTable = new Float32Array(N / 2);
+    const sinTable = new Float32Array(N / 2);
+    for (let i = 0; i < N / 2; i++) {
+      const ang = -2 * Math.PI * i / N;
+      cosTable[i] = Math.cos(ang);
+      sinTable[i] = Math.sin(ang);
+    }
+
+    const rev = new Uint32Array(N);
+    let bits = Math.log2(N) | 0;
+    for (let i = 0; i < N; i++) {
+      let x = i, y = 0;
+      for (let b = 0; b < bits; b++) { y = (y << 1) | (x & 1); x >>= 1; }
+      rev[i] = y >>> 0;
+    }
+
+    function fft(re, im) {
+      const n = N;
+      // bit-reversal
+      for (let i = 0; i < n; i++) {
+        const j = rev[i];
+        if (j > i) { const tr = re[i]; re[i] = re[j]; re[j] = tr; const ti = im[i]; im[i] = im[j]; im[j] = ti; }
+      }
+
+      for (let size = 2; size <= n; size <<= 1) {
+        const half = size >>> 1;
+        const step = N / size;
+        for (let i = 0; i < n; i += size) {
+          let k = 0;
+          for (let j = i; j < i + half; j++) {
+            const tpre =  re[j + half] * cosTable[k] - im[j + half] * sinTable[k];
+            const tpim =  re[j + half] * sinTable[k] + im[j + half] * cosTable[k];
+            re[j + half] = re[j] - tpre;
+            im[j + half] = im[j] - tpim;
+            re[j] += tpre;
+            im[j] += tpim;
+            k += step;
+          }
+        }
+      }
+    }
+
+    return { fft };
+  }
+
+  // Map dB in approximately [-80, 0] to RGB using a perceptual-ish gradient
+  function colormap(db) {
+    const minDB = -80, maxDB = 0;
+    const t = Math.max(0, Math.min(1, (db - minDB) / (maxDB - minDB)));
+    // Gradient: black → navy → blue → cyan → yellow → white
+    // piecewise linear in RGB
+    const stops = [
+      [0, 0, 0],       // 0.0
+      [0, 0, 64],      // 0.2
+      [0, 64, 255],    // 0.4
+      [0, 200, 255],   // 0.6
+      [255, 255, 0],   // 0.8
+      [255, 255, 255], // 1.0
+    ];
+    const p = t * (stops.length - 1);
+    const i = Math.floor(p);
+    const f = p - i;
+    const a = stops[i], b = stops[Math.min(i + 1, stops.length - 1)];
+    const r = a[0] + (b[0] - a[0]) * f;
+    const g = a[1] + (b[1] - a[1]) * f;
+    const bl = a[2] + (b[2] - a[2]) * f;
+    return [r|0, g|0, bl|0];
+  }
+
+  // Kick things off
+  resize();
+})();
+</script>
+</body>
+</html>

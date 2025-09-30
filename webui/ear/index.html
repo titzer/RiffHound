@@ -483,5 +483,123 @@
     // Startup
     makeQuestion();
   </script>
+
+<div id="examples" class="examples"></div>
+
+<style>
+  .examples {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(240px, 1fr));
+    gap: 14px;
+    margin: 16px 0;
+  }
+  .ex-card {
+    background: #0b1220;
+    border: 1px solid #1f2937;
+    border-radius: 12px;
+    padding: 10px 12px;
+  }
+  .ex-title {
+    color: #94a3b8;
+    font-size: 12px;
+    margin-bottom: 6px;
+  }
+  .ladder {
+    width: 100%;
+    height: 120px;
+    display: block;
+  }
+  .ladder text {
+    font: 10px ui-monospace, monospace;
+    fill: #e2e8f0;
+    dominant-baseline: middle;
+    text-anchor: start;
+  }
+  .ladder .step {
+    stroke: #6366f1;
+    stroke-width: 2;
+    fill: none;
+  }
+</style>
+
+<script>
+  const NOTE_TO_SEMI = {C:0,"C#":1,Db:1,D:2,"D#":3,Eb:3,E:4,F:5,"F#":6,Gb:6,
+                        G:7,"G#":8,Ab:8,A:9,"A#":10,Bb:10,B:11};
+  const CMAJ = [0,2,4,5,7,9,11];
+
+  function nameToDegreeIdxC(n){ return CMAJ.indexOf(NOTE_TO_SEMI[n]); }
+
+  function renderStepLadder(svg, names){
+    const pad = {l:20, r:12, t:10, b:20};
+    const W = svg.clientWidth || 280;
+    const H = svg.clientHeight || 120;
+    while (svg.firstChild) svg.removeChild(svg.firstChild);
+
+    const plotW = W - pad.l - pad.r;
+    const plotH = H - pad.t - pad.b;
+    const xStep = plotW / names.length;
+
+    const yForDeg = d => pad.t + plotH*(1 - d/6); // 0..6 scale degrees
+
+    // Path of steps
+    const path = document.createElementNS("http://www.w3.org/2000/svg","path");
+    path.setAttribute("class","step");
+
+    let dstr = "";
+    let x = pad.l;
+    let y = yForDeg(nameToDegreeIdxC(names[0]));
+    dstr += `M${x},${y}`;
+    names.forEach((n,i)=>{
+      const deg = nameToDegreeIdxC(n);
+      const yy = yForDeg(deg);
+      const xx = pad.l + (i+1)*xStep;
+      // horizontal segment
+      dstr += ` H${xx}`;
+      // if pitch changes, vertical riser at end of segment
+      if (i < names.length-1){
+        const nextDeg = nameToDegreeIdxC(names[i+1]);
+        const yNext = yForDeg(nextDeg);
+        dstr += ` V${yNext}`;
+      }
+      x = xx; y = yy;
+      // label note
+      const label = document.createElementNS("http://www.w3.org/2000/svg","text");
+      label.textContent = n;
+      label.setAttribute("x", x-4);
+      label.setAttribute("y", y);
+      svg.appendChild(label);
+    });
+    path.setAttribute("d", dstr);
+    svg.appendChild(path);
+  }
+
+  // Example sequences
+  const EXAMPLES = [
+    { title: "C – E – G", names: ["C","E","G"] },
+    { title: "C – D – F", names: ["C","D","F"] },
+    { title: "C – E – D", names: ["C","E","D"] },
+    { title: "C – G – E", names: ["C","G","E"] }
+  ];
+
+  const container = document.getElementById("examples");
+  EXAMPLES.forEach(ex=>{
+    const card = document.createElement("div");
+    card.className = "ex-card";
+    card.innerHTML = `<div class="ex-title">${ex.title}</div>`;
+    const svg = document.createElementNS("http://www.w3.org/2000/svg","svg");
+    svg.classList.add("ladder");
+    card.appendChild(svg);
+    container.appendChild(card);
+    requestAnimationFrame(()=>renderStepLadder(svg, ex.names));
+  });
+
+  // re-render on resize
+  window.addEventListener("resize",()=>{
+    container.querySelectorAll("svg.ladder").forEach((svg,i)=>
+      renderStepLadder(svg, EXAMPLES[i].names));
+  });
+</script>
+
+  
 </body>
 </html>

@@ -1,0 +1,428 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Pitch Match Trainer (Single File)</title>
+<style>
+  :root { --bg:#0f172a; --panel:#111827; --text:#e5e7eb; --muted:#9ca3af; --accent:#60a5fa; --good:#34d399; --warn:#fbbf24; --bad:#f87171; }
+  html, body { margin:0; padding:0; background:var(--bg); color:var(--text); font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
+  .wrap { max-width: 840px; margin: 24px auto; padding: 16px; }
+  h1 { margin: 0 0 12px; font-size: 1.25rem; font-weight: 600; letter-spacing:.2px; }
+  .panel { background:var(--panel); border-radius:12px; padding:16px; box-shadow: 0 10px 24px rgba(0,0,0,.25); }
+  .row { display:flex; gap:12px; flex-wrap:wrap; align-items:center; margin: 8px 0 16px; }
+  label { font-size:.9rem; color:var(--muted); }
+  select, button, input[type=range] {
+    background:#0b1220; color:var(--text); border:1px solid #1f2937; border-radius:10px; padding:8px 10px;
+  }
+  button { cursor:pointer; }
+  button.primary { border-color:#1e3a8a; }
+  button:disabled { opacity:.6; cursor:not-allowed; }
+  .stat { font-variant-numeric: tabular-nums; font-weight:600; }
+  .target { font-size:1rem; color: var(--muted); }
+  canvas { width:100%; height:130px; display:block; background:#0b1220; border-radius:12px; border:1px solid #1f2937; }
+  .tiny { font-size:.8rem; color:var(--muted); margin-top:6px; }
+  .grid { display:grid; grid-template-columns: repeat(2, minmax(200px, 1fr)); gap:12px; }
+  @media (max-width:640px){ .grid{ grid-template-columns:1fr; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Pitch Match Trainer</h1>
+  <div class="panel">
+    <div class="row">
+      <div>
+        <label>Note</label><br/>
+        <select id="noteSelect"></select>
+      </div>
+      <div>
+        <label>Octave</label><br/>
+        <select id="octaveSelect"></select>
+      </div>
+      <div>
+        <label>Volume</label><br/>
+        <input id="vol" type="range" min="0" max="1" step="0.01" value="0.15"/>
+      </div>
+      <div class="row" style="gap:8px;">
+        <button id="playBtn" class="primary">▶️ Play Note</button>
+        <button id="micBtn">🎤 Start Mic</button>
+      </div>
+    </div>
+
+    <div class="grid">
+      <div>
+        <div class="target">Target: <span id="targetName" class="stat">A4</span> · <span id="targetHz" class="stat">440.00 Hz</span></div>
+        <div style="height:8px"></div>
+        <canvas id="gauge" width="800" height="130"></canvas>
+        <div class="tiny">Gauge shows deviation from target in cents (±100). Center = in tune.</div>
+      </div>
+      <div>
+        <div class="target">You</div>
+        <div style="height:4px"></div>
+        <div>Live Pitch: <span id="liveHz" class="stat">—</span></div>
+        <div>Nearest Note: <span id="liveNote" class="stat">—</span></div>
+        <div>Offset: <span id="liveCents" class="stat">—</span></div>
+        <div>Status: <span id="liveStatus" class="stat">—</span></div>
+        <div style="height:10px"></div>
+        <div class="tiny">Tip: sing a steady vowel (“ah”) close to your mic. Background noise and vibrato can affect detection.</div>
+      </div>
+    </div>
+  </div>
+  <div class="tiny" style="margin-top:10px;">Works best over HTTPS or on <code>localhost</code> (required for microphone access). No audio leaves your browser.</div>
+</div>
+
+<script>
+(() => {
+  // --- Music helpers ---
+  const A4 = 440;
+  const NOTE_NAMES_SHARP = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
+
+  function noteToFreq(nIdx, octave) {
+    // MIDI of C-1 is 0; A4 = 69
+    const midi = (octave + 1) * 12 + nIdx;
+    return A4 * Math.pow(2, (midi - 69) / 12);
+  }
+  function freqToMidi(f) { return 69 + 12 * Math.log2(f / A4); }
+  function midiToName(midi) {
+    const m = Math.round(midi);
+    const name = NOTE_NAMES_SHARP[(m % 12 + 12) % 12];
+    const oct = Math.floor(m / 12) - 1;
+    return `${name}${oct}`;
+  }
+  function centsOffFrom(freq, target) {
+    return 1200 * Math.log2(freq / target);
+  }
+
+  // --- DOM ---
+  const noteSel = document.getElementById('noteSelect');
+  const octaveSel = document.getElementById('octaveSelect');
+  const vol = document.getElementById('vol');
+  const playBtn = document.getElementById('playBtn');
+  const micBtn = document.getElementById('micBtn');
+  const targetNameEl = document.getElementById('targetName');
+  const targetHzEl = document.getElementById('targetHz');
+  const liveHzEl = document.getElementById('liveHz');
+  const liveNoteEl = document.getElementById('liveNote');
+  const liveCentsEl = document.getElementById('liveCents');
+  const liveStatusEl = document.getElementById('liveStatus');
+  const gauge = document.getElementById('gauge');
+  const ctx = gauge.getContext('2d');
+
+  // Populate selectors
+  NOTE_NAMES_SHARP.forEach((n,i) => {
+    const opt = document.createElement('option'); opt.value = i; opt.textContent = n; noteSel.appendChild(opt);
+  });
+  for (let o = 2; o <= 6; o++) {
+    const opt = document.createElement('option'); opt.value = o; opt.textContent = o; octaveSel.appendChild(opt);
+  }
+  // Defaults
+  noteSel.value = 9;   // A
+  octaveSel.value = 4; // A4
+
+  // --- WebAudio setup ---
+  const AC = window.AudioContext || window.webkitAudioContext;
+  let audioCtx = null;
+  let osc = null, gain = null;
+  let analyser = null, micStream = null, micSource = null;
+  let workBuf = null;
+  let rafId = 0;
+
+  function ensureAudio() {
+    if (!audioCtx) {
+      audioCtx = new AC();
+    }
+    return audioCtx;
+  }
+
+  function updateTargetDisplay() {
+    const nIdx = parseInt(noteSel.value,10), oct = parseInt(octaveSel.value,10);
+    const f = noteToFreq(nIdx, oct);
+    targetNameEl.textContent = `${NOTE_NAMES_SHARP[nIdx]}${oct}`;
+    targetHzEl.textContent = `${f.toFixed(2)} Hz`;
+    drawGauge(0, null); // reset gauge center
+  }
+
+  function startTone() {
+    ensureAudio();
+    const freq = getTargetFreq();
+    if (osc) stopTone();
+    osc = audioCtx.createOscillator();
+    gain = audioCtx.createGain();
+    gain.gain.value = parseFloat(vol.value);
+    osc.type = 'sine';
+    osc.frequency.value = freq;
+    osc.connect(gain).connect(audioCtx.destination);
+    // Smooth start to avoid click
+    const t = audioCtx.currentTime;
+    gain.gain.cancelScheduledValues(t);
+    gain.gain.setValueAtTime(0, t);
+    gain.gain.linearRampToValueAtTime(parseFloat(vol.value), t + 0.02);
+    osc.start();
+    playBtn.textContent = '⏹ Stop Note';
+  }
+  function stopTone() {
+    if (osc && gain) {
+      const t = audioCtx.currentTime;
+      gain.gain.cancelScheduledValues(t);
+      gain.gain.linearRampToValueAtTime(0, t + 0.02);
+      osc.stop(t + 0.03);
+    }
+    osc = null; gain = null;
+    playBtn.textContent = '▶️ Play Note';
+  }
+  vol.addEventListener('input', () => { if (gain) gain.gain.value = parseFloat(vol.value); });
+
+  function getTargetFreq() {
+    const nIdx = parseInt(noteSel.value,10), oct = parseInt(octaveSel.value,10);
+    return noteToFreq(nIdx, oct);
+  }
+
+  // --- Mic + Pitch detection ---
+  async function startMic() {
+    try {
+      ensureAudio();
+      micStream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation:false, noiseSuppression:false, autoGainControl:false }, video:false });
+      micSource = audioCtx.createMediaStreamSource(micStream);
+      analyser = audioCtx.createAnalyser();
+      analyser.fftSize = 2048;
+      analyser.minDecibels = -100;
+      analyser.maxDecibels = -10;
+      analyser.smoothingTimeConstant = 0.0; // raw for detection
+      workBuf = new Float32Array(analyser.fftSize);
+      micSource.connect(analyser);
+      micBtn.textContent = '🛑 Stop Mic';
+      loop();
+    } catch (e) {
+      console.error(e);
+      alert('Microphone access failed. Ensure HTTPS or localhost, and grant permission.');
+    }
+  }
+  function stopMic() {
+    cancelAnimationFrame(rafId);
+    if (micSource && analyser) {
+      micSource.disconnect();
+      analyser.disconnect();
+    }
+    if (micStream) {
+      micStream.getTracks().forEach(t => t.stop());
+    }
+    micStream = null; micSource = null; analyser = null; workBuf = null;
+    liveHzEl.textContent = '—';
+    liveNoteEl.textContent = '—';
+    liveCentsEl.textContent = '—';
+    liveStatusEl.textContent = '—';
+    drawGauge(0, null);
+    micBtn.textContent = '🎤 Start Mic';
+  }
+
+  // Simple autocorrelation pitch detector (robust enough for clean monophonic voice)
+  function autoCorrelate(buf, sampleRate) {
+    // Compute RMS to reject silence
+    let rms = 0;
+    for (let i = 0; i < buf.length; i++) { const v = buf[i]; rms += v*v; }
+    rms = Math.sqrt(rms / buf.length);
+    if (rms < 0.01) return -1; // too quiet
+
+    // Autocorrelation
+    const SIZE = buf.length;
+    let bestOffset = -1;
+    let bestCorr = 0;
+    const maxLag = Math.floor(SIZE/2);
+    // optional: trim ends (not strictly necessary)
+    for (let offset = 2; offset <= maxLag; offset++) {
+      let corr = 0;
+      for (let i=0; i < maxLag; i++) {
+        corr += buf[i] * buf[i + offset];
+      }
+      if (corr > bestCorr) {
+        bestCorr = corr; bestOffset = offset;
+      }
+    }
+    if (bestCorr < 0.01) return -1;
+
+    // Parabolic interpolation around best peak for sub-sample accuracy
+    const x1 = bestOffset > 0 ? correlationAt(buf, bestOffset-1) : 0;
+    const x2 = correlationAt(buf, bestOffset);
+    const x3 = bestOffset+1 <= maxLag ? correlationAt(buf, bestOffset+1) : 0;
+    const a = (x1 + x3 - 2*x2) / 2;
+    const b = (x3 - x1) / 2;
+    let T0 = bestOffset;
+    if (a !== 0) T0 = bestOffset - b / (2*a);
+
+    const freq = sampleRate / T0;
+    return (freq > 50 && freq < 1500) ? freq : -1;
+  }
+  function correlationAt(buf, offset) {
+    const maxLag = Math.floor(buf.length/2);
+    let corr = 0;
+    for (let i=0; i < maxLag; i++) corr += buf[i] * buf[i + offset];
+    return corr;
+  }
+
+  let lastCents = NaN;
+  let lastGoodHz = NaN;
+
+function loop() {
+  rafId = requestAnimationFrame(loop);
+  if (!analyser || !workBuf) return;
+
+  analyser.getFloatTimeDomainData(workBuf);
+  const sr = audioCtx.sampleRate;
+  const { freq, prob } = detectPitchYIN(workBuf, sr);
+
+  const target = getTargetFreq();
+
+  // Require a decent confidence before updating the “last good” estimate
+  const CONF_THRESH = 0.6; // tweak 0.5–0.8 as you like
+  if (freq > 0 && prob >= CONF_THRESH) {
+    lastGoodHz = freq;
+
+    // Work in cents relative to target
+    const cents = 1200 * Math.log2(freq / target);
+
+    // First stage: EMA
+    const EMA_ALPHA = 0.25; // larger = snappier; smaller = smoother
+    if (!isFinite(lastCents)) lastCents = cents;
+    lastCents = EMA_ALPHA * cents + (1 - EMA_ALPHA) * lastCents;
+
+    // Second stage: median filter
+    const med = centsMedian.push(lastCents);
+
+    // Third stage: small dead-zone to stop shimmer
+    const dz = applyDeadzone(med, 3);
+
+    // Present
+    const nearestMidi = Math.round(69 + 12 * Math.log2((lastGoodHz) / 440));
+    liveHzEl.textContent = `${lastGoodHz.toFixed(2)} Hz`;
+    liveNoteEl.textContent = midiToName(nearestMidi);
+    liveCentsEl.textContent = `${dz >= 0 ? '+' : ''}${dz.toFixed(1)} cents`;
+
+    // Status/color
+    const absC = Math.abs(dz);
+    let status = '—', color = 'var(--warn)';
+    if (absC <= 10) { status = 'In tune'; color = 'var(--good)'; }
+    else if (absC <= 25) { status = (dz<0?'Slightly flat':'Slightly sharp'); color = 'var(--warn)'; }
+    else { status = (dz<0?'Flat':'Sharp'); color = 'var(--bad)'; }
+    liveStatusEl.textContent = status;
+    liveStatusEl.style.color = color;
+
+    drawGauge(dz, color);
+    lastCentsSmoothed = dz;
+
+  } else {
+    // No confident estimate: keep last good value on screen, mark "Listening…"
+    liveStatusEl.textContent = 'Listening…';
+    liveStatusEl.style.color = 'var(--muted)';
+    if (isFinite(lastGoodHz)) {
+      liveHzEl.textContent = `${lastGoodHz.toFixed(2)} Hz`;
+      liveNoteEl.textContent = midiToName(Math.round(freqToMidi(lastGoodHz)));
+      liveCentsEl.textContent = isFinite(lastCentsSmoothed)
+        ? `${lastCentsSmoothed >= 0 ? '+' : ''}${lastCentsSmoothed.toFixed(1)} cents`
+        : '—';
+      drawGauge(isFinite(lastCentsSmoothed) ? lastCentsSmoothed : null, null);
+    } else {
+      liveHzEl.textContent = '—';
+      liveNoteEl.textContent = '—';
+      liveCentsEl.textContent = '—';
+      drawGauge(null, null);
+    }
+  }
+}
+
+  // --- Gauge drawing (±100 cents) ---
+  function drawGauge(cents, color) {
+    const w = gauge.width, h = gauge.height;
+    ctx.clearRect(0,0,w,h);
+
+    // background
+    ctx.fillStyle = '#0b1220';
+    ctx.fillRect(0,0,w,h);
+
+    // scale
+    const left = 20, right = w-20, mid = (left+right)/2, top=28, baseline=80;
+    // ticks every 10 cents, labels every 50
+    ctx.strokeStyle = '#1f2937';
+    ctx.beginPath();
+    ctx.moveTo(left, baseline); ctx.lineTo(right, baseline); ctx.stroke();
+
+    for (let c = -100; c <= 100; c += 10) {
+      const x = mid + (c/100) * ((right-left)/2);
+      const big = (c % 50 === 0);
+      ctx.strokeStyle = big ? '#374151' : '#1f2937';
+      ctx.beginPath();
+      ctx.moveTo(x, baseline - (big?18:10));
+      ctx.lineTo(x, baseline + (big?18:10));
+      ctx.stroke();
+      if (big) {
+        ctx.fillStyle = '#6b7280';
+        ctx.font = '12px system-ui, sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText(`${c}`, x, baseline + 32);
+      }
+    }
+
+    // target marker at 0
+    ctx.strokeStyle = 'rgba(96,165,250,.9)'; // accent
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(mid, top);
+    ctx.lineTo(mid, baseline);
+    ctx.stroke();
+    ctx.lineWidth = 1;
+
+    // label
+    ctx.fillStyle = '#93c5fd';
+    ctx.font = '12px system-ui, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('Target (0 cents)', mid, top-8);
+
+    // pointer for current cents
+    if (typeof cents === 'number' && isFinite(cents)) {
+      const clamped = Math.max(-100, Math.min(100, cents));
+      const x = mid + (clamped/100) * ((right-left)/2);
+      // pointer
+      ctx.fillStyle = color || '#fbbf24';
+      ctx.beginPath();
+      ctx.moveTo(x, baseline - 26);
+      ctx.lineTo(x - 8, baseline - 10);
+      ctx.lineTo(x + 8, baseline - 10);
+      ctx.closePath();
+      ctx.fill();
+
+      // line down
+      ctx.strokeStyle = color || '#fbbf24';
+      ctx.beginPath();
+      ctx.moveTo(x, baseline - 10);
+      ctx.lineTo(x, baseline + 10);
+      ctx.stroke();
+    }
+  }
+
+  // --- Events ---
+  playBtn.addEventListener('click', async () => {
+    ensureAudio();
+    await audioCtx.resume();
+    if (osc) stopTone(); else startTone();
+  });
+  micBtn.addEventListener('click', async () => {
+    ensureAudio();
+    await audioCtx.resume();
+    if (micStream) stopMic(); else startMic();
+  });
+  noteSel.addEventListener('change', () => {
+    updateTargetDisplay();
+    if (osc) osc.frequency.setValueAtTime(getTargetFreq(), audioCtx.currentTime);
+  });
+  octaveSel.addEventListener('change', () => {
+    updateTargetDisplay();
+    if (osc) osc.frequency.setValueAtTime(getTargetFreq(), audioCtx.currentTime);
+  });
+
+  // Init
+  updateTargetDisplay();
+  drawGauge(0, null);
+})();
+</script>
+</body>
+</html>
+
