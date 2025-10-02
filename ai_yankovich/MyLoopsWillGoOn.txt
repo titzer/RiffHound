@@ -1,0 +1,73 @@
+Original lyrics
+
+Every night in my dreams
+I see you, I feel you
+That is how I know you go on
+Far across the distance
+And spaces between us
+You have come to show you go on
+
+Near, far, wherever you are
+I believe that the heart does go on
+Once more, you open the door
+And you're here in my heart
+    And my heart will go on and on
+
+Love can touch us one time
+And last for a lifetime
+And never let go 'til we're gone
+Love was when I loved you
+One true time I'd hold to
+In my life, we'll always go on
+
+Near, far, wherever you are
+I believe that the heart does go on (why does the heart go on?)
+Once more, you open the door
+And you're here in my heart
+And my heart will go on and on
+
+You're here, there's nothing I fear
+And I know that my heart will go on
+We'll stay forever this way
+You are safe in my heart and
+My heart will go on and on
+
+
+-- With some help from ChatGPT ----
+
+Version 1
+Every night when I code
+I see you: while (true)
+That is how I know you go on
+Far across the distance
+No changes to globals
+You have come to show you got stuck
+
+Chorus
+Loop, spin, forever again
+I believe that the loop does go on
+Once more, you ignore the store
+And the flag is not clear
+And I fear it runs on and on
+
+Verse 2
+Code can trap us one time
+And hang for a lifetime
+And never break out ’til RAM's gone
+Dreamed we’d write the function
+That can say “it ends here”
+But the truth is, Turing said no
+
+Chorus
+Calls, deep, forever again
+I believe that the stack does go on
+Once more, exceptions are thrown
+But the handler ignores
+And the stack will go on and on
+
+Bridge
+You’re here, all cores are on fire
+And I know that the loop will go on
+We’ll spin forever this way
+You are stuck and it lags and
+My fans will roar on and on
