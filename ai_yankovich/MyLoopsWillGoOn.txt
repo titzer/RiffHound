@@ -59,7 +59,7 @@ That can say “it ends here”
 But the truth is, Turing said no
 
 Chorus
-Calls, deep, forever again
+Calls, deep, forever recurse
 I believe that the stack does go on
 Once more, exceptions are thrown
 But the handler ignores
