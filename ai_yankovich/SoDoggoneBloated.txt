@@ -41,14 +41,14 @@ But they’re always asking me about the build time
 And it hurts me so to tell ’em it’s so long
 
 If they ask me I guess I’d be denyin’
-That my compile is draggin’ all dog slow
+That my compile is draggin’ all dog slow # TODO need better cadence
 But if they heard my fan they’d hear it cryin’
 Where's my dot-oh's where's the dot-ess-o
 
 Chorus
 I ask myself a million times what’s right for me to do
 To try to trim the code alone, or wait around for you
-But I make it pretty good until that linker’s breaking through
+But I make it pretty good until that linker’s breaking through  # TODO need a syllable
 And then it gets so doggone bloated
 
 Verse 2
@@ -57,10 +57,10 @@ Sometimes I think the hard drive’s stoppin’ too
 One lonely dot-oh takes forever
 Sixty thousand more to link with you
 
-But I guess I’ll wait on Ninja till it’s finished
+But I guess I’ll wait on Ninja till it’s finished # TODO
 ’Cause I believe that shippin’ code is right
 But I don’t care if the sun don’t rise tomorrow
-If I can't have my lib link tonight
+If I can't have my lib link tonight #TODO
 
 Verse 3
 Well I know I’ll keep on patchin’ you
