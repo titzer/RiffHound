@@ -1,16 +1,18 @@
-[choir]
+[Intro: strings]
+
+[Choir]
 Feucht der Boden, modrig die Wand,
 Ein Königreich aus Schatten und Sand.
 Hier unten ruht, was oben lebt,
 Hier unten frisst, was niemand hebt.
 
-##[verse: high-pitched female voice]
+[Female, high-pitched]
 Ein Krümel, nur ein kleiner, goldner Krümel,
 gefallen aus der Welt der Götter dort!
 Ich riech ihn schon, so nah, so süß,
 vielleicht — vielleicht gehört er mir!
 
-##[Answer: deep male voice]
+[Male, deep voice]
 Wieder dieses Kratzen…
 In der Nacht, da, wenn das Denken ruht,
 kommt etwas, das denkt nicht, nur frisst.
@@ -18,46 +20,63 @@ Ist das mein Schicksal?
 Eine Maus?
 Oder ein Spiegel meiner selbst?
 
-[chorus - choir, loud and swelling]
+[Chorus - choir, loud and swelling]
 Er....hat....eine...Ratte
-Runter....im....Keller.....gefängt!
+Runter....im....Keller.....gefangen!
 
 Er....hat....eine...Ratte
-Runter....im....Keller.....gefängt!
+Runter....im....Keller.....gefangen!
 
 Er....hat....eine...Ratte
-Runter....im....Keller.....gefängt!
+Runter....im....Keller.....gefangen!
 
-#[Male lead, regretfully]
+[Male lead, regretfully]
 So ist sie zerstört!
 Leider nicht mehr am Leben
 Hier unter gibt es den Tod
 
-##[chorus]
+[Chorus - male voice only]
+Ich....hab....eine...Ratte
+So ist sie zerstört!
 
-##[verse: high-pitched female voice]
+Ich....hab....eine...Ratte
+Runter....im....Keller.....gefangen!
+
+Ich....hab....eine...Ratte
+So ist sie zerstört!
+
+[Chorus, choir]
+
+[Verse: high-pitched female voice]
 Kalt ist das Eisen,
 warm deine Hand.
 Wird meine Freiheit draußen sein —
-oder dein Erbarmen hier?
+oder Fahr ich zum Himmel?
 
-##[male voice, repentant]
+[Male voice, repentant]
 Kleines Herz aus Staub und Fell,
 du hast nur Brot gesucht —
 und fandst den Tod durch meine Hand.
-
 Ich wollt nur Ruh,
 doch Ruhe kam als Grab.
 Was hab ich getan,
-was hab ich getan?
 
-Dein letztes Zucken —
-ein Schlag in meiner Brust.
-So endet meine Herrschaft
-über diesen feuchten Stein.
+[Female]
+Was hab ich getan?
 
+[Male]
 O kleine Seele,
-du bist fort,
+[Female, response]
+Ich bin fort
+[Male]
 und lässt mich hier zurück,
+[Female, response]
+Ich bin fort
+[Male]
 mit meiner Schuld —
+[Female, response]
+Ich bin fort
+
+[Male, alone]
+[MALE VOICE]
 mit meiner Menschlichkeit.
