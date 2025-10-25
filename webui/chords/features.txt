@@ -21,6 +21,11 @@ KEY - swing support: down sets straight feel, left swings towards beat one way, 
 Features 1.0
 
 - edit chords mode has a transpose mechanism (e.g. up / down)
+- chords can go up or down an octave and change voicings
+- Can sample each of the chords from a electronic piano over midi
+- can add rhythm to the chords
+- can tinker with the attack / decay of the chords
+- can change to strings (which have dynamics)
 - transition combinators: rotate current chords
 - editable drum patterns
 - integrate with tap pads (i.e. a physical drumstick) for entry of
