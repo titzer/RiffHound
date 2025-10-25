@@ -98,7 +98,7 @@ function keyToSemi(k) {
 }
 
 function nameForSemi(s) {
-  return NOTE_NAMES[(s % 12 + 12) % 12];
+  return NOTE_NAMES[(s + 12) % 12];
 }
 
 function parseLiteralToken(tok) {
@@ -352,6 +352,7 @@ function actionPlay() { // start transport
 
 function actionStop() { // stop transport
   if (!playing) return;
+  // TODO: cancel all active sounds
   playing = false;
   el.btnPlay.disabled = false;
   el.btnStop.disabled = true;
@@ -525,5 +526,43 @@ function init() {
 // Boot
 init();
 </script>
+
+Key bindings:
+<ul>
+  <li>
+    D: toggle drums on/off
+  </li>
+  <li>
+    C: toggle chords on/off
+  </li>
+  <li>
+    R: pick random chord progression
+  </li>
+  <li>
+    E: enter edit mode for chord progression
+  </li>
+  <li>
+    T: toggle tap to tempo mode
+  </li>
+  </ul>
+
+Tips:
+<ul>
+  <li>
+    Turning off both drums and chords results in a metronome.
+  </li>
+  <li>
+    Click <b>Tap Demo</b> to set the tempo, or drag tempo slider.
+  </li>
+  </ul>
+
+
+Errata:
+<ul>
+  <li>
+    1. You must listen to one measure of annoyance if messing too much with the tempo.
+  </li>
+  </ul>
+
 </body>
 </html>
