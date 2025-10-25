@@ -9,10 +9,12 @@ body { font-family: sans-serif; background: #fff; color: #000; margin: 0; }
 #top { display: flex; flex-wrap: nowrap; gap: 1vh; padding: 1vh; background: #eee; align-items: stretch; }
 #top button { flex: 1 1 0; font-size: 4vh; padding: 2vh 1vw; }
 button { cursor: pointer; }
-button.primary.active { background: #cfe9ff; }
-button.danger.active { background: #ffd0d0; }
+button.primary.active { background: #f4f4f4; color: #000000; }
+button.primary { background: #007700; color: #ffffff; }
+button.danger.active { background: #770000; color: #ffffff; }
 button.toggle { background: #f4f4f4; }
-button.toggle.on { background: #d7ffd7; }
+button.toggle.on { background: #007700; color: #ffffff }
+
 #strip { position: relative; display: flex; gap: 0; height: 40vh; border-top: 1px solid #ccc; border-bottom: 1px solid #ccc; }
 .chord { flex: 1 1 0; display: flex; flex-direction: column; align-items: center; justify-content: center; position: relative; border-right: 1px solid #ddd; }
 .chord:last-child { border-right: none; }
@@ -84,23 +86,46 @@ input, select { font-size: 2.2vh; }
 
   function buildFromInputs(){const arr=parseProgression();const inp=document.getElementById('literalInput');if(!arr){inp.classList.add('invalid');return false;}inp.classList.remove('invalid');chords=arr;renderStrip();highlight();return true;} 
 
-  document.getElementById('play').onclick=startPlayback;document.getElementById('stop').onclick=stopPlayback;document.getElementById('tap').onclick=()=>{tapMode=!tapMode;taps.length=0;document.getElementById('tap').classList.toggle('on',tapMode);};document.getElementById('drums').onclick=()=>{drumsOn=!drumsOn;document.getElementById('drums').classList.toggle('on',drumsOn);};document.getElementById('chordsBtn').onclick=()=>{chordsOn=!chordsOn;document.getElementById('chordsBtn').classList.toggle('on',chordsOn);};document.getElementById('btnRandom').onclick=()=>{const t=['C | G | Am | F','C | F | G | C','C | Am | F | G','Dm | G | C | G','C | C | C | C | F | F | C | C | G | F | C | G'];document.getElementById('literalInput').value=t[Math.floor(Math.random()*t.length)];buildFromInputs();}; 
+    document.getElementById('play').onclick=startPlayback;
+    document.getElementById('stop').onclick=stopPlayback;
+    document.getElementById('tap').onclick=()=>{tapMode=!tapMode;taps.length=0;document.getElementById('tap').classList.toggle('on',tapMode);};
+    document.getElementById('drums').onclick=()=>{drumsOn=!drumsOn;document.getElementById('drums').classList.toggle('on',drumsOn);};document.getElementById('chordsBtn').onclick=()=>{chordsOn=!chordsOn;document.getElementById('chordsBtn').classList.toggle('on',chordsOn);};document.getElementById('btnRandom').onclick=()=>{
+      const t = [
+	  'C | G | Am | F',
+	  'C | F | G | C',
+	  'C | Am | F | G',
+	  'Dm | G | C | G',
+	  // House of the rising sun
+	  'Am | C | D | F | Am | E | Am | E',
+	  // 12-bar blues
+	  'C | C | C | C | F | F | C | C | G | F | C | G',
+	  'E | E | E | E | A | A | E | E | B | A | E | B',
+	  'A | A | A | A | D | D | A | A | E | D | A | E',
+	  'B | B | B | B | E | E | B | B | F# | E | B | F#'
+      ];
+	document.getElementById('literalInput').value=t[Math.floor(Math.random()*t.length)];buildFromInputs();
+    }; 
 
   document.getElementById('bpm').oninput=e=>{const old=bpm;bpm=parseInt(e.target.value);document.getElementById('bpmVal').textContent=bpm;tempoShiftSfx(old,bpm);if(playing){barStart=ctx.currentTime;scheduleBar(barStart);}};
   document.getElementById('literalInput').addEventListener('change', buildFromInputs);
   document.getElementById('keySelect').addEventListener('change', buildFromInputs);
 
+    document.getElementById('literalInput').addEventListener('focus', () => {
+	if (!editMode) enterEditMode();
+    });
+    
   function enterEditMode(){editMode=true;tapMode=false;const inp=document.getElementById('literalInput');inp.classList.add('editing');inp.focus();inp.selectionStart=inp.value.length;inp.selectionEnd=inp.value.length;}
   function exitEditMode(){const inp=document.getElementById('literalInput');const ok=buildFromInputs();if(ok){editMode=false;inp.classList.remove('editing');inp.blur();}}
 
   document.body.addEventListener('keydown',(e)=>{
-    if(editMode){if(e.code==='Enter'){e.preventDefault();exitEditMode();}return;}
-    if(tapMode&&e.code==='Space'){e.preventDefault();const now=performance.now();taps.push(now);while(taps.length>6)taps.shift();if(taps.length>=2){const diffs=taps.slice(1).map((t,i)=>t-taps[i]);const avg=diffs.reduce((a,b)=>a+b,0)/diffs.length;const old=bpm;bpm=Math.max(50,Math.min(200,60000/avg));document.getElementById('bpm').value=bpm;document.getElementById('bpmVal').textContent=bpm.toFixed(0);tempoShiftSfx(old,bpm);if(playing){barStart=ctx.currentTime;scheduleBar(barStart);}}return;}
-    if(e.code==='Space'){e.preventDefault();if(playing)stopPlayback();else startPlayback();return;}
-    if(e.code==='KeyD'){drumsOn=!drumsOn;document.getElementById('drums').classList.toggle('on',drumsOn);return;}
-    if(e.code==='KeyC'){chordsOn=!chordsOn;document.getElementById('chordsBtn').classList.toggle('on',chordsOn);return;}
-    if(e.code==='KeyR'){e.preventDefault();document.getElementById('btnRandom').click();return;}
-    if(e.code==='KeyE'){e.preventDefault();enterEditMode();return;}
+      if(editMode){if(e.code==='Enter'){e.preventDefault();exitEditMode();}return;}
+      if(tapMode&&e.code==='Space'){e.preventDefault();const now=performance.now();taps.push(now);while(taps.length>6)taps.shift();if(taps.length>=2){const diffs=taps.slice(1).map((t,i)=>t-taps[i]);const avg=diffs.reduce((a,b)=>a+b,0)/diffs.length;const old=bpm;bpm=Math.max(50,Math.min(200,60000/avg));document.getElementById('bpm').value=bpm;document.getElementById('bpmVal').textContent=bpm.toFixed(0);tempoShiftSfx(old,bpm);if(playing){barStart=ctx.currentTime;scheduleBar(barStart);}}return;}
+      if(e.code==='Space'){e.preventDefault();if(playing)stopPlayback();else startPlayback();return;}
+      if(e.code==='KeyD'){drumsOn=!drumsOn;document.getElementById('drums').classList.toggle('on',drumsOn);return;}
+      if(e.code==='KeyC' && !editMode){chordsOn=!chordsOn;document.getElementById('chordsBtn').classList.toggle('on',chordsOn);return;}
+      if(e.code==='KeyR' && !e.metaKey && !e.ctrlKey){e.preventDefault();document.getElementById('btnRandom').click();return;}
+      if(e.code==='KeyE'){e.preventDefault();enterEditMode();return;}
+      if(e.code==='KeyT'){e.preventDefault();document.getElementById('tap').click();return;}
   });
   document.addEventListener('click',(e)=>{const inp=document.getElementById('literalInput');if(editMode&&!inp.contains(e.target)&&e.target!==inp){exitEditMode();}});
 
@@ -119,17 +144,20 @@ Key bindings:
     R: pick random chord progression
   </li>
   <li>
-    E: enter edit mode for progression
+    E: enter edit mode for chord progression
+  </li>
+  <li>
+    T: toggle tap to tempo mode
   </li>
   </ul>
 
 Tips:
 <ul>
   <li>
-    Turning both drums and chords off gives a metronome.
+    Turning off both drums and chords results in a metronome.
   </li>
   <li>
-    Click Tap Demo to set the tempo, or drag tempo slider.
+    Click <b>Tap Demo</b> to set the tempo, or drag tempo slider.
   </li>
   </ul>
 
@@ -137,16 +165,7 @@ Tips:
 Errata:
 <ul>
   <li>
-    1. Typing C while editing appears to toggle the chords.
-  </li>
-  <li>
-    2. The tempo button should be wired to T.
-  </li>
-  <li>
-    3. The R intercept also intercepts Apple+R = reload!
-  </li>
-  <li>
-    4. You must listen to one measure of annoyance before reset.
+    1. You must listen to one measure of annoyance if messing too much with the tempo.
   </li>
   </ul>
 </body>
