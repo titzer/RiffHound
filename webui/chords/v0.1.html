@@ -107,6 +107,33 @@ input, select { font-size: 2.2vh; }
   const ks=document.getElementById('keySelect');KEYS.forEach(k=>{const o=document.createElement('option');o.value=k;o.textContent=k+' Major';ks.appendChild(o);});ks.value='C';buildFromInputs();
 })();
 </script>
+Key bindings:
+<ul>
+  <li>
+    D: toggle drums on/off
+  </li>
+  <li>
+    C: toggle chords on/off
+  </li>
+  <li>
+    R: pick random chord progression
+  </li>
+  <li>
+    E: enter edit mode for progression
+  </li>
+  </ul>
+
+Tips:
+<ul>
+  <li>
+    Turning both drums and chords off gives a metronome.
+  </li>
+  <li>
+    Click Tap Demo to set the tempo, or drag tempo slider.
+  </li>
+  </ul>
+
+
 Errata:
 <ul>
   <li>
