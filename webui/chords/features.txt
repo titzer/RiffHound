@@ -1,0 +1,39 @@
+Feature requests: 0.1 to 0.2
+
+- Try to dedicate keys to functions (great if expanded keyboard is available)
+KEY - E opens edit of chords
+KEY - C toggles chords
+KEY - D toggles drums
+KEY - R random chords (better random generator)
+KEY - esc always stops
+KEY - space always plays, even if playing
+KEY - dedicated tap tempo button, such as shift or command or control
+KEY - S picks a song (known or simple jams)
+KEY - swing support: down sets straight feel, left swings towards beat one way, right the other way
+  - 7 settings: straight, plus three on each side of the beat
+- eighth note option for metronome / drums
+- Quick changes / submeasures for a chord
+- Immediate, quick, or gradual changes between pieces
+- Minor chords
+- Strong visual indicator on the downbeat of a chord change
+- heavier kick drum on the 1 & 3
+
+Features 1.0
+
+- edit chords mode has a transpose mechanism (e.g. up / down)
+- transition combinators: rotate current chords
+- editable drum patterns
+- integrate with tap pads (i.e. a physical drumstick) for entry of
+  - drum patterns
+  - tap tempo
+- integrate with other programs that can play:
+  - good sounding chords (e.g. a guitar strum)
+  - voice, such as vocals or an instrument
+  - better drums / bass
+- integrate with midi sources to:
+  - record melodies and riff ideas
+  - output generated musics / riffs
+- Song library integration
+  - Know the chord structure, tempo, and composition of all music
+  - import the chords and drum pattern for any pop song
+    + extra credit for melody lines
