@@ -19,8 +19,29 @@ button.toggle.on { background: #007700; color: #ffffff }
 .chord { flex: 1 1 0; display: flex; flex-direction: column; align-items: center; justify-content: center; position: relative; border-right: 1px solid #ddd; }
 .chord:last-child { border-right: none; }
 .chord .literal { font-size: 8vw; font-weight: bold; line-height: 1; }
+
+.chord {
+  flex: 1 1 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  text-align: center;
+  min-width: 0; /* prevents overflow */
+}
+
+.chord .literal {
+  font-family: monospace;
+  font-size: 8vw;
+  font-weight: bold;
+  line-height: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .chord .roman { font-size: 3.5vw; color: #333; line-height: 1.2; }
-.chord.active { background: #f3f9ff; }
+.chord.active { background: #8389ff; }
 .beatProg { position: absolute; left: 0; top: 0; bottom: 0; width: 0%; background: rgba(0,0,0,0.07); pointer-events: none; }
 #loopMarker { width: 3vw; min-width: 20px; background: repeating-linear-gradient(90deg,#000 0,#000 2px,transparent 2px,transparent 6px); display: flex; align-items: center; justify-content: center; font-size: 2vw; }
 .loopFlash { animation: flash 0.35s ease-in-out 1; }
