@@ -1,0 +1,529 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Live Jam Practice v0.2 (refactor)</title>
+<style>
+  /* Minimal, readable, big-click targets */
+  body { font-family: sans-serif; background: #fff; color: #000; margin: 0; }
+  #top { display: flex; flex-wrap: nowrap; gap: 1vh; padding: 1vh; background: #eee; align-items: stretch; }
+  #top button { flex: 1 1 0; font-size: 4vh; padding: 2vh 1vw; }
+  button { cursor: pointer; }
+  button.primary.active { background: #f4f4f4; color: #000000; }
+  button.primary { background: #007700; color: #ffffff; }
+  button.danger.active { background: #770000; color: #ffffff; }
+  button.toggle { background: #f4f4f4; }
+  button.toggle.on { background: #007700; color: #ffffff }
+
+  #strip { position: relative; display: flex; gap: 0; height: 40vh; border-top: 1px solid #ccc; border-bottom: 1px solid #ccc; }
+  .chord { flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; position: relative; border-right: 1px solid #ddd; text-align: center; }
+  .chord:last-child { border-right: none; }
+  .chord .literal { font-family: monospace; font-size: 8vw; font-weight: bold; line-height: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .chord .roman { font-size: 3.5vw; color: #333; line-height: 1.2; }
+  .chord.active { background: #8389ff; }
+  .beatProg { position: absolute; left: 0; top: 0; bottom: 0; width: 0%; background: rgba(0,0,0,0.07); pointer-events: none; }
+  #loopMarker { width: 3vw; min-width: 20px; background: repeating-linear-gradient(90deg,#000 0,#000 2px,transparent 2px,transparent 6px); display: flex; align-items: center; justify-content: center; font-size: 2vw; }
+  .loopFlash { animation: flash 0.35s ease-in-out 1; }
+  @keyframes flash { 0%{box-shadow: inset 0 0 0 6px #ff0;} 100%{box-shadow: inset 0 0 0 0px #ff0;} }
+
+  #bottom { padding: 1vh; font-size: 2.2vh; display: flex; flex-wrap: wrap; gap: .6em; align-items: center; }
+  input, select { font-size: 2.2vh; }
+  #literalInput.editing { outline: 3px solid #66f; background: #eef; }
+  #literalInput.invalid { outline: 3px solid #f00; background: #fee; }
+</style>
+</head>
+<body>
+  <div id="top">
+    <button id="btnPlay"   class="primary">▶️ Play</button>
+    <button id="btnStop"   class="danger" disabled>⏹ Stop</button>
+    <button id="btnTap"    class="toggle">🕒 Tap Tempo</button>
+    <button id="btnDrums"  class="toggle">🥁 Drums</button>
+    <button id="btnChords" class="toggle on">🎹 Chords</button>
+    <button id="btnRandom" class="toggle">🎲 Random</button>
+  </div>
+
+  <div id="strip"></div>
+
+  <div id="bottom">
+    Key: <select id="keySelect"></select>
+    Progression: <input id="literalInput" size="50" value="C | F | G | C">
+    BPM: <input id="bpm" type="range" min="30" max="250" value="110"> <span id="bpmVal">110</span>
+  </div>
+
+<script>
+// =========================
+// v0.2 — refactored wiring
+// =========================
+
+// --- Global state ---
+let bpm = 92;
+let playing = false;
+let tapMode = false;
+let editMode = false;
+let drumsOn = false;
+let chordsOn = true;
+let chords = [];
+let chordIdx = 0;
+let barStart = 0; // audio time of current bar start
+const taps = [];
+
+// --- DOM refs ---
+const el = {};
+
+// --- Audio setup ---
+const NOTE_NAMES = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
+const KEYS = ['C','Db','D','Eb','E','F','F#','G','Ab','A','Bb','B'];
+
+const ctx = new (window.AudioContext || window.webkitAudioContext)();
+const master = ctx.createGain(); master.connect(ctx.destination);
+const chordsGain = ctx.createGain(); chordsGain.connect(master);
+const drumsGain  = ctx.createGain(); drumsGain.connect(master);
+const metroGain  = ctx.createGain(); metroGain.connect(master);
+
+// --- One-off buffers ---
+const noiseBuf = (() => {
+  const b = ctx.createBuffer(1, ctx.sampleRate * 0.2, ctx.sampleRate);
+  const d = b.getChannelData(0);
+  for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+  return b;
+})();
+
+// =========================
+// Helpers (theory / parsing)
+// =========================
+function keyToSemi(k) {
+  const m = { Db:1, Eb:3, F:5, Gb:6, Ab:8, Bb:10 };
+  return (m[k] != null) ? m[k] : (NOTE_NAMES.indexOf(k) >= 0 ? NOTE_NAMES.indexOf(k) : 0);
+}
+
+function nameForSemi(s) {
+  return NOTE_NAMES[(s % 12 + 12) % 12];
+}
+
+function parseLiteralToken(tok) {
+  tok = tok.trim();
+  if (!tok) return null;
+  const m = tok.match(/^([A-Ga-g])(b|#)?(m)?/);
+  if (!m) return null;
+  const letter = m[1].toUpperCase();
+  const acc = m[2] || '';
+  const minor = !!m[3];
+  const enh = { Db:'C#', Eb:'D#', Gb:'F#', Ab:'G#', Bb:'A#' };
+  const sharp = enh[letter + acc] || (letter + acc);
+  const idx = NOTE_NAMES.indexOf(sharp);
+  if (idx < 0) return null;
+  return { root: idx, quality: minor ? 'm' : 'M' };
+}
+
+function romanFor(rootSemi, quality) {
+  try {
+    const key = keyToSemi(el.keySelect.value);
+    const deg = (rootSemi - key + 12) % 12;
+    const map = { 0:'I', 2:'ii', 4:'iii', 5:'IV', 7:'V', 9:'vi', 11:'vii°' };
+    let r = map[deg];
+    if (!r) return '?';
+    if (quality === 'm') r = r.toLowerCase();
+    return r;
+  } catch {
+    return '?';
+  }
+}
+
+function buildTriad(rootMidi, quality) {
+  const third = (quality === 'm') ? 3 : 4;
+  return [rootMidi, rootMidi + third, rootMidi + 7];
+}
+
+// =========================
+// Audio voice utilities
+// =========================
+function voiceChord(notes, t, dur) {
+  const grp = ctx.createGain(); grp.gain.value = 0; grp.connect(chordsGain);
+  notes.forEach(n => {
+    const o = ctx.createOscillator();
+    o.type = 'triangle';
+    o.frequency.value = 440 * Math.pow(2, (n - 69) / 12);
+    const g = ctx.createGain(); g.gain.value = 0.6;
+    o.connect(g).connect(grp);
+    o.start(t); o.stop(t + dur);
+  });
+  const a = 0.02, d = 0.1, s = 0.7, r = 0.06, peak = 0.6;
+  grp.gain.setValueAtTime(0, t);
+  grp.gain.linearRampToValueAtTime(peak, t + a);
+  grp.gain.linearRampToValueAtTime(peak * s, t + a + d);
+  grp.gain.setValueAtTime(peak * s, t + dur - r);
+  grp.gain.linearRampToValueAtTime(0.0001, t + dur);
+}
+
+function voiceKick(t) {
+  const o = ctx.createOscillator(); o.type = 'sine';
+  const g = ctx.createGain();
+  o.frequency.setValueAtTime(110, t);
+  o.frequency.exponentialRampToValueAtTime(50, t + 0.08);
+  g.gain.setValueAtTime(0.9, t);
+  g.gain.exponentialRampToValueAtTime(0.001, t + 0.1);
+  o.connect(g).connect(drumsGain);
+  o.start(t); o.stop(t + 0.12);
+}
+
+function voiceSnare(t) {
+  const s = ctx.createBufferSource(); s.buffer = noiseBuf;
+  const bp = ctx.createBiquadFilter(); bp.type = 'bandpass'; bp.frequency.value = 1800;
+  const g = ctx.createGain(); g.gain.setValueAtTime(0.5, t); g.gain.exponentialRampToValueAtTime(0.001, t + 0.1);
+  s.connect(bp).connect(g).connect(drumsGain);
+  s.start(t); s.stop(t + 0.1);
+}
+
+function voiceHat(t) {
+  const s = ctx.createBufferSource(); s.buffer = noiseBuf;
+  const hp = ctx.createBiquadFilter(); hp.type = 'highpass'; hp.frequency.value = 6000;
+  const g = ctx.createGain(); g.gain.setValueAtTime(0.18, t); g.gain.exponentialRampToValueAtTime(0.001, t + 0.05);
+  s.connect(hp).connect(g).connect(drumsGain);
+  s.start(t); s.stop(t + 0.05);
+}
+
+function voiceMetro(t, accent = false) {
+  const o = ctx.createOscillator(); o.type = 'square';
+  const g = ctx.createGain(); g.gain.value = accent ? 0.25 : 0.12;
+  o.frequency.setValueAtTime(accent ? 2000 : 1200, t);
+  o.connect(g).connect(metroGain);
+  o.start(t); o.stop(t + 0.03);
+}
+
+function tempoShiftSfx(oldB, newB) {
+  if (oldB === newB) return;
+  const o = ctx.createOscillator(); const g = ctx.createGain(); g.gain.value = 0.15; o.type = 'sine';
+  const startF = 400 * (newB < oldB ? 1.1 : 0.9);
+  const endF   = 400 * (newB > oldB ? 1.1 : 0.9);
+  const t = ctx.currentTime;
+  o.frequency.setValueAtTime(startF, t);
+  o.frequency.linearRampToValueAtTime(endF, t + 0.12);
+  o.connect(g).connect(master);
+  o.start(t); o.stop(t + 0.14);
+}
+
+// =========================
+// Rendering
+// =========================
+function renderStrip() {
+  el.strip.innerHTML = '';
+  if (!chords || chords.length === 0) return;
+  chords.forEach((ch, i) => {
+    const cell = document.createElement('div');
+    cell.className = 'chord';
+    cell.dataset.idx = i;
+    const lit = nameForSemi(ch.root) + (ch.quality === 'm' ? 'm' : '');
+    const rn  = romanFor(ch.root, ch.quality);
+    cell.innerHTML = `
+      <div class="beatProg"></div>
+      <div class="literal">${lit}</div>
+      <div class="roman">${rn}</div>
+    `;
+    el.strip.appendChild(cell);
+  });
+  const loop = document.createElement('div');
+  loop.id = 'loopMarker';
+  loop.title = 'Loop start';
+  loop.textContent = '↩';
+  el.strip.appendChild(loop);
+}
+
+function highlightActiveCell() {
+  const cells = el.strip.querySelectorAll('.chord');
+  cells.forEach(c => c.classList.remove('active'));
+  const active = cells[chordIdx];
+  if (active) {
+    active.classList.add('active');
+    const prog = active.querySelector('.beatProg');
+    if (prog) prog.style.width = '0%';
+  }
+}
+
+function updateBeatProgress(now) {
+  const durBar = (60 / bpm) * 4;
+  const p = (now - barStart) / durBar; // 0..1 per bar
+  const prog = el.strip.querySelector('.chord.active .beatProg');
+  if (prog) prog.style.width = Math.max(0, Math.min(100, p * 100)) + '%';
+}
+
+// =========================
+// Transport & scheduling
+// =========================
+function scheduleBar(t) {
+  const beat = 60 / bpm;
+  const bar  = beat * 4;
+
+  if (chordsOn && chords.length) {
+    const ch = chords[chordIdx];
+    voiceChord(buildTriad(48 + ch.root, ch.quality), t, bar);
+  }
+
+  if (drumsOn) {
+    for (let b = 0; b < 4; b++) {
+      const bt = t + b * beat;
+      if (b === 0 || b === 2) voiceKick(bt);
+      if (b === 1 || b === 3) voiceSnare(bt);
+      voiceHat(bt);
+      voiceHat(bt + beat / 2);
+    }
+  }
+
+  if (!drumsOn && !chordsOn) {
+    for (let b = 0; b < 4; b++) {
+      const bt = t + b * beat;
+      voiceMetro(bt, b === 0);
+    }
+  }
+}
+
+function advanceBar() {
+  const durBar = (60 / bpm) * 4;
+  chordIdx = (chordIdx + 1) % chords.length;
+  barStart += durBar;
+  if (chordIdx === 0) {
+    const first = el.strip.querySelector('.chord[data-idx="0"]');
+    if (first) {
+      first.classList.add('loopFlash');
+      setTimeout(() => first.classList.remove('loopFlash'), 350);
+    }
+  }
+  scheduleBar(barStart);
+}
+
+function tickRAF() {
+  if (!playing) return;
+  const now = ctx.currentTime;
+  const durBar = (60 / bpm) * 4;
+  const p = (now - barStart) / durBar;
+  if (p >= 1) {
+    advanceBar();
+    highlightActiveCell();
+    requestAnimationFrame(tickRAF);
+    return;
+  }
+  updateBeatProgress(now);
+  requestAnimationFrame(tickRAF);
+}
+
+// =========================
+// Parsing & rebuilding
+// =========================
+function parseProgressionFromInput() {
+  const raw = el.literalInput.value;
+  const arr = [];
+  raw.split('|').forEach(tok => {
+    const p = parseLiteralToken(tok);
+    if (p) arr.push(p);
+  });
+  return arr.length ? arr : null;
+}
+
+function rebuildFromInputs() {
+  const parsed = parseProgressionFromInput();
+  if (!parsed) {
+    el.literalInput.classList.add('invalid');
+    return false;
+  }
+  el.literalInput.classList.remove('invalid');
+  chords = parsed;
+  renderStrip();
+  highlightActiveCell();
+  return true;
+}
+
+// =========================
+// UI actions (top-level)
+// =========================
+function actionPlay() { // start transport
+  if (playing) return;
+  ctx.resume();
+  playing = true;
+  chordIdx = 0;
+  barStart = ctx.currentTime + 0.05;
+  highlightActiveCell();
+  scheduleBar(barStart);
+  tickRAF();
+  el.btnPlay.disabled = true;
+  el.btnStop.disabled = false;
+  el.btnPlay.classList.add('active');
+  el.btnStop.classList.add('active');
+}
+
+function actionStop() { // stop transport
+  if (!playing) return;
+  playing = false;
+  el.btnPlay.disabled = false;
+  el.btnStop.disabled = true;
+  el.btnPlay.classList.remove('active');
+  el.btnStop.classList.remove('active');
+}
+
+function actionToggleDrums() { // toggle drums
+  drumsOn = !drumsOn;
+  el.btnDrums.classList.toggle('on', drumsOn);
+}
+
+function actionToggleChords() { // toggle chord playback
+  chordsOn = !chordsOn;
+  el.btnChords.classList.toggle('on', chordsOn);
+}
+
+function actionTapModeToggle() { // toggle tap-tempo capture
+  tapMode = !tapMode;
+  if (tapMode) taps.length = 0;
+  el.btnTap.classList.toggle('on', tapMode);
+}
+
+function actionTapSpace() { // handle a tap sample
+  const now = performance.now();
+  taps.push(now);
+  while (taps.length > 6) taps.shift();
+  if (taps.length >= 2) {
+    const diffs = taps.slice(1).map((t, i) => t - taps[i]);
+    const avg = diffs.reduce((a, b) => a + b, 0) / diffs.length;
+    const old = bpm;
+    bpm = Math.max(50, Math.min(200, 60000 / avg));
+    el.bpm.value = bpm;
+    el.bpmVal.textContent = bpm.toFixed(0);
+    tempoShiftSfx(old, bpm);
+    if (playing) {
+      barStart = ctx.currentTime; // resync bar at new tempo
+      scheduleBar(barStart);
+    }
+  }
+}
+
+function actionSetBPM(val) { // slider changed
+  const old = bpm;
+  bpm = parseInt(val, 10) || bpm;
+  el.bpmVal.textContent = bpm;
+  tempoShiftSfx(old, bpm);
+  if (playing) {
+    barStart = ctx.currentTime; // resync bar
+    scheduleBar(barStart);
+  }
+}
+
+function actionRandom() { // pick a random progression
+  const t = [
+      'C | G | Am | F',
+      'C | F | G | C',
+      'C | Am | F | G',
+      'Dm | G | C | G',
+      // House of the rising sun
+      'Am | C | D | F | Am | E | Am | E',
+      // 12-bar blues
+      'C | C | C | C | F | F | C | C | G | F | C | G',
+      'E | E | E | E | A | A | E | E | B | A | E | B',
+      'A | A | A | A | D | D | A | A | E | D | A | E',
+      'B | B | B | B | E | E | B | B | F# | E | B | F#'
+  ];
+  el.literalInput.value = t[Math.floor(Math.random() * t.length)];
+  rebuildFromInputs();
+}
+
+function actionEnterEditMode() { // focus progression input, disable global shortcuts
+  editMode = true;
+  tapMode = false;
+  el.btnTap.classList.remove('on');
+  el.literalInput.classList.add('editing');
+  el.literalInput.focus();
+  el.literalInput.selectionStart = el.literalInput.value.length;
+  el.literalInput.selectionEnd = el.literalInput.value.length;
+}
+
+function actionExitEditMode() { // validate, update strip, stay if invalid
+  const ok = rebuildFromInputs();
+  if (!ok) return; // remain in edit mode until fixed
+  editMode = false;
+  el.literalInput.classList.remove('editing');
+  el.literalInput.blur();
+}
+
+function actionKeyDown(e) { // global keyboard shortcuts
+  // If editing, only Enter exits; allow all other keys (incl. space) to type
+  if (editMode) {
+    if (e.code === 'Enter') { e.preventDefault(); actionExitEditMode(); }
+    return;
+  }
+
+  // Tap-mode space capture
+  if (tapMode && e.code === 'Space') {
+    e.preventDefault();
+    actionTapSpace();
+    return;
+  }
+
+  // Space toggles play/stop when not tapping/editing
+  if (e.code === 'Space') {
+    e.preventDefault();
+    if (playing) actionStop(); else actionPlay();
+    return;
+  }
+
+  // Drums toggle (D)
+  if (e.code === 'KeyD') { actionToggleDrums(); return; }
+
+  // Chords toggle (C) — skip if meta/ctrl pressed
+  if (e.code === 'KeyC' && !e.metaKey && !e.ctrlKey) { actionToggleChords(); return; }
+
+  // Random (R) — avoid Cmd/Ctrl+R
+  if (e.code === 'KeyR' && !e.metaKey && !e.ctrlKey) { e.preventDefault(); actionRandom(); return; }
+
+  // Edit mode (E)
+  if (e.code === 'KeyE') { e.preventDefault(); actionEnterEditMode(); return; }
+
+  // Tap mode (T)
+  if (e.code === 'KeyT') { e.preventDefault(); actionTapModeToggle(); return; }
+}
+
+// =========================
+// Wiring (once)
+// =========================
+function init() {
+  // Cache DOM
+  el.btnPlay    = document.getElementById('btnPlay');
+  el.btnStop    = document.getElementById('btnStop');
+  el.btnTap     = document.getElementById('btnTap');
+  el.btnDrums   = document.getElementById('btnDrums');
+  el.btnChords  = document.getElementById('btnChords');
+  el.btnRandom  = document.getElementById('btnRandom');
+  el.strip      = document.getElementById('strip');
+  el.keySelect  = document.getElementById('keySelect');
+  el.literalInput = document.getElementById('literalInput');
+  el.bpm        = document.getElementById('bpm');
+  el.bpmVal     = document.getElementById('bpmVal');
+
+  // Populate keys
+  KEYS.forEach(k => {
+    const o = document.createElement('option');
+    o.value = k; o.textContent = k + ' Major';
+    el.keySelect.appendChild(o);
+  });
+  el.keySelect.value = 'C';
+
+  // One-time event wiring to top-level actions
+  el.btnPlay.addEventListener('click', actionPlay);
+  el.btnStop.addEventListener('click', actionStop);
+  el.btnTap.addEventListener('click', actionTapModeToggle);
+  el.btnDrums.addEventListener('click', actionToggleDrums);
+  el.btnChords.addEventListener('click', actionToggleChords);
+  el.btnRandom.addEventListener('click', actionRandom);
+
+  el.bpm.addEventListener('input', e => actionSetBPM(e.target.value));
+  el.keySelect.addEventListener('change', rebuildFromInputs);
+  el.literalInput.addEventListener('focus', () => { if (!editMode) actionEnterEditMode(); });
+  el.literalInput.addEventListener('change', rebuildFromInputs);
+
+  document.body.addEventListener('keydown', actionKeyDown);
+
+  // Initial build
+  rebuildFromInputs();
+}
+
+// Boot
+init();
+</script>
+</body>
+</html>
