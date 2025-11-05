@@ -1,0 +1,378 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Drum Practice v0.1.1 (step editor)</title>
+<style>
+  /* Minimal, readable, big-click targets */
+  body { font-family: sans-serif; background: #fff; color: #000; margin: 0; }
+  #top { display: flex; flex-wrap: wrap; gap: 1vh; padding: 1vh; background: #eee; align-items: stretch; }
+  #top button, #top select { flex: 1 1 0; font-size: 3.2vh; padding: 1.6vh 1vw; }
+  button { cursor: pointer; }
+  button.primary { background: #007700; color: #fff; }
+  button.primary.active { background: #f4f4f4; color: #000; }
+  button.danger { background: #770000; color: #fff; }
+  button.toggle { background: #f4f4f4; }
+  button.toggle.on { background: #007700; color: #fff; }
+
+  #grid { padding: 1vh 1vw; }
+  .row { display: grid; grid-template-columns: auto auto 1fr; align-items: center; gap: .6rem; margin: .4rem 0; }
+  .row .name { min-width: 6ch; text-align: right; }
+  .steps { display: grid; gap: .3rem; grid-auto-flow: column; }
+  .cell { width: 32px; height: 32px; border: 1px solid #bbb; background: #fafafa; display: inline-flex; align-items: center; justify-content: center; font-size: 12px; user-select: none; box-sizing: border-box; }
+
+  .cell.on { background: #007700; color: #fff; border-color: #007700; }
+  /* bar start coloring (works whether on/off) */
+  .cell.barStart { background-color: #e0ffe0; }
+  .cell.on.barStart { background-color: #2f8f2f; border-color: #2f8f2f; }
+  .cell.beat { box-shadow: inset 0 0 0 2px #000; }
+  .cell.barStart { background-color: #e0ffe0; } /* light green for bar starts */
+  .cell.columnActive { outline: 3px solid #8389ff; }
+
+  #bottom { padding: 1vh 1vw; font-size: 2.2vh; display: flex; flex-wrap: wrap; gap: .6em; align-items: center; }
+  input, select { font-size: 2.2vh; }
+</style>
+</head>
+<body>
+  <div id="top">
+    <button id="btnPlay"   class="primary">▶️ Play</button>
+    <button id="btnStop"   class="danger" disabled>⏹ Stop</button>
+    <button id="btnTap"    class="toggle">🕒 Tap Tempo</button>
+    <select id="selSteps">
+      <option value="16" selected>16 steps (8th notes ×2 bars)</option>
+      <option value="32">32 steps (8th notes ×4 bars)</option>
+    </select>
+    <button id="btnClear"  class="toggle">🧹 Clear</button>
+    <button id="btnRandom" class="toggle">🎲 Random</button>
+  </div>
+
+  <div id="grid"></div>
+
+  <div id="bottom">
+    BPM: <input id="bpm" type="range" min="30" max="250" value="110"> <span id="bpmVal">110</span>
+  </div>
+
+<script>
+// =========================
+// Drum Practice v0.1.1 — step editor (5 voices, 16/32 steps)
+// =========================
+
+// --- Global state ---
+let bpm = 110;              // quarter-note BPM
+let playing = false;
+let tapMode = false;
+let steps = 16;             // 16 or 32 eighth-note steps
+let currentStep = 0;        // which step is currently playing (0..steps-1)
+let startTime = 0;          // audio time for transport start
+const taps = [];
+
+// 5 drum voices
+const VOICES = [
+  { id: 'kick',  name: 'Kick',  enabled: true },
+  { id: 'snare', name: 'Snare', enabled: true },
+  { id: 'hat',   name: 'Hat',   enabled: true },
+  { id: 'tom',   name: 'Tom',   enabled: true },
+  { id: 'clap',  name: 'Clap',  enabled: true },
+];
+
+// pattern[voiceIndex][stepIndex] -> boolean (eighth-note grid)
+let pattern = [];
+
+// --- DOM refs ---
+const el = {};
+
+// --- Audio setup ---
+const ctx = new (window.AudioContext || window.webkitAudioContext)();
+const master = ctx.createGain(); master.connect(ctx.destination);
+const bus = { drums: ctx.createGain() };
+Object.values(bus).forEach(g => g.connect(master));
+
+// One-off buffers
+const noiseBuf = (() => {
+  const b = ctx.createBuffer(1, ctx.sampleRate * 0.2, ctx.sampleRate);
+  const d = b.getChannelData(0);
+  for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+  return b;
+})();
+
+// =========================
+// Audio voices
+// =========================
+function voiceKick(t) {
+  const o = ctx.createOscillator(); o.type = 'sine';
+  const g = ctx.createGain();
+  o.frequency.setValueAtTime(120, t);
+  o.frequency.exponentialRampToValueAtTime(50, t + 0.08);
+  g.gain.setValueAtTime(1.0, t);
+  g.gain.exponentialRampToValueAtTime(0.001, t + 0.12);
+  o.connect(g).connect(bus.drums);
+  o.start(t); o.stop(t + 0.14);
+}
+
+function voiceSnare(t) {
+  const s = ctx.createBufferSource(); s.buffer = noiseBuf;
+  const bp = ctx.createBiquadFilter(); bp.type = 'bandpass'; bp.frequency.value = 1800; bp.Q = 0.8;
+  const g = ctx.createGain(); g.gain.setValueAtTime(0.7, t); g.gain.exponentialRampToValueAtTime(0.001, t + 0.12);
+  s.connect(bp).connect(g).connect(bus.drums);
+  s.start(t); s.stop(t + 0.12);
+}
+
+function voiceHat(t) {
+  const s = ctx.createBufferSource(); s.buffer = noiseBuf;
+  const hp = ctx.createBiquadFilter(); hp.type = 'highpass'; hp.frequency.value = 6000;
+  const g = ctx.createGain(); g.gain.setValueAtTime(0.25, t); g.gain.exponentialRampToValueAtTime(0.001, t + 0.05);
+  s.connect(hp).connect(g).connect(bus.drums);
+  s.start(t); s.stop(t + 0.06);
+}
+
+function voiceTom(t) {
+  const o = ctx.createOscillator(); o.type = 'sine';
+  const g = ctx.createGain();
+  o.frequency.setValueAtTime(180, t);
+  o.frequency.exponentialRampToValueAtTime(110, t + 0.1);
+  g.gain.setValueAtTime(0.8, t);
+  g.gain.exponentialRampToValueAtTime(0.001, t + 0.14);
+  o.connect(g).connect(bus.drums);
+  o.start(t); o.stop(t + 0.16);
+}
+
+function voiceClap(t) {
+  const s = ctx.createBufferSource(); s.buffer = noiseBuf;
+  const hp = ctx.createBiquadFilter(); hp.type = 'highpass'; hp.frequency.value = 2000;
+  const g = ctx.createGain(); g.gain.setValueAtTime(0.7, t); g.gain.exponentialRampToValueAtTime(0.001, t + 0.06);
+  s.connect(hp).connect(g).connect(bus.drums);
+  s.start(t); s.stop(t + 0.08);
+}
+
+function triggerVoice(id, t) {
+  switch(id) {
+    case 'kick':  voiceKick(t); break;
+    case 'snare': voiceSnare(t); break;
+    case 'hat':   voiceHat(t); break;
+    case 'tom':   voiceTom(t); break;
+    case 'clap':  voiceClap(t); break;
+  }
+}
+
+// =========================
+// Rendering the grid
+// =========================
+function renderGrid() {
+  el.grid.innerHTML = '';
+  VOICES.forEach((v, vi) => {
+    const row = document.createElement('div');
+    row.className = 'row';
+
+    // Enable checkbox
+    const cb = document.createElement('input');
+    cb.type = 'checkbox'; cb.checked = v.enabled;
+    cb.addEventListener('change', () => actionToggleVoice(vi));
+
+    // Name label
+    const name = document.createElement('div');
+    name.className = 'name';
+    name.textContent = v.name;
+
+    // Steps grid
+    const stepsWrap = document.createElement('div');
+    stepsWrap.className = 'steps';
+    stepsWrap.style.gridTemplateColumns = `repeat(${steps}, 32px)`;
+
+    for (let si = 0; si < steps; si++) {
+      const cell = document.createElement('div');
+      cell.className = 'cell';
+      if (pattern[vi][si]) cell.classList.add('on');
+      if ((si % 2) === 0) cell.classList.add('beat');      // quarter boundaries on 8th grid
+      if ((si % 8) === 0) cell.classList.add('barStart');  // mark ALL bar starts, including step 0
+      cell.addEventListener('click', () => actionToggleStep(vi, si));
+      stepsWrap.appendChild(cell);
+    }
+
+    row.appendChild(cb);
+    row.appendChild(name);
+    row.appendChild(stepsWrap);
+    el.grid.appendChild(row);
+  });
+  highlightColumn(currentStep);
+}
+
+function highlightColumn(stepIdx) {
+  el.grid.querySelectorAll('.cell.columnActive').forEach(c => c.classList.remove('columnActive'));
+  const rows = el.grid.querySelectorAll('.row');
+  rows.forEach(row => {
+    const cells = row.querySelectorAll('.steps .cell');
+    if (cells[stepIdx]) cells[stepIdx].classList.add('columnActive');
+  });
+}
+
+// =========================
+// Transport & scheduling (8th notes)
+// =========================
+function stepDuration() { return (60 / bpm) / 2; } // 8th-note grid
+
+function scheduleStep(si, when) {
+  VOICES.forEach((v, vi) => {
+    if (!v.enabled) return;
+    if (pattern[vi][si]) triggerVoice(v.id, when);
+  });
+}
+
+function tickRAF() { // visuals & near-future scheduling
+  if (!playing) return;
+  const now = ctx.currentTime;
+  const dur = stepDuration();
+  const elapsed = now - startTime;
+  const idx = Math.floor(elapsed / dur) % steps;
+
+  if (idx !== currentStep) {
+    const thisWhen = startTime + Math.floor(elapsed / dur) * dur;
+    scheduleStep(idx, thisWhen);
+    highlightColumn(idx);
+    currentStep = idx;
+  }
+
+  requestAnimationFrame(tickRAF);
+}
+
+// =========================
+// UI actions (top-level)
+// =========================
+function actionPlay() { // start transport
+  if (playing) return;
+  ctx.resume();
+  playing = true;
+  startTime = ctx.currentTime + 0.03;
+  currentStep = 0;
+  highlightColumn(currentStep);
+  requestAnimationFrame(tickRAF);
+  el.btnPlay.disabled = true; el.btnStop.disabled = false;
+  el.btnPlay.classList.add('active');
+}
+
+function actionStop() { // stop transport
+  if (!playing) return;
+  playing = false;
+  el.btnPlay.disabled = false; el.btnStop.disabled = true;
+  el.btnPlay.classList.remove('active');
+}
+
+function actionTapModeToggle() { // enable/disable tap capture
+  tapMode = !tapMode;
+  if (tapMode) taps.length = 0;
+  el.btnTap.classList.toggle('on', tapMode);
+}
+
+function actionTapSpace() { // accumulate taps → BPM
+  const now = performance.now();
+  taps.push(now);
+  while (taps.length > 6) taps.shift();
+  if (taps.length >= 2) {
+    const diffs = taps.slice(1).map((t,i) => t - taps[i]);
+    const avg = diffs.reduce((a,b) => a + b, 0) / diffs.length;
+    bpm = Math.max(30, Math.min(250, Math.round(60000 / avg)));
+    el.bpm.value = bpm;
+    el.bpmVal.textContent = bpm;
+    if (playing) { startTime = ctx.currentTime; }
+  }
+}
+
+function actionSetBPM(val) { // slider changed
+  bpm = parseInt(val, 10) || bpm;
+  el.bpmVal.textContent = bpm;
+  if (playing) { startTime = ctx.currentTime; }
+}
+
+function actionSetSteps(n) { // change grid length (16/32)
+  steps = n;
+  VOICES.forEach((_, vi) => {
+    const old = pattern[vi];
+    const next = new Array(steps).fill(false);
+    for (let i = 0; i < Math.min(old.length, next.length); i++) next[i] = old[i];
+    pattern[vi] = next;
+  });
+  currentStep = 0;
+  renderGrid();
+}
+
+function actionToggleVoice(vi) { // enable/disable voice row
+  VOICES[vi].enabled = !VOICES[vi].enabled;
+}
+
+function actionToggleStep(vi, si) { // toggle a cell on/off
+  pattern[vi][si] = !pattern[vi][si];
+  renderGrid();
+}
+
+function actionClear() { // clear all steps
+  VOICES.forEach((_, vi) => pattern[vi].fill(false));
+  renderGrid();
+}
+
+function actionRandom() { // quick seed pattern (correct for 8th grid)
+  actionClear();
+  const K = VOICES.findIndex(v => v.id==='kick');
+  const S = VOICES.findIndex(v => v.id==='snare');
+  const H = VOICES.findIndex(v => v.id==='hat');
+  for (let i = 0; i < steps; i++) {
+    if (i % 2 === 0) pattern[K][i] = true;           // Kick on quarter notes (every 2 eighths)
+    if (i % 8 === 2 || i % 8 === 6) pattern[S][i] = true; // Backbeat on beats 2 & 4 per bar
+    pattern[H][i] = true;                              // 8th-note hats
+  }
+  // Light sprinkles
+  const T = VOICES.findIndex(v => v.id==='tom');
+  const C = VOICES.findIndex(v => v.id==='clap');
+  for (let i = 1; i < steps; i += 8) if (Math.random() < 0.4) pattern[T][i] = true;
+  for (let i = 5; i < steps; i += 8) if (Math.random() < 0.3) pattern[C][i] = true;
+  renderGrid();
+}
+
+function actionKeyDown(e) { // global keyboard shortcuts
+  // Tap-mode space capture
+  if (tapMode && e.code === 'Space') { e.preventDefault(); actionTapSpace(); return; }
+
+  if (e.code === 'Space') { e.preventDefault(); if (playing) actionStop(); else actionPlay(); return; }
+
+  if (e.code === 'KeyR' && !e.metaKey && !e.ctrlKey) { e.preventDefault(); actionRandom(); return; }
+
+  if (e.code === 'KeyT') { e.preventDefault(); actionTapModeToggle(); return; } // T toggles tap mode
+}
+
+// =========================
+// Wiring (once)
+// =========================
+function init() {
+  // Cache DOM
+  el.btnPlay   = document.getElementById('btnPlay');
+  el.btnStop   = document.getElementById('btnStop');
+  el.btnTap    = document.getElementById('btnTap');
+  el.btnClear  = document.getElementById('btnClear');
+  el.btnRandom = document.getElementById('btnRandom');
+  el.selSteps  = document.getElementById('selSteps');
+  el.grid      = document.getElementById('grid');
+  el.bpm       = document.getElementById('bpm');
+  el.bpmVal    = document.getElementById('bpmVal');
+
+  // Initialize pattern
+  pattern = VOICES.map(() => new Array(steps).fill(false));
+
+  // Wire events to actions
+  el.btnPlay.addEventListener('click', actionPlay);
+  el.btnStop.addEventListener('click', actionStop);
+  el.btnTap.addEventListener('click', actionTapModeToggle);
+  el.btnClear.addEventListener('click', actionClear);
+  el.btnRandom.addEventListener('click', actionRandom);
+  el.selSteps.addEventListener('change', e => actionSetSteps(parseInt(e.target.value,10)));
+
+  el.bpm.addEventListener('input', e => actionSetBPM(e.target.value));
+  document.body.addEventListener('keydown', actionKeyDown);
+
+  // First render
+  renderGrid();
+}
+
+// Boot
+init();
+</script>
+</body>
+</html>
