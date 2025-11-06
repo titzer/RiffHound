@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Drum Practice v0.1.1 (step editor)</title>
+<title>Simple Drum Machine v0.1.2</title>
 <style>
   /* Minimal, readable, big-click targets */
   body { font-family: sans-serif; background: #fff; color: #000; margin: 0; }
@@ -41,6 +41,7 @@
     <button id="btnTap"    class="toggle">🕒 Tap Tempo</button>
     <select id="selSteps">
       <option value="16" selected>16 steps (8th notes ×2 bars)</option>
+      <option value="24">24 steps (8th notes ×4 bars, 6/8)</option>
       <option value="32">32 steps (8th notes ×4 bars)</option>
     </select>
     <button id="btnClear"  class="toggle">🧹 Clear</button>
@@ -183,9 +184,11 @@ function renderGrid() {
       const cell = document.createElement('div');
       cell.className = 'cell';
       if (pattern[vi][si]) cell.classList.add('on');
-      if ((si % 2) === 0) cell.classList.add('beat');      // quarter boundaries on 8th grid
-      if ((si % 8) === 0) cell.classList.add('barStart');  // mark ALL bar starts, including step 0
-      cell.addEventListener('click', () => actionToggleStep(vi, si));
+      // beat/bar marking adapts to 4/4 (8 per bar) vs 6/8 (6 per bar)
+      const bar = getBarSize();         // 8 for 4/4, 6 for 6/8
+      const beatDiv = getBeatDiv();     // 2 for 4/4, 3 for 6/8
+      if ((si % beatDiv) === 0) cell.classList.add('beat');
+      if ((si % bar) === 0)     cell.classList.add('barStart');      cell.addEventListener('click', () => actionToggleStep(vi, si));
       stepsWrap.appendChild(cell);
     }
 
@@ -195,6 +198,15 @@ function renderGrid() {
     el.grid.appendChild(row);
   });
   highlightColumn(currentStep);
+}
+
+// Determine grouping: force 6/8 for 24 steps, else fallback heuristic
+function getBarSize() {
+  if (steps === 24) return 6;               // 24 eighths = 4 bars of 6/8
+  return (steps % 6 === 0 && steps % 8 !== 0) ? 6 : 8;
+}
+function getBeatDiv() {                     // beats per bar marker spacing (in eighths)
+  return (getBarSize() === 6) ? 3 : 2;      // 6/8 = dotted quarters (every 3 eighths)
 }
 
 function highlightColumn(stepIdx) {
@@ -280,6 +292,7 @@ function actionTapSpace() { // accumulate taps → BPM
 function actionSetBPM(val) { // slider changed
   bpm = parseInt(val, 10) || bpm;
   el.bpmVal.textContent = bpm;
+  el.bpm.value = bpm;
   if (playing) { startTime = ctx.currentTime; }
 }
 
@@ -314,16 +327,22 @@ function actionRandom() { // quick seed pattern (correct for 8th grid)
   const K = VOICES.findIndex(v => v.id==='kick');
   const S = VOICES.findIndex(v => v.id==='snare');
   const H = VOICES.findIndex(v => v.id==='hat');
+  const bar = getBarSize();       // 8 (4/4) or 6 (6/8)
+  const beatDiv = getBeatDiv();   // 2 (4/4) or 3 (6/8)
   for (let i = 0; i < steps; i++) {
-    if (i % 2 === 0) pattern[K][i] = true;           // Kick on quarter notes (every 2 eighths)
-    if (i % 8 === 2 || i % 8 === 6) pattern[S][i] = true; // Backbeat on beats 2 & 4 per bar
-    pattern[H][i] = true;                              // 8th-note hats
+    // Kick on primary beats
+    if (i % beatDiv === 0) pattern[K][i] = true;
+    // Snare: 4/4 -> beats 2 & 4; 6/8 -> beat 2 (i%6==3)
+    if ((bar === 8 && (i % 8 === 2 || i % 8 === 6)) ||
+        (bar === 6 && i % 6 === 3)) pattern[S][i] = true;
+    // Hi-hat every eighth
+    pattern[H][i] = true;
   }
-  // Light sprinkles
+  // Light sprinkles (align to bar size)
   const T = VOICES.findIndex(v => v.id==='tom');
   const C = VOICES.findIndex(v => v.id==='clap');
-  for (let i = 1; i < steps; i += 8) if (Math.random() < 0.4) pattern[T][i] = true;
-  for (let i = 5; i < steps; i += 8) if (Math.random() < 0.3) pattern[C][i] = true;
+  for (let i = 1; i < steps; i += bar) if (Math.random() < 0.4) pattern[T][i] = true;
+  for (let i = Math.floor(bar*0.8); i < steps; i += bar) if (Math.random() < 0.3) pattern[C][i] = true;
   renderGrid();
 }
 
@@ -332,10 +351,10 @@ function actionKeyDown(e) { // global keyboard shortcuts
   if (tapMode && e.code === 'Space') { e.preventDefault(); actionTapSpace(); return; }
 
   if (e.code === 'Space') { e.preventDefault(); if (playing) actionStop(); else actionPlay(); return; }
-
   if (e.code === 'KeyR' && !e.metaKey && !e.ctrlKey) { e.preventDefault(); actionRandom(); return; }
-
   if (e.code === 'KeyT') { e.preventDefault(); actionTapModeToggle(); return; } // T toggles tap mode
+  if (e.code === 'Minus' || e.code === 'NumpadSubtract') { actionSetBPM((el.bpm.value | 0) - 5); return; }
+  if (e.code === 'Equal' || e.code === 'NumpadAdd') { actionSetBPM((el.bpm.value | 0) + 5); }
 }
 
 // =========================
@@ -374,5 +393,20 @@ function init() {
 // Boot
 init();
 </script>
+
+<p></p>
+TODO:
+
+<ul>
+    <li>Quantize BPM slider (still allow text entry)</li>
+    <li>Visualization of animated drum set (swinging arm) </li>
+    <li>Configurable loop length</li>
+    <li>Store and retrieve named patterns</li>
+    <li>Randomize works on a subset of the voices</li>
+    <li>(S)implify and (C)omplexify buttons</li>
+    <li>Samples for voices</li>
+    <li>Extensible number of voices</li>
+    <li>Allow remote control from Music Coordinator Program (MCP)</li>
+</ul>
 </body>
 </html>
