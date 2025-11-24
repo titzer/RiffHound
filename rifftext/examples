@@ -1,0 +1,23 @@
+# Rifftext format
+# K - key and mode
+# T - tempo and BPM
+# S - time signature for grouping of beats
+# R[name] - a rhythm structure
+# M[name] - a melodic line
+# D[name] - a drums
+# C[name] - chords
+
+# specify a key, a tempo, and a time signature
+KAm:T100:S4/4:
+# specify the rhythm pattern in terms of whole, half, quarter, eight, sixteenth, and thirty-second notes
+R q,q,q,q:
+# can use simple fractions of notes, e.g. to implement triplets
+R2 q,e,e,s/3,s/3,s/3,q:
+# specify a chord pattern in terms of diatonic chords
+Hcow:I,IV,I,V
+# which is a short hand for these chords:
+Mcow:[0,3,7],[5,8,12],[0,3,7],[7,11,14]
+# Melodies have either single notes, chords, rests (_), or ties (^)
+Mmel:[0,4,7],^,_,[2,5,9],^,_:
+# Melodies are specified by chromatic intervals
+Mbass:_,_, -2, -2, -2, 0:

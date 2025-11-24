@@ -1,0 +1,569 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>RiffText Prototype</title>
+  <style>
+    body {
+      font-family: sans-serif;
+      margin: 16px;
+    }
+    #container {
+      max-width: 900px;
+      margin: 0 auto;
+    }
+    input[type="text"] {
+      width: 100%;
+      padding: 6px;
+      font-family: monospace;
+      font-size: 14px;
+      box-sizing: border-box;
+    }
+    button {
+      margin-top: 8px;
+      margin-right: 8px;
+      padding: 6px 10px;
+    }
+    #status {
+      margin-top: 8px;
+      font-family: monospace;
+      font-size: 13px;
+      white-space: pre-wrap;
+    }
+    #gridContainer {
+      margin-top: 16px;
+      overflow-x: auto;
+      border: 1px solid #ccc;
+      padding: 4px;
+    }
+    table.grid {
+      border-collapse: collapse;
+      border-spacing: 0;
+    }
+    table.grid td, table.grid th {
+      border: 1px solid #ddd;
+      width: 18px;
+      height: 18px;
+      text-align: center;
+      font-size: 10px;
+      padding: 0;
+    }
+    table.grid th {
+      background: #f0f0f0;
+      position: sticky;
+      top: 0;
+      z-index: 2;
+    }
+    .pitch-label {
+      background: #f8f8f8;
+      position: sticky;
+      left: 0;
+      z-index: 1;
+    }
+    .note-cell {
+      background: #88c;
+    }
+    .beat-border {
+      border-right: 2px solid #000;
+    }
+    .measure-border {
+      border-right: 3px solid #000;
+    }
+  </style>
+</head>
+<body>
+<div id="container">
+  <h2>RiffText Prototype (Single Voice)</h2>
+
+  <p>Enter a RiffText string like:<br>
+    <code>KC:T120:Rq,q,q,q:M0,2,4,5</code><br>
+    Durations: <code>q</code> (quarter), <code>e</code> (eighth). Melody: integers or <code>r</code> for rest.
+  </p>
+
+  <input id="riffInput" type="text"
+         value="KC:T120:Rq,q,q,q:M0,2,4,5">
+
+  <div>
+    <button onclick="actionParse()">Parse</button>
+    <button onclick="actionPlay()">Play</button>
+  </div>
+
+  <div id="status"></div>
+  <div id="gridContainer"></div>
+</div>
+
+<script>
+  // -----------------------------
+  // Global state
+  // -----------------------------
+  let gParsed = null;       // { key, tempo, durations, pitches, ticks, events }
+  let gAudioCtx = null;
+
+  // -----------------------------
+  // Action entry points
+  // -----------------------------
+  function actionParse() {
+  const text = document.getElementById('riffInput').value.trim();
+  try {
+    const parsed = parseRiffText(text);
+    const expanded = expandToTimeline(parsed);
+    gParsed = expanded;
+    actionRender();
+    setStatus(
+      "Parsed OK.\n" +
+      "Key: " + parsed.key +
+      "  Tempo: " + parsed.tempo + " bpm\n" +
+      "Time Sig: " + expanded.timeSig.numerator + "/" + expanded.timeSig.denominator + "\n" +
+      "Total beats: " + expanded.totalBeats.toFixed(2) +
+      "  Measures: " + expanded.measures
+    );
+  } catch (e) {
+    console.error(e);
+    gParsed = null;
+    setStatus("Error: " + e.message);
+    clearGrid();
+  }
+}
+
+  function actionRender() {
+    if (!gParsed) {
+      setStatus("Nothing parsed yet.");
+      return;
+    }
+    renderGrid(gParsed);
+  }
+
+  function actionPlay() {
+    if (!gParsed) {
+      setStatus("Nothing parsed yet.");
+      return;
+    }
+    playRiff(gParsed);
+  }
+
+  // -----------------------------
+  // Status & Grid helpers
+  // -----------------------------
+  function setStatus(msg) {
+    document.getElementById('status').textContent = msg;
+  }
+
+  function clearGrid() {
+    document.getElementById('gridContainer').innerHTML = "";
+  }
+
+  // -----------------------------
+  // Parsing RiffText
+  // Format (simplified prototype):
+  //   K<tonic><m?>:T<tempo>:R<dur,dur,...>:M<pitch,pitch,...>
+  // Example:
+  //   KC:T120:Rq,q,e,e,q:M0,2,4,5,7
+  // -----------------------------
+function parseRiffText(text) {
+  if (!text) throw new Error("Empty input");
+
+  const parts = text.split(":");
+  let key = "C";       // default
+  let tempo = 120;     // default
+  let signature = null;
+  let durations = null;
+  let pitches = null;
+
+  for (let part of parts) {
+    part = part.trim();
+    if (!part) continue;
+    const tag = part[0];
+
+    if (tag === 'K') {
+      const body = part.substring(1).trim();
+      // Accept e.g. "C", "Am", "F#", "Eb"
+      const m = body.match(/^([A-G][b#]?)(m)?$/);
+      if (!m) throw new Error("Invalid key spec: " + part);
+      key = m[1];
+      // We ignore mode for now; treat both major/minor the same re: tonic offset
+    } else if (tag === 'T') {
+      const body = part.substring(1).trim();
+      const t = parseInt(body, 10);
+      if (isNaN(t) || t <= 0) throw new Error("Invalid tempo: " + part);
+      tempo = t;
+    } else if (tag === 'S') {
+      const body = part.substring(1).trim();
+      const m = body.match(/^(\d+)\s*\/\s*(\d+)$/);
+      if (!m) throw new Error("Invalid time signature: " + part);
+      const num = parseInt(m[1], 10);
+      const den = parseInt(m[2], 10);
+      if (!(num > 0 && den > 0)) throw new Error("Invalid time signature: " + part);
+      signature = { numerator: num, denominator: den };
+    } else if (tag === 'R') {
+      const body = part.substring(1).trim();
+      durations = parseDurations(body);
+    } else if (tag === 'M') {
+      const body = part.substring(1).trim();
+      pitches = parsePitches(body);
+    } else {
+      throw new Error("Unknown field: " + part);
+    }
+  }
+
+  if (!durations) throw new Error("Missing R (rhythm) field");
+  if (!pitches) throw new Error("Missing M (melody) field");
+  if (durations.length !== pitches.length) {
+    throw new Error(
+      "R and M must have same number of entries (got " +
+      durations.length + " durations and " + pitches.length + " pitches)"
+    );
+  }
+
+  if (!signature) {
+    signature = { numerator: 4, denominator: 4 }; // default if S is omitted
+  }
+
+  return { key, tempo, durations, pitches, signature };
+}
+function parseDurations(body) {
+  if (!body) throw new Error("Empty R field");
+  const tokens = body.split(",").map(s => s.trim()).filter(s => s.length > 0);
+  if (tokens.length === 0) throw new Error("No durations in R");
+
+  const res = [];
+  for (const tokRaw of tokens) {
+    let tok = tokRaw;
+    // Optional rest prefix: "_q", "_e", etc.
+    if (tok[0] === '_') {
+      tok = tok.substring(1);
+      if (!tok) throw new Error("Invalid rest duration token: " + tokRaw);
+      // For now we ignore the fact it's a "rest step" at the rhythm level,
+      // since rests are handled in the melody (M) line.
+    }
+
+    let beats;
+    if (tok === 'w')      beats = 4.0;    // whole
+    else if (tok === 'h') beats = 2.0;    // half
+    else if (tok === 'q') beats = 1.0;    // quarter
+    else if (tok === 'e') beats = 0.5;    // eighth
+    else if (tok === 's') beats = 0.25;   // sixteenth
+    else if (tok === 't') beats = 0.125;  // thirty-second
+    else throw new Error("Unsupported duration token: " + tokRaw);
+
+    res.push(beats);
+  }
+  return res;
+}
+function parsePitches(body) {
+  if (!body) throw new Error("Empty M field");
+  const tokens = body.split(",").map(s => s.trim()).filter(s => s.length > 0);
+  if (tokens.length === 0) throw new Error("No pitches in M");
+
+  const res = [];
+  for (const tok of tokens) {
+    if (tok === 'r' || tok === 'R' || tok === '_') {
+      res.push(null);          // rest
+    } else if (tok === '^') {
+      res.push('^');           // tie
+    } else {
+      const v = parseInt(tok, 10);
+      if (isNaN(v)) throw new Error("Invalid pitch token (use integers, '^', or 'r'/'_'): " + tok);
+      res.push(v);
+    }
+  }
+  return res;
+}
+
+function computeTicksPerBeat(durations) {
+  let min = Infinity;
+
+  for (const d of durations) {
+    // d is like 1, 0.5, 0.25, 0.125
+    // Find smallest power-of-two denominator
+    const denom = 1 / d;
+    if (denom < 1) continue;   // whole notes etc still count as denom=1
+    min = Math.max(min, denom);
+  }
+
+  if (!isFinite(min)) return 1;
+  if (min <= 1) return 1;
+  if (min <= 2) return 2;
+  if (min <= 4) return 4;
+  if (min <= 8) return 8;
+  return 8; // cap at 32nd notes
+}
+
+  
+  // -----------------------------
+  // Expand to timeline (eighth-note ticks)
+  // - Each beat = 2 ticks (since e = 0.5 beats)
+  // - For now, we only support q (1 beat) and e (0.5 beat)
+  // -----------------------------
+  function expandToTimeline(parsed) {
+  const { key, tempo, durations, pitches, signature } = parsed;
+
+  // Total beats as quarter-note units
+  let totalBeats = 0;
+  for (const d of durations) totalBeats += d;
+
+  const ticksPerBeat = 8;// computeTicksPerBeat(durations);
+  const totalTicks = Math.round(totalBeats * ticksPerBeat);
+
+  // Tick-level pitch representation
+  const tickPitch = new Array(totalTicks).fill(null);
+  const events = []; // for audio: { startBeat, durBeats, pitchOffset }
+
+  let tickCursor = 0;
+  let beatCursor = 0;
+
+  let currentEvent = null; // { startBeat, durBeats, pitchOffset }
+
+  for (let i = 0; i < durations.length; i++) {
+    const dBeats = durations[i];
+    const dTicks = Math.round(dBeats * ticksPerBeat);
+    const tok = pitches[i];
+
+    if (tok === '^') {
+      // Tie: extend previous event if there is one
+      if (currentEvent) {
+        currentEvent.durBeats += dBeats;
+        const p = currentEvent.pitchOffset;
+        for (let t = 0; t < dTicks; t++) {
+          if (tickCursor + t >= totalTicks) break;
+          tickPitch[tickCursor + t] = p;
+        }
+      }
+      // If there's no currentEvent, treat as a rest (do nothing)
+    } else if (tok === null) {
+      // Rest: no sounding note in this span
+      currentEvent = null;
+      // tickPitch remains null over these ticks
+    } else {
+      // Attack: start a new event at this beat
+      const p = tok;
+      currentEvent = {
+        startBeat: beatCursor,
+        durBeats: dBeats,
+        pitchOffset: p
+      };
+      events.push(currentEvent);
+
+      for (let t = 0; t < dTicks; t++) {
+        if (tickCursor + t >= totalTicks) break;
+        tickPitch[tickCursor + t] = p;
+      }
+    }
+
+    tickCursor += dTicks;
+    beatCursor += dBeats;
+  }
+
+  // Determine pitch range (ignore rests and ties)
+  let minP = +Infinity, maxP = -Infinity;
+  for (const tok of pitches) {
+    if (tok === null || tok === '^') continue;
+    if (tok < minP) minP = tok;
+    if (tok > maxP) maxP = tok;
+  }
+  if (!isFinite(minP) || !isFinite(maxP)) {
+    minP = 0;
+    maxP = 0;
+  }
+
+  // Time signature & measures
+  const sig = signature || { numerator: 4, denominator: 4 };
+  const baseBeat = 4.0 / sig.denominator;          // value of one "count" in quarter-beat units
+  const beatsPerMeasure = sig.numerator * baseBeat;
+  const measures =
+    beatsPerMeasure > 0 ? Math.ceil(totalBeats / beatsPerMeasure) : 0;
+
+  return {
+    key,
+    tempo,
+    durations,
+    pitches,
+    signature,
+    timeSig: sig,
+    ticksPerBeat,
+    totalBeats,
+    totalTicks,
+    tickPitch,
+    minPitch: minP,
+    maxPitch: maxP,
+    measures,
+    beatsPerMeasure,
+    events
+  };
+}
+
+  // -----------------------------
+  // Grid rendering
+  // -----------------------------
+  function renderGrid(data) {
+  const {
+    ticksPerBeat,
+    totalTicks,
+    tickPitch,
+    minPitch,
+    maxPitch,
+    beatsPerMeasure
+  } = data;
+
+  const gridDiv = document.getElementById('gridContainer');
+  gridDiv.innerHTML = "";
+
+  const table = document.createElement('table');
+  table.className = 'grid';
+
+  const pitchRange = [];
+  for (let p = maxPitch; p >= minPitch; p--) {
+    pitchRange.push(p);
+  }
+
+  // Header row: empty cell + tick indices / beat markers
+  const thead = document.createElement('thead');
+  const headerRow = document.createElement('tr');
+  const corner = document.createElement('th');
+  corner.textContent = "p\\t";
+  headerRow.appendChild(corner);
+
+  for (let tick = 0; tick < totalTicks; tick++) {
+    const th = document.createElement('th');
+    const beat = tick / ticksPerBeat;
+
+    // Label beats at tick 0 of each beat
+    if (tick % ticksPerBeat === 0) {
+      th.textContent = beat.toFixed(0);
+    } else {
+      th.textContent = "";
+    }
+
+    // Mark measure and beat borders
+    if (beatsPerMeasure > 0 &&
+        Math.abs(beat % beatsPerMeasure) < 1e-6 &&
+        beat !== 0) {
+      th.classList.add('measure-border');
+    } else if (tick % ticksPerBeat === 0) {
+      th.classList.add('beat-border');
+    }
+
+    headerRow.appendChild(th);
+  }
+  thead.appendChild(headerRow);
+  table.appendChild(thead);
+
+  const tbody = document.createElement('tbody');
+  for (const p of pitchRange) {
+    const tr = document.createElement('tr');
+
+    const label = document.createElement('td');
+    label.textContent = p;
+    label.className = "pitch-label";
+    tr.appendChild(label);
+
+    for (let tick = 0; tick < totalTicks; tick++) {
+      const td = document.createElement('td');
+      const activePitch = tickPitch[tick];
+
+      if (activePitch === p) {
+        td.classList.add('note-cell');
+      }
+
+      const beat = tick / ticksPerBeat;
+      if (beatsPerMeasure > 0 &&
+          Math.abs(beat % beatsPerMeasure) < 1e-6 &&
+          beat !== 0) {
+        td.classList.add('measure-border');
+      } else if (tick % ticksPerBeat === 0) {
+        td.classList.add('beat-border');
+      }
+
+      tr.appendChild(td);
+    }
+
+    tbody.appendChild(tr);
+  }
+  table.appendChild(tbody);
+
+  gridDiv.appendChild(table);
+}
+
+  // -----------------------------
+  // Audio playback using WebAudio
+  // -----------------------------
+  function playRiff(data) {
+    const { key, tempo, events } = data;
+    if (!events || events.length === 0) {
+      setStatus("Nothing to play (no notes).");
+      return;
+    }
+
+    if (!gAudioCtx) {
+      gAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    }
+
+    const ctx = gAudioCtx;
+    const now = ctx.currentTime;
+    const secondsPerBeat = 60.0 / tempo;
+
+    const keyOffset = keyToSemitoneOffset(key); // relative to C
+
+    // Simple gain envelope
+    const masterGain = ctx.createGain();
+    masterGain.gain.value = 0.2;
+    masterGain.connect(ctx.destination);
+
+    for (const ev of events) {
+      const midi = 60 + keyOffset + ev.pitchOffset; // around middle C
+      const freq = midiToFrequency(midi);
+      const startTime = now + ev.startBeat * secondsPerBeat;
+      const durSec = ev.durBeats * secondsPerBeat;
+
+      const osc = ctx.createOscillator();
+      osc.type = 'sine';
+      osc.frequency.value = freq;
+
+      const noteGain = ctx.createGain();
+      noteGain.gain.setValueAtTime(0, startTime);
+      noteGain.gain.linearRampToValueAtTime(1.0, startTime + 0.01);
+      noteGain.gain.linearRampToValueAtTime(0.0, startTime + durSec);
+
+      osc.connect(noteGain);
+      noteGain.connect(masterGain);
+
+      osc.start(startTime);
+      osc.stop(startTime + durSec + 0.05);
+    }
+
+    setStatus("Playing " + events.length + " notes at " + tempo + " bpm.");
+  }
+
+  function keyToSemitoneOffset(key) {
+    // key: "C", "Am", "F#", "Eb", etc. We ignore mode, only tonic.
+    const m = key.match(/^([A-G][b#]?)/);
+    if (!m) return 0;
+    const tonic = m[1];
+
+    switch (tonic) {
+      case 'C': return 0;
+      case 'C#': case 'Db': return 1;
+      case 'D': return 2;
+      case 'D#': case 'Eb': return 3;
+      case 'E': return 4;
+      case 'F': return 5;
+      case 'F#': case 'Gb': return 6;
+      case 'G': return 7;
+      case 'G#': case 'Ab': return 8;
+      case 'A': return 9;
+      case 'A#': case 'Bb': return 10;
+      case 'B': return 11;
+      default: return 0;
+    }
+  }
+
+  function midiToFrequency(midi) {
+    return 440 * Math.pow(2, (midi - 69) / 12);
+  }
+
+  // Parse & render initial example
+  window.addEventListener('load', () => {
+    actionParse();
+  });
+</script>
+</body>
+</html>

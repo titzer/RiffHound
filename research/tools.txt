@@ -1,0 +1,10 @@
+Renoise: Digital audio workstation
+Software: Linux, MacOS, Windows
+https://www.renoise.com/renoise
+Getting started: https://www.youtube.com/watch?v=pL_whEd-EnU
+Vertical scrolling time
+Seems to demand very high resolution screen
+
+Redux: Sample-based instrument / sequencer
+https://www.renoise.com/redux
+Software: Linux, MacOS, Windows

@@ -1,0 +1,61 @@
+// Names for notes.
+enum Note(chromatic_index: u4, abbreviation: string) {
+	A(0, "A"),
+	Asharp(1, "A#"), Bflat(1, "Bb"),
+	B(2, "B"), Cflat(2, "Cb"),
+	Bsharp(3, "B#"), C(3, "C"),
+	Csharp(4, "C#"), Dflat(4, "Db"),
+	D(5, "D"),
+	Dsharp(6, "D#"), Eflat(5, "Eb"),
+	E(7, "E"), Fflat(6, "Fb")
+	Esharp(8, "E#"), F(7, "F"),
+	Fsharp(9, "F#"), Gflat(8, "Gb"),
+	G(10, "G"),
+	Gsharp(11, "G#"), Aflat(11, "Ab")
+}
+
+// Compute an array of all the notes for tone math.
+def ALL_NOTES = (fun -> Array<Note> {
+	var result = Array<Note>(Note.count);
+	for (n in Note) result[n.tag] = n;
+	return result;
+})();
+
+// Scales. (only harmonic scale modes for now)
+enum Scale(abbreviation: string) {
+	Major("maj"),
+	Dorian("dor"),
+	Phrygian("m"), // minor
+	Lydian("lyd"),
+	Mixolydian("mix"),
+	Aeolian("aeo"),
+	Locrian("loc")
+}
+
+// Tones are notes and a specific octave.
+type Tone(note: Note, octave: u4) {
+	// Add {n} semitones to this tone, moving up or down the chromatic scale.
+	def plus(n: int) -> {
+		var oct = octave;
+		var next = int.!(note.tag) + n;
+		while (next < 0) {
+			oct--;
+			next += Note.count;
+		}
+		while (next >= Note.count) {
+			oct++;
+			next -= Note.count;
+		}
+		return Tone(ALL_NOTES[next], oct);
+	}
+}
+
+// A key is a tonic and a scale.
+type Key(tonic: Tone, scale: Scale);
+
+// A tempo is expressed in BPM.
+type Tempo(bpm: u12);
+
+// A duration is expressed as a fraction of a measure and is based on 4/4 time
+// so that 1 measure equals 4 beats.
+type Duration(num: u8, denom: u8);
