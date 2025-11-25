@@ -1,0 +1,118 @@
+RiffHound System Specification
+
+Abstract.
+
+The RiffHound system is a modular collection of hardware and software subsystems for learning to play and perform music, with specific affordances for each type of instrument and style of music.
+The Riffhound system understands player goals, skill level, and knowledge base and works to efficiently and enjoyably expand skillsets.
+Riffhound consists of both software and hardware elements--hereafter, "software" refers to computer code written in one or more programming languages as well as AI elements that enable Riffhound to both understand and learn how to better serve each player.
+Similarly, hereafter "hardware" refers to specifically-designed hardware that a player may interact with to customize Riffhound during real-time interaction, such as switches, knobs, sliders and displays of various kinds.
+Hardware and software co-operate to allow a customizable user experience that places little to no emphasis on a central display (e.g. laptop computer screen) unless that display is large and designed for collaborative view by all players, such as a projector onto a large screen on a wall, a wall-sized TV, or an old-time flip-letter-based display like in old train stations.
+The Riffhound system can expand to fill any size room, can be configured to occupy a full room--like a pipe organ--or have a mini or travel version that consists of a box no larger than a small boombox.
+The Riffhound system can be used to complete an incomplete band in a fully-interactive jam session by emulating (at a virtuoso level) any musician's ability on any instrument, such as adding a virtual John Bonham to two dudes jamming in their basement.
+
+Fun.
+
+The number one requirement of Riffhound is that all activities must have some element fun, including challenging activities such as training ear, timing, rthythm, speed, feel, learning specific pieces or passages of music, and playing with others.
+
+Virtual band.
+
+Riffhound can function as a virtual band that is capable of practicing and performing any typical Rock, Blues, Metal, pop or other genre of music that the player desires.
+That includes functioning as a missing drummer, bassist, etc that can participate, lead, and follow, call/response, etc in a live jam that is both fun and challenging.
+
+Riffhound helps you learn.
+
+Riffhound directs jamming gently toward improvement.
+For example, Riffhound intersperses learning riffs while in a live groove/jam session in a pedagogical way that doesn't sacrifice the groove to stoop to learn.
+Instead, riffs, passages, and even pieces are presented in right-sized chunks at and slightly above the player's ability to allow them to stretch, but comfortably in a way that sounds good and remains always fun.
+
+Riffhound hones your performance.
+
+The player can choose to focus on performance of certain pieces, jams, improvs, etc, and Riffhound can help you perfect the piece when concentration is necessary.
+
+Riffound knows what you want to learn.
+
+The system understands the type of music you like, the type of music you want to be able to play, and the music you have learned and can or could play.
+It helps pick exercises, practices, jams, etc that always point toward achieving the music you want to be able to play.
+
+Riffhound never breaks your flow.
+
+The entire system is designed to allow control at all points but to never prompt, get stuck, crash, or balk at player intent.
+It absolutely does not show advertisements.
+It has only your betterment in mind.
+It also can stop and won't guilt trip you into practicing hard things that are no fun.
+It knows better than you but it's not snooty or mean--think of more like a best friend you can trust.
+
+Specific systems employed.
+
+Monitors.
+
+Riffhound has lots of ways to analyze your play or just entertain you with the music that is being produced.
+It can show audio spectrograms, do rhythm analysis, and understand other aspects of playing such as being able to analyze technique with cameras.
+It also monitors the groove and jam of overall sessions and adjusts RBM behavior.
+
+Replacement Band Members
+
+Riffhound can provide replacement band members (RBM) to complete any multi-player session.
+For example, a guitarist and a drummer can have RBMs of a bassist and rhythm guitarist, or even vocalist.
+An expert RBM can be selected and even given a blend of known personalities based on offline analysis of their musical style and technique.
+Riffhound can provide appropriate visualizations of RBMs, for example with a cylindrical, dome-shaped 3D holographic display of the performer, perhaps in miniature for convenience purposes.
+Visualizations of RBMs can be completely customized.
+
+Hardware ideas:
+
+- Pressure buttons on the floor for foot operation.
+  Should be industrially-strength robust--tough enough to jump and land with your full bodyweight on, repeatedly, for years.
+  Somewhat trip-proof: consider a rubber membrane covering all pressure switches as bumps.
+  Light up with programmable LED colors--very cool looking and easily configurable.
+
+- Programmable LED runway lights around the room.
+  Should be animated, for example, showing a flow of blue streaks that look like water through a hose or a pressure-wave propagation, like electrons flowing.
+  Under normal jam sessions, they find a way to match the groove of the jam and contribute to the vibe.
+  Can also be used to carry cues, such as rhythm patterns or even melodic patterns.
+  Cues could be used as a learning mechanism as well, as they code for riffs, fills, etc, that the player is being taught, thus giving multiple kinds of correlated visual input with learning.
+  Could possibly also respond with color changes in response to chords changing.
+  A standard chord color scheme (for basic guitar open chords like G C D E A) could be applied.
+
+- Mixboard with huge master volume and tempo controls.
+
+- Huge racks of switchings, lights, and gizmos that keep lighting up and doing interesting things for various reasons.
+  Partly a gimmick for a show, to set the mood and make a trippy jam experience.
+  Bonus if some of the racks actually do control parts of the jam, like configuration parameters on the system.
+
+- Consoles.
+  Various types of input/output into the Riffhound system are represented by hardware "consoles" that group related functionality and present a HW UI customized to their purpose.
+  For example, the "Tempo" console is a discrete set of switches, knobs, and displays of various kinds (e.g. 7-segment display of the current BPM), all of which control some aspect of the timing. Everything related to tweaking the tempo is here, like turning on/off a click track or audio metronome, how fast the beat is, how swung the beat is, whether it counts off measures, automatically speeds up (for training), etc.
+  The player is expected to interact with a console frequently during the jam.
+  Thus, every console should be designed to be operated with one hand while holding a guitar.
+  Consoles appear both information-dense and business-like but also flashy and complicated.
+  All consoles can go into a "total darkness" mode where they still operate as normal but emit absolutely zero light--no status displays, etc.
+  Consoles can also go into "magic mode" where their displays mimic druidic magic items.
+  Total darkness mode for all consoles is controlled by a single master switch in the room that is easily findable, even in the dark, near the exit.
+  The design of all consoles, though specialized hardware, can also be modeled in software for a "software only" control of all aspects of the Riffhound system.
+  Hardware consoles have priority over software consoles--if both are active, hardware wins.
+  Thus if a hardware console is de-activated (which can only be done by a hardware switch at the site of the console), then control reverts to Riffhound software.
+  If a hardware console is "activated
+
+Voice interaction.
+  A player can interact with Riffhound completely fluently by voice.
+  For example, one can just say STOP! to immediately halt the jam--at least for all software-controlled consoles.
+  Example voice interactions are to select new pieces to play, speed/up slow down, repeat a last section, etc--all processable with spoken natural language commands with extremely low latency.
+  
+Jam mode.
+  Riffhound has the concept of different "modes".
+  In jam mode, Riffhound can keep a jam up with the player(s) centered around a song, a group, a genre, a playlist, riff ideas, etc.
+  The key hallmarks of a good jam session are a feeling of fun, of groove, of locking tight in the group, trading ideas, learning, not being embarrassed, confidence, expression.
+  In jam mode Riffhound may challenge the player with new riffs or difficult riffs or passages, but always with the aim of leading the player to better skill.
+  Challenges may be so subtle the player doesn't notice.
+
+Practice mode.
+  In practice mode, the player directs focus to learning a specific song, setlist, riff, or test.
+  It's disciplined practice that helps the player specifically focus on developing new skills and knowledge.
+  Riffhound should assist in focus, analyze playing automatically and help correct mistakes, and generally act as the most disciplined, efficient, and empathetic teacher a player could want.
+
+AI Model integration.
+  Riffhound can utilize artificial intelligence modules for all aspects.
+  AI can help determine exercises, backing tracks, backing parts, lessons, riffs, call/response, etc.
+  AI has been trained on thousands or millions of instructional videos and is ready to teach a player any instrument in any notation at any time.
+  It can point to specific source materials and tabs and frictionlessly display them (e.g. show a YouTube video of someone teaching a technique).
+  
