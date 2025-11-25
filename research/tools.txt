@@ -8,3 +8,9 @@ Seems to demand very high resolution screen
 Redux: Sample-based instrument / sequencer
 https://www.renoise.com/redux
 Software: Linux, MacOS, Windows
+
+Roadie Coach app:
+
+
+Vamp and plugins:
+https://vamp-plugins.org/
