@@ -1,0 +1,54 @@
+// Copyright (c) 2025 Ben L. Titzer. All rights reserved.
+
+// Parses the various components of RiffText.
+class RiffParser(input: string) {
+	def r = TextReader.new("<input>", input);
+
+	// M ((<int> | _) duration)*
+	def parseMelody() {
+		r.req1('M');
+	}
+	// ((w|h|q|e|s|t)[.][/<int>])+
+	def parseDuration() -> Duration {
+		var cur = Durations.NONE;
+		while (true) {
+			var t = Duration(0, 1);
+			match (r.char) {
+				'w' => t = Durations.WHOLE;
+				'h' => t = Durations.HALF;
+				'q' => t = Durations.QUARTER;
+				'e' => t = Durations.EIGHTH;
+				's' => t = Durations.SIXTEENTH;
+				't' => t = Durations.THIRTY_SECOND;
+				_ => r.fail("expected duration (w,h,q,e,s, or t)");
+			}
+			r.advance1();
+			if (r.opt1('.') >= 0) {
+				var half = Duration(t.num, t.denom * 2u16); // TODO: handle overflow
+				t = t.plus(half);
+			}
+			if (r.opt1('/') >= 0) {
+				// handle fractions of a note
+				var p = r.pos;
+				var d = parseInt();
+				if (d == 0) r.failRel(p - r.pos, "divide by zero");
+				var n = d * t.denom;
+				if (n > u16.max) r.failRel(p - r.pos, "fractional note too small to represent");
+				else t = Durations.of(t.num, n);
+			}
+			cur = cur.plus(t);
+			if (r.opt1('^') < 0) break; // not a tie
+		}
+		return cur;
+	}
+	def parseInt() -> u32 {
+		var i = r.pos;
+		var t = Ints.parsePosDecimal(r.data, i);
+		if (t.0 > 0) {
+			var token = r.readToken(i + t.0 - r.pos);
+			return u32.!(t.1);
+		}
+		r.failRel(i, "expected positive integer");
+		return 0;
+	}
+}

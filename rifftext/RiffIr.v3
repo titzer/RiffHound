@@ -16,7 +16,7 @@ enum Note(chromatic_index: u4, abbreviation: string) {
 
 // Compute an array of all the notes for tone math.
 def ALL_NOTES = (fun -> Array<Note> {
-	var result = Array<Note>(Note.count);
+	var result = Array<Note>.new(Note.count);
 	for (n in Note) result[n.tag] = n;
 	return result;
 })();
@@ -35,7 +35,7 @@ enum Scale(abbreviation: string) {
 // Tones are notes and a specific octave.
 type Tone(note: Note, octave: u4) {
 	// Add {n} semitones to this tone, moving up or down the chromatic scale.
-	def plus(n: int) -> {
+	def plus(n: int) -> Tone {
 		var oct = octave;
 		var next = int.!(note.tag) + n;
 		while (next < 0) {
@@ -58,4 +58,65 @@ type Tempo(bpm: u12);
 
 // A duration is expressed as a fraction of a measure and is based on 4/4 time
 // so that 1 measure equals 4 beats.
-type Duration(num: u8, denom: u8);
+type Duration(num: u16, denom: u16) {
+	def plus(that: Duration) -> Duration {
+		// Same denominator => easy case.
+		if (this.denom == that.denom) return Durations.of(this.num + that.num, this.denom);
+
+		// Cross-multiply to add different denominators.
+		var a: u32 = this.num;
+		var b: u32 = this.denom;
+		var c: u32 = that.num;
+		var d: u32 = that.denom;
+
+		return Durations.of((a * d + c * b), (b * d));
+	}
+}
+
+class Rhythm {
+}
+
+class Melody {
+}
+
+// Compute greatest common divisor of two u32 values.
+def gcd(a: u32, b: u32) -> u32 {
+	var x = a;
+	var y = b;
+	while (y != 0) {
+		var r = x % y;
+		x = y;
+		y = r;
+	}
+	return x;
+}
+
+// Reduce a fraction.
+def reduce(num: u32, denom: u32) -> (u32, u32) {
+	if (denom == 0) {
+		// Leave invalid fractions unchanged.
+		return (num, denom);
+	}
+	var g = gcd(num, denom);
+	if (g == 0) {
+		// Covers the (0, 0) case.
+		return (num, denom);
+	}
+	return (num / g, denom / g);
+}
+
+component Durations {
+	def NONE = Duration(0, 1);
+	def WHOLE = Duration(1, 1);
+	def HALF = Duration(1, 2);
+	def QUARTER = Duration(1, 4);
+	def EIGHTH = Duration(1, 8);
+	def SIXTEENTH = Duration(1, 16);
+	def THIRTY_SECOND = Duration(1, 32);
+
+
+	def of(num: u32, denom: u32) -> Duration {
+		var t = reduce(num, denom);
+		return Duration(u16.!(t.0), u16.!(t.1));
+	}
+}
