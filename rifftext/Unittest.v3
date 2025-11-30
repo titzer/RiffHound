@@ -14,6 +14,8 @@ def X_ = void(
 	T("fractional_durations", test_fractional_durations),
 	T("tied_durations", test_tied_durations),
 	T("invalid_durations", test_invalid_durations),
+	T("notes0", test_notes0),
+	T("notes1", test_notes1),
 	()
 );
 
@@ -27,6 +29,7 @@ def assert_invalid_tempo = assert_invalid(_, _, RiffParser.parseTempo);
 def assert_invalid_duration = assert_invalid(_, _, RiffParser.parseDuration);
 def assert_invalid_step = assert_invalid(_, _, RiffParser.parseStep);
 def assert_invalid_melody = assert_invalid(_, _, RiffParser.parseMelody);
+def assert_invalid_note = assert_invalid(_, _, RiffParser.parseNote);
 
 def assert_melody(t: Tester, str: string, expected: Array<Step>) {
 	var p = RiffParser.new(str);
@@ -74,6 +77,15 @@ def assert_duration(t: Tester, str: string, expected: (u16, u16)) {
 			.put2("expected (%d / %d)", expected.0, expected.1)
 			.put2(", got (%d / %d)", got.num, got.denom).toString();
 		t.fail(msg);
+	}
+}
+
+def assert_note(t: Tester, str: string, expected: Note) {
+	var p = RiffParser.new(str);
+	var got = p.parseNote();
+	if (!p.r.ok) return t.fail(p.r.error_msg);
+	if (got != expected) {
+		t.fail(Strings.format2("expected %s, got %s", expected.name, got.name));
 	}
 }
 
