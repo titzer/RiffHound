@@ -1,23 +1,32 @@
+enum NoteDir {
+	FLAT, NATURAL, SHARP
+}
+
 // Names for notes.
-enum Note(chromatic_index: u4, abbreviation: string) {
-	A(0, "A"),
-	Asharp(1, "A#"), Bflat(1, "Bb"),
-	B(2, "B"), Cflat(2, "Cb"),
-	Bsharp(3, "B#"), C(3, "C"),
-	Csharp(4, "C#"), Dflat(4, "Db"),
-	D(5, "D"),
-	Dsharp(6, "D#"), Eflat(5, "Eb"),
-	E(7, "E"), Fflat(6, "Fb")
-	Esharp(8, "E#"), F(7, "F"),
-	Fsharp(9, "F#"), Gflat(8, "Gb"),
-	G(10, "G"),
-	Gsharp(11, "G#"), Aflat(11, "Ab")
+enum Note(chromatic_index: u4, abbrev: string, dir: NoteDir) {
+	A(0, "A", NoteDir.NATURAL),
+	Asharp(1, "A#", NoteDir.SHARP), Bflat(1, "Bb", NoteDir.FLAT),
+	B(2, "B", NoteDir.NATURAL), Cflat(2, "Cb", NoteDir.FLAT),
+	Bsharp(3, "B#", NoteDir.SHARP), C(3, "C", NoteDir.NATURAL),
+	Csharp(4, "C#", NoteDir.SHARP), Dflat(4, "Db", NoteDir.FLAT),
+	D(5, "D", NoteDir.NATURAL),
+	Dsharp(6, "D#", NoteDir.SHARP), Eflat(6, "Eb", NoteDir.FLAT),
+	E(7, "E", NoteDir.NATURAL), Fflat(7, "Fb", NoteDir.FLAT)
+	Esharp(8, "E#", NoteDir.SHARP), F(8, "F", NoteDir.NATURAL),
+	Fsharp(9, "F#", NoteDir.SHARP), Gflat(9, "Gb", NoteDir.FLAT),
+	G(10, "G", NoteDir.NATURAL),
+	Gsharp(11, "G#", NoteDir.SHARP), Aflat(11, "Ab", NoteDir.FLAT)
 }
 
 // Compute an array of all the notes for tone math.
-def ALL_NOTES = (fun -> Array<Note> {
-	var result = Array<Note>.new(Note.count);
-	for (n in Note) result[n.tag] = n;
+def ALL_NOTES = (fun -> Array<Array<Note>> {
+	var result = Array<Array<Note>>.new(12);
+	for (n in Note) {
+		var i = n.chromatic_index;
+		var prev = result[i];
+		if (prev == null) result[i] = [n];
+		else result[i] = Arrays.append(n, prev);
+	}
 	return result;
 })();
 
@@ -35,18 +44,23 @@ enum Scale(abbreviation: string) {
 // Tones are notes and a specific octave.
 type Tone(note: Note, octave: u4) {
 	// Add {n} semitones to this tone, moving up or down the chromatic scale.
-	def plus(n: int) -> Tone {
+	def plus(n: int, dir: NoteDir) -> Tone {
 		var oct = octave;
-		var next = int.!(note.tag) + n;
+		var next = int.!(note.chromatic_index) + n;
 		while (next < 0) {
 			oct--;
-			next += Note.count;
+			next += 12;
 		}
 		while (next >= Note.count) {
 			oct++;
-			next -= Note.count;
+			next -= 12;
 		}
-		return Tone(ALL_NOTES[next], oct);
+		var notes = ALL_NOTES[next];
+		for (i < notes.length) {
+			var n = notes[i];
+			if (n.dir == dir) return Tone(n, oct);
+		}
+		return Tone(notes[0], oct);
 	}
 }
 

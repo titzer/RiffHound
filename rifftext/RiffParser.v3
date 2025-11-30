@@ -99,8 +99,8 @@ class RiffParser(input: string) {
 		while (true) {
 			eat1();
 			match (r.char) {
-				'#' => note = Tone(note, 4).plus(1).note;
-				'b' => note = Tone(note, 4).plus(-1).note;
+				'#' => note = Tone(note, 4).plus(1, NoteDir.SHARP).note;
+				'b' => note = Tone(note, 4).plus(-1, NoteDir.FLAT).note;
 				_ => break;
 			}
 		}

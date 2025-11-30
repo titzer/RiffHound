@@ -16,6 +16,7 @@ def X_ = void(
 	T("invalid_durations", test_invalid_durations),
 	T("notes0", test_notes0),
 	T("notes1", test_notes1),
+	T("notes2", test_notes2),
 	()
 );
 
@@ -85,7 +86,7 @@ def assert_note(t: Tester, str: string, expected: Note) {
 	var got = p.parseNote();
 	if (!p.r.ok) return t.fail(p.r.error_msg);
 	if (got != expected) {
-		t.fail(Strings.format2("expected %s, got %s", expected.name, got.name));
+		t.fail(Strings.format2("expected %s, got %s", expected.abbrev, got.abbrev));
 	}
 }
 
@@ -212,6 +213,44 @@ def test_invalid_durations(t: Tester) {
 	N("-");
 	N("q/0");
 	N("q/7788383");
+}
+
+def test_notes0(t: Tester) {
+	def T = assert_note(t, _, _);
+	T("A", Note.A);
+	T("B", Note.B);
+	T("C", Note.C);
+	T("D", Note.D);
+	T("E", Note.E);
+	T("F", Note.F);
+	T("G", Note.G);
+}
+
+def test_notes1(t: Tester) {
+	def T = assert_note(t, _, _);
+	T("A#", Note.Asharp);
+	T("B#", Note.Bsharp);
+	T("C#", Note.Csharp);
+	T("D#", Note.Dsharp);
+	T("E#", Note.Esharp);
+	T("F#", Note.Fsharp);
+	T("G#", Note.Gsharp);
+	T("Ab", Note.Aflat);
+	T("Bb", Note.Bflat);
+	T("Cb", Note.Cflat);
+	T("Db", Note.Dflat);
+	T("Eb", Note.Eflat);
+	T("Fb", Note.Fflat);
+	T("Gb", Note.Gflat);
+}
+
+def test_notes2(t: Tester) {
+	def N = assert_invalid_note(t, _);
+	N("c");
+	N("+");
+	N("T");
+	N("0");
+	N("12");
 }
 
 def main(args: Array<string>) -> int {
