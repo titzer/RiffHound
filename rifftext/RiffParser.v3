@@ -4,11 +4,50 @@
 class RiffParser(input: string) {
 	def r = TextReader.new("<input>", input);
 
-	// M ((<int> | _) duration)*
-	def parseMelody() {
-		r.req1('M');
+	// T <int>
+	def parseTempo() -> Tempo {
+		r.req1('T');
+		var p = r.pos;
+		var bpm = parseInt();
+		if (bpm > u16.max) r.failRel(p - r.pos, Strings.format2("expected max tempo of %d bpm, got %d", u16.max, bpm));
+		if (bpm == 0) r.failRel(p - r.pos, "invalid 0 tempo");
+		return Tempo(u16.view(bpm));
 	}
-	// ((w|h|q|e|s|t)[.][/<int>])+
+	// M ((<int> | _) duration)+
+	def parseMelody() -> Array<Step> {
+		r.req1('M');
+		var steps = parseListOf(parseStep);
+		return steps;
+	}
+	// R (duration)+
+	def parseRhythm() -> Array<Duration> {
+		r.req1('R');
+		var durations = parseListOf(parseDuration);
+		return durations;
+	}
+	// ((+|-)?<int>) | _
+	def parseStep() -> Step {
+		match (r.char) {
+			'0', '1', '2', '3', '4', '5', '6', '7', '8', '9' => {
+				var d = parseInt();
+				return Step.Abs(i32.view(d));
+			}
+			'-' => {
+				eat1();
+				var d = parseInt();
+				return Step.Abs(i32.view(0u - d));
+			}
+			'_' => {
+				eat1();
+				return Step.Rest;
+			}
+			_ => {
+				r.fail("expected number or _");
+				return Step.Rest;
+			}
+		}
+	}
+	// ((w|h|q|e|s|t)[.][/<int>]) (^(w|h|q|e|s|t)[.][/<int>])*
 	def parseDuration() -> Duration {
 		var cur = Durations.NONE;
 		while (true) {
@@ -22,10 +61,12 @@ class RiffParser(input: string) {
 				't' => t = Durations.THIRTY_SECOND;
 				_ => r.fail("expected duration (w,h,q,e,s, or t)");
 			}
-			r.advance1();
+			eat1();
 			if (r.opt1('.') >= 0) {
-				var half = Duration(t.num, t.denom * 2u16); // TODO: handle overflow
-				t = t.plus(half);
+				var p = r.pos;
+				var n = 2u * t.denom;
+				if (n > u16.max) r.failRel(p - r.pos, "fractional note too small to represent");
+				else t = t.plus(Durations.of(t.num, n));
 			}
 			if (r.opt1('/') >= 0) {
 				// handle fractions of a note
@@ -41,6 +82,39 @@ class RiffParser(input: string) {
 		}
 		return cur;
 	}
+	def parseNote() -> Note {
+		var note: Note;
+		match (r.char) {
+			'A' => note = Note.A;
+			'B' => note = Note.B;
+			'C' => note = Note.C;
+			'D' => note = Note.D;
+			'E' => note = Note.E;
+			'F' => note = Note.F;
+			'G' => note = Note.G;
+			_ => {
+				r.fail("expected A, B, C, D, E, F, or G");
+			}
+		}
+		while (true) {
+			eat1();
+			match (r.char) {
+				'#' => note = Tone(note, 4).plus(1).note;
+				'b' => note = Tone(note, 4).plus(-1).note;
+				_ => break;
+			}
+		}
+		return note;
+	}
+	def parseListOf<T>(parse: void -> T) -> Array<T> {
+		var buf = Vector<T>.new();
+		while (true) {
+			var d = parse();
+			buf.put(d);
+			if (r.opt1(',') < 0) break;
+		}
+		return buf.extract();
+	}
 	def parseInt() -> u32 {
 		var i = r.pos;
 		var t = Ints.parsePosDecimal(r.data, i);
@@ -48,7 +122,10 @@ class RiffParser(input: string) {
 			var token = r.readToken(i + t.0 - r.pos);
 			return u32.!(t.1);
 		}
-		r.failRel(i, "expected positive integer");
+		r.failRel(i - r.pos, "expected positive integer");
 		return 0;
+	}
+	def eat1() {
+		r.advance1(); // TODO: don't skip space
 	}
 }

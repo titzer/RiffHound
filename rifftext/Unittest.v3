@@ -3,17 +3,66 @@
 
 def T = UnitTests.register;
 def X_ = void(
-	T("parser:melody", test_parseMelody),
-	T("parse:duration0", test_parseDuration0),
-	T("parse:duration1", test_parseDuration1),
-	T("parse:duration2", test_parseDuration2),
-	T("parse:duration3", test_parseDuration3),
-	T("parse:duration4", test_parseDuration4),
+	T("tempos", test_tempos),
+	T("simple_steps", test_simple_steps),
+	T("invalid_steps", test_invalid_steps),
+	T("simple_melodies1", test_simple_melodies1),
+	T("simple_melodies2", test_simple_melodies2),
+	T("invalid_melodies", test_invalid_melodies),
+	T("simple_durations", test_simple_durations),
+	T("dotted_durations", test_dotted_durations),
+	T("fractional_durations", test_fractional_durations),
+	T("tied_durations", test_tied_durations),
+	T("invalid_durations", test_invalid_durations),
 	()
 );
 
-def test_parseMelody(t: Tester) {
-	
+def assert_invalid<T>(t: Tester, str: string, parse: RiffParser -> T) {
+	var p = RiffParser.new(str);
+	var got = parse(p);
+	if (p.r.ok) return t.fail("expected fail, but passed");
+}
+
+def assert_invalid_tempo = assert_invalid(_, _, RiffParser.parseTempo);
+def assert_invalid_duration = assert_invalid(_, _, RiffParser.parseDuration);
+def assert_invalid_step = assert_invalid(_, _, RiffParser.parseStep);
+def assert_invalid_melody = assert_invalid(_, _, RiffParser.parseMelody);
+
+def assert_melody(t: Tester, str: string, expected: Array<Step>) {
+	var p = RiffParser.new(str);
+	var got = p.parseMelody();
+	if (!p.r.ok) return t.fail(p.r.error_msg);
+	if (got.length != expected.length) {
+		t.fail(Strings.format2("expected %d steps, got %d", expected.length, got.length));
+		return;
+	}
+	for (i < expected.length) {
+		var g = got[i], e = expected[i];
+		if (g != e) {
+			var msg = StringBuilder.new().put3("expected [%d]=%s, got %s", i, g.name, e.name).toString();
+			t.fail(msg);
+		}
+	}
+}
+
+def assert_step(t: Tester, str: string, expected: Step) {
+	var p = RiffParser.new(str);
+	var got = p.parseStep();
+	if (!p.r.ok) return t.fail(p.r.error_msg);
+	if (got != expected) {
+		var msg = StringBuilder.new().put2("expected %s, got %s", expected.name, got.name).toString();
+		t.fail(msg);
+	}
+}
+
+def assert_tempo(t: Tester, str: string, expected: u16) {
+	var p = RiffParser.new(str);
+	var got = p.parseTempo();
+	if (!p.r.ok) return t.fail(p.r.error_msg);
+	if (got.bpm != expected) {
+		var msg = StringBuilder.new().put2("expected tempo=%d, got %d", expected, got.bpm).toString();
+		t.fail(msg);
+	}
 }
 
 def assert_duration(t: Tester, str: string, expected: (u16, u16)) {
@@ -28,13 +77,72 @@ def assert_duration(t: Tester, str: string, expected: (u16, u16)) {
 	}
 }
 
-def assert_bad_duration(t: Tester, str: string) {
-	var p = RiffParser.new(str);
-	var got = p.parseDuration();
-	if (p.r.ok) return t.fail("expected fail, but passed");
+def test_tempos(t: Tester) {
+	def T = assert_tempo(t, _, _);
+	T("T1", 1);
+	T("T120", 120);
+	T("T155", 155);
+	def N = assert_invalid_tempo(t, _);
+	N("Y88");
+	N("T-120");
+	N("T0");
+	N("T65536");
 }
 
-def test_parseDuration0(t: Tester) {
+def test_simple_steps(t: Tester) {
+	def T = assert_step(t, _, _);
+	T("0", Step.Abs(0));
+	T("-1", Step.Abs(-1));
+	T("1", Step.Abs(1));
+	T("2", Step.Abs(2));
+	T("3", Step.Abs(3));
+	T("-1", Step.Abs(-1));
+	T("-13", Step.Abs(-13));
+	T("14", Step.Abs(14));
+	T("22", Step.Abs(22));
+	T("33", Step.Abs(33));
+	T("_", Step.Rest);
+}
+
+def test_invalid_steps(t: Tester) {
+	def N = assert_invalid_step(t, _);
+	N("A");	
+	N("&");	
+	N("-");	
+	N("--");
+	N("^");
+}
+
+def test_simple_melodies1(t: Tester) {
+	def T = assert_melody(t, _, _), A = Step.Abs, R = Step.Rest;
+	T("M0", [A(0)]);
+	T("M-1", [A(-1)]);
+	T("M-12", [A(-12)]);
+	T("M12", [A(12)]);
+	T("M_", [R]);
+}
+
+def test_simple_melodies2(t: Tester) {
+	def T = assert_melody(t, _, _), A = Step.Abs, R = Step.Rest;
+	T("M0,1", [A(0), A(1)]);
+	T("M3,-1", [A(3), A(-1)]);
+	T("M_,-9", [R, A(-9)]);
+	T("M_,_,_", [R, R, R]);
+	T("M0,0,0,_,1", [A(0), A(0), A(0), R, A(1)]);
+}
+
+def test_invalid_melodies(t: Tester) {
+	def N = assert_invalid_melody(t, _);
+	N("T");
+	N("Y");
+	N("+");
+	N("Ma");
+	N("M,");
+	N("M+");
+	N("M7,");
+}
+
+def test_simple_durations(t: Tester) {
 	def T = assert_duration(t, _, _);
 
 	T("w", (1, 1));
@@ -45,7 +153,7 @@ def test_parseDuration0(t: Tester) {
 	T("t", (1, 32));
 }
 
-def test_parseDuration1(t: Tester) {
+def test_dotted_durations(t: Tester) {
 	def T = assert_duration(t, _, _);
 
 	T("w.", (3, 2));
@@ -56,7 +164,7 @@ def test_parseDuration1(t: Tester) {
 	T("t.", (3, 64));
 }
 
-def test_parseDuration2(t: Tester) {
+def test_fractional_durations(t: Tester) {
 	def T = assert_duration(t, _, _);
 
 	T("w/3", (1, 3));
@@ -72,7 +180,7 @@ def test_parseDuration2(t: Tester) {
 	T("w/11", (1, 11));
 }
 
-def test_parseDuration3(t: Tester) {
+def test_tied_durations(t: Tester) {
 	def T = assert_duration(t, _, _);
 
 	T("w^w", (2, 1));
@@ -83,8 +191,8 @@ def test_parseDuration3(t: Tester) {
 	T("q/5^q/7^q/11", (167, 1540));
 }
 
-def test_parseDuration4(t: Tester) {
-	def N = assert_bad_duration(t, _);
+def test_invalid_durations(t: Tester) {
+	def N = assert_invalid_duration(t, _);
 	N(".");
 	N("0");
 	N("+");

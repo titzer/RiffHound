@@ -54,7 +54,7 @@ type Tone(note: Note, octave: u4) {
 type Key(tonic: Tone, scale: Scale);
 
 // A tempo is expressed in BPM.
-type Tempo(bpm: u12);
+type Tempo(bpm: u16);
 
 // A duration is expressed as a fraction of a measure and is based on 4/4 time
 // so that 1 measure equals 4 beats.
@@ -69,8 +69,14 @@ type Duration(num: u16, denom: u16) {
 		var c: u32 = that.num;
 		var d: u32 = that.denom;
 
-		return Durations.of((a * d + c * b), (b * d));
+		return Durations.of(a * d + c * b, b * d);
 	}
+}
+
+// Each part of a melody consists of a step.
+type Step {
+	case Abs(val: i32);	// Tonic + val
+	case Rest;		// Rest step
 }
 
 class Rhythm {
@@ -79,7 +85,7 @@ class Rhythm {
 class Melody {
 }
 
-// Compute greatest common divisor of two u32 values.
+// Utility to compute greatest common divisor of two u32 values.
 def gcd(a: u32, b: u32) -> u32 {
 	var x = a;
 	var y = b;
@@ -91,7 +97,7 @@ def gcd(a: u32, b: u32) -> u32 {
 	return x;
 }
 
-// Reduce a fraction.
+// Utility to reduce a fraction.
 def reduce(num: u32, denom: u32) -> (u32, u32) {
 	if (denom == 0) {
 		// Leave invalid fractions unchanged.
@@ -105,6 +111,7 @@ def reduce(num: u32, denom: u32) -> (u32, u32) {
 	return (num / g, denom / g);
 }
 
+// Global utilities associated with durations.
 component Durations {
 	def NONE = Duration(0, 1);
 	def WHOLE = Duration(1, 1);
