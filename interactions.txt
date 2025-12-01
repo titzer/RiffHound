@@ -1,0 +1,65 @@
+Interactions between RiffHound components
+
+RiffHound components consists of software and hardware that all participate in a jam.
+
+1. Sound Generators (Playback Engines)
+Modules that produce musical audio or MIDI in time with the system.
+
+Examples:
+- Drum Engine
+- Harmony Engine (chords)
+- Melody Engine
+- MIDI Synth / Sequencer Engine
+
+These are the “actuators” of musical sound.
+
+2. Visual Displays (Performer Interfaces)
+Modules that render information for performers or operators.
+
+Examples:
+- Rhythm Display
+- Score Display
+- Tab Display
+- Lead Line Display
+- Chord Display
+- Lyrics Display
+
+Their role is informational, not generative.
+
+3. Sensors / Capture Modules (Audio & Control Inputs)
+Modules that ingest external signals—audio, control, or performance gestures.
+
+Examples:
+- Audio Capture (mics, DI, line-in)
+- MIDI Capture
+- Instrument Sensors (piezo, pickups, contact mics)
+- Multi-track Capture
+- Automatic transcription
+
+These are the system’s “ears.”
+
+4. Creative Generators / Algorithmic Actuators
+
+Modules that produce new musical material or transformations algorithmically.
+
+Examples:
+- Generative Accompaniment Engine
+- Adaptive Performance Engine
+- Pattern Transformer / Filler / Improviser
+- AI Melody or Drum Line Generator
+
+These influence or inject creative musical events into the system.
+
+5. Editors (Control Consoles)
+Modules that allow performers, producers, or mixers to modify the musical state, either globally or per-component.
+Think of these as the user-facing control surfaces for configuring patterns, sounds, displays, or routing.
+
+Examples:
+- Pattern Editor (drums, chords, melodies)
+- Mixer Console (levels, panning, effects)
+- Arrangement Editor (sections, transitions, repeats)
+- Tempo/Timing Console (BPM, swing, quantization)
+- Instrument Configurator (synth parameters, timbre)
+- Lyrics/Score Annotation Editor
+
+Editors don’t produce sound themselves; they shape what the other modules will do.
