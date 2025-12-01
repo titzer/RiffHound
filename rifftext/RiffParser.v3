@@ -36,13 +36,22 @@ class RiffParser(input: string) {
 	def parseStep() -> Step {
 		match (r.char) {
 			'0', '1', '2', '3', '4', '5', '6', '7', '8', '9' => {
-				var d = parseInt(0, 120);
-				return Step.Voice(i32.view(d));
+				var d = parseInt(i8.min, i8.max);
+				return Step.Voice(i16.view(d));
 			}
-			'-' => {
+			'[' => {
 				eat1();
-				var d = parseInt(1, 120);
-				return Step.Voice(i32.view(0u - d));
+				if (r.char == ']') {
+					eat1();
+					return Step.Rest;
+				}
+				var voices = parseListOf(fun => i16.view(parseInt(i8.min, i8.max)));
+				r.req1(']');
+				match (voices.length) {
+					0 => return Step.Rest;
+					1 => return Step.Voice(voices[0]);
+					_ => return Step.Chord(voices);
+				}
 			}
 			'_' => {
 				eat1();
@@ -82,7 +91,7 @@ class RiffParser(input: string) {
 				if (d == 0) r.failRel(p - r.pos, "divide by zero");
 				var n = d * t.denom;
 				if (n > u16.max) r.failRel(p - r.pos, "fractional note too small to represent");
-				else t = Durations.of(t.num, n);
+				else t = Durations.of(t.num, u16.view(n));
 			}
 			cur = cur.plus(t);
 			if (r.opt1('^') < 0) break; // not a tie
@@ -125,12 +134,12 @@ class RiffParser(input: string) {
 		}
 		return buf.extract();
 	}
-	def parseInt(min: u32, max: u32) -> u32 {
+	def parseInt(min: int, max: int) -> int {
 		var i = r.pos;
-		var t = Ints.parsePosDecimal(r.data, i);
+		var t = Ints.parseDecimal(r.data, i);
 		if (t.0 > 0) {
 			r.advance(t.0);
-			var val = u32.!(t.1);
+			var val = t.1;
 			if (val < min) {
 				r.failRel(i - r.pos, Strings.format2("expected integer >= %d, got %d", min, val));
 				return min;
@@ -140,7 +149,7 @@ class RiffParser(input: string) {
 			}
 			return val;
 		}
-		r.failRel(i - r.pos, "expected positive integer");
+		r.failRel(i - r.pos, "expected integer");
 		return 0;
 	}
 	def isNoteStart(ch: byte) -> bool {

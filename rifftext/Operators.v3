@@ -3,18 +3,19 @@
 
 component Operators {
 	// Transpose the steps {delta} semitones.
-	def transposeSteps(s: Array<Step>, delta: int) -> Array<Step> {
+	def transposeSteps(s: Array<Step>, delta: i16) -> Array<Step> {
 		return Arrays.map(s, transposeStep(_, delta));
 	}
 	// Transpose a step by {delta} semitones.
-	def transposeStep(s: Step, delta: int) -> Step {
+	def transposeStep(s: Step, delta: i16) -> Step {
 		match (s) {
-			Voice(x) => return Step.Voice(x + delta);
+			Voice(x) => return Step.Voice(i16.view(x + delta));
+			Chord(x) => return Step.Chord(Arrays.map(x, i16.+(delta, _)));
 			Rest => return Step.Rest;
 		}
 	}
 	// Transpose a melody by {delta} semitones by simply adjusting the tonic.
-	def transposeMelody(m: Melody, delta: int) -> Melody {
+	def transposeMelody(m: Melody, delta: i16) -> Melody {
 		return Melody(m.tonic.plus(delta, NoteDir.NATURAL), m.steps, m.rhythm);
 	}
 	// Convert a melody to pure rhythm by replacing all voices with 0.
@@ -22,6 +23,7 @@ component Operators {
 		var steps = Arrays.map(m.steps, fun (s: Step) -> Step {
 			match (s) {
 				Voice(x) => return Step.Voice(0);
+				Chord(x) => return Step.Voice(0);
 				Rest => return Step.Rest;
 			}
 		});

@@ -1,24 +1,25 @@
 // Copyright 2025 Ben L. Titzer. All rights reserved.
 // See LICENSE for details of Apache 2.0 license.
 
-def T = UnitTests.register;
+def reg = UnitTests.register;
 def X_ = void(
-	T("tempos", test_tempos),
-	T("simple_steps", test_simple_steps),
-	T("invalid_steps", test_invalid_steps),
-	T("simple_melodies1", test_simple_melodies1),
-	T("simple_melodies2", test_simple_melodies2),
-	T("invalid_melodies", test_invalid_melodies),
-	T("simple_durations", test_simple_durations),
-	T("dotted_durations", test_dotted_durations),
-	T("fractional_durations", test_fractional_durations),
-	T("tied_durations", test_tied_durations),
-	T("invalid_durations", test_invalid_durations),
-	T("notes0", test_notes0),
-	T("notes1", test_notes1),
-	T("notes2", test_notes2),
-	T("tones0", test_tones0),
-	T("keys", test_keys),
+	reg("tempos", test_tempos),
+	reg("simple_steps", test_simple_steps),
+	reg("invalid_steps", test_invalid_steps),
+	reg("simple_melodies1", test_simple_melodies1),
+	reg("simple_melodies2", test_simple_melodies2),
+	reg("invalid_melodies", test_invalid_melodies),
+	reg("simple_durations", test_simple_durations),
+	reg("dotted_durations", test_dotted_durations),
+	reg("fractional_durations", test_fractional_durations),
+	reg("tied_durations", test_tied_durations),
+	reg("invalid_durations", test_invalid_durations),
+	reg("notes0", test_notes0),
+	reg("notes1", test_notes1),
+	reg("notes2", test_notes2),
+	reg("tones0", test_tones0),
+	reg("keys", test_keys),
+	reg("chords0", test_chords0),
 	()
 );
 
@@ -32,11 +33,12 @@ def assert_invalid<T>(t: Tester, str: string, parse: RiffParser -> T) {
 	if (p.r.ok) return t.fail("expected fail, but passed");
 }
 
-def assert_valid<T>(t: Tester, str: string, parse: RiffParser -> T, expected: T) {
+def assert_valid<T>(t: Tester, str: string, parse: RiffParser -> T, expected: T, cmp: (T, T) -> bool) {
+	if (cmp == null) cmp = T.==;
 	var p = RiffParser.new(str);
 	var got = parse(p);
 	if (!p.r.ok) return t.fail(p.r.error_msg);
-	if (got != expected) {
+	if (!cmp(got, expected)) {
 		var buf = StringBuilder.new();
 		buf.puts("expected ");
 		render(buf, expected);
@@ -65,19 +67,23 @@ def assert_melody(t: Tester, str: string, expected: Array<Step>) {
 	}
 	for (i < expected.length) {
 		var g = got[i], e = expected[i];
-		if (g != e) {
-			var msg = StringBuilder.new().put3("expected [%d]=%s, got %s", i, g.name, e.name).toString();
-			t.fail(msg);
+		if (!g.equals(e)) {
+			var buf = StringBuilder.new();
+			buf.put1("expected [%d]=", i);
+			render(buf, e);
+			buf.puts(", got ");
+			render(buf, g);
+			t.fail(buf.toString());
 		}
 	}
 }
 
-def assert_step = assert_valid(_, _, RiffParser.parseStep, _);
-def assert_tempo = assert_valid(_, _, RiffParser.parseTempo, _);
-def assert_duration = assert_valid(_, _, RiffParser.parseDuration, _);
-def assert_note = assert_valid(_, _, parseNote, _);
-def assert_tone = assert_valid(_, _, RiffParser.parseTone, _);
-def assert_key = assert_valid(_, _, RiffParser.parseKey, _);
+def assert_step = assert_valid(_, _, RiffParser.parseStep, _, null);
+def assert_tempo = assert_valid(_, _, RiffParser.parseTempo, _, null);
+def assert_duration = assert_valid(_, _, RiffParser.parseDuration, _, null);
+def assert_note = assert_valid(_, _, parseNote, _, null);
+def assert_tone = assert_valid(_, _, RiffParser.parseTone, _, null);
+def assert_key = assert_valid(_, _, RiffParser.parseKey, _, null);
 
 def render<T>(buf: StringBuilder, val: T) {
 	match (val) {
@@ -92,6 +98,13 @@ def render<T>(buf: StringBuilder, val: T) {
 		x: Key => {
 			buf.puts(x.tonic.abbrev);
 			buf.puts(x.scale.abbrev);
+		}
+		x: Step => match (x) {
+			Rest => buf.puts("_");
+			Voice(y) => buf.putd(y);
+			Chord(y) => {
+				// TODO
+			}
 		}
 	}
 }
@@ -298,6 +311,14 @@ def test_keys(t: Tester) {
 	T("KCaeo", Key(Note.C, Scale.Aeolian));
 	T("KCloc", Key(Note.C, Scale.Locrian));
 	T("KCm", Key(Note.C, Scale.Phrygian));
+}
+
+def test_chords0(t: Tester) {
+	def T = assert_melody(t, _, _), C = Step.Chord;
+	T("M[]", [Step.Rest]);
+	T("M[0]", [Step.Voice(0)]);
+	T("M[0,1,2]", [C([0, 1, 2])]);
+	T("M[-2,-3],[4,5]", [C([-2, -3]), C([4, 5])]);
 }
 
 def main(args: Array<string>) -> int {

@@ -1,12 +1,13 @@
 // Copyright 2025 Ben L. Titzer. All rights reserved.
 // See LICENSE for details of Apache 2.0 license.
 
+// For notes that are altered up or down, the note direction encodes spelling.
 enum NoteDir(abbrev: string) {
 	FLAT("b"), NATURAL(""), SHARP("#")
 }
 
-// Names for notes.
-enum Note(chromatic_index: u4, abbrev: string, dir: NoteDir) {
+// Notes have names and have a chromatic index (0-11).
+enum Note(pitch_class: u4, abbrev: string, dir: NoteDir) {
 	A(0, "A", NoteDir.NATURAL),
 	Asharp(1, "A#", NoteDir.SHARP), Bflat(1, "Bb", NoteDir.FLAT),
 	B(2, "B", NoteDir.NATURAL), Cflat(2, "Cb", NoteDir.FLAT),
@@ -25,7 +26,7 @@ enum Note(chromatic_index: u4, abbrev: string, dir: NoteDir) {
 def ALL_NOTES = (fun -> Array<Array<Note>> {
 	var result = Array<Array<Note>>.new(12);
 	for (n in Note) {
-		var i = n.chromatic_index;
+		var i = n.pitch_class;
 		var prev = result[i];
 		if (prev == null) result[i] = [n];
 		else result[i] = Arrays.append(n, prev);
@@ -44,12 +45,12 @@ enum Scale(abbrev: string, degree: int) {
 	Phrygian("m", 2), // minor
 }
 
-// Tones are notes and a specific octave.
+// A Tone is a Note at a specific octave.
 type Tone(note: Note, octave: u4) {
 	// Add {n} semitones to this tone, moving up or down the chromatic scale.
 	def plus(n: int, dir: NoteDir) -> Tone {
 		var oct = octave;
-		var next = int.!(note.chromatic_index) + n;
+		var next = int.!(note.pitch_class) + n;
 		while (next < 0) {
 			oct--;
 			next += 12;
@@ -67,13 +68,13 @@ type Tone(note: Note, octave: u4) {
 	}
 }
 
-// A key is a tonic and a scale.
+// A Key is a tonic note and a scale.
 type Key(tonic: Note, scale: Scale);
 
-// A tempo is expressed in BPM.
+// A Tempo is expressed in beats per minute (bpm).
 type Tempo(bpm: u16);
 
-// A duration is expressed as a fraction of a measure and is based on 4/4 time
+// A Duration is expressed as a fraction of a measure and is based on 4/4 time
 // so that 1 measure equals 4 beats.
 type Duration(num: u16, denom: u16) {
 	def plus(that: Duration) -> Duration {
@@ -90,14 +91,31 @@ type Duration(num: u16, denom: u16) {
 	}
 }
 
-// A step is either voiced or a rest.
+// A step is either voiced with one or more voices or a rest.
 type Step {
-	case Voice(val: i32);	// Tonic + val
-	case Rest;		// Rest step
+	case Rest;			// Rest step
+	case Voice(val: i16);		// Tonic + val
+	case Chord(vals: Array<i16>);	// Tonic + vals
+
+	def equals(that: Step) -> bool {
+		if (this == that) return true;
+		match (this) {
+			Chord(x) => match (that) {
+				Chord(y) => return Arrays.equal(x, y);
+				_ => return false;
+			}
+			_ => return false;
+		}
+	}
 }
 
-// A melody consists of a tonic and steps
-type Melody(tonic: Tone, steps: Array<Step>, rhythm: Array<Duration>);
+// A melody consists of a tonic, steps, and a rhythm.
+type Melody(tonic: Tone, steps: Array<Step>, rhythm: Array<Duration>) {
+	def equals(that: Melody) -> bool {
+		if (this == that) return true;
+		return Arrays.equal(this.steps, that.steps) && Arrays.equal(this.rhythm, that.rhythm);
+	}
+}
 
 // Utility to compute greatest common divisor of two u32 values.
 def gcd(a: u32, b: u32) -> u32 {
