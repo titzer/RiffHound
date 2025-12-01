@@ -54,7 +54,7 @@ type Tone(note: Note, octave: u4) {
 			oct--;
 			next += 12;
 		}
-		while (next >= Note.count) {
+		while (next >= 12) {
 			oct++;
 			next -= 12;
 		}
