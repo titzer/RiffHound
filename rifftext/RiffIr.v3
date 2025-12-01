@@ -1,3 +1,6 @@
+// Copyright 2025 Ben L. Titzer. All rights reserved.
+// See LICENSE for details of Apache 2.0 license.
+
 enum NoteDir(abbrev: string) {
 	FLAT("b"), NATURAL(""), SHARP("#")
 }
@@ -87,17 +90,14 @@ type Duration(num: u16, denom: u16) {
 	}
 }
 
-// Each part of a melody consists of a step.
+// A step is either voiced or a rest.
 type Step {
-	case Abs(val: i32);	// Tonic + val
+	case Voice(val: i32);	// Tonic + val
 	case Rest;		// Rest step
 }
 
-class Rhythm {
-}
-
-class Melody {
-}
+// A melody consists of a tonic and steps
+type Melody(tonic: Tone, steps: Array<Step>, rhythm: Array<Duration>);
 
 // Utility to compute greatest common divisor of two u32 values.
 def gcd(a: u32, b: u32) -> u32 {

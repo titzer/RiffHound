@@ -1,0 +1,30 @@
+// Copyright 2025 Ben L. Titzer. All rights reserved.
+// See LICENSE for details of Apache 2.0 license.
+
+component Operators {
+	// Transpose the steps {delta} semitones.
+	def transposeSteps(s: Array<Step>, delta: int) -> Array<Step> {
+		return Arrays.map(s, transposeStep(_, delta));
+	}
+	// Transpose a step by {delta} semitones.
+	def transposeStep(s: Step, delta: int) -> Step {
+		match (s) {
+			Voice(x) => return Step.Voice(x + delta);
+			Rest => return Step.Rest;
+		}
+	}
+	// Transpose a melody by {delta} semitones by simply adjusting the tonic.
+	def transposeMelody(m: Melody, delta: int) -> Melody {
+		return Melody(m.tonic.plus(delta, NoteDir.NATURAL), m.steps, m.rhythm);
+	}
+	// Convert a melody to pure rhythm by replacing all voices with 0.
+	def setMelodyVoicesToZero(m: Melody) -> Melody {
+		var steps = Arrays.map(m.steps, fun (s: Step) -> Step {
+			match (s) {
+				Voice(x) => return Step.Voice(0);
+				Rest => return Step.Rest;
+			}
+		});
+		return Melody(m.tonic, steps, m.rhythm);
+	}
+}

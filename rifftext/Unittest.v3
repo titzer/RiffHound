@@ -1,4 +1,4 @@
-// Copyright 2020 Ben L. Titzer. All rights reserved.
+// Copyright 2025 Ben L. Titzer. All rights reserved.
 // See LICENSE for details of Apache 2.0 license.
 
 def T = UnitTests.register;
@@ -109,17 +109,17 @@ def test_tempos(t: Tester) {
 }
 
 def test_simple_steps(t: Tester) {
-	def T = assert_step(t, _, _);
-	T("0", Step.Abs(0));
-	T("-1", Step.Abs(-1));
-	T("1", Step.Abs(1));
-	T("2", Step.Abs(2));
-	T("3", Step.Abs(3));
-	T("-1", Step.Abs(-1));
-	T("-13", Step.Abs(-13));
-	T("14", Step.Abs(14));
-	T("22", Step.Abs(22));
-	T("33", Step.Abs(33));
+	def T = assert_step(t, _, _), A = Step.Voice;
+	T("0", A(0));
+	T("-1", A(-1));
+	T("1", A(1));
+	T("2", A(2));
+	T("3", A(3));
+	T("-1", A(-1));
+	T("-13", A(-13));
+	T("14", A(14));
+	T("22", A(22));
+	T("33", A(33));
 	T("_", Step.Rest);
 }
 
@@ -133,7 +133,7 @@ def test_invalid_steps(t: Tester) {
 }
 
 def test_simple_melodies1(t: Tester) {
-	def T = assert_melody(t, _, _), A = Step.Abs, R = Step.Rest;
+	def T = assert_melody(t, _, _), A = Step.Voice, R = Step.Rest;
 	T("M0", [A(0)]);
 	T("M-1", [A(-1)]);
 	T("M-12", [A(-12)]);
@@ -142,7 +142,7 @@ def test_simple_melodies1(t: Tester) {
 }
 
 def test_simple_melodies2(t: Tester) {
-	def T = assert_melody(t, _, _), A = Step.Abs, R = Step.Rest;
+	def T = assert_melody(t, _, _), A = Step.Voice, R = Step.Rest;
 	T("M0,1", [A(0), A(1)]);
 	T("M3,-1", [A(3), A(-1)]);
 	T("M_,-9", [R, A(-9)]);
