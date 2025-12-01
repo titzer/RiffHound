@@ -24,7 +24,7 @@ def X_ = void(
 );
 
 def parseNote(p: RiffParser) -> Note {
-	return p.parseTone().note;
+	return p.parsePitch().note;
 }
 
 def assert_invalid<T>(t: Tester, str: string, parse: RiffParser -> T) {
@@ -54,7 +54,7 @@ def assert_invalid_duration = assert_invalid(_, _, RiffParser.parseDuration);
 def assert_invalid_step = assert_invalid(_, _, RiffParser.parseStep);
 def assert_invalid_melody = assert_invalid(_, _, RiffParser.parseMelody);
 def assert_invalid_note = assert_invalid(_, _, parseNote);
-def assert_invalid_tone = assert_invalid(_, _, RiffParser.parseTone);
+def assert_invalid_tone = assert_invalid(_, _, RiffParser.parsePitch);
 def assert_invalid_key = assert_invalid(_, _, RiffParser.parseKey);
 
 def assert_melody(t: Tester, str: string, expected: Array<Step>) {
@@ -82,14 +82,14 @@ def assert_step = assert_valid(_, _, RiffParser.parseStep, _, null);
 def assert_tempo = assert_valid(_, _, RiffParser.parseTempo, _, null);
 def assert_duration = assert_valid(_, _, RiffParser.parseDuration, _, null);
 def assert_note = assert_valid(_, _, parseNote, _, null);
-def assert_tone = assert_valid(_, _, RiffParser.parseTone, _, null);
+def assert_tone = assert_valid(_, _, RiffParser.parsePitch, _, null);
 def assert_key = assert_valid(_, _, RiffParser.parseKey, _, null);
 
 def render<T>(buf: StringBuilder, val: T) {
 	match (val) {
 		x: Note => buf.puts(x.abbrev);
 		x: Scale => buf.puts(x.abbrev);
-		x: Tone => {
+		x: Pitch => {
 			buf.putc(x.note.abbrev[0]);
 			buf.putd(x.octave);
 			buf.puts(x.note.dir.abbrev);
@@ -274,14 +274,14 @@ def test_notes2(t: Tester) {
 
 def test_tones0(t: Tester) {
 	def T = assert_tone(t, _, _);
-	T("A", Tone(Note.A, 4));
-	T("A1", Tone(Note.A, 1));
-	T("A2", Tone(Note.A, 2));
-	T("A3", Tone(Note.A, 3));
-	T("A4", Tone(Note.A, 4));
-	T("C5#", Tone(Note.Csharp, 5));
-	T("G6b", Tone(Note.Gflat, 6));
-	T("F2", Tone(Note.F, 2));
+	T("A", Pitch(Note.A, 4));
+	T("A1", Pitch(Note.A, 1));
+	T("A2", Pitch(Note.A, 2));
+	T("A3", Pitch(Note.A, 3));
+	T("A4", Pitch(Note.A, 4));
+	T("C5#", Pitch(Note.Csharp, 5));
+	T("G6b", Pitch(Note.Gflat, 6));
+	T("F2", Pitch(Note.F, 2));
 	
 	def N = assert_invalid_tone(t, _);
 	N("A0");

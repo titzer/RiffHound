@@ -45,10 +45,10 @@ enum Scale(abbrev: string, degree: int) {
 	Phrygian("m", 2), // minor
 }
 
-// A Tone is a Note at a specific octave.
-type Tone(note: Note, octave: u4) {
+// A Pitch is a Note at a specific octave.
+type Pitch(note: Note, octave: u4) {
 	// Add {n} semitones to this tone, moving up or down the chromatic scale.
-	def plus(n: int, dir: NoteDir) -> Tone {
+	def plus(n: int, dir: NoteDir) -> Pitch {
 		var oct = octave;
 		var next = int.!(note.pitch_class) + n;
 		while (next < 0) {
@@ -62,9 +62,9 @@ type Tone(note: Note, octave: u4) {
 		var notes = ALL_NOTES[next];
 		for (i < notes.length) {
 			var n = notes[i];
-			if (n.dir == dir) return Tone(n, oct);
+			if (n.dir == dir) return Pitch(n, oct);
 		}
-		return Tone(notes[0], oct);
+		return Pitch(notes[0], oct);
 	}
 }
 
@@ -110,7 +110,7 @@ type Step {
 }
 
 // A melody consists of a tonic, steps, and a rhythm.
-type Melody(tonic: Tone, steps: Array<Step>, rhythm: Array<Duration>) {
+type Melody(tonic: Pitch, steps: Array<Step>, rhythm: Array<Duration>) {
 	def equals(that: Melody) -> bool {
 		if (this == that) return true;
 		return Arrays.equal(this.steps, that.steps) && Arrays.equal(this.rhythm, that.rhythm);

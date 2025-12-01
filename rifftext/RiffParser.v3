@@ -6,7 +6,7 @@ class RiffParser(input: string) {
 
 	def parseKey() -> Key {
 		r.req1('K');
-		var tone = parseTone();
+		var tone = parsePitch();
 		var scale = Scale.Major;
 		for (s in Scale) {
 			if (r.optN(s.abbrev) >= 0) { scale = s; break; }
@@ -98,7 +98,7 @@ class RiffParser(input: string) {
 		}
 		return cur;
 	}
-	def parseTone() -> Tone {
+	def parsePitch() -> Pitch {
 		var note: Note;
 		match (r.char) {
 			'A' => note = Note.A;
@@ -115,7 +115,7 @@ class RiffParser(input: string) {
 		eat1();
 		var octave = 4u4;
 		if (Chars.isDecimal(r.char)) octave = u4.!(parseInt(1, 9));
-		var tone = Tone(note, octave);
+		var tone = Pitch(note, octave);
 		while (true) {
 			match (r.char) {
 				'#' => { tone = tone.plus(1, NoteDir.SHARP); eat1(); }
