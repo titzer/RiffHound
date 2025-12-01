@@ -117,25 +117,13 @@ type Melody(tonic: Pitch, steps: Array<Step>, rhythm: Array<Duration>) {
 	}
 }
 
-// Utility to compute greatest common divisor of two u32 values.
-def gcd(a: u32, b: u32) -> u32 {
-	var x = a;
-	var y = b;
-	while (y != 0) {
-		var r = x % y;
-		x = y;
-		y = r;
-	}
-	return x;
-}
-
 // Utility to reduce a fraction.
 def reduce(num: u32, denom: u32) -> (u32, u32) {
 	if (denom == 0) {
 		// Leave invalid fractions unchanged.
 		return (num, denom);
 	}
-	var g = gcd(num, denom);
+	var g = Ints.gcd(num, denom);
 	if (g == 0) {
 		// Covers the (0, 0) case.
 		return (num, denom);

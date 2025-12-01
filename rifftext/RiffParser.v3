@@ -35,7 +35,7 @@ class RiffParser(input: string) {
 	// ((+|-)?<int>) | _
 	def parseStep() -> Step {
 		match (r.char) {
-			'0', '1', '2', '3', '4', '5', '6', '7', '8', '9' => {
+			'-', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9' => {
 				var d = parseInt(i8.min, i8.max);
 				return Step.Voice(i16.view(d));
 			}
