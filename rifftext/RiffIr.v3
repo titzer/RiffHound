@@ -1,5 +1,5 @@
-enum NoteDir {
-	FLAT, NATURAL, SHARP
+enum NoteDir(abbrev: string) {
+	FLAT("b"), NATURAL(""), SHARP("#")
 }
 
 // Names for notes.
@@ -31,14 +31,14 @@ def ALL_NOTES = (fun -> Array<Array<Note>> {
 })();
 
 // Scales. (only harmonic scale modes for now)
-enum Scale(abbreviation: string) {
-	Major("maj"),
-	Dorian("dor"),
-	Phrygian("m"), // minor
-	Lydian("lyd"),
-	Mixolydian("mix"),
-	Aeolian("aeo"),
-	Locrian("loc")
+enum Scale(abbrev: string, degree: int) {
+	Major("maj", 0),
+	Dorian("dor", 1),
+	Lydian("lyd", 3),
+	Mixolydian("mix", 4),
+	Aeolian("aeo", 5),
+	Locrian("loc", 6)
+	Phrygian("m", 2), // minor
 }
 
 // Tones are notes and a specific octave.
@@ -65,7 +65,7 @@ type Tone(note: Note, octave: u4) {
 }
 
 // A key is a tonic and a scale.
-type Key(tonic: Tone, scale: Scale);
+type Key(tonic: Note, scale: Scale);
 
 // A tempo is expressed in BPM.
 type Tempo(bpm: u16);

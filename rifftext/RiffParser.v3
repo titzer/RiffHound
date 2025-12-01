@@ -4,14 +4,21 @@
 class RiffParser(input: string) {
 	def r = TextReader.new("<input>", input);
 
+	def parseKey() -> Key {
+		r.req1('K');
+		var tone = parseTone();
+		var scale = Scale.Major;
+		for (s in Scale) {
+			if (r.optN(s.abbrev) >= 0) { scale = s; break; }
+		}
+		return Key(tone.note, scale);
+	}
 	// T <int>
 	def parseTempo() -> Tempo {
 		r.req1('T');
 		var p = r.pos;
-		var bpm = parseInt();
-		if (bpm > u16.max) r.failRel(p - r.pos, Strings.format2("expected max tempo of %d bpm, got %d", u16.max, bpm));
-		if (bpm == 0) r.failRel(p - r.pos, "invalid 0 tempo");
-		return Tempo(u16.view(bpm));
+		var bpm = u16.!(parseInt(1, u16.max));
+		return Tempo(bpm);
 	}
 	// M ((<int> | _) duration)+
 	def parseMelody() -> Array<Step> {
@@ -29,12 +36,12 @@ class RiffParser(input: string) {
 	def parseStep() -> Step {
 		match (r.char) {
 			'0', '1', '2', '3', '4', '5', '6', '7', '8', '9' => {
-				var d = parseInt();
+				var d = parseInt(0, 120);
 				return Step.Abs(i32.view(d));
 			}
 			'-' => {
 				eat1();
-				var d = parseInt();
+				var d = parseInt(1, 120);
 				return Step.Abs(i32.view(0u - d));
 			}
 			'_' => {
@@ -71,7 +78,7 @@ class RiffParser(input: string) {
 			if (r.opt1('/') >= 0) {
 				// handle fractions of a note
 				var p = r.pos;
-				var d = parseInt();
+				var d = parseInt(1, u16.max);
 				if (d == 0) r.failRel(p - r.pos, "divide by zero");
 				var n = d * t.denom;
 				if (n > u16.max) r.failRel(p - r.pos, "fractional note too small to represent");
@@ -82,7 +89,7 @@ class RiffParser(input: string) {
 		}
 		return cur;
 	}
-	def parseNote() -> Note {
+	def parseTone() -> Tone {
 		var note: Note;
 		match (r.char) {
 			'A' => note = Note.A;
@@ -96,15 +103,18 @@ class RiffParser(input: string) {
 				r.fail("expected A, B, C, D, E, F, or G");
 			}
 		}
+		eat1();
+		var octave = 4u4;
+		if (Chars.isDecimal(r.char)) octave = u4.!(parseInt(1, 9));
+		var tone = Tone(note, octave);
 		while (true) {
-			eat1();
 			match (r.char) {
-				'#' => note = Tone(note, 4).plus(1, NoteDir.SHARP).note;
-				'b' => note = Tone(note, 4).plus(-1, NoteDir.FLAT).note;
+				'#' => { tone = tone.plus(1, NoteDir.SHARP); eat1(); }
+				'b' => { tone = tone.plus(-1, NoteDir.FLAT); eat1(); }
 				_ => break;
 			}
 		}
-		return note;
+		return tone;
 	}
 	def parseListOf<T>(parse: void -> T) -> Array<T> {
 		var buf = Vector<T>.new();
@@ -115,15 +125,26 @@ class RiffParser(input: string) {
 		}
 		return buf.extract();
 	}
-	def parseInt() -> u32 {
+	def parseInt(min: u32, max: u32) -> u32 {
 		var i = r.pos;
 		var t = Ints.parsePosDecimal(r.data, i);
 		if (t.0 > 0) {
-			var token = r.readToken(i + t.0 - r.pos);
-			return u32.!(t.1);
+			r.advance(t.0);
+			var val = u32.!(t.1);
+			if (val < min) {
+				r.failRel(i - r.pos, Strings.format2("expected integer >= %d, got %d", min, val));
+				return min;
+			} else if (val > max) {
+				r.failRel(i - r.pos, Strings.format2("expected integer <= %d, got %d", max, val));
+				return max;
+			}
+			return val;
 		}
 		r.failRel(i - r.pos, "expected positive integer");
 		return 0;
+	}
+	def isNoteStart(ch: byte) -> bool {
+		return ch >= 'A' && ch <= 'G';
 	}
 	def eat1() {
 		r.advance1(); // TODO: don't skip space

@@ -17,8 +17,14 @@ def X_ = void(
 	T("notes0", test_notes0),
 	T("notes1", test_notes1),
 	T("notes2", test_notes2),
+	T("tones0", test_tones0),
+	T("keys", test_keys),
 	()
 );
+
+def parseNote(p: RiffParser) -> Note {
+	return p.parseTone().note;
+}
 
 def assert_invalid<T>(t: Tester, str: string, parse: RiffParser -> T) {
 	var p = RiffParser.new(str);
@@ -26,11 +32,28 @@ def assert_invalid<T>(t: Tester, str: string, parse: RiffParser -> T) {
 	if (p.r.ok) return t.fail("expected fail, but passed");
 }
 
+def assert_valid<T>(t: Tester, str: string, parse: RiffParser -> T, expected: T) {
+	var p = RiffParser.new(str);
+	var got = parse(p);
+	if (!p.r.ok) return t.fail(p.r.error_msg);
+	if (got != expected) {
+		var buf = StringBuilder.new();
+		buf.puts("expected ");
+		render(buf, expected);
+		buf.puts(", got ");
+		render(buf, got);
+		t.fail(buf.toString());
+	}
+}
+
+
 def assert_invalid_tempo = assert_invalid(_, _, RiffParser.parseTempo);
 def assert_invalid_duration = assert_invalid(_, _, RiffParser.parseDuration);
 def assert_invalid_step = assert_invalid(_, _, RiffParser.parseStep);
 def assert_invalid_melody = assert_invalid(_, _, RiffParser.parseMelody);
-def assert_invalid_note = assert_invalid(_, _, RiffParser.parseNote);
+def assert_invalid_note = assert_invalid(_, _, parseNote);
+def assert_invalid_tone = assert_invalid(_, _, RiffParser.parseTone);
+def assert_invalid_key = assert_invalid(_, _, RiffParser.parseKey);
 
 def assert_melody(t: Tester, str: string, expected: Array<Step>) {
 	var p = RiffParser.new(str);
@@ -49,52 +72,35 @@ def assert_melody(t: Tester, str: string, expected: Array<Step>) {
 	}
 }
 
-def assert_step(t: Tester, str: string, expected: Step) {
-	var p = RiffParser.new(str);
-	var got = p.parseStep();
-	if (!p.r.ok) return t.fail(p.r.error_msg);
-	if (got != expected) {
-		var msg = StringBuilder.new().put2("expected %s, got %s", expected.name, got.name).toString();
-		t.fail(msg);
-	}
-}
+def assert_step = assert_valid(_, _, RiffParser.parseStep, _);
+def assert_tempo = assert_valid(_, _, RiffParser.parseTempo, _);
+def assert_duration = assert_valid(_, _, RiffParser.parseDuration, _);
+def assert_note = assert_valid(_, _, parseNote, _);
+def assert_tone = assert_valid(_, _, RiffParser.parseTone, _);
+def assert_key = assert_valid(_, _, RiffParser.parseKey, _);
 
-def assert_tempo(t: Tester, str: string, expected: u16) {
-	var p = RiffParser.new(str);
-	var got = p.parseTempo();
-	if (!p.r.ok) return t.fail(p.r.error_msg);
-	if (got.bpm != expected) {
-		var msg = StringBuilder.new().put2("expected tempo=%d, got %d", expected, got.bpm).toString();
-		t.fail(msg);
-	}
-}
-
-def assert_duration(t: Tester, str: string, expected: (u16, u16)) {
-	var p = RiffParser.new(str);
-	var got = p.parseDuration();
-	if (!p.r.ok) return t.fail(p.r.error_msg);
-	if (got.num != expected.0 || got.denom != expected.1) {
-		var msg = StringBuilder.new()
-			.put2("expected (%d / %d)", expected.0, expected.1)
-			.put2(", got (%d / %d)", got.num, got.denom).toString();
-		t.fail(msg);
-	}
-}
-
-def assert_note(t: Tester, str: string, expected: Note) {
-	var p = RiffParser.new(str);
-	var got = p.parseNote();
-	if (!p.r.ok) return t.fail(p.r.error_msg);
-	if (got != expected) {
-		t.fail(Strings.format2("expected %s, got %s", expected.abbrev, got.abbrev));
+def render<T>(buf: StringBuilder, val: T) {
+	match (val) {
+		x: Note => buf.puts(x.abbrev);
+		x: Scale => buf.puts(x.abbrev);
+		x: Tone => {
+			buf.putc(x.note.abbrev[0]);
+			buf.putd(x.octave);
+			buf.puts(x.note.dir.abbrev);
+		}
+		x: Tempo => buf.putd(x.bpm);
+		x: Key => {
+			buf.puts(x.tonic.abbrev);
+			buf.puts(x.scale.abbrev);
+		}
 	}
 }
 
 def test_tempos(t: Tester) {
 	def T = assert_tempo(t, _, _);
-	T("T1", 1);
-	T("T120", 120);
-	T("T155", 155);
+	T("T1", Tempo(1));
+	T("T120", Tempo(120));
+	T("T155", Tempo(155));
 	def N = assert_invalid_tempo(t, _);
 	N("Y88");
 	N("T-120");
@@ -158,50 +164,50 @@ def test_invalid_melodies(t: Tester) {
 def test_simple_durations(t: Tester) {
 	def T = assert_duration(t, _, _);
 
-	T("w", (1, 1));
-	T("h", (1, 2));
-	T("q", (1, 4));
-	T("e", (1, 8));
-	T("s", (1, 16));
-	T("t", (1, 32));
+	T("w", Duration(1, 1));
+	T("h", Duration(1, 2));
+	T("q", Duration(1, 4));
+	T("e", Duration(1, 8));
+	T("s", Duration(1, 16));
+	T("t", Duration(1, 32));
 }
 
 def test_dotted_durations(t: Tester) {
 	def T = assert_duration(t, _, _);
 
-	T("w.", (3, 2));
-	T("h.", (3, 4));
-	T("q.", (3, 8));
-	T("e.", (3, 16));
-	T("s.", (3, 32));
-	T("t.", (3, 64));
+	T("w.", Duration(3, 2));
+	T("h.", Duration(3, 4));
+	T("q.", Duration(3, 8));
+	T("e.", Duration(3, 16));
+	T("s.", Duration(3, 32));
+	T("t.", Duration(3, 64));
 }
 
 def test_fractional_durations(t: Tester) {
 	def T = assert_duration(t, _, _);
 
-	T("w/3", (1, 3));
-	T("h/3", (1, 6));
-	T("q/3", (1, 12));
-	T("e/3", (1, 24));
-	T("s/3", (1, 48));
-	T("t/3", (1, 96));
+	T("w/3", Duration(1, 3));
+	T("h/3", Duration(1, 6));
+	T("q/3", Duration(1, 12));
+	T("e/3", Duration(1, 24));
+	T("s/3", Duration(1, 48));
+	T("t/3", Duration(1, 96));
 
-	T("w/5", (1, 5));
-	T("w/7", (1, 7));
-	T("w/9", (1, 9));
-	T("w/11", (1, 11));
+	T("w/5", Duration(1, 5));
+	T("w/7", Duration(1, 7));
+	T("w/9", Duration(1, 9));
+	T("w/11", Duration(1, 11));
 }
 
 def test_tied_durations(t: Tester) {
 	def T = assert_duration(t, _, _);
 
-	T("w^w", (2, 1));
-	T("w^w^w", (3, 1));
-	T("w^q", (5, 4));
-	T("q/3^q/3", (1, 6));
-	T("q/3^q/3^q/3", (1, 4));
-	T("q/5^q/7^q/11", (167, 1540));
+	T("w^w", Duration(2, 1));
+	T("w^w^w", Duration(3, 1));
+	T("w^q", Duration(5, 4));
+	T("q/3^q/3", Duration(1, 6));
+	T("q/3^q/3^q/3", Duration(1, 4));
+	T("q/5^q/7^q/11", Duration(167, 1540));
 }
 
 def test_invalid_durations(t: Tester) {
@@ -251,6 +257,47 @@ def test_notes2(t: Tester) {
 	N("T");
 	N("0");
 	N("12");
+}
+
+def test_tones0(t: Tester) {
+	def T = assert_tone(t, _, _);
+	T("A", Tone(Note.A, 4));
+	T("A1", Tone(Note.A, 1));
+	T("A2", Tone(Note.A, 2));
+	T("A3", Tone(Note.A, 3));
+	T("A4", Tone(Note.A, 4));
+	T("C5#", Tone(Note.Csharp, 5));
+	T("G6b", Tone(Note.Gflat, 6));
+	T("F2", Tone(Note.F, 2));
+	
+	def N = assert_invalid_tone(t, _);
+	N("A0");
+	N("H2");
+	N("C10");
+}
+
+def test_keys(t: Tester) {
+	def T = assert_key(t, _, _);
+	T("KA", Key(Note.A, Scale.Major));
+	T("KB", Key(Note.B, Scale.Major));
+	T("KC", Key(Note.C, Scale.Major));
+	T("KD", Key(Note.D, Scale.Major));
+	T("KE", Key(Note.E, Scale.Major));
+	T("KF#", Key(Note.Fsharp, Scale.Major));
+	T("KG#", Key(Note.Gsharp, Scale.Major));
+	T("KCb", Key(Note.Cflat, Scale.Major));
+	T("KDb", Key(Note.Dflat, Scale.Major));
+	T("KEb", Key(Note.Eflat, Scale.Major));
+
+	T("KAmaj", Key(Note.A, Scale.Major));
+	T("KAm", Key(Note.A, Scale.Phrygian));
+	T("KCmaj", Key(Note.C, Scale.Major));
+	T("KCdor", Key(Note.C, Scale.Dorian));
+	T("KClyd", Key(Note.C, Scale.Lydian));
+	T("KCmix", Key(Note.C, Scale.Mixolydian));
+	T("KCaeo", Key(Note.C, Scale.Aeolian));
+	T("KCloc", Key(Note.C, Scale.Locrian));
+	T("KCm", Key(Note.C, Scale.Phrygian));
 }
 
 def main(args: Array<string>) -> int {
