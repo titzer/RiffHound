@@ -1,0 +1,399 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Animated Metronome</title>
+<style>
+  body {
+    margin: 0;
+    font-family: sans-serif;
+    background: #111;
+    color: #eee;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    min-height: 100vh;
+  }
+
+  header {
+    margin: 10px 0;
+    text-align: center;
+  }
+
+  #controls {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    justify-content: center;
+    margin-bottom: 10px;
+    font-size: 14px;
+  }
+
+  button, select, input[type="number"] {
+    padding: 4px 8px;
+    font-size: 14px;
+  }
+
+  #tapIndicator {
+    padding: 2px 6px;
+    border-radius: 4px;
+    border: 1px solid #666;
+    font-size: 12px;
+  }
+
+  #tapIndicator.tap-on {
+    border-color: #0f0;
+    color: #0f0;
+  }
+
+  #canvasContainer {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 100%;
+  }
+
+  canvas {
+    background: #222;
+    border: 1px solid #555;
+    max-width: 90vw;
+  }
+
+  #hint {
+    font-size: 12px;
+    color: #aaa;
+    margin: 10px;
+    text-align: center;
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>Animated Metronome</h1>
+</header>
+
+<div id="controls">
+  <button id="playBtn" onclick="actionPlay()">Play</button>
+  <button id="stopBtn" onclick="actionStop()" disabled>Stop</button>
+
+  <label>
+    Tempo:
+    <input id="tempoInput" type="number" min="30" max="300" value="120" onchange="actionSetTempo(this.value)">
+    <span id="tempoValue">120</span> BPM
+  </label>
+
+  <label>
+    Mode:
+    <select id="modeSelect" onchange="actionSetMode(parseInt(this.value,10))">
+      <option value="1">Mode 1: Vertical bounce</option>
+      <option value="2">Mode 2: Side-to-side</option>
+      <option value="4">Mode 4: Down-left-down-right</option>
+    </select>
+  </label>
+
+  <button onclick="actionToggleTapMode()">
+    Tap Tempo (T)
+  </button>
+  <span id="tapIndicator">Tap mode: off</span>
+</div>
+
+<div id="hint">
+  Space: Play/Stop (or Tap when in tap mode) &nbsp;|&nbsp;
+  T: Toggle tap-to-tempo mode &nbsp;|&nbsp;
+  + / - : Tempo &plusmn; 5 BPM
+</div>
+
+<div id="canvasContainer">
+  <canvas id="metronomeCanvas" width="600" height="300"></canvas>
+</div>
+
+<script>
+  // --- Global State ---
+  let audioCtx = null;
+  let isPlaying = false;
+  let bpm = 120;
+  const MIN_BPM = 30;
+  const MAX_BPM = 300;
+  let beatIntervalMs = 60000 / bpm;
+
+  let lastBeatTime = null;  // in performance.now() time
+  let beatCount = 0;
+
+  let tapMode = false;
+  let tapTimes = [];
+
+  let animationMode = 1;
+
+  const canvas = document.getElementById('metronomeCanvas');
+  const ctx = canvas.getContext('2d');
+
+  const playBtn = document.getElementById('playBtn');
+  const stopBtn = document.getElementById('stopBtn');
+  const tempoInput = document.getElementById('tempoInput');
+  const tempoValue = document.getElementById('tempoValue');
+  const tapIndicator = document.getElementById('tapIndicator');
+
+  // --- UI Action Functions ---
+
+  function actionPlay() {
+    if (isPlaying) return;
+    isPlaying = true;
+    if (!audioCtx) {
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    }
+    audioCtx.resume && audioCtx.resume();
+    lastBeatTime = performance.now();
+    beatCount = 0;
+    updatePlayStopUI();
+  }
+
+  function actionStop() {
+    if (!isPlaying) return;
+    isPlaying = false;
+    updatePlayStopUI();
+  }
+
+  function actionSetTempo(value) {
+    let newTempo = parseFloat(value);
+    if (isNaN(newTempo)) return;
+    newTempo = Math.max(MIN_BPM, Math.min(MAX_BPM, newTempo));
+    bpm = Math.round(newTempo);
+    beatIntervalMs = 60000 / bpm;
+    tempoInput.value = bpm;
+    tempoValue.textContent = bpm;
+
+    // Reset beat phase so change is immediate and consistent
+    if (isPlaying) {
+      lastBeatTime = performance.now();
+      beatCount = 0;
+    }
+  }
+
+  function actionAdjustTempo(delta) {
+    actionSetTempo(bpm + delta);
+  }
+
+  function actionSetMode(mode) {
+    if (mode === 1 || mode === 2 || mode === 4) {
+      animationMode = mode;
+    }
+  }
+
+  function actionToggleTapMode() {
+    tapMode = !tapMode;
+    tapTimes = [];
+    updateTapUI();
+  }
+
+  function actionTap() {
+    const now = performance.now();
+    tapTimes.push(now);
+    // Use last 6 taps to compute tempo
+    if (tapTimes.length > 6) {
+      tapTimes.shift();
+    }
+    if (tapTimes.length >= 2) {
+      let intervals = [];
+      for (let i = 1; i < tapTimes.length; i++) {
+        intervals.push(tapTimes[i] - tapTimes[i - 1]);
+      }
+      const avgIntervalMs = intervals.reduce((a, b) => a + b, 0) / intervals.length;
+      const tappedBpm = 60000 / avgIntervalMs;
+      actionSetTempo(tappedBpm);
+    }
+  }
+
+  // --- UI Helpers ---
+
+  function updatePlayStopUI() {
+    playBtn.disabled = isPlaying;
+    stopBtn.disabled = !isPlaying;
+  }
+
+  function updateTapUI() {
+    if (tapMode) {
+      tapIndicator.textContent = 'Tap mode: ON (Space = tap)';
+      tapIndicator.classList.add('tap-on');
+    } else {
+      tapIndicator.textContent = 'Tap mode: off';
+      tapIndicator.classList.remove('tap-on');
+    }
+  }
+
+  // --- Metronome Tick ---
+
+  function tick(now) {
+    if (!isPlaying) return;
+
+    if (lastBeatTime === null) {
+      lastBeatTime = now;
+    }
+
+    // Handle one or multiple pending beats (in case of lag)
+    while (now - lastBeatTime >= beatIntervalMs) {
+      lastBeatTime += beatIntervalMs;
+      beatCount++;
+      playClick();
+    }
+  }
+
+  function playClick() {
+    if (!audioCtx) return;
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+    osc.frequency.value = 1000;
+    gain.gain.value = 0.25;
+
+    osc.connect(gain);
+    gain.connect(audioCtx.destination);
+
+    const t = audioCtx.currentTime;
+    osc.start(t);
+    osc.stop(t + 0.03);
+  }
+
+  // --- Animation ---
+
+  function drawFrame(now) {
+    requestAnimationFrame(drawFrame);
+
+    // Update tick timing first
+    tick(now);
+
+    // Compute phase within current beat [0,1)
+    let phase = 0;
+    if (isPlaying && lastBeatTime !== null) {
+      phase = (now - lastBeatTime) / beatIntervalMs;
+      if (phase < 0) phase = 0;
+      if (phase > 1) phase = 1;
+    }
+
+    drawScene(phase);
+  }
+
+  function drawScene(phase) {
+    const w = canvas.width;
+    const h = canvas.height;
+    ctx.clearRect(0, 0, w, h);
+
+    // Background grid line
+    ctx.strokeStyle = '#444';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(0, h * 0.75);
+    ctx.lineTo(w, h * 0.75);
+    ctx.stroke();
+
+    const cx = w / 2;
+    const baseY = h * 0.75;
+    const bounceHeight = h * 0.35;
+    const sideOffset = w * 0.25;
+
+    let x = cx;
+    let y = baseY;
+
+    if (animationMode === 1) {
+      // Mode 1: simple vertical bounce each beat
+      const s = Math.sin(Math.PI * phase);
+      y = baseY - s * bounceHeight;
+    } else if (animationMode === 2) {
+      // Mode 2: one-two bounce side-to-side on angled surfaces
+      // Alternate direction every beat
+      const dir = (beatCount % 2 === 0) ? 1 : -1;
+      const cosTerm = Math.cos(Math.PI * phase);
+      const sinTerm = Math.sin(Math.PI * phase);
+      x = cx + dir * cosTerm * sideOffset;
+      y = baseY - sinTerm * bounceHeight * 0.7;
+
+      // Draw angled "surfaces"
+      ctx.strokeStyle = '#666';
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.moveTo(cx - sideOffset, baseY);
+      ctx.lineTo(cx - sideOffset * 0.5, baseY - bounceHeight * 0.7);
+      ctx.moveTo(cx + sideOffset, baseY);
+      ctx.lineTo(cx + sideOffset * 0.5, baseY - bounceHeight * 0.7);
+      ctx.stroke();
+    } else if (animationMode === 4) {
+      // Mode 4: down, left, down, right sequence across 4 beats
+      const step = beatCount % 4;
+
+      if (step === 0) {
+        // Down-up at center
+        const s = Math.sin(Math.PI * phase);
+        x = cx;
+        y = baseY - s * bounceHeight;
+      } else if (step === 1) {
+        // Sweep left
+        const s = Math.sin(Math.PI * phase);
+        x = cx - s * sideOffset;
+        y = baseY - (1 - s) * bounceHeight * 0.4;
+      } else if (step === 2) {
+        // Down-up at left
+        const s = Math.sin(Math.PI * phase);
+        x = cx - sideOffset;
+        y = baseY - s * bounceHeight * 0.9;
+      } else {
+        // Sweep right back
+        const s = Math.sin(Math.PI * phase);
+        x = cx - sideOffset + s * sideOffset * 2;
+        y = baseY - (1 - s) * bounceHeight * 0.4;
+      }
+    }
+
+    // Draw ball
+    const radius = 18;
+    ctx.beginPath();
+    ctx.arc(x, y, radius, 0, Math.PI * 2, false);
+    ctx.fillStyle = isPlaying ? '#0f9' : '#999';
+    ctx.fill();
+    ctx.strokeStyle = '#000';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+  }
+
+  // --- Keyboard Controls ---
+
+  window.addEventListener('keydown', function (e) {
+    const tag = (e.target && e.target.tagName) ? e.target.tagName.toLowerCase() : '';
+    // Avoid stealing keys when typing in input fields
+    if (tag === 'input' || tag === 'select' || tag === 'textarea') return;
+
+    if (e.key === ' ' || e.code === 'Space') {
+      e.preventDefault();
+      if (tapMode) {
+        actionTap();
+      } else {
+        if (isPlaying) {
+          actionStop();
+        } else {
+          actionPlay();
+        }
+      }
+    } else if (e.key === 't' || e.key === 'T') {
+      e.preventDefault();
+      actionToggleTapMode();
+    } else if (e.key === '+' || e.key === '=') {
+      // On many keyboards, '+' is shift+'=' so handle '=' too
+      e.preventDefault();
+      actionAdjustTempo(+5);
+    } else if (e.key === '-') {
+      e.preventDefault();
+      actionAdjustTempo(-5);
+    }
+  });
+
+  // --- Init ---
+  function initMetronome() {
+    actionSetTempo(bpm);
+    actionSetMode(1);
+    updatePlayStopUI();
+    updateTapUI();
+    requestAnimationFrame(drawFrame);
+  }
+
+  initMetronome();
+</script>
+</body>
+</html>
