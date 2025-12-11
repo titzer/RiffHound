@@ -1,0 +1,354 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>RiffText Song Demo</title>
+  <style>
+    body {
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      margin: 0;
+      padding: 0;
+      background: #f5f5f5;
+    }
+    header {
+      background: #222;
+      color: #eee;
+      padding: 0.75rem 1rem;
+    }
+    header h1 {
+      margin: 0;
+      font-size: 1.1rem;
+    }
+    main {
+      display: flex;
+      gap: 1rem;
+      padding: 1rem;
+      box-sizing: border-box;
+      height: calc(100vh - 56px);
+    }
+    .column {
+      background: white;
+      border-radius: 4px;
+      padding: 0.75rem;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+      box-sizing: border-box;
+    }
+    #search-column {
+      width: 30%;
+      min-width: 220px;
+      display: flex;
+      flex-direction: column;
+    }
+    #edit-column {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+    }
+    label {
+      display: block;
+      margin-bottom: 0.25rem;
+      font-size: 0.9rem;
+      font-weight: 600;
+    }
+    input[type="text"] {
+      width: 100%;
+      box-sizing: border-box;
+      padding: 0.35rem 0.5rem;
+      border-radius: 3px;
+      border: 1px solid #ccc;
+      margin-bottom: 0.5rem;
+      font-size: 0.9rem;
+    }
+    textarea {
+      width: 100%;
+      box-sizing: border-box;
+      padding: 0.5rem;
+      border-radius: 3px;
+      border: 1px solid #ccc;
+      font-family: monospace;
+      font-size: 0.9rem;
+      resize: vertical;
+      min-height: 200px;
+    }
+    button {
+      padding: 0.35rem 0.75rem;
+      border-radius: 3px;
+      border: none;
+      background: #1976d2;
+      color: white;
+      font-size: 0.9rem;
+      cursor: pointer;
+      margin-right: 0.25rem;
+    }
+    button:disabled {
+      background: #aaa;
+      cursor: default;
+    }
+    #results {
+      list-style: none;
+      padding-left: 0;
+      margin: 0.5rem 0 0;
+      flex: 1;
+      overflow-y: auto;
+      border-top: 1px solid #ddd;
+    }
+    #results li {
+      padding: 0.4rem 0.25rem;
+      border-bottom: 1px solid #eee;
+      cursor: pointer;
+      font-size: 0.9rem;
+    }
+    #results li:hover {
+      background: #f0f7ff;
+    }
+    #results li.selected {
+      background: #e1f0ff;
+      font-weight: 600;
+    }
+    .field-row {
+      display: flex;
+      gap: 0.5rem;
+      margin-bottom: 0.5rem;
+    }
+    .field-row .field {
+      flex: 1;
+    }
+    .field-row #song-id {
+      flex: 0 0 150px;
+    }
+    #status {
+      margin-top: 0.5rem;
+      font-size: 0.8rem;
+      color: #555;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>RiffText Song Demo (GET /songs, GET /song/{id}, PUT /song/{id})</h1>
+  </header>
+  <main>
+    <!-- Search / list -->
+    <section id="search-column" class="column">
+      <label for="query-input">Search songs</label>
+      <input id="query-input" type="text" placeholder="e.g. blues, Ballad, Demo Artist">
+      <button id="search-button">Search</button>
+
+      <ul id="results"></ul>
+    </section>
+
+    <!-- Edit -->
+    <section id="edit-column" class="column">
+      <div class="field-row">
+        <div class="field">
+          <label for="song-id">Song ID</label>
+          <!-- now editable -->
+          <input id="song-id" type="text" placeholder="e.g. 4">
+        </div>
+        <div class="field">
+          <label for="title-input">Title</label>
+          <input id="title-input" type="text">
+        </div>
+      </div>
+      <div class="field-row">
+        <div class="field">
+          <label for="artist-input">Artist</label>
+          <input id="artist-input" type="text">
+        </div>
+        <div class="field">
+          <label for="tags-input">Tags (comma-separated)</label>
+          <input id="tags-input" type="text" placeholder="blues, A">
+        </div>
+      </div>
+      <label for="rifftext-input">RiffText</label>
+      <textarea id="rifftext-input" spellcheck="false"></textarea>
+
+      <div style="margin-top:0.5rem;">
+        <button id="new-button" type="button">New song</button>
+        <button id="save-button" type="button">Save (PUT /song/{id})</button>
+      </div>
+      <div id="status"></div>
+    </section>
+  </main>
+
+  <script>
+    const API_BASE = "http://localhost:8000";
+
+    const queryInput   = document.getElementById("query-input");
+    const searchButton = document.getElementById("search-button");
+    const resultsList  = document.getElementById("results");
+
+    const songIdInput   = document.getElementById("song-id");
+    const titleInput    = document.getElementById("title-input");
+    const artistInput   = document.getElementById("artist-input");
+    const tagsInput     = document.getElementById("tags-input");
+    const rifftextInput = document.getElementById("rifftext-input");
+    const saveButton    = document.getElementById("save-button");
+    const newButton     = document.getElementById("new-button");
+    const statusDiv     = document.getElementById("status");
+
+    let currentSongId = null;
+    let lastSearchResults = [];
+
+    function setStatus(msg, isError = false) {
+      statusDiv.textContent = msg || "";
+      statusDiv.style.color = isError ? "#c00" : "#555";
+    }
+
+    async function searchSongs() {
+      setStatus("Searching...");
+      resultsList.innerHTML = "";
+      const q = queryInput.value.trim();
+      const url = q ? `${API_BASE}/songs?q=${encodeURIComponent(q)}` : `${API_BASE}/songs`;
+
+      try {
+        const resp = await fetch(url);
+        if (!resp.ok) {
+          throw new Error(`HTTP ${resp.status}`);
+        }
+        const songs = await resp.json();
+        lastSearchResults = Array.isArray(songs) ? songs : [];
+        if (!Array.isArray(songs) || songs.length === 0) {
+          setStatus("No songs found.");
+        } else {
+          setStatus(`Found ${songs.length} song(s).`);
+        }
+        renderResults(songs);
+      } catch (err) {
+        console.error(err);
+        setStatus("Search failed: " + err.message, true);
+      }
+    }
+
+    function renderResults(songs) {
+      resultsList.innerHTML = "";
+      songs.forEach(song => {
+        const li = document.createElement("li");
+        li.textContent = `${song.title} — ${song.artist || "Unknown"} [${song.id}]`;
+        li.dataset.songId = song.id;
+        li.addEventListener("click", () => {
+          loadSong(song.id);
+        });
+        if (song.id === currentSongId) {
+          li.classList.add("selected");
+        }
+        resultsList.appendChild(li);
+      });
+    }
+
+    async function loadSong(id) {
+      setStatus(`Loading song ${id}...`);
+      try {
+        const resp = await fetch(`${API_BASE}/song/${encodeURIComponent(id)}`);
+        if (!resp.ok) {
+          throw new Error(`HTTP ${resp.status}`);
+        }
+        const song = await resp.json();
+        currentSongId = song.id;
+        populateEditor(song);
+        highlightSelected(id);
+        setStatus(`Loaded song ${id}.`);
+      } catch (err) {
+        console.error(err);
+        setStatus("Load failed: " + err.message, true);
+      }
+    }
+
+    function populateEditor(song) {
+      songIdInput.value   = song.id || "";
+      titleInput.value    = song.title || "";
+      artistInput.value   = song.artist || "";
+      tagsInput.value     = (song.tags || []).join(", ");
+      rifftextInput.value = song.rifftext || "";
+    }
+
+    function highlightSelected(id) {
+      Array.from(resultsList.children).forEach(li => {
+        li.classList.toggle("selected", li.dataset.songId === id);
+      });
+    }
+
+    function clearEditor() {
+      songIdInput.value   = "";
+      titleInput.value    = "";
+      artistInput.value   = "";
+      tagsInput.value     = "";
+      rifftextInput.value = "";
+      currentSongId = null;
+      highlightSelected(null);
+    }
+
+    function computeNextId() {
+      // Find max numeric ID among last search results; fallback to "1".
+      let maxNum = 0;
+      for (const s of lastSearchResults) {
+        const n = parseInt(s.id, 10);
+        if (!Number.isNaN(n) && n > maxNum) {
+          maxNum = n;
+        }
+      }
+      return String(maxNum + 1 || 1);
+    }
+
+    function newSong() {
+      clearEditor();
+      const nextId = computeNextId();
+      songIdInput.value = nextId;
+      setStatus(`New song with suggested id ${nextId}. Edit fields and click Save.`);
+    }
+
+    async function saveSong() {
+      const id = songIdInput.value.trim();
+      if (!id) {
+        setStatus("Please enter a song ID before saving.", true);
+        return;
+      }
+
+      const title  = titleInput.value.trim();
+      const artist = artistInput.value.trim() || null;
+      const tags   = tagsInput.value
+        .split(",")
+        .map(s => s.trim())
+        .filter(s => s.length > 0);
+      const rifftext = rifftextInput.value;
+
+      const payload = { title, artist, tags, rifftext };
+
+      setStatus(`Saving song ${id}...`);
+      try {
+        const resp = await fetch(`${API_BASE}/song/${encodeURIComponent(id)}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload)
+        });
+        if (!resp.ok) {
+          const text = await resp.text();
+          throw new Error(`HTTP ${resp.status}: ${text}`);
+        }
+        const updated = await resp.json();
+        populateEditor(updated);
+        currentSongId = updated.id;
+        // Re-run search to update list text
+        await searchSongs();
+        setStatus(`Saved song ${updated.id}.`);
+      } catch (err) {
+        console.error(err);
+        setStatus("Save failed: " + err.message, true);
+      }
+    }
+
+    // Wire up UI
+    searchButton.addEventListener("click", searchSongs);
+    queryInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        searchSongs();
+      }
+    });
+    saveButton.addEventListener("click", saveSong);
+    newButton.addEventListener("click", newSong);
+
+    // Initial load
+    searchSongs();
+  </script>
+</body>
+</html>

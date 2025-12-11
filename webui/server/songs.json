@@ -1,0 +1,52 @@
+{
+  "1": {
+    "id": "1",
+    "title": "Blues in A",
+    "artist": "Demo Artist",
+    "tags": [
+      "blues",
+      "A"
+    ],
+    "rifftext": "KEY A\nTEMPO 100\n[verse]\nA7 D7 A7 E7 D7 A7\n"
+  },
+  "2": {
+    "id": "2",
+    "title": "Funky Jam in Eb",
+    "artist": "Frank Ozcorp",
+    "tags": [
+      "funk",
+      "Ed"
+    ],
+    "rifftext": "KEY E\nTEMPO 110\n[groove]\nE7 E7 E7 E7\n"
+  },
+  "3": {
+    "id": "3",
+    "title": "Ballad in CC",
+    "artist": "Someone Else",
+    "tags": [
+      "ballad",
+      "C"
+    ],
+    "rifftext": "KEY C\nTEMPO 70\n[verse]\nC F G C\n"
+  },
+  "stairway": {
+    "id": "stairway",
+    "title": "Stairway to Heaven",
+    "artist": "Led Zeppelin",
+    "tags": [
+      "ballad",
+      "C"
+    ],
+    "rifftext": "KEY C\nTEMPO 70\n[verse]\nC F G C\n"
+  },
+  "rover": {
+    "id": "rover",
+    "title": "The Rover",
+    "artist": "Led Zeppelin",
+    "tags": [
+      "zep",
+      "blues"
+    ],
+    "rifftext": "K:E\nT:110\nM:0,1"
+  }
+}
