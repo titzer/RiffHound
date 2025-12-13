@@ -89,6 +89,9 @@ type Duration(num: u16, denom: u16) {
 
 		return Durations.of(a * d + c * b, b * d);
 	}
+	def divide(factor: u16) -> Duration {
+		return Duration(num, denom * factor);
+	}
 }
 
 // A step is either voiced with one or more voices or a rest.
@@ -110,10 +113,10 @@ type Step {
 }
 
 // A melody consists of a tonic, steps, and a rhythm.
-type Melody(tonic: Pitch, steps: Array<Step>, rhythm: Array<Duration>) {
+type Melody(tonic: Pitch, steps: Array<(Step, Duration)>) {
 	def equals(that: Melody) -> bool {
 		if (this == that) return true;
-		return Arrays.equal(this.steps, that.steps) && Arrays.equal(this.rhythm, that.rhythm);
+		return Arrays.equal(this.steps, that.steps);
 	}
 }
 

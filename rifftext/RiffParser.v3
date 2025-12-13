@@ -20,10 +20,10 @@ class RiffParser(input: string) {
 		var bpm = u16.!(parseInt(1, u16.max));
 		return Tempo(bpm);
 	}
-	// M ((<int> | _) duration)+
-	def parseSteps() -> Array<Step> {
+	// M (step[duration])+
+	def parseSteps() -> Array<(Step, Duration)> {
 		r.req1('M');
-		var steps = parseListOf(parseStep);
+		var steps = parseListOf(fun => parseWithDuration(parseStep, Durations.QUARTER));
 		return steps;
 	}
 	// R (duration)+

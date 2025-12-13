@@ -16,17 +16,17 @@ component Operators {
 	}
 	// Transpose a melody by {delta} semitones by simply adjusting the tonic.
 	def transposeMelody(m: Melody, delta: i16) -> Melody {
-		return Melody(m.tonic.plus(delta, NoteDir.NATURAL), m.steps, m.rhythm);
+		return Melody(m.tonic.plus(delta, NoteDir.NATURAL), m.steps);
 	}
 	// Convert a melody to pure rhythm by replacing all voices with 0.
 	def setMelodyVoicesToZero(m: Melody) -> Melody {
-		var steps = Arrays.map(m.steps, fun (s: Step) -> Step {
-			match (s) {
-				Voice(x) => return Step.Voice(0);
-				Chord(x) => return Step.Voice(0);
-				Rest => return Step.Rest;
+		var steps = Arrays.map(m.steps, fun (step: Step, d: Duration) -> (Step, Duration) {
+			match (step) {
+				Voice(x) => return (Step.Voice(0), d);
+				Chord(x) => return (Step.Voice(0), d);
+				Rest => return (Step.Rest, d);
 			}
 		});
-		return Melody(m.tonic, steps, m.rhythm);
+		return Melody(m.tonic, steps);
 	}
 }
