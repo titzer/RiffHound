@@ -21,7 +21,7 @@ class RiffParser(input: string) {
 		return Tempo(bpm);
 	}
 	// M ((<int> | _) duration)+
-	def parseMelody() -> Array<Step> {
+	def parseSteps() -> Array<Step> {
 		r.req1('M');
 		var steps = parseListOf(parseStep);
 		return steps;

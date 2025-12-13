@@ -52,14 +52,14 @@ def assert_valid<T>(t: Tester, str: string, parse: RiffParser -> T, expected: T,
 def assert_invalid_tempo = assert_invalid(_, _, RiffParser.parseTempo);
 def assert_invalid_duration = assert_invalid(_, _, RiffParser.parseDuration);
 def assert_invalid_step = assert_invalid(_, _, RiffParser.parseStep);
-def assert_invalid_melody = assert_invalid(_, _, RiffParser.parseMelody);
+def assert_invalid_steps = assert_invalid(_, _, RiffParser.parseSteps);
 def assert_invalid_note = assert_invalid(_, _, parseNote);
 def assert_invalid_tone = assert_invalid(_, _, RiffParser.parsePitch);
 def assert_invalid_key = assert_invalid(_, _, RiffParser.parseKey);
 
-def assert_melody(t: Tester, str: string, expected: Array<Step>) {
+def assert_steps(t: Tester, str: string, expected: Array<Step>) {
 	var p = RiffParser.new(str);
-	var got = p.parseMelody();
+	var got = p.parseSteps();
 	if (!p.r.ok) return t.fail(p.r.error_msg);
 	if (got.length != expected.length) {
 		t.fail(Strings.format2("expected %d steps, got %d", expected.length, got.length));
@@ -146,7 +146,7 @@ def test_invalid_steps(t: Tester) {
 }
 
 def test_simple_melodies1(t: Tester) {
-	def T = assert_melody(t, _, _), A = Step.Voice, R = Step.Rest;
+	def T = assert_steps(t, _, _), A = Step.Voice, R = Step.Rest;
 	T("M0", [A(0)]);
 	T("M-1", [A(-1)]);
 	T("M-12", [A(-12)]);
@@ -155,7 +155,7 @@ def test_simple_melodies1(t: Tester) {
 }
 
 def test_simple_melodies2(t: Tester) {
-	def T = assert_melody(t, _, _), A = Step.Voice, R = Step.Rest;
+	def T = assert_steps(t, _, _), A = Step.Voice, R = Step.Rest;
 	T("M0,1", [A(0), A(1)]);
 	T("M3,-1", [A(3), A(-1)]);
 	T("M_,-9", [R, A(-9)]);
@@ -164,7 +164,7 @@ def test_simple_melodies2(t: Tester) {
 }
 
 def test_invalid_melodies(t: Tester) {
-	def N = assert_invalid_melody(t, _);
+	def N = assert_invalid_steps(t, _);
 	N("T");
 	N("Y");
 	N("+");
@@ -314,7 +314,7 @@ def test_keys(t: Tester) {
 }
 
 def test_chords0(t: Tester) {
-	def T = assert_melody(t, _, _), C = Step.Chord;
+	def T = assert_steps(t, _, _), C = Step.Chord;
 	T("M[]", [Step.Rest]);
 	T("M[0]", [Step.Voice(0)]);
 	T("M[0,1,2]", [C([0, 1, 2])]);
