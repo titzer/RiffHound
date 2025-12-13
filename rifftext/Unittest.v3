@@ -144,14 +144,13 @@ def render<T>(buf: StringBuilder, val: T) -> StringBuilder {
 
 def test_tempos(t: Tester) {
 	def T = assert_tempo(t, _, _);
-	T("T1", Tempo(1));
-	T("T120", Tempo(120));
-	T("T155", Tempo(155));
+	T("1", Tempo(1));
+	T("120", Tempo(120));
+	T("155", Tempo(155));
 	def N = assert_invalid_tempo(t, _);
-	N("Y88");
-	N("T-120");
-	N("T0");
-	N("T65536");
+	N("-120");
+	N("0");
+	N("65536");
 }
 
 def test_simple_steps(t: Tester) {
@@ -184,20 +183,20 @@ def R = (MelodyStep.Rest, Durations.QUARTER);
 
 def test_simple_melodies1(t: Tester) {
 	def T = assert_steps(t, _, _);
-	T("M0", [V(0)]);
-	T("M-1", [V(-1)]);
-	T("M-12", [V(-12)]);
-	T("M12", [V(12)]);
-	T("M_", [R]);
+	T("0", [V(0)]);
+	T("-1", [V(-1)]);
+	T("-12", [V(-12)]);
+	T("12", [V(12)]);
+	T("_", [R]);
 }
 
 def test_simple_melodies2(t: Tester) {
 	def T = assert_steps(t, _, _);
-	T("M0,1", [V(0), V(1)]);
-	T("M3,-1", [V(3), V(-1)]);
-	T("M_,-9", [R, V(-9)]);
-	T("M_,_,_", [R, R, R]);
-	T("M0,0,0,_,1", [V(0), V(0), V(0), R, V(1)]);
+	T("0,1", [V(0), V(1)]);
+	T("3,-1", [V(3), V(-1)]);
+	T("_,-9", [R, V(-9)]);
+	T("_,_,_", [R, R, R]);
+	T("0,0,0,_,1", [V(0), V(0), V(0), R, V(1)]);
 }
 
 def test_invalid_melodies(t: Tester) {
@@ -273,12 +272,12 @@ def test_invalid_durations(t: Tester) {
 
 def test_melody_durations(t: Tester) {
 	def T = assert_steps(t, _, _), V = MelodyStep.Voice;
-	T("M0q", [(V(0), Durations.QUARTER)]);
-	T("M1e", [(V(1), Durations.EIGHTH)]);
-	T("M2s", [(V(2), Durations.SIXTEENTH)]);
-	T("M-7w/3", [(V(-7), Durations.WHOLE.divide(3))]);
-	T("M5,2s,3", [(V(5), Durations.QUARTER), (V(2), Durations.SIXTEENTH), (V(3), Durations.QUARTER)]);
-	T("M5,2s^s,3", [(V(5), Durations.QUARTER), (V(2), Durations.EIGHTH), (V(3), Durations.QUARTER)]);
+	T("0q", [(V(0), Durations.QUARTER)]);
+	T("1e", [(V(1), Durations.EIGHTH)]);
+	T("2s", [(V(2), Durations.SIXTEENTH)]);
+	T("-7w/3", [(V(-7), Durations.WHOLE.divide(3))]);
+	T("5,2s,3", [(V(5), Durations.QUARTER), (V(2), Durations.SIXTEENTH), (V(3), Durations.QUARTER)]);
+	T("5,2s^s,3", [(V(5), Durations.QUARTER), (V(2), Durations.EIGHTH), (V(3), Durations.QUARTER)]);
 }
 
 def test_notes0(t: Tester) {
@@ -338,34 +337,34 @@ def test_tones0(t: Tester) {
 
 def test_keys(t: Tester) {
 	def T = assert_key(t, _, _);
-	T("KA", Key(Note.A, Scale.Major));
-	T("KB", Key(Note.B, Scale.Major));
-	T("KC", Key(Note.C, Scale.Major));
-	T("KD", Key(Note.D, Scale.Major));
-	T("KE", Key(Note.E, Scale.Major));
-	T("KF#", Key(Note.Fsharp, Scale.Major));
-	T("KG#", Key(Note.Gsharp, Scale.Major));
-	T("KCb", Key(Note.Cflat, Scale.Major));
-	T("KDb", Key(Note.Dflat, Scale.Major));
-	T("KEb", Key(Note.Eflat, Scale.Major));
+	T("A", Key(Note.A, Scale.Major));
+	T("B", Key(Note.B, Scale.Major));
+	T("C", Key(Note.C, Scale.Major));
+	T("D", Key(Note.D, Scale.Major));
+	T("E", Key(Note.E, Scale.Major));
+	T("F#", Key(Note.Fsharp, Scale.Major));
+	T("G#", Key(Note.Gsharp, Scale.Major));
+	T("Cb", Key(Note.Cflat, Scale.Major));
+	T("Db", Key(Note.Dflat, Scale.Major));
+	T("Eb", Key(Note.Eflat, Scale.Major));
 
-	T("KAmaj", Key(Note.A, Scale.Major));
-	T("KAm", Key(Note.A, Scale.Phrygian));
-	T("KCmaj", Key(Note.C, Scale.Major));
-	T("KCdor", Key(Note.C, Scale.Dorian));
-	T("KClyd", Key(Note.C, Scale.Lydian));
-	T("KCmix", Key(Note.C, Scale.Mixolydian));
-	T("KCaeo", Key(Note.C, Scale.Aeolian));
-	T("KCloc", Key(Note.C, Scale.Locrian));
-	T("KCm", Key(Note.C, Scale.Phrygian));
+	T("Amaj", Key(Note.A, Scale.Major));
+	T("Am", Key(Note.A, Scale.Phrygian));
+	T("Cmaj", Key(Note.C, Scale.Major));
+	T("Cdor", Key(Note.C, Scale.Dorian));
+	T("Clyd", Key(Note.C, Scale.Lydian));
+	T("Cmix", Key(Note.C, Scale.Mixolydian));
+	T("Caeo", Key(Note.C, Scale.Aeolian));
+	T("Cloc", Key(Note.C, Scale.Locrian));
+	T("Cm", Key(Note.C, Scale.Phrygian));
 }
 
 def test_chords0(t: Tester) {
 	def T = assert_steps(t, _, _);
-	T("M[]", [R]);
-	T("M[0]", [V(0)]);
-	T("M[0,1,2]", [C([0, 1, 2])]);
-	T("M[-2,-3],[4,5]", [C([-2, -3]), C([4, 5])]);
+	T("[]", [R]);
+	T("[0]", [V(0)]);
+	T("[0,1,2]", [C([0, 1, 2])]);
+	T("[-2,-3],[4,5]", [C([-2, -3]), C([4, 5])]);
 }
 
 def test_drums0(t: Tester) {

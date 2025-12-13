@@ -4,8 +4,32 @@
 class RiffParser(input: string) {
 	def r = TextReader.new("<input>", input);
 
+	def parseDirective() -> Directive {
+		if (r.optN("key") >= 0) {
+			r.req1(':');
+			return Directive.Key(parseKey());
+		}
+		if (r.optN("tempo") >= 0) {
+			r.req1(':');
+			return Directive.Tempo(parseTempo());
+		}
+		if (r.optN("melody") >= 0) {
+			r.req1(':');
+			return Directive.Melody(parseMelodySteps());
+		}
+		if (r.optN("drums") >= 0) {
+			r.req1(':');
+			return Directive.Drums(parseDrumSteps());
+		}
+		if (r.optN("rhythm") >= 0) {
+			r.req1(':');
+			return Directive.Rhythm(parseDurations());
+		}
+		r.fail("expected key|tempo|melody|drums");
+		return Directive.None;
+	}
+
 	def parseKey() -> Key {
-		r.req1('K');
 		var tone = parsePitch();
 		var scale = Scale.Major;
 		for (s in Scale) {
@@ -13,26 +37,22 @@ class RiffParser(input: string) {
 		}
 		return Key(tone.note, scale);
 	}
-	// T <int>
+	// <int>
 	def parseTempo() -> Tempo {
-		r.req1('T');
 		var p = r.pos;
 		var bpm = u16.!(parseInt(1, u16.max));
 		return Tempo(bpm);
 	}
-	// M (step[duration])+
-	def parseMelodySteps() -> Array<(MelodyStep, Duration)> {
-		r.req1('M');
-		var steps = parseListOf(fun => parseWithDuration(parseMelodyStep, Durations.QUARTER));
-		return steps;
-	}
-	// R (duration)+
-	def parseRhythm() -> Array<Duration> {
-		r.req1('R');
-		var durations = parseListOf(parseDuration);
-		return durations;
-	}
-	// ((+|-)?<int>) | _
+	// (melody_step[duration])+
+	def parseMelodySteps() =>
+		parseListOf(fun => parseWithDuration(parseMelodyStep, Durations.DEFAULT_MELODY));
+	// (drum_step[duration])+
+	def parseDrumSteps() =>
+		parseListOf(fun => parseWithDuration(parseDrumStep, Durations.DEFAULT_DRUM));
+	// (duration)+
+	def parseDurations() =>
+		parseListOf(parseDuration);
+	// <int> | '_' | '[' <int>* ']'
 	def parseMelodyStep() -> MelodyStep {
 		match (r.char) {
 			'-', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9' => {
@@ -63,7 +83,7 @@ class RiffParser(input: string) {
 			}
 		}
 	}
-	// ((K|S|T...)[<int>])+
+	// (drum)+
 	def parseDrumStep() -> DrumStep {
 		if (r.char == '_') {
 			eat1();

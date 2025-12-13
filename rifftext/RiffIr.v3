@@ -143,6 +143,16 @@ type Melody(tonic: Pitch, steps: Array<(MelodyStep, Duration)>) {
 	}
 }
 
+type Directive {
+	case None;
+	case Key(key: Key);
+	case Tempo(tempo: Tempo);
+	case Melody(steps: Array<(MelodyStep, Duration)>);
+	case Drums(steps: Array<(DrumStep, Duration)>);
+	case Rhythm(durations: Array<Duration>);
+//	case Chords(steps: Array<(ChordStep, Duration)>);
+}
+
 // Utility to reduce a fraction.
 def reduce(num: u32, denom: u32) -> (u32, u32) {
 	if (denom == 0) {
