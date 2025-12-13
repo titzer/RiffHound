@@ -63,10 +63,43 @@ class RiffParser(input: string) {
 			}
 		}
 	}
+	def parseWithDuration<T>(f: void -> T, d: Duration) -> (T, Duration) {
+		var v = f();
+		if (isDuration(r.char)) d = parseDuration();
+		return (v, d);
+	}
+	// ((K|S|T...)[<int>])+
+	def parseDrumStep() -> Array<(Drum, int)> {
+		var buf = Vector<(Drum, int)>.new();
+		buf.put(parseDrum());
+		while (r.ok && isDrum(r.char)) buf.put(parseDrum());
+		return buf.extract();
+	}
+	// (K|S|T...)[<int>]
+	def parseDrum() -> (Drum, int) {
+		for (d in Drum) {
+			if (d.mnemonic == r.char) {
+				eat1();
+				var num = if(Chars.isDecimal(r.char), parseInt(1, 9));
+				return (d, num);
+			}
+		}
+		var buf = StringBuilder.new().puts("expected drum (");
+		for (d in Drum) {
+			buf.putc(d.mnemonic);
+			buf.sp();
+		}
+		r.fail(buf.toString());
+		return (Drum.Kick, -1);
+	}
+	def isDrum(ch: byte) -> bool {
+		for (d in Drum) if (d.mnemonic == ch) return true;
+		return false;
+	}
 	// ((w|h|q|e|s|t)[.][/<int>]) (^(w|h|q|e|s|t)[.][/<int>])*
 	def parseDuration() -> Duration {
 		var cur = Durations.NONE;
-		while (true) {
+		while (r.ok) {
 			var t = Duration(0, 1);
 			match (r.char) {
 				'w' => t = Durations.WHOLE;
@@ -97,6 +130,12 @@ class RiffParser(input: string) {
 			if (r.opt1('^') < 0) break; // not a tie
 		}
 		return cur;
+	}
+	def isDuration(ch: byte) -> bool {
+		match (ch) {
+			'w', 'h', 'q', 'e', 's', 't' => return true;
+		}
+		return false;
 	}
 	def parsePitch() -> Pitch {
 		var note: Note;

@@ -20,6 +20,7 @@ def X_ = void(
 	reg("tones0", test_tones0),
 	reg("keys", test_keys),
 	reg("chords0", test_chords0),
+	reg("drums0", test_drums0),
 	()
 );
 
@@ -56,18 +57,20 @@ def assert_invalid_steps = assert_invalid(_, _, RiffParser.parseSteps);
 def assert_invalid_note = assert_invalid(_, _, parseNote);
 def assert_invalid_tone = assert_invalid(_, _, RiffParser.parsePitch);
 def assert_invalid_key = assert_invalid(_, _, RiffParser.parseKey);
+def assert_invalid_drums = assert_invalid(_, _, RiffParser.parseDrumStep);
 
-def assert_steps(t: Tester, str: string, expected: Array<Step>) {
+def assert_valid_array<T>(t: Tester, str: string, parse: RiffParser -> Array<T>, expected: Array<T>, cmp: (T, T) -> bool) {
+	if (cmp == null) cmp = T.==;
 	var p = RiffParser.new(str);
-	var got = p.parseSteps();
+	var got = parse(p);
 	if (!p.r.ok) return t.fail(p.r.error_msg);
 	if (got.length != expected.length) {
-		t.fail(Strings.format2("expected %d steps, got %d", expected.length, got.length));
+		t.fail(Strings.format2("expected length = %d, got %d", expected.length, got.length));
 		return;
 	}
 	for (i < expected.length) {
 		var g = got[i], e = expected[i];
-		if (!g.equals(e)) {
+		if (!cmp(g, e)) {
 			var buf = StringBuilder.new();
 			buf.put1("expected [%d]=", i);
 			render(buf, e);
@@ -84,6 +87,8 @@ def assert_duration = assert_valid(_, _, RiffParser.parseDuration, _, null);
 def assert_note = assert_valid(_, _, parseNote, _, null);
 def assert_tone = assert_valid(_, _, RiffParser.parsePitch, _, null);
 def assert_key = assert_valid(_, _, RiffParser.parseKey, _, null);
+def assert_steps = assert_valid_array(_, _, RiffParser.parseSteps, _, Step.equals);
+def assert_drums = assert_valid_array(_, _, RiffParser.parseDrumStep, _, null);
 
 def render<T>(buf: StringBuilder, val: T) {
 	match (val) {
@@ -319,6 +324,16 @@ def test_chords0(t: Tester) {
 	T("M[0]", [Step.Voice(0)]);
 	T("M[0,1,2]", [C([0, 1, 2])]);
 	T("M[-2,-3],[4,5]", [C([-2, -3]), C([4, 5])]);
+}
+
+def test_drums0(t: Tester) {
+	def T = assert_drums(t, _, _);
+	T("K", [(Drum.Kick, 0)]);
+	T("K1", [(Drum.Kick, 1)]);
+	T("KS", [(Drum.Kick, 0), (Drum.Snare, 0)]);
+	T("KST1", [(Drum.Kick, 0), (Drum.Snare, 0), (Drum.Tom, 1)]);
+	T("KT1R", [(Drum.Kick, 0), (Drum.Tom, 1), (Drum.Ride, 0)]);
+	T("LX", [(Drum.Clap, 0), (Drum.Shaker, 0)]);
 }
 
 def main(args: Array<string>) -> int {

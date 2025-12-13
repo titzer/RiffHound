@@ -147,3 +147,15 @@ component Durations {
 		return Duration(u16.!(t.0), u16.!(t.1));
 	}
 }
+
+enum Drum(mnemonic: byte) {
+	Kick('K'),
+	Tom('T'),
+	Snare('S'),
+	Clap('L'),
+	Shaker('X'),
+	Crash('C'),
+	Hihat('H'),
+	Ride('R'),
+	Openhat('O')
+}

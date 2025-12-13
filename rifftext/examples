@@ -9,15 +9,50 @@
 
 # specify a key, a tempo, and a time signature
 KAm:T100:S4/4:
+
 # specify the rhythm pattern in terms of whole, half, quarter, eight, sixteenth, and thirty-second notes
 R q,q,q,q:
+
 # can use simple fractions of notes, e.g. to implement triplets
 R2 q,e,e,s/3,s/3,s/3,q:
+
 # specify a chord pattern in terms of diatonic chords
 Hcow:I,IV,I,V
+
 # which is a short hand for these chords:
 Mcow:[0,3,7],[5,8,12],[0,3,7],[7,11,14]
+
 # Melodies have either single notes, chords, rests (_), or ties (^)
 Mmel:[0,4,7],^,_,[2,5,9],^,_:
+
 # Melodies are specified by chromatic intervals
 Mbass:_,_, -2, -2, -2, 0:
+
+# new syntax
+# 1. Keywords start with lower case letters
+# 2. All uppercase names are variables
+# 3. Built-in variables:
+#    - in chord declarations, the various chord names like C, Am, F, G#, Gmaj7
+#    - in drums, the various parts of the kit: K, S, T1, T2, R
+#    - for song structure: Intro, Verse<N>, Chorus<N>, Outro, Solo<N>
+# 4. All other variables are considered user-defined names
+
+# Built-in variable names:
+# Drums: K = kick, S = snare, T1 = tom, T2 = tom, R = ride, H = hihat, C = clap
+# Chords: A, B, C, D, E, F, G
+#         Ab, Bb, Cb, Db, Eb, Fb, Gb
+#         A#, B#, C#, D#, E#, F#, G#
+#         Am, Bm, Cm, Dm, Em, Fm, Gm
+key:Am
+tempo:110
+tempo.Chorus:120
+drums:K,S,K,S,Ks,Ks,S,K		# drums have a default of eighth note duration
+melody.PartA:0,2,4e,5e		# melody has default quarter note duration
+melody.PartB:0,2,4e,7q^e	# melody has default quarter note duration
+melody.Verse:PartA*2,PartB*2	# melodies can be built from other melodies
+chords.Chorus:C,Am,F,G		# chords have default whole note duration
+structure:Intro,Verse,Chorus,Verse,Chorus,Outro
+# chords can be defined
+chord.A:[0,4,7]
+# chord names include the diatonic spellings
+chords.Chorus=I,IV,V,iii
