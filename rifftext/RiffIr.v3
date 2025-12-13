@@ -95,12 +95,12 @@ type Duration(num: u16, denom: u16) {
 }
 
 // A step is either voiced with one or more voices or a rest.
-type Step {
+type MelodyStep {
 	case Rest;			// Rest step
 	case Voice(val: i16);		// Tonic + val
 	case Chord(vals: Array<i16>);	// Tonic + vals
 
-	def equals(that: Step) -> bool {
+	def equals(that: MelodyStep) -> bool {
 		if (this == that) return true;
 		match (this) {
 			Chord(x) => match (that) {
@@ -112,8 +112,31 @@ type Step {
 	}
 }
 
+// Kinds of drums.
+enum DrumKind(mnemonic: byte) {
+	Kick('K'),
+	Tom('T'),
+	Snare('S'),
+	Clap('L'),
+	Shaker('X'),
+	Crash('C'),
+	Hihat('H'),
+	Ride('R'),
+	Openhat('O')
+}
+
+// A drum, such as kick or tom #N.
+type Drum(kind: DrumKind, num: byte);
+
+// A drum step.
+type DrumStep(hits: Array<Drum>) {
+	def equals(that: DrumStep) -> bool {
+		return Arrays.equal(this.hits, that.hits);
+	}
+}
+
 // A melody consists of a tonic, steps, and a rhythm.
-type Melody(tonic: Pitch, steps: Array<(Step, Duration)>) {
+type Melody(tonic: Pitch, steps: Array<(MelodyStep, Duration)>) {
 	def equals(that: Melody) -> bool {
 		if (this == that) return true;
 		return Arrays.equal(this.steps, that.steps);
@@ -144,6 +167,9 @@ component Durations {
 	def SIXTEENTH = Duration(1, 16);
 	def THIRTY_SECOND = Duration(1, 32);
 
+	def DEFAULT_DRUM = EIGHTH;
+	def DEFAULT_MELODY = QUARTER;
+	def DEFAULT_CHORD = WHOLE;
 
 	def of(num: u32, denom: u32) -> Duration {
 		var t = reduce(num, denom);
@@ -151,14 +177,6 @@ component Durations {
 	}
 }
 
-enum Drum(mnemonic: byte) {
-	Kick('K'),
-	Tom('T'),
-	Snare('S'),
-	Clap('L'),
-	Shaker('X'),
-	Crash('C'),
-	Hihat('H'),
-	Ride('R'),
-	Openhat('O')
+component Drums {
+	def NONE: Array<Drum> = [];
 }

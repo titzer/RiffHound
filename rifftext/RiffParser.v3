@@ -21,9 +21,9 @@ class RiffParser(input: string) {
 		return Tempo(bpm);
 	}
 	// M (step[duration])+
-	def parseSteps() -> Array<(Step, Duration)> {
+	def parseMelodySteps() -> Array<(MelodyStep, Duration)> {
 		r.req1('M');
-		var steps = parseListOf(fun => parseWithDuration(parseStep, Durations.QUARTER));
+		var steps = parseListOf(fun => parseWithDuration(parseMelodyStep, Durations.QUARTER));
 		return steps;
 	}
 	// R (duration)+
@@ -33,67 +33,66 @@ class RiffParser(input: string) {
 		return durations;
 	}
 	// ((+|-)?<int>) | _
-	def parseStep() -> Step {
+	def parseMelodyStep() -> MelodyStep {
 		match (r.char) {
 			'-', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9' => {
 				var d = parseInt(i8.min, i8.max);
-				return Step.Voice(i16.view(d));
+				return MelodyStep.Voice(i16.view(d));
 			}
 			'[' => {
 				eat1();
 				if (r.char == ']') {
 					eat1();
-					return Step.Rest;
+					return MelodyStep.Rest;
 				}
 				var voices = parseListOf(fun => i16.view(parseInt(i8.min, i8.max)));
 				r.req1(']');
 				match (voices.length) {
-					0 => return Step.Rest;
-					1 => return Step.Voice(voices[0]);
-					_ => return Step.Chord(voices);
+					0 => return MelodyStep.Rest;
+					1 => return MelodyStep.Voice(voices[0]);
+					_ => return MelodyStep.Chord(voices);
 				}
 			}
 			'_' => {
 				eat1();
-				return Step.Rest;
+				return MelodyStep.Rest;
 			}
 			_ => {
 				r.fail("expected number or _");
-				return Step.Rest;
+				return MelodyStep.Rest;
 			}
 		}
 	}
-	def parseWithDuration<T>(f: void -> T, d: Duration) -> (T, Duration) {
-		var v = f();
-		if (isDuration(r.char)) d = parseDuration();
-		return (v, d);
-	}
 	// ((K|S|T...)[<int>])+
-	def parseDrumStep() -> Array<(Drum, int)> {
-		var buf = Vector<(Drum, int)>.new();
+	def parseDrumStep() -> DrumStep {
+		if (r.char == '_') {
+			eat1();
+			return DrumStep(Drums.NONE);
+		}
+		var buf = Vector<Drum>.new();
 		buf.put(parseDrum());
 		while (r.ok && isDrum(r.char)) buf.put(parseDrum());
-		return buf.extract();
+		return DrumStep(buf.extract());
 	}
 	// (K|S|T...)[<int>]
-	def parseDrum() -> (Drum, int) {
-		for (d in Drum) {
+	def parseDrum() -> Drum {
+		for (d in DrumKind) {
 			if (d.mnemonic == r.char) {
 				eat1();
-				var num = if(Chars.isDecimal(r.char), parseInt(1, 9));
-				return (d, num);
+				var num = byte.!(if(Chars.isDecimal(r.char), parseInt(1, 9)));
+				return Drum(d, num);
 			}
 		}
 		var buf = StringBuilder.new().puts("expected drum (");
-		for (d in Drum) {
+		for (d in DrumKind) {
 			buf.putc(d.mnemonic);
 			buf.sp();
 		}
 		r.fail(buf.toString());
-		return (Drum.Kick, -1);
+		return Drum(DrumKind.Kick, byte.max);
 	}
 	def isDrum(ch: byte) -> bool {
-		for (d in Drum) if (d.mnemonic == ch) return true;
+		for (d in DrumKind) if (d.mnemonic == ch) return true;
 		return false;
 	}
 	// ((w|h|q|e|s|t)[.][/<int>]) (^(w|h|q|e|s|t)[.][/<int>])*
@@ -164,6 +163,11 @@ class RiffParser(input: string) {
 		}
 		return tone;
 	}
+	def parseWithDuration<T>(f: void -> T, d: Duration) -> (T, Duration) {
+		var v = f();
+		if (isDuration(r.char)) d = parseDuration();
+		return (v, d);
+	}
 	def parseListOf<T>(parse: void -> T) -> Array<T> {
 		var buf = Vector<T>.new();
 		while (true) {
@@ -189,7 +193,7 @@ class RiffParser(input: string) {
 			return val;
 		}
 		r.failRel(i - r.pos, "expected integer");
-		return 0;
+		return min;
 	}
 	def isNoteStart(ch: byte) -> bool {
 		return ch >= 'A' && ch <= 'G';

@@ -3,15 +3,15 @@
 
 component Operators {
 	// Transpose the steps {delta} semitones.
-	def transposeSteps(s: Array<Step>, delta: i16) -> Array<Step> {
-		return Arrays.map(s, transposeStep(_, delta));
+	def transposeMelodySteps(s: Array<MelodyStep>, delta: i16) -> Array<MelodyStep> {
+		return Arrays.map(s, transposeMelodyStep(_, delta));
 	}
 	// Transpose a step by {delta} semitones.
-	def transposeStep(s: Step, delta: i16) -> Step {
+	def transposeMelodyStep(s: MelodyStep, delta: i16) -> MelodyStep {
 		match (s) {
-			Voice(x) => return Step.Voice(i16.view(x + delta));
-			Chord(x) => return Step.Chord(Arrays.map(x, i16.+(delta, _)));
-			Rest => return Step.Rest;
+			Voice(x) => return MelodyStep.Voice(i16.view(x + delta));
+			Chord(x) => return MelodyStep.Chord(Arrays.map(x, i16.+(delta, _)));
+			Rest => return MelodyStep.Rest;
 		}
 	}
 	// Transpose a melody by {delta} semitones by simply adjusting the tonic.
@@ -20,11 +20,11 @@ component Operators {
 	}
 	// Convert a melody to pure rhythm by replacing all voices with 0.
 	def setMelodyVoicesToZero(m: Melody) -> Melody {
-		var steps = Arrays.map(m.steps, fun (step: Step, d: Duration) -> (Step, Duration) {
+		var steps = Arrays.map(m.steps, fun (step: MelodyStep, d: Duration) -> (MelodyStep, Duration) {
 			match (step) {
-				Voice(x) => return (Step.Voice(0), d);
-				Chord(x) => return (Step.Voice(0), d);
-				Rest => return (Step.Rest, d);
+				Voice(x) => return (MelodyStep.Voice(0), d);
+				Chord(x) => return (MelodyStep.Voice(0), d);
+				Rest => return (MelodyStep.Rest, d);
 			}
 		});
 		return Melody(m.tonic, steps);

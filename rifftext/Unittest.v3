@@ -53,8 +53,8 @@ def assert_valid<T>(t: Tester, str: string, parse: RiffParser -> T, expected: T,
 
 def assert_invalid_tempo = assert_invalid(_, _, RiffParser.parseTempo);
 def assert_invalid_duration = assert_invalid(_, _, RiffParser.parseDuration);
-def assert_invalid_step = assert_invalid(_, _, RiffParser.parseStep);
-def assert_invalid_steps = assert_invalid(_, _, RiffParser.parseSteps);
+def assert_invalid_step = assert_invalid(_, _, RiffParser.parseMelodyStep);
+def assert_invalid_steps = assert_invalid(_, _, RiffParser.parseMelodySteps);
 def assert_invalid_note = assert_invalid(_, _, parseNote);
 def assert_invalid_tone = assert_invalid(_, _, RiffParser.parsePitch);
 def assert_invalid_key = assert_invalid(_, _, RiffParser.parseKey);
@@ -82,15 +82,15 @@ def assert_valid_array<T>(t: Tester, str: string, parse: RiffParser -> Array<T>,
 	}
 }
 
-def assert_step = assert_valid(_, _, RiffParser.parseStep, _, null);
+def assert_step = assert_valid(_, _, RiffParser.parseMelodyStep, _, null);
 def assert_tempo = assert_valid(_, _, RiffParser.parseTempo, _, null);
 def assert_duration = assert_valid(_, _, RiffParser.parseDuration, _, null);
 def assert_note = assert_valid(_, _, parseNote, _, null);
 def assert_tone = assert_valid(_, _, RiffParser.parsePitch, _, null);
 def assert_key = assert_valid(_, _, RiffParser.parseKey, _, null);
-def assert_steps = assert_valid_array(_, _, RiffParser.parseSteps, _,
-	fun (a: (Step, Duration), b: (Step, Duration)) => Step.equals(a.0, b.0) && Duration.==(a.1, b.1));
-def assert_drums = assert_valid_array(_, _, RiffParser.parseDrumStep, _, null);
+def assert_steps = assert_valid_array(_, _, RiffParser.parseMelodySteps, _,
+	fun (a: (MelodyStep, Duration), b: (MelodyStep, Duration)) => MelodyStep.equals(a.0, b.0) && Duration.==(a.1, b.1));
+def assert_drum_step = assert_valid(_, _, RiffParser.parseDrumStep, _, DrumStep.equals);
 
 def render<T>(buf: StringBuilder, val: T) -> StringBuilder {
 	match (val) {
@@ -106,7 +106,7 @@ def render<T>(buf: StringBuilder, val: T) -> StringBuilder {
 			buf.puts(x.tonic.abbrev);
 			buf.puts(x.scale.abbrev);
 		}
-		x: Step => match (x) {
+		x: MelodyStep => match (x) {
 			Rest => buf.puts("_");
 			Voice(y) => buf.putd(y);
 			Chord(y) => {
@@ -122,12 +122,21 @@ def render<T>(buf: StringBuilder, val: T) -> StringBuilder {
 			if (x == Durations.THIRTY_SECOND) return buf.puts("t");
 			return buf.put2("%d/%d", x.num, x.denom);
 		}
-		x: (Step, Duration) => {
+		x: (MelodyStep, Duration) => {
 			buf.puts("(");
 			render(buf, x.0);
 			buf.csp();
 			render(buf, x.1);
 			buf.puts(")");
+		}
+		x: (DrumStep, Duration) => {
+			if (x.0.hits.length == 0) buf.puts("_");
+			else for (d in x.0.hits) render(buf, d);
+			if (x.1 != Durations.DEFAULT_DRUM) render(buf, x.1);
+		}
+		x: Drum => {
+			buf.putc(x.kind.mnemonic);
+			if (x.num != 0) buf.putd(x.num);
 		}
 	}
 	return buf;
@@ -146,7 +155,7 @@ def test_tempos(t: Tester) {
 }
 
 def test_simple_steps(t: Tester) {
-	def T = assert_step(t, _, _), A = Step.Voice;
+	def T = assert_step(t, _, _), A = MelodyStep.Voice;
 	T("0", A(0));
 	T("-1", A(-1));
 	T("1", A(1));
@@ -157,7 +166,7 @@ def test_simple_steps(t: Tester) {
 	T("14", A(14));
 	T("22", A(22));
 	T("33", A(33));
-	T("_", Step.Rest);
+	T("_", MelodyStep.Rest);
 }
 
 def test_invalid_steps(t: Tester) {
@@ -169,9 +178,9 @@ def test_invalid_steps(t: Tester) {
 	N("^");
 }
 
-def V(x: short) => (Step.Voice(x), Durations.QUARTER);
-def C(x: Array<short>) => (Step.Chord(x), Durations.QUARTER);
-def R = (Step.Rest, Durations.QUARTER);
+def V(x: short) => (MelodyStep.Voice(x), Durations.QUARTER);
+def C(x: Array<short>) => (MelodyStep.Chord(x), Durations.QUARTER);
+def R = (MelodyStep.Rest, Durations.QUARTER);
 
 def test_simple_melodies1(t: Tester) {
 	def T = assert_steps(t, _, _);
@@ -263,7 +272,7 @@ def test_invalid_durations(t: Tester) {
 }
 
 def test_melody_durations(t: Tester) {
-	def T = assert_steps(t, _, _), V = Step.Voice;
+	def T = assert_steps(t, _, _), V = MelodyStep.Voice;
 	T("M0q", [(V(0), Durations.QUARTER)]);
 	T("M1e", [(V(1), Durations.EIGHTH)]);
 	T("M2s", [(V(2), Durations.SIXTEENTH)]);
@@ -360,13 +369,15 @@ def test_chords0(t: Tester) {
 }
 
 def test_drums0(t: Tester) {
-	def T = assert_drums(t, _, _);
-	T("K", [(Drum.Kick, 0)]);
-	T("K1", [(Drum.Kick, 1)]);
-	T("KS", [(Drum.Kick, 0), (Drum.Snare, 0)]);
-	T("KST1", [(Drum.Kick, 0), (Drum.Snare, 0), (Drum.Tom, 1)]);
-	T("KT1R", [(Drum.Kick, 0), (Drum.Tom, 1), (Drum.Ride, 0)]);
-	T("LX", [(Drum.Clap, 0), (Drum.Shaker, 0)]);
+	def T = assert_drum_step(t, _, _);
+	def K = fun (x: byte) => Drum(DrumKind.Kick, x);
+	def S = fun (x: byte) => Drum(DrumKind.Snare, x);
+	T("K", DrumStep([K(0)]));
+	T("K1", DrumStep([K(1)]));
+	T("KS", DrumStep([K(0), S(0)]));
+	T("KST1", DrumStep([K(0), S(0), Drum(DrumKind.Tom, 1)]));
+	T("KT1R", DrumStep([K(0), Drum(DrumKind.Tom, 1), Drum(DrumKind.Ride, 0)]));
+	T("LX", DrumStep([Drum(DrumKind.Clap, 0), Drum(DrumKind.Shaker, 0)]));
 }
 
 def main(args: Array<string>) -> int {
