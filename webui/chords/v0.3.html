@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Live Jam Practice v0.2 (refactor)</title>
+<title>RiffHound Chord Machine v0.3</title>
 <style>
   /* Minimal, readable, big-click targets */
   body { font-family: sans-serif; background: #fff; color: #000; margin: 0; }
@@ -194,18 +194,6 @@ function voiceMetro(t, accent = false) {
   o.frequency.setValueAtTime(accent ? 2000 : 1200, t);
   o.connect(g).connect(metroGain);
   o.start(t); o.stop(t + 0.03);
-}
-
-function tempoShiftSfx(oldB, newB) {
-  if (oldB === newB) return;
-  const o = ctx.createOscillator(); const g = ctx.createGain(); g.gain.value = 0.15; o.type = 'sine';
-  const startF = 400 * (newB < oldB ? 1.1 : 0.9);
-  const endF   = 400 * (newB > oldB ? 1.1 : 0.9);
-  const t = ctx.currentTime;
-  o.frequency.setValueAtTime(startF, t);
-  o.frequency.linearRampToValueAtTime(endF, t + 0.12);
-  o.connect(g).connect(master);
-  o.start(t); o.stop(t + 0.14);
 }
 
 // =========================
@@ -428,8 +416,6 @@ function actionSetBPM(val) { // slider or text input changed
   bpm = Math.max(30, Math.min(250, parseInt(val, 10) || bpm));
   el.bpmVal.value = bpm;
   el.bpm.value = bpm;
-
-  tempoShiftSfx(oldBpm, bpm);
 
   if (playing && bpm !== oldBpm) {
     // Preserve current position when changing tempo
