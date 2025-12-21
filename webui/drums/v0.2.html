@@ -76,8 +76,8 @@
     <span class="label">Loop:</span>
     <div id="repeatBoxes"></div>
     <span class="label" style="margin-left: 2em;">BPM:</span>
-    <input id="bpm" type="range" min="30" max="250" value="110">
-    <input id="bpmVal" type="number" min="30" max="250" value="110" style="width: 4em;">
+    <input id="bpm" type="range" min="30" max="300" value="110">
+    <input id="bpmVal" type="number" min="30" max="300" value="110" style="width: 4em;">
   </div>
 
   <div id="grid"></div>
@@ -546,7 +546,7 @@ function actionTapSpace() { // accumulate taps → BPM
   if (taps.length >= 2) {
     const diffs = taps.slice(1).map((t,i) => t - taps[i]);
     const avg = diffs.reduce((a,b) => a + b, 0) / diffs.length;
-    bpm = Math.max(30, Math.min(250, Math.round(60000 / avg)));
+    bpm = Math.max(30, Math.min(300, Math.round(60000 / avg)));
     el.bpm.value = bpm;
     el.bpmVal.value = bpm;
     updatePatternText();
@@ -560,7 +560,7 @@ function actionTapSpace() { // accumulate taps → BPM
 
 function actionSetBPM(val) { // slider or text input changed
   const oldBpm = bpm;
-  bpm = Math.max(30, Math.min(250, parseInt(val, 10) || bpm));
+  bpm = Math.max(30, Math.min(300, parseInt(val, 10) || bpm));
   el.bpmVal.value = bpm;
   el.bpm.value = bpm;
 
@@ -716,7 +716,7 @@ function actionKeyDown(e) { // global keyboard shortcuts
     // Round down to nearest 5, then add 5
     const rounded = Math.floor(bpm / 5) * 5;
     const newBpm = rounded + 5;
-    actionSetBPM(newBpm <= 250 ? newBpm : 250);
+    actionSetBPM(newBpm <= 300 ? newBpm : 300);
   }
 }
 
