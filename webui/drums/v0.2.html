@@ -70,12 +70,16 @@
   <div id="repeatViz">
     <span class="label">Loop:</span>
     <div id="repeatBoxes"></div>
+    <span class="label" style="margin-left: 2em;">BPM:</span>
+    <input id="bpm" type="range" min="30" max="250" value="110">
+    <input id="bpmVal" type="number" min="30" max="250" value="110" style="width: 4em;">
   </div>
 
   <div id="grid"></div>
 
-  <div id="bottom">
-    BPM: <input id="bpm" type="range" min="30" max="250" value="110"> <input id="bpmVal" type="number" min="30" max="250" value="110" style="width: 4em;">
+  <div style="padding: 1vh 1vw;">
+    <div style="margin-bottom: 0.5em; font-weight: bold;">Pattern:</div>
+    <textarea id="patternText" style="width: 98%; height: 8vh; font-family: monospace; font-size: 1.8vh;"></textarea>
   </div>
 
 <script>
@@ -94,6 +98,7 @@ const taps = [];
 let repeatCount = 3;        // how many times to repeat before playing fill
 let currentIteration = 1;   // current iteration (1..repeatCount)
 const FILL_LENGTH = 4;      // drum fill is always 4 steps (2 beats)
+let deserializing = false;  // flag to prevent pattern text updates during deserialization
 
 // 5 drum voices
 const VOICES = [
@@ -182,6 +187,106 @@ function triggerVoice(id, t) {
     case 'tom':   voiceTom(t); break;
     case 'clap':  voiceClap(t); break;
   }
+}
+
+// =========================
+// Pattern serialization
+// =========================
+function serializePattern() {
+  const voiceChars = ['K', 'S', 'H', 'T', 'C'];
+
+  // Serialize main pattern
+  const drumsSteps = [];
+  for (let si = 0; si < steps; si++) {
+    let stepStr = '';
+    for (let vi = 0; vi < VOICES.length; vi++) {
+      if (pattern[vi][si]) stepStr += voiceChars[vi];
+    }
+    drumsSteps.push(stepStr || '_'); // Use '_' for rest
+  }
+
+  // Serialize fill pattern
+  const fillSteps = [];
+  for (let fi = 0; fi < FILL_LENGTH; fi++) {
+    let stepStr = '';
+    for (let vi = 0; vi < VOICES.length; vi++) {
+      if (fillPattern[vi][fi]) stepStr += voiceChars[vi];
+    }
+    fillSteps.push(stepStr || '_'); // Use '_' for rest
+  }
+
+  return `tempo: ${bpm}; drums: ${drumsSteps.join(',')}; fill: ${fillSteps.join(',')}`;
+}
+
+function deserializePattern(text) {
+  deserializing = true;
+  try {
+    // Parse the format: "tempo: <NUM>; drums: ...; fill: ..."
+    const parts = text.split(';').map(p => p.trim());
+
+    // Parse tempo
+    const tempoMatch = parts[0].match(/tempo:\s*(\d+)/);
+    if (tempoMatch) {
+      actionSetBPM(parseInt(tempoMatch[1], 10));
+    }
+
+    // Parse drums
+    const drumsMatch = parts[1].match(/drums:\s*(.+)/);
+    if (drumsMatch) {
+      const drumSteps = drumsMatch[1].split(',').map(s => s.trim());
+      const voiceMap = { 'K': 0, 'S': 1, 'H': 2, 'T': 3, 'C': 4 };
+
+      for (let si = 0; si < Math.min(drumSteps.length, steps); si++) {
+        const stepStr = drumSteps[si];
+        // Clear this step first
+        for (let vi = 0; vi < VOICES.length; vi++) {
+          pattern[vi][si] = false;
+        }
+        // Set voices that are present
+        if (stepStr !== '_') {
+          for (let char of stepStr) {
+            if (voiceMap.hasOwnProperty(char)) {
+              pattern[voiceMap[char]][si] = true;
+            }
+          }
+        }
+      }
+    }
+
+    // Parse fill
+    const fillMatch = parts[2].match(/fill:\s*(.+)/);
+    if (fillMatch) {
+      const fillSteps = fillMatch[1].split(',').map(s => s.trim());
+      const voiceMap = { 'K': 0, 'S': 1, 'H': 2, 'T': 3, 'C': 4 };
+
+      for (let fi = 0; fi < Math.min(fillSteps.length, FILL_LENGTH); fi++) {
+        const stepStr = fillSteps[fi];
+        // Clear this step first
+        for (let vi = 0; vi < VOICES.length; vi++) {
+          fillPattern[vi][fi] = false;
+        }
+        // Set voices that are present
+        if (stepStr !== '_') {
+          for (let char of stepStr) {
+            if (voiceMap.hasOwnProperty(char)) {
+              fillPattern[voiceMap[char]][fi] = true;
+            }
+          }
+        }
+      }
+    }
+
+    renderGrid();
+  } catch (e) {
+    console.error('Error parsing pattern:', e);
+  } finally {
+    deserializing = false;
+  }
+}
+
+function updatePatternText() {
+  if (deserializing) return; // Don't update while deserializing to avoid cursor jumps
+  el.patternText.value = serializePattern();
 }
 
 // =========================
@@ -421,7 +526,8 @@ function actionTapSpace() { // accumulate taps → BPM
     const avg = diffs.reduce((a,b) => a + b, 0) / diffs.length;
     bpm = Math.max(30, Math.min(250, Math.round(60000 / avg)));
     el.bpm.value = bpm;
-    el.bpmVal.textContent = bpm;
+    el.bpmVal.value = bpm;
+    updatePatternText();
     if (playing) { startTime = ctx.currentTime; }
   }
 }
@@ -441,6 +547,10 @@ function actionSetBPM(val) { // slider or text input changed
     const newDur = stepDuration();
     startTime = now - (totalSteps * newDur);
   }
+
+  if (bpm !== oldBpm) {
+    updatePatternText();
+  }
 }
 
 function actionSetSteps(n) { // change grid length (16/32)
@@ -453,6 +563,7 @@ function actionSetSteps(n) { // change grid length (16/32)
   });
   currentStep = 0;
   renderGrid();
+  updatePatternText();
 }
 
 function actionSetRepeat(n) { // change repeat count
@@ -500,6 +611,7 @@ function actionToggleStep(vi, si, isFill) { // toggle a cell on/off
     pattern[vi][si] = !pattern[vi][si];
   }
   renderGrid();
+  updatePatternText();
 }
 
 function actionClear() { // clear all steps
@@ -508,6 +620,7 @@ function actionClear() { // clear all steps
     fillPattern[vi].fill(false);
   });
   renderGrid();
+  updatePatternText();
 }
 
 function actionRandom() { // quick seed pattern (correct for 8th grid)
@@ -558,6 +671,7 @@ function actionRandom() { // quick seed pattern (correct for 8th grid)
   }
 
   renderGrid();
+  updatePatternText();
 }
 
 function actionKeyDown(e) { // global keyboard shortcuts
@@ -598,6 +712,7 @@ function init() {
   el.bpm       = document.getElementById('bpm');
   el.bpmVal    = document.getElementById('bpmVal');
   el.repeatBoxes = document.getElementById('repeatBoxes');
+  el.patternText = document.getElementById('patternText');
 
   // Initialize from DOM values
   repeatCount = parseInt(el.selRepeat.value, 10);
@@ -617,6 +732,7 @@ function init() {
 
   el.bpm.addEventListener('input', e => actionSetBPM(e.target.value));
   el.bpmVal.addEventListener('input', e => actionSetBPM(e.target.value));
+  el.patternText.addEventListener('input', e => deserializePattern(e.target.value));
   document.body.addEventListener('keydown', actionKeyDown);
 
   // First render
@@ -625,7 +741,7 @@ function init() {
   updateCellActivity(1); // Initialize with first iteration state
 
   // Start with a random pattern
-  actionRandom();
+  actionRandom(); // This also calls updatePatternText()
 }
 
 // Boot

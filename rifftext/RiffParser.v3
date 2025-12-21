@@ -1,9 +1,31 @@
 // Copyright (c) 2025 Ben L. Titzer. All rights reserved.
 
 // Parses the various components of RiffText.
-class RiffParser(input: string) {
-	def r = TextReader.new("<input>", input);
-
+class RiffParser(r: TextReader) {
+	new() {
+		// We need to install a whitespace skipper for comments.
+		r.skipWs = fun r {
+			while (true) {
+				r.skipWhitespace();
+				if (r.char == '#') {
+					r.skip1();
+					r.skipToEndOfLine();
+				} else {
+					break;
+				}
+			}
+		};
+		r.skipWs(r);
+	}
+	def parseFile() -> List<Directive> {
+		r.skipWs(r);
+		var result: List<Directive>;
+		while (r.ok && r.char != 0) {
+			var d = parseDirective();
+			if (d != Directive.None) result = List.new(d, result);
+		}
+		return Lists.reverse(result);
+	}
 	def parseDirective() -> Directive {
 		if (r.optN("key") >= 0) {
 			r.req1(':');
@@ -78,7 +100,7 @@ class RiffParser(input: string) {
 				return MelodyStep.Rest;
 			}
 			_ => {
-				r.fail("expected number or _");
+				r.fail("expected melody step as number or _");
 				return MelodyStep.Rest;
 			}
 		}

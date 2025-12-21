@@ -29,15 +29,17 @@ def parseNote(p: RiffParser) -> Note {
 	return p.parsePitch().note;
 }
 
+def newParser(str: string) => RiffParser.new(TextReader.new("<test>", str));
+
 def assert_invalid<T>(t: Tester, str: string, parse: RiffParser -> T) {
-	var p = RiffParser.new(str);
+	var p = newParser(str);
 	var got = parse(p);
 	if (p.r.ok) return t.fail("expected fail, but passed");
 }
 
 def assert_valid<T>(t: Tester, str: string, parse: RiffParser -> T, expected: T, cmp: (T, T) -> bool) {
 	if (cmp == null) cmp = T.==;
-	var p = RiffParser.new(str);
+	var p = newParser(str);
 	var got = parse(p);
 	if (!p.r.ok) return t.fail(p.r.error_msg);
 	if (!cmp(got, expected)) {
@@ -62,7 +64,7 @@ def assert_invalid_drums = assert_invalid(_, _, RiffParser.parseDrumStep);
 
 def assert_valid_array<T>(t: Tester, str: string, parse: RiffParser -> Array<T>, expected: Array<T>, cmp: (T, T) -> bool) {
 	if (cmp == null) cmp = T.==;
-	var p = RiffParser.new(str);
+	var p = newParser(str);
 	var got = parse(p);
 	if (!p.r.ok) return t.fail(p.r.error_msg);
 	if (got.length != expected.length) {

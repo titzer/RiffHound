@@ -1,4 +1,4 @@
-Interactions between RiffHound components
+RiffHound components analysis
 
 RiffHound components consists of software and hardware that all participate in a jam.
 
@@ -6,12 +6,15 @@ RiffHound components consists of software and hardware that all participate in a
 Modules that produce musical audio or MIDI in time with the system.
 
 Examples:
-- Drum Engine
+- Drum Machine
 - Harmony Engine (chords)
+- Strum machine
 - Melody Engine
 - MIDI Synth / Sequencer Engine
 
-These are the “actuators” of musical sound.
+These are the "actuators" of musical sound that are used in a variety of practice, play,
+or performance use cases. 
+Parameters: volume, pitch shift, playback speed
 
 2. Visual Displays (Performer Interfaces)
 Modules that render information for performers or operators.
@@ -23,8 +26,11 @@ Examples:
 - Lead Line Display
 - Chord Display
 - Lyrics Display
+- Spectrogram
 
-Their role is informational, not generative.
+These displays cue performers, organizing and presenting musical information in an animated
+display that keeps them synced. May be coupled with specific sound generators.
+Parameters: many, user configurable display
 
 3. Sensors / Capture Modules (Audio & Control Inputs)
 Modules that ingest external signals—audio, control, or performance gestures.
@@ -36,7 +42,8 @@ Examples:
 - Multi-track Capture
 - Automatic transcription
 
-These are the system’s “ears.”
+These are the system’s "ears."
+Parameters: various, including level
 
 4. Creative Generators / Algorithmic Actuators
 
@@ -49,6 +56,7 @@ Examples:
 - AI Melody or Drum Line Generator
 
 These influence or inject creative musical events into the system.
+Parameters: many
 
 5. Editors (Control Consoles)
 Modules that allow performers, producers, or mixers to modify the musical state, either globally or per-component.
@@ -63,3 +71,159 @@ Examples:
 - Lyrics/Score Annotation Editor
 
 Editors don’t produce sound themselves; they shape what the other modules will do.
+Parameters: many
+
+6. Connections
+Connections between modules allow multiple tools to cooperate.
+
+Examples:
+- MIDI input/output from DAW to keyboard
+- Digital audio input/output from DAW to line in/out
+- MIDI interface between sequencer and drum machine
+
+7. Time model + tempo control
+
+Examples:
+- step/stepped time: series of beats or measures
+- physical time: seconds or milliseconds
+- loops: one or more looping constructs
+- speed change: resampling or analog
+Parameters: master tempo control
+
+8. Composition and Sequencing
+Handling elements at multiple granularities and temporal seqence control.
+
+Examples:
+- playlist
+- looping constructs
+- crossfade / mix
+
+9. Annotations
+Attaching notes, cues, or other information to playback.
+
+Examples:
+- beat map
+- cueing notes
+
+10. Content library
+
+
+=====================================
+Music tools breakdown
+
+TuxGuitar: tab player
+ - sound generators: midi guitar / drums / instruments
+ - visual displays: multi-track tab view
+ - sensors: none
+ - creative generators: none
+ - editors: keyboard + mouse based tab editor
+ - connections: none
+ - time: step, simple loop, speed percent
+ - composition: multi-track MIDI editing, loop section
+ - annotation: labels
+ - library: local files
+
+Mp3 player:
+ - sound generators: digital audio out
+ - visual displays: time / waveform / visualizer plugins
+ - sensors: none
+ - creative generators: none
+ - editors: none
+ - time: physical
+ - composition: playlist, loop single track
+ - annotations: none
+ - library: local files
+
+Audacity:
+ - sound generators: digital audio out
+ - visual displays: time / waveform / spectrograph
+ - sensors: audio line-in
+ - creative generators: beat
+ - editors: audio tracks
+ - time: physical, simple loop
+ - composition: multi-track editing
+ - annotations: labels
+ - library: local files
+
+YouTube backing tracks:
+ - visual displays: accompanying video
+ - composition: playlist
+ - library: playlists, cloud library with search
+
+=============================================================
+RiffHound tools:
+ - library: (envisioned)
+ - annotations: (part of library)
+ - time control: (multiloop, beatmap)
+ - annotations: legato
+ - per note annotations: volume, vibrato, tremolo
+ - generate instrument-specific drills
+ - chord diagrams
+ - fingering diagrams
+ - strum patterns
+ - harmonica tab
+ - generative accompaniment
+ - instrument-specific tools: wind fingering, sax growl, draw/blow on harmonica and accordion, trombone slide positions
+ - articulation marks: tonguing patterns, overblowing, bends, slides, growl
+ - drum staff notation
+ - pitch-trace overlays
+ - falling notes
+
+RiffHound Drummer:
+ - sound generators: WebAudio
+ - visual displays: animated sequence matrix
+ - sensors: none
+ - creative generators: randomize
+ - editors: grid-based tick boxes for piano roll
+ - time: step, infinite loop, master BPM (multiloop, beatmap)
+ - composition: none
+ - TODO: swing feel control
+ - TODO: show/edit rifftext
+ - TODO: pickup beats
+ - TODO: animated drumkit and/or drummer
+
+RiffHound Chord Engine:
+ - sound generators: WebAudio, MIDI
+ - visual displays: animated chord chart, (envisioned: strum pattern)
+ - sensors: none
+ - creative generators: randomize
+ - editors: text box for chord progression
+ - time: step, infinite loop, master BPM (multiloop, beatmap)
+ - composition: none
+ - TODO: show/edit rifftext
+ - TODO: composition, song section
+ - TODO: animate strum pattern
+ - TODO
+
+RiffHound Tab Display (TODO):
+ - sound generators: WebAudio, MIDI
+ - visual displays: animated tab, sheet music, pitch, fretboard, guitar, hands
+ - sensors: guitar signal (mono, hexaphonic)
+ - creative generators: randomize, write, lookup, transform
+ - editors: riff
+ - time: step, infinite loop, master BPM (multiloop, beatmap)
+ - composition: none
+ - annotations: personal notes, slide, hammer-on, pull off, artificial harmonics, pinch harmonics, tap, fingering
+
+RiffHound Lyrics (TODO):
+ - sound generators: WebAudio, MIDI
+ - visual displays: animated lyrics, sheet music, pitch, face
+ - sensors: digital audio in (mono)
+ - creative generators: write lyrics, write melody, lookup, transform, harmonize
+ - editors: lyrics, melody
+ - time: step, melody loop, section loop, master BPM (multiloop, beatmap)
+ - composition: mix harmonies, duet, duet with track
+ - annotations: personal notes, vibrato
+
+RiffHound Clarinet (TODO):
+ - visual display: animated sheet music, fingering
+ - editors: melody
+ - annotations: vibrato, growl, legato
+
+RiffHound Harmonica (TODO):
+ - visual display: animated sheet music, draw/blow
+
+RiffHound Piano (TODO):
+ - visual display: animated sheet music, piano roll
+ - sensors: digital audio in, MIDI
+ - creative generators: create drills
