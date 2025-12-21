@@ -1,0 +1,33 @@
+
+
+def main(args: Array<string>) -> int {
+	var result = 0;
+	for (a in args) {
+		var input = System.fileLoad(a);
+		if (input == null) {
+			OUT.put1("file error: %s", a).ln();
+			continue;
+		}
+		var r = TextReader.new(a, input);
+		def p = RiffParser.new(r);
+		var d = p.parseFile();
+		if (!r.ok) {
+			OUT.put3("%s @ %d:%d: ", a, r.error_line, r.error_column);
+			OUT.puts(r.error_msg).ln();
+			var b = r.renderCurrentLineWithCaret(StringBuilder.new(), r.error_pos);
+			b.ln().send(WRITE);
+		}
+	}
+	return result;
+}
+
+// A TraceBuilder is a {StringBuilder} which can also dump itself to stdout
+// and has additional utility methods.
+def WRITE = System.write(1, _);
+class TraceBuilder extends StringBuilder {
+	def ln() -> this {
+		putc('\n');
+		send(WRITE);
+	}
+}
+def OUT = TraceBuilder.new();
