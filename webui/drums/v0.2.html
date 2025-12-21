@@ -9,12 +9,16 @@
   body { font-family: sans-serif; background: #fff; color: #000; margin: 0; }
   #top { display: flex; flex-wrap: wrap; gap: 1vh; padding: 1vh; background: #eee; align-items: stretch; }
   #top button, #top select { flex: 1 1 0; font-size: 3.2vh; padding: 1.6vh 1vw; }
-  button { cursor: pointer; }
-  button.primary { background: #007700; color: #fff; }
-  button.primary.active { background: #f4f4f4; color: #000; }
-  button.danger { background: #770000; color: #fff; }
-  button.toggle { background: #f4f4f4; }
-  button.toggle.on { background: #007700; color: #fff; }
+  button { cursor: pointer; border: 1px solid #bbb; }
+  button.primary { background: #f4f4f4; color: #000; border: 1px solid #bbb; }
+  button.primary.playing { background: #007700; color: #fff; border: 1px solid #007700; }
+  button.danger { background: #f4f4f4; color: #000; border: 1px solid #999; }
+  button.danger.stopped { background: #770000; color: #fff; border: 1px solid #770000; }
+  button.toggle { background: #f4f4f4; border: 1px solid #bbb; }
+  button.toggle.on { background: #007700; color: #fff; border: 1px solid #007700; }
+  button.mute { background: #f4f4f4; color: #000; border: 1px solid #bbb; }
+  button.mute.active { background: #ffcc00; color: #000; border: 1px solid #ffcc00; }
+  button.flash { background: #4CAF50; color: #fff; }
 
   #repeatViz { padding: 1vh 1vw; display: flex; gap: 1rem; align-items: center; }
   #repeatViz .label { font-weight: bold; }
@@ -50,8 +54,9 @@
 <body>
   <div id="top">
     <button id="btnPlay"   class="primary">▶️ Play</button>
-    <button id="btnStop"   class="danger" disabled>⏹ Stop</button>
-    <button id="btnTap"    class="toggle">🕒 Tap Tempo</button>
+    <button id="btnStop"   class="danger stopped">⏹ Stop</button>
+    <button id="btnMute"   class="mute">🔊 Sound</button>
+    <button id="btnTap">🕒 Tap Tempo</button>
     <select id="selSteps">
       <option value="16" selected>16 steps (8th notes ×2 bars)</option>
       <option value="24">24 steps (8th notes ×4 bars, 6/8)</option>
@@ -90,7 +95,7 @@
 // --- Global state ---
 let bpm = 110;              // quarter-note BPM
 let playing = false;
-let tapMode = false;
+let muted = false;
 let steps = 16;             // 16 or 32 eighth-note steps
 let currentStep = 0;        // which step is currently playing (0..steps-1)
 let startTime = 0;          // audio time for transport start
@@ -426,6 +431,7 @@ function updateCellActivity(iteration) {
 function stepDuration() { return (60 / bpm) / 2; } // 8th-note grid
 
 function scheduleStep(si, when, useFill) {
+  if (muted) return; // Skip sound generation when muted
   VOICES.forEach((v, vi) => {
     if (useFill) {
       // si is the fill pattern index (0 to FILL_LENGTH-1)
@@ -497,24 +503,40 @@ function actionPlay() { // start transport
   highlightRepeatBox(1);
   updateCellActivity(1);
   requestAnimationFrame(tickRAF);
-  el.btnPlay.disabled = true; el.btnStop.disabled = false;
-  el.btnPlay.classList.add('active');
+  el.btnPlay.classList.add('playing');
+  el.btnStop.classList.remove('stopped');
+  updateMuteButton();
 }
 
 function actionStop() { // stop transport
   if (!playing) return;
   playing = false;
-  el.btnPlay.disabled = false; el.btnStop.disabled = true;
-  el.btnPlay.classList.remove('active');
+  el.btnPlay.classList.remove('playing');
+  el.btnStop.classList.add('stopped');
   currentIteration = 1;
   highlightRepeatBox(0); // Clear highlight
   updateCellActivity(1); // Reset to first iteration state
+  updateMuteButton();
 }
 
-function actionTapModeToggle() { // enable/disable tap capture
-  tapMode = !tapMode;
-  if (tapMode) taps.length = 0;
-  el.btnTap.classList.toggle('on', tapMode);
+function actionMuteToggle() { // toggle mute
+  muted = !muted;
+  updateMuteButton();
+
+  // Flash the mute button
+  el.btnMute.classList.add('flash');
+  setTimeout(() => el.btnMute.classList.remove('flash'), 150);
+}
+
+function updateMuteButton() {
+  if (muted && playing) {
+    el.btnMute.classList.add('active');
+  } else {
+    el.btnMute.classList.remove('active');
+  }
+
+  // Update icon based on muted state
+  el.btnMute.textContent = muted ? '🔇 Muted' : '🔊 Sound';
 }
 
 function actionTapSpace() { // accumulate taps → BPM
@@ -529,6 +551,10 @@ function actionTapSpace() { // accumulate taps → BPM
     el.bpmVal.value = bpm;
     updatePatternText();
     if (playing) { startTime = ctx.currentTime; }
+
+    // Flash the tap button
+    el.btnTap.classList.add('flash');
+    setTimeout(() => el.btnTap.classList.remove('flash'), 150);
   }
 }
 
@@ -675,12 +701,10 @@ function actionRandom() { // quick seed pattern (correct for 8th grid)
 }
 
 function actionKeyDown(e) { // global keyboard shortcuts
-  // Tap-mode space capture
-  if (tapMode && e.code === 'Space') { e.preventDefault(); actionTapSpace(); return; }
-
   if (e.code === 'Space') { e.preventDefault(); if (playing) actionStop(); else actionPlay(); return; }
   if (e.code === 'KeyR' && !e.metaKey && !e.ctrlKey) { e.preventDefault(); actionRandom(); return; }
-  if (e.code === 'KeyT') { e.preventDefault(); actionTapModeToggle(); return; } // T toggles tap mode
+  if (e.code === 'KeyT') { e.preventDefault(); actionTapSpace(); return; } // T triggers tap tempo
+  if (e.code === 'KeyM') { e.preventDefault(); actionMuteToggle(); return; } // M toggles mute
   if (e.code === 'Minus' || e.code === 'NumpadSubtract') {
     // Round up to nearest 5, then subtract 5
     const rounded = Math.ceil(bpm / 5) * 5;
@@ -703,6 +727,7 @@ function init() {
   // Cache DOM
   el.btnPlay   = document.getElementById('btnPlay');
   el.btnStop   = document.getElementById('btnStop');
+  el.btnMute   = document.getElementById('btnMute');
   el.btnTap    = document.getElementById('btnTap');
   el.btnClear  = document.getElementById('btnClear');
   el.btnRandom = document.getElementById('btnRandom');
@@ -724,7 +749,8 @@ function init() {
   // Wire events to actions
   el.btnPlay.addEventListener('click', actionPlay);
   el.btnStop.addEventListener('click', actionStop);
-  el.btnTap.addEventListener('click', actionTapModeToggle);
+  el.btnMute.addEventListener('click', actionMuteToggle);
+  el.btnTap.addEventListener('click', actionTapSpace);
   el.btnClear.addEventListener('click', actionClear);
   el.btnRandom.addEventListener('click', actionRandom);
   el.selSteps.addEventListener('change', e => actionSetSteps(parseInt(e.target.value,10)));
