@@ -703,7 +703,7 @@ function actionRandom() { // quick seed pattern (correct for 8th grid)
 function actionKeyDown(e) { // global keyboard shortcuts
   if (e.code === 'Space') { e.preventDefault(); if (playing) actionStop(); else actionPlay(); return; }
   if (e.code === 'KeyR' && !e.metaKey && !e.ctrlKey) { e.preventDefault(); actionRandom(); return; }
-  if (e.code === 'KeyT') { e.preventDefault(); actionTapSpace(); return; } // T triggers tap tempo
+  if (e.code === 'KeyT' && document.activeElement !== el.patternText) { e.preventDefault(); actionTapSpace(); return; } // T triggers tap tempo
   if (e.code === 'KeyM') { e.preventDefault(); actionMuteToggle(); return; } // M toggles mute
   if (e.code === 'Minus' || e.code === 'NumpadSubtract') {
     // Round up to nearest 5, then subtract 5
