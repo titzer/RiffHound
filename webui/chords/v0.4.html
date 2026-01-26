@@ -1,0 +1,1006 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>RiffHound Chord Machine v0.4</title>
+<style>
+  /* Minimal, readable, big-click targets */
+  body { font-family: sans-serif; background: #fff; color: #000; margin: 0; }
+  #top { display: flex; flex-wrap: nowrap; gap: 1vh; padding: 1vh; background: #eee; align-items: stretch; }
+  #top button { flex: 1 1 0; font-size: 4vh; padding: 2vh 1vw; }
+  button { cursor: pointer; border: 1px solid #bbb; }
+  button.primary { background: #f4f4f4; color: #000; border: 1px solid #bbb; }
+  button.primary.playing { background: #007700; color: #fff; border: 1px solid #007700; }
+  button.danger { background: #f4f4f4; color: #000; border: 1px solid #999; }
+  button.danger.stopped { background: #770000; color: #fff; border: 1px solid #770000; }
+  button.toggle { background: #f4f4f4; border: 1px solid #bbb; }
+  button.toggle.on { background: #007700; color: #fff; border: 1px solid #007700; }
+  button.mute { background: #f4f4f4; color: #000; border: 1px solid #bbb; }
+  button.mute.active { background: #ffcc00; color: #000; border: 1px solid #ffcc00; }
+  button.flash { background: #4CAF50; color: #fff; }
+
+  #strip { position: relative; display: flex; gap: 0; height: 30vh; border-top: 1px solid #ccc; border-bottom: 1px solid #ccc; }
+  .chord { flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; position: relative; border-right: 1px solid #ddd; text-align: center; }
+  .chord:last-child { border-right: none; }
+  .chord .literal { font-family: monospace; font-size: 8vw; font-weight: bold; line-height: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .chord .roman { font-size: 3.5vw; color: #333; line-height: 1.2; }
+  .chord.active { background: #8389ff; }
+  .beatProg { position: absolute; left: 0; top: 0; bottom: 0; width: 0%; background: rgba(0,0,0,0.07); pointer-events: none; }
+  #loopMarker { width: 3vw; min-width: 20px; background: repeating-linear-gradient(90deg,#000 0,#000 2px,transparent 2px,transparent 6px); display: flex; align-items: center; justify-content: center; font-size: 2vw; }
+  .loopFlash { animation: flash 0.35s ease-in-out 1; }
+  @keyframes flash { 0%{box-shadow: inset 0 0 0 6px #ff0;} 100%{box-shadow: inset 0 0 0 0px #ff0;} }
+
+  /* Strum pattern display */
+  #strumSection { background: #f8f8f8; border-top: 1px solid #ccc; padding: 1vh; }
+  #strumHeader { display: flex; align-items: center; gap: 1em; margin-bottom: 0.5vh; }
+  #strumHeader label { font-weight: bold; font-size: 2.2vh; }
+  #strumContainer { display: flex; gap: 0; height: 18vh; background: #fff; border: 2px solid #999; border-bottom: none; border-radius: 4px 4px 0 0; overflow: hidden; }
+  .strumBeat { flex: 1 1 0; display: flex; flex-direction: column; align-items: center; justify-content: center; border-right: 2px solid #ccc; position: relative; cursor: pointer; transition: background 0.1s; }
+  .strumBeat:last-child { border-right: none; }
+  .strumBeat:hover { background: #f0f0ff; }
+  .strumBeat.active { background: #a0a8ff; }
+  .strumBeat .strumIcon { font-size: 10vh; font-weight: bold; line-height: 1; }
+  .strumBeat .strumLabel { font-size: 3vh; font-weight: bold; margin-top: 0.5vh; }
+  .strumBeat .beatNum { font-size: 2vh; font-weight: bold; color: #666; position: absolute; top: 4px; left: 50%; transform: translateX(-50%); }
+
+  /* Strum type colors - bold and visible */
+  .strumBeat[data-type="down"] { background: #e0f0ff; }
+  .strumBeat[data-type="down"] .strumIcon,
+  .strumBeat[data-type="down"] .strumLabel { color: #0044aa; }
+  .strumBeat[data-type="up"] { background: #fff0e0; }
+  .strumBeat[data-type="up"] .strumIcon,
+  .strumBeat[data-type="up"] .strumLabel { color: #cc5500; }
+  .strumBeat[data-type="muted"] { background: #f0f0f0; }
+  .strumBeat[data-type="muted"] .strumIcon,
+  .strumBeat[data-type="muted"] .strumLabel { color: #333; }
+  .strumBeat[data-type="rest"] { background: #fafafa; }
+  .strumBeat[data-type="rest"] .strumIcon,
+  .strumBeat[data-type="rest"] .strumLabel { color: #bbb; }
+  .strumBeat[data-type="bass"] { background: #f8e0f8; }
+  .strumBeat[data-type="bass"] .strumIcon,
+  .strumBeat[data-type="bass"] .strumLabel { color: #880088; }
+  .strumBeat[data-type="mid"] { background: #fff8e0; }
+  .strumBeat[data-type="mid"] .strumIcon,
+  .strumBeat[data-type="mid"] .strumLabel { color: #aa8800; }
+  .strumBeat[data-type="upper"] { background: #e0f8f0; }
+  .strumBeat[data-type="upper"] .strumIcon,
+  .strumBeat[data-type="upper"] .strumLabel { color: #008855; }
+
+  /* Active beat highlight */
+  .strumBeat.active[data-type="down"] { background: #80c0ff; }
+  .strumBeat.active[data-type="up"] { background: #ffb080; }
+  .strumBeat.active[data-type="muted"] { background: #999; }
+  .strumBeat.active[data-type="rest"] { background: #ddd; }
+  .strumBeat.active[data-type="bass"] { background: #e080e0; }
+  .strumBeat.active[data-type="mid"] { background: #ffdd66; }
+  .strumBeat.active[data-type="upper"] { background: #80e0c0; }
+
+  /* Dynamics bar container */
+  #dynamicsContainer {
+    display: flex;
+    gap: 0;
+    height: 3vh;
+    background: #e8e8e8;
+    border: 2px solid #999;
+    border-top: none;
+    border-radius: 0 0 4px 4px;
+    overflow: hidden;
+  }
+  .dynamicsCell {
+    flex: 1 1 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-right: 2px solid #ccc;
+    cursor: pointer;
+    padding: 2px;
+  }
+  .dynamicsCell:last-child { border-right: none; }
+  .dynamicsCell:hover { background: #ddd; }
+  .dynamicsBar {
+    height: 60%;
+    background: #666;
+    border-radius: 2px;
+    transition: width 0.1s;
+  }
+  .dynamicsCell[data-dynamics="soft"] .dynamicsBar { width: 30%; background: #999; }
+  .dynamicsCell[data-dynamics="medium"] .dynamicsBar { width: 60%; background: #666; }
+  .dynamicsCell[data-dynamics="loud"] .dynamicsBar { width: 100%; background: #c00; }
+  .dynamicsCell[data-type="rest"] .dynamicsBar { width: 0%; }
+
+  /* Icon opacity based on dynamics */
+  .strumBeat[data-dynamics="soft"] .strumIcon { opacity: 0.5; }
+  .strumBeat[data-dynamics="medium"] .strumIcon { opacity: 0.75; }
+  .strumBeat[data-dynamics="loud"] .strumIcon { opacity: 1; }
+
+  /* Animated strum indicator */
+  .strumIndicator { position: absolute; bottom: 0; left: 0; right: 0; height: 6px; background: #4CAF50; transform: scaleX(0); transform-origin: left; }
+  .strumBeat.active .strumIndicator { animation: strumPulse 0.15s ease-out; }
+  @keyframes strumPulse {
+    0% { transform: scaleX(0); background: #4CAF50; }
+    50% { transform: scaleX(1); background: #8BC34A; }
+    100% { transform: scaleX(1); background: #4CAF50; }
+  }
+
+  #bottom { padding: 1vh; font-size: 2.2vh; display: flex; flex-wrap: wrap; gap: .6em; align-items: center; }
+  input, select { font-size: 2.2vh; }
+  #literalInput.editing { outline: 3px solid #66f; background: #eef; }
+  #literalInput.invalid { outline: 3px solid #f00; background: #fee; }
+
+  /* Pattern selector */
+  #patternSelect { font-size: 2vh; padding: 0.3em; }
+</style>
+</head>
+<body>
+  <div id="top">
+    <button id="btnPlay"   class="primary">▶ Play</button>
+    <button id="btnStop"   class="danger stopped">⏹ Stop</button>
+    <button id="btnMute"   class="mute">🔊 Sound</button>
+    <button id="btnTap">🕒 Tap Tempo</button>
+    <button id="btnDrums"  class="toggle">🥁 Drums</button>
+    <button id="btnChords" class="toggle on">🎹 Chords</button>
+    <button id="btnRandom" class="toggle">🎲 Random</button>
+  </div>
+
+  <div id="strip"></div>
+
+  <div id="strumSection">
+    <div id="strumHeader">
+      <label>Strum Pattern:</label>
+      <select id="patternSelect">
+        <option value="basic">Basic (D D D D)</option>
+        <option value="folk" selected>Folk (D DU UD U)</option>
+        <option value="reggae">Reggae (r Mu r Mu)</option>
+        <option value="arpeggio">Arpeggio (B U U U)</option>
+        <option value="boom-chick">Boom-Chick (B U D U)</option>
+        <option value="custom">Custom</option>
+      </select>
+    </div>
+    <div id="strumContainer"></div>
+    <div id="dynamicsContainer"></div>
+  </div>
+
+  <div id="bottom">
+    Key: <select id="keySelect"></select>
+    Progression: <input id="literalInput" size="50" value="C | F | G | C">
+    BPM: <input id="bpm" type="range" min="30" max="300" value="110"> <input id="bpmVal" type="number" min="30" max="300" value="110" style="width: 4em;">
+  </div>
+
+<script>
+// =========================
+// v0.4 — strumming patterns
+// =========================
+
+// --- Strum types ---
+const STRUM_TYPES = {
+  down:  { icon: '↓', label: 'Down', short: 'D' },
+  up:    { icon: '↑', label: 'Up', short: 'U' },
+  muted: { icon: '✕', label: 'Muted', short: 'M' },
+  rest:  { icon: '·', label: 'Rest', short: 'r' },
+  bass:  { icon: '◎', label: 'Bass', short: 'B' },
+  mid:   { icon: '◉', label: 'Mid', short: 'm' },
+  upper: { icon: '◠', label: 'Upper', short: 'u' }
+};
+
+const STRUM_ORDER = ['down', 'up', 'muted', 'rest', 'bass', 'mid', 'upper'];
+
+// Dynamics levels
+const DYNAMICS = {
+  soft:   { label: 'S', gain: 0.35 },
+  medium: { label: 'M', gain: 0.65 },
+  loud:   { label: 'L', gain: 1.0 }
+};
+const DYNAMICS_ORDER = ['soft', 'medium', 'loud'];
+
+// Helper to create a strum beat with type and dynamics
+function strum(type, dynamics = 'medium') {
+  return { type, dynamics };
+}
+
+// Preset patterns (8 eighth notes per bar)
+const PATTERNS = {
+  basic:       [strum('down','loud'), strum('rest'), strum('down','medium'), strum('rest'), strum('down','loud'), strum('rest'), strum('down','medium'), strum('rest')],
+  folk:        [strum('down','loud'), strum('rest'), strum('down','medium'), strum('up','soft'), strum('rest'), strum('up','soft'), strum('down','medium'), strum('up','soft')],
+  reggae:      [strum('rest'), strum('muted','medium'), strum('up','soft'), strum('rest'), strum('rest'), strum('muted','medium'), strum('up','soft'), strum('rest')],
+  arpeggio:    [strum('bass','loud'), strum('rest'), strum('upper','soft'), strum('rest'), strum('upper','soft'), strum('rest'), strum('upper','soft'), strum('rest')],
+  'boom-chick': [strum('bass','loud'), strum('rest'), strum('upper','medium'), strum('rest'), strum('down','loud'), strum('rest'), strum('upper','medium'), strum('rest')],
+  custom:      [strum('down','loud'), strum('rest'), strum('down','medium'), strum('up','soft'), strum('rest'), strum('up','soft'), strum('down','medium'), strum('up','soft')]
+};
+
+// --- Global state ---
+let bpm = 92;
+let playing = false;
+let muted = false;
+let editMode = false;
+let drumsOn = false;
+let chordsOn = true;
+let chords = [];
+let chordIdx = 0;
+let barStart = 0; // audio time of current bar start
+let strumPattern = PATTERNS.folk.map(s => ({...s}));
+let currentStrumIdx = -1;
+const taps = [];
+
+// --- DOM refs ---
+const el = {};
+
+// --- Audio setup ---
+const NOTE_NAMES = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
+const KEYS = ['C','Db','D','Eb','E','F','F#','G','Ab','A','Bb','B'];
+
+const ctx = new (window.AudioContext || window.webkitAudioContext)();
+const master = ctx.createGain(); master.connect(ctx.destination);
+let chordsGain = ctx.createGain(); chordsGain.connect(master);
+let drumsGain  = ctx.createGain(); drumsGain.connect(master);
+let metroGain  = ctx.createGain(); metroGain.connect(master);
+
+// --- One-off buffers ---
+const noiseBuf = (() => {
+  const b = ctx.createBuffer(1, ctx.sampleRate * 0.2, ctx.sampleRate);
+  const d = b.getChannelData(0);
+  for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+  return b;
+})();
+
+// =========================
+// Helpers (theory / parsing)
+// =========================
+function keyToSemi(k) {
+  const m = { Db:1, Eb:3, F:5, Gb:6, Ab:8, Bb:10 };
+  return (m[k] != null) ? m[k] : (NOTE_NAMES.indexOf(k) >= 0 ? NOTE_NAMES.indexOf(k) : 0);
+}
+
+function nameForSemi(s) {
+  return NOTE_NAMES[(s + 12) % 12];
+}
+
+function parseLiteralToken(tok) {
+  tok = tok.trim();
+  if (!tok) return null;
+  const m = tok.match(/^([A-Ga-g])(b|#)?(m)?/);
+  if (!m) return null;
+  const letter = m[1].toUpperCase();
+  const acc = m[2] || '';
+  const minor = !!m[3];
+  const enh = { Db:'C#', Eb:'D#', Gb:'F#', Ab:'G#', Bb:'A#' };
+  const sharp = enh[letter + acc] || (letter + acc);
+  const idx = NOTE_NAMES.indexOf(sharp);
+  if (idx < 0) return null;
+  return { root: idx, quality: minor ? 'm' : 'M' };
+}
+
+function romanFor(rootSemi, quality) {
+  try {
+    const key = keyToSemi(el.keySelect.value);
+    const deg = (rootSemi - key + 12) % 12;
+    const map = { 0:'I', 2:'ii', 4:'iii', 5:'IV', 7:'V', 9:'vi', 11:'vii°' };
+    let r = map[deg];
+    if (!r) return '?';
+    if (quality === 'm') r = r.toLowerCase();
+    return r;
+  } catch {
+    return '?';
+  }
+}
+
+function buildTriad(rootMidi, quality) {
+  const third = (quality === 'm') ? 3 : 4;
+  return [rootMidi, rootMidi + third, rootMidi + 7];
+}
+
+// =========================
+// Audio voice utilities
+// =========================
+
+// Strum delay for realistic guitar sound (in seconds)
+const STRUM_DELAY = 0.035; // 35ms between each string - noticeable stagger
+
+function voiceStrum(notes, t, dur, strumType, dynamics = 'medium') {
+  if (strumType === 'rest') return; // Silent
+
+  const grp = ctx.createGain();
+  grp.gain.value = 0;
+  grp.connect(chordsGain);
+
+  // Apply dynamics multiplier
+  const dynGain = DYNAMICS[dynamics]?.gain || 0.65;
+
+  let notesToPlay = [...notes];
+  let delays = [];
+  let peak = 0.55 * dynGain;
+  let filterFreq = 20000; // No filter by default
+  let filterQ = 1;
+  let useNoise = false; // Add noise for muted strums
+
+  switch (strumType) {
+    case 'down':
+      // Low to high, normal sound
+      notesToPlay = notes.slice().sort((a, b) => a - b);
+      delays = notesToPlay.map((_, i) => i * STRUM_DELAY);
+      break;
+    case 'up':
+      // High to low
+      notesToPlay = notes.slice().sort((a, b) => b - a);
+      delays = notesToPlay.map((_, i) => i * STRUM_DELAY);
+      break;
+    case 'muted':
+      // All at once, muffled and very short with noise
+      notesToPlay = notes.slice().sort((a, b) => a - b);
+      delays = notesToPlay.map(() => 0);
+      filterFreq = 400; // Much more muffled
+      filterQ = 4;
+      peak = 0.5 * dynGain;
+      dur = Math.min(dur, 0.06); // Even shorter
+      useNoise = true;
+      break;
+    case 'bass':
+      // Just the root note
+      notesToPlay = [Math.min(...notes)];
+      delays = [0];
+      peak = 0.7 * dynGain;
+      break;
+    case 'mid':
+      // Just the middle note (the third)
+      const sortedMid = notes.slice().sort((a, b) => a - b);
+      notesToPlay = [sortedMid[1]]; // Middle note of triad
+      delays = [0];
+      peak = 0.65 * dynGain;
+      break;
+    case 'upper':
+      // Upper two notes of triad
+      const sorted = notes.slice().sort((a, b) => a - b);
+      notesToPlay = sorted.slice(1); // Remove lowest
+      delays = notesToPlay.map((_, i) => i * STRUM_DELAY * 0.5);
+      peak = 0.5 * dynGain;
+      break;
+    default:
+      delays = notes.map(() => 0);
+  }
+
+  // Create filter for muted sound
+  let filterNode = null;
+  if (filterFreq < 20000) {
+    filterNode = ctx.createBiquadFilter();
+    filterNode.type = 'lowpass';
+    filterNode.frequency.value = filterFreq;
+    filterNode.Q.value = filterQ;
+    filterNode.connect(grp);
+  }
+
+  const targetNode = filterNode || grp;
+
+  notesToPlay.forEach((n, i) => {
+    const noteStart = t + delays[i];
+    const o = ctx.createOscillator();
+    o.type = 'triangle';
+    o.frequency.value = 440 * Math.pow(2, (n - 69) / 12);
+    const g = ctx.createGain();
+    g.gain.value = 0.6;
+    o.connect(g).connect(targetNode);
+    o.start(noteStart);
+    o.stop(noteStart + dur);
+  });
+
+  // Add percussive noise for muted strums
+  if (useNoise) {
+    const noise = ctx.createBufferSource();
+    noise.buffer = noiseBuf;
+    const noiseFilter = ctx.createBiquadFilter();
+    noiseFilter.type = 'bandpass';
+    noiseFilter.frequency.value = 600;
+    noiseFilter.Q.value = 2;
+    const noiseGain = ctx.createGain();
+    noiseGain.gain.setValueAtTime(0.4, t);
+    noiseGain.gain.exponentialRampToValueAtTime(0.001, t + 0.08);
+    noise.connect(noiseFilter).connect(noiseGain).connect(grp);
+    noise.start(t);
+    noise.stop(t + 0.1);
+  }
+
+  // Envelope
+  const maxDelay = Math.max(...delays);
+  const a = 0.02, d = 0.1, s = 0.7, r = 0.06;
+
+  if (strumType === 'muted') {
+    // Quick percussive envelope for muted
+    grp.gain.setValueAtTime(0, t);
+    grp.gain.linearRampToValueAtTime(peak, t + 0.005);
+    grp.gain.exponentialRampToValueAtTime(0.001, t + dur);
+  } else {
+    grp.gain.setValueAtTime(0, t);
+    grp.gain.linearRampToValueAtTime(peak, t + maxDelay + a);
+    grp.gain.linearRampToValueAtTime(peak * s, t + maxDelay + a + d);
+    grp.gain.setValueAtTime(peak * s, t + dur - r);
+    grp.gain.linearRampToValueAtTime(0.0001, t + dur);
+  }
+}
+
+function voiceKick(t) {
+  const o = ctx.createOscillator(); o.type = 'sine';
+  const g = ctx.createGain();
+  o.frequency.setValueAtTime(110, t);
+  o.frequency.exponentialRampToValueAtTime(50, t + 0.08);
+  g.gain.setValueAtTime(0.9, t);
+  g.gain.exponentialRampToValueAtTime(0.001, t + 0.1);
+  o.connect(g).connect(drumsGain);
+  o.start(t); o.stop(t + 0.12);
+}
+
+function voiceSnare(t) {
+  const s = ctx.createBufferSource(); s.buffer = noiseBuf;
+  const bp = ctx.createBiquadFilter(); bp.type = 'bandpass'; bp.frequency.value = 1800;
+  const g = ctx.createGain(); g.gain.setValueAtTime(0.5, t); g.gain.exponentialRampToValueAtTime(0.001, t + 0.1);
+  s.connect(bp).connect(g).connect(drumsGain);
+  s.start(t); s.stop(t + 0.1);
+}
+
+function voiceHat(t) {
+  const s = ctx.createBufferSource(); s.buffer = noiseBuf;
+  const hp = ctx.createBiquadFilter(); hp.type = 'highpass'; hp.frequency.value = 6000;
+  const g = ctx.createGain(); g.gain.setValueAtTime(0.18, t); g.gain.exponentialRampToValueAtTime(0.001, t + 0.05);
+  s.connect(hp).connect(g).connect(drumsGain);
+  s.start(t); s.stop(t + 0.05);
+}
+
+function voiceMetro(t, accent = false) {
+  const o = ctx.createOscillator(); o.type = 'square';
+  const g = ctx.createGain(); g.gain.value = accent ? 0.25 : 0.12;
+  o.frequency.setValueAtTime(accent ? 2000 : 1200, t);
+  o.connect(g).connect(metroGain);
+  o.start(t); o.stop(t + 0.03);
+}
+
+// =========================
+// Rendering
+// =========================
+function renderStrip() {
+  el.strip.innerHTML = '';
+  if (!chords || chords.length === 0) return;
+  chords.forEach((ch, i) => {
+    const cell = document.createElement('div');
+    cell.className = 'chord';
+    cell.dataset.idx = i;
+    const lit = nameForSemi(ch.root) + (ch.quality === 'm' ? 'm' : '');
+    const rn  = romanFor(ch.root, ch.quality);
+    cell.innerHTML = `
+      <div class="beatProg"></div>
+      <div class="literal">${lit}</div>
+      <div class="roman">${rn}</div>
+    `;
+    el.strip.appendChild(cell);
+  });
+  const loop = document.createElement('div');
+  loop.id = 'loopMarker';
+  loop.title = 'Loop start';
+  loop.textContent = '↩';
+  el.strip.appendChild(loop);
+}
+
+function renderStrumPattern() {
+  el.strumContainer.innerHTML = '';
+  el.dynamicsContainer.innerHTML = '';
+
+  strumPattern.forEach((beat, i) => {
+    // Strum beat cell
+    const beatEl = document.createElement('div');
+    beatEl.className = 'strumBeat';
+    beatEl.dataset.idx = i;
+    beatEl.dataset.type = beat.type;
+    beatEl.dataset.dynamics = beat.dynamics;
+
+    const info = STRUM_TYPES[beat.type];
+    beatEl.innerHTML = `
+      <div class="beatNum">${Math.floor(i/2) + 1}${i % 2 === 0 ? '' : '&'}</div>
+      <div class="strumIcon">${info.icon}</div>
+      <div class="strumLabel">${info.short}</div>
+      <div class="strumIndicator"></div>
+    `;
+
+    // Click icon/label area to cycle through strum types
+    const iconEl = beatEl.querySelector('.strumIcon');
+    const labelEl = beatEl.querySelector('.strumLabel');
+    const cycleType = (e) => {
+      e.stopPropagation();
+      const currentIdx = STRUM_ORDER.indexOf(beat.type);
+      const nextIdx = (currentIdx + 1) % STRUM_ORDER.length;
+      strumPattern[i].type = STRUM_ORDER[nextIdx];
+      el.patternSelect.value = 'custom';
+      renderStrumPattern();
+    };
+    iconEl.style.cursor = 'pointer';
+    labelEl.style.cursor = 'pointer';
+    iconEl.addEventListener('click', cycleType);
+    labelEl.addEventListener('click', cycleType);
+
+    el.strumContainer.appendChild(beatEl);
+
+    // Dynamics cell
+    const dynCell = document.createElement('div');
+    dynCell.className = 'dynamicsCell';
+    dynCell.dataset.idx = i;
+    dynCell.dataset.type = beat.type;
+    dynCell.dataset.dynamics = beat.dynamics;
+    dynCell.innerHTML = '<div class="dynamicsBar"></div>';
+
+    dynCell.addEventListener('click', () => {
+      const currentIdx = DYNAMICS_ORDER.indexOf(beat.dynamics);
+      const nextIdx = (currentIdx + 1) % DYNAMICS_ORDER.length;
+      strumPattern[i].dynamics = DYNAMICS_ORDER[nextIdx];
+      el.patternSelect.value = 'custom';
+      renderStrumPattern();
+    });
+
+    el.dynamicsContainer.appendChild(dynCell);
+  });
+}
+
+function highlightActiveCell() {
+  const cells = el.strip.querySelectorAll('.chord');
+  cells.forEach(c => c.classList.remove('active'));
+  const active = cells[chordIdx];
+  if (active) {
+    active.classList.add('active');
+    const prog = active.querySelector('.beatProg');
+    if (prog) prog.style.width = '0%';
+  }
+}
+
+function highlightActiveStrum(idx) {
+  const beats = el.strumContainer.querySelectorAll('.strumBeat');
+  beats.forEach(b => b.classList.remove('active'));
+  if (idx >= 0 && idx < beats.length) {
+    beats[idx].classList.add('active');
+  }
+}
+
+function updateBeatProgress(now) {
+  const durBar = (60 / bpm) * 4;
+  const p = (now - barStart) / durBar; // 0..1 per bar
+  const prog = el.strip.querySelector('.chord.active .beatProg');
+  if (prog) prog.style.width = Math.max(0, Math.min(100, p * 100)) + '%';
+
+  // Update strum highlight
+  const strumIdx = Math.floor(p * strumPattern.length);
+  if (strumIdx !== currentStrumIdx && strumIdx < strumPattern.length) {
+    currentStrumIdx = strumIdx;
+    highlightActiveStrum(currentStrumIdx);
+  }
+}
+
+// =========================
+// Transport & scheduling
+// =========================
+function scheduleBar(t) {
+  if (muted) return; // Skip sound generation when muted
+
+  const beat = 60 / bpm;
+  const bar  = beat * 4;
+  const eighthNote = beat / 2;
+
+  if (chordsOn && chords.length) {
+    const ch = chords[chordIdx];
+    const triad = buildTriad(48 + ch.root, ch.quality);
+
+    // Schedule each strum in the pattern
+    strumPattern.forEach((beat, i) => {
+      const strumTime = t + (i * eighthNote);
+      const strumDur = eighthNote * 0.9; // Slightly shorter than full eighth
+      voiceStrum(triad, strumTime, strumDur, beat.type, beat.dynamics);
+    });
+  }
+
+  if (drumsOn) {
+    for (let b = 0; b < 4; b++) {
+      const bt = t + b * beat;
+      if (b === 0 || b === 2) voiceKick(bt);
+      if (b === 1 || b === 3) voiceSnare(bt);
+      voiceHat(bt);
+      voiceHat(bt + beat / 2);
+    }
+  }
+
+  if (!drumsOn && !chordsOn) {
+    for (let b = 0; b < 4; b++) {
+      const bt = t + b * beat;
+      voiceMetro(bt, b === 0);
+    }
+  }
+}
+
+function advanceBar() {
+  const durBar = (60 / bpm) * 4;
+  chordIdx = (chordIdx + 1) % chords.length;
+  barStart += durBar;
+  currentStrumIdx = -1;
+  if (chordIdx === 0) {
+    const first = el.strip.querySelector('.chord[data-idx="0"]');
+    if (first) {
+      first.classList.add('loopFlash');
+      setTimeout(() => first.classList.remove('loopFlash'), 350);
+    }
+  }
+  scheduleBar(barStart);
+}
+
+function tickRAF() {
+  if (!playing) return;
+  const now = ctx.currentTime;
+  const durBar = (60 / bpm) * 4;
+  const p = (now - barStart) / durBar;
+  if (p >= 1) {
+    advanceBar();
+    highlightActiveCell();
+    requestAnimationFrame(tickRAF);
+    return;
+  }
+  updateBeatProgress(now);
+  requestAnimationFrame(tickRAF);
+}
+
+// =========================
+// Parsing & rebuilding
+// =========================
+function parseProgressionFromInput() {
+  const raw = el.literalInput.value;
+  const arr = [];
+  raw.split('|').forEach(tok => {
+    const p = parseLiteralToken(tok);
+    if (p) arr.push(p);
+  });
+  return arr.length ? arr : null;
+}
+
+function rebuildFromInputs() {
+  const parsed = parseProgressionFromInput();
+  if (!parsed) {
+    el.literalInput.classList.add('invalid');
+    return false;
+  }
+  el.literalInput.classList.remove('invalid');
+  chords = parsed;
+  renderStrip();
+  highlightActiveCell();
+  return true;
+}
+
+// =========================
+// UI actions (top-level)
+// =========================
+function actionPlay() { // start transport
+  if (playing) return;
+  ctx.resume();
+  playing = true;
+  chordIdx = 0;
+  currentStrumIdx = -1;
+  barStart = ctx.currentTime + 0.05;
+  highlightActiveCell();
+  scheduleBar(barStart);
+  tickRAF();
+  el.btnPlay.classList.add('playing');
+  el.btnStop.classList.remove('stopped');
+  updateMuteButton();
+}
+
+function actionStop() { // stop transport
+  if (!playing) return;
+  playing = false;
+  currentStrumIdx = -1;
+  highlightActiveStrum(-1);
+
+  // Immediately silence all sounds by disconnecting and recreating gain nodes
+  chordsGain.disconnect();
+  drumsGain.disconnect();
+  metroGain.disconnect();
+  chordsGain = ctx.createGain(); chordsGain.connect(master);
+  drumsGain = ctx.createGain(); drumsGain.connect(master);
+  metroGain = ctx.createGain(); metroGain.connect(master);
+
+  el.btnPlay.classList.remove('playing');
+  el.btnStop.classList.add('stopped');
+  updateMuteButton();
+}
+
+function actionToggleDrums() { // toggle drums
+  drumsOn = !drumsOn;
+  el.btnDrums.classList.toggle('on', drumsOn);
+}
+
+function actionToggleChords() { // toggle chord playback
+  chordsOn = !chordsOn;
+  el.btnChords.classList.toggle('on', chordsOn);
+}
+
+function actionMuteToggle() { // toggle mute
+  muted = !muted;
+  updateMuteButton();
+
+  // Flash the mute button
+  el.btnMute.classList.add('flash');
+  setTimeout(() => el.btnMute.classList.remove('flash'), 150);
+}
+
+function updateMuteButton() {
+  if (muted && playing) {
+    el.btnMute.classList.add('active');
+  } else {
+    el.btnMute.classList.remove('active');
+  }
+
+  // Update icon based on muted state
+  el.btnMute.textContent = muted ? '🔇 Muted' : '🔊 Sound';
+}
+
+function actionTapSpace() { // handle a tap sample
+  const now = performance.now();
+  taps.push(now);
+  while (taps.length > 6) taps.shift();
+  if (taps.length >= 2) {
+    const diffs = taps.slice(1).map((t, i) => t - taps[i]);
+    const avg = diffs.reduce((a, b) => a + b, 0) / diffs.length;
+    const oldBpm = bpm;
+    bpm = Math.max(50, Math.min(200, 60000 / avg));
+    el.bpm.value = bpm;
+    el.bpmVal.value = bpm;
+
+    if (playing && bpm !== oldBpm) {
+      // Clear currently scheduled sounds
+      chordsGain.disconnect();
+      drumsGain.disconnect();
+      metroGain.disconnect();
+      chordsGain = ctx.createGain(); chordsGain.connect(master);
+      drumsGain = ctx.createGain(); drumsGain.connect(master);
+      metroGain = ctx.createGain(); metroGain.connect(master);
+
+      // Preserve current position when changing tempo
+      const nowTime = ctx.currentTime;
+      const oldDur = (60 / oldBpm) * 4; // old bar duration
+      const elapsed = nowTime - barStart;
+      const progress = Math.min((elapsed / oldDur) % 1, 0.99); // position within current bar
+      const newDur = (60 / bpm) * 4; // new bar duration
+      barStart = nowTime - (progress * newDur); // adjust start time to maintain position
+      scheduleBar(barStart);
+    }
+
+    // Flash the tap button
+    el.btnTap.classList.add('flash');
+    setTimeout(() => el.btnTap.classList.remove('flash'), 150);
+  }
+}
+
+function actionSetBPM(val) { // slider or text input changed
+  const oldBpm = bpm;
+  bpm = Math.max(30, Math.min(300, parseInt(val, 10) || bpm));
+  el.bpmVal.value = bpm;
+  el.bpm.value = bpm;
+
+  if (playing && bpm !== oldBpm) {
+    // Clear currently scheduled sounds
+    chordsGain.disconnect();
+    drumsGain.disconnect();
+    metroGain.disconnect();
+    chordsGain = ctx.createGain(); chordsGain.connect(master);
+    drumsGain = ctx.createGain(); drumsGain.connect(master);
+    metroGain = ctx.createGain(); metroGain.connect(master);
+
+    // Preserve current position when changing tempo
+    const now = ctx.currentTime;
+    const oldDur = (60 / oldBpm) * 4; // old bar duration
+    const elapsed = now - barStart;
+    const progress = Math.min((elapsed / oldDur) % 1, 0.99); // position within current bar (0-1)
+    const newDur = (60 / bpm) * 4; // new bar duration
+    barStart = now - (progress * newDur);
+    scheduleBar(barStart);
+  }
+}
+
+function actionRandom() { // pick a random progression
+  const t = [
+      'C | G | Am | F',
+      'C | F | G | C',
+      'C | Am | F | G',
+      'Dm | G | C | G',
+      // House of the rising sun
+      'Am | C | D | F | Am | E | Am | E',
+      // 12-bar blues
+      'C | C | C | C | F | F | C | C | G | F | C | G',
+      'E | E | E | E | A | A | E | E | B | A | E | B',
+      'A | A | A | A | D | D | A | A | E | D | A | E',
+      'B | B | B | B | E | E | B | B | F# | E | B | F#'
+  ];
+  el.literalInput.value = t[Math.floor(Math.random() * t.length)];
+  rebuildFromInputs();
+}
+
+function actionPatternChange(patternName) {
+  if (PATTERNS[patternName]) {
+    strumPattern = PATTERNS[patternName].map(s => ({...s}));
+    renderStrumPattern();
+  }
+}
+
+function actionEnterEditMode() { // focus progression input, disable global shortcuts
+  editMode = true;
+  tapMode = false;
+  el.btnTap.classList.remove('on');
+  el.literalInput.classList.add('editing');
+  el.literalInput.focus();
+  el.literalInput.selectionStart = el.literalInput.value.length;
+  el.literalInput.selectionEnd = el.literalInput.value.length;
+}
+
+function actionExitEditMode() { // validate, update strip, stay if invalid
+  const ok = rebuildFromInputs();
+  if (!ok) return; // remain in edit mode until fixed
+  editMode = false;
+  el.literalInput.classList.remove('editing');
+  el.literalInput.blur();
+}
+
+function actionKeyDown(e) { // global keyboard shortcuts
+  // If editing, only Enter exits; allow all other keys (incl. space) to type
+  if (editMode) {
+    if (e.code === 'Enter') { e.preventDefault(); actionExitEditMode(); }
+    return;
+  }
+
+  // Space toggles play/stop
+  if (e.code === 'Space') {
+    e.preventDefault();
+    if (playing) actionStop(); else actionPlay();
+    return;
+  }
+
+  // Drums toggle (D)
+  if (e.code === 'KeyD') { actionToggleDrums(); return; }
+
+  // Chords toggle (C) — skip if meta/ctrl pressed
+  if (e.code === 'KeyC' && !e.metaKey && !e.ctrlKey) { actionToggleChords(); return; }
+
+  // Random (R) — avoid Cmd/Ctrl+R
+  if (e.code === 'KeyR' && !e.metaKey && !e.ctrlKey) { e.preventDefault(); actionRandom(); return; }
+
+  // Edit mode (E)
+  if (e.code === 'KeyE') { e.preventDefault(); actionEnterEditMode(); return; }
+
+  // Tap tempo (T)
+  if (e.code === 'KeyT') { e.preventDefault(); actionTapSpace(); return; }
+
+  // Mute toggle (M)
+  if (e.code === 'KeyM') { e.preventDefault(); actionMuteToggle(); return; }
+
+  // BPM +/- keys
+  if (e.code === 'Minus' || e.code === 'NumpadSubtract') {
+    // Round up to nearest 5, then subtract 5
+    const rounded = Math.ceil(bpm / 5) * 5;
+    const newBpm = rounded - 5;
+    actionSetBPM(newBpm >= 30 ? newBpm : 30);
+    return;
+  }
+  if (e.code === 'Equal' || e.code === 'NumpadAdd') {
+    // Round down to nearest 5, then add 5
+    const rounded = Math.floor(bpm / 5) * 5;
+    const newBpm = rounded + 5;
+    actionSetBPM(newBpm <= 300 ? newBpm : 300);
+  }
+}
+
+// =========================
+// Wiring (once)
+// =========================
+function init() {
+  // Cache DOM
+  el.btnPlay    = document.getElementById('btnPlay');
+  el.btnStop    = document.getElementById('btnStop');
+  el.btnMute    = document.getElementById('btnMute');
+  el.btnTap     = document.getElementById('btnTap');
+  el.btnDrums   = document.getElementById('btnDrums');
+  el.btnChords  = document.getElementById('btnChords');
+  el.btnRandom  = document.getElementById('btnRandom');
+  el.strip      = document.getElementById('strip');
+  el.keySelect  = document.getElementById('keySelect');
+  el.literalInput = document.getElementById('literalInput');
+  el.bpm        = document.getElementById('bpm');
+  el.bpmVal     = document.getElementById('bpmVal');
+  el.strumContainer = document.getElementById('strumContainer');
+  el.dynamicsContainer = document.getElementById('dynamicsContainer');
+  el.patternSelect = document.getElementById('patternSelect');
+
+  // Populate keys
+  KEYS.forEach(k => {
+    const o = document.createElement('option');
+    o.value = k; o.textContent = k + ' Major';
+    el.keySelect.appendChild(o);
+  });
+  el.keySelect.value = 'C';
+
+  // One-time event wiring to top-level actions
+  el.btnPlay.addEventListener('click', actionPlay);
+  el.btnStop.addEventListener('click', actionStop);
+  el.btnMute.addEventListener('click', actionMuteToggle);
+  el.btnTap.addEventListener('click', actionTapSpace);
+  el.btnDrums.addEventListener('click', actionToggleDrums);
+  el.btnChords.addEventListener('click', actionToggleChords);
+  el.btnRandom.addEventListener('click', actionRandom);
+
+  el.bpm.addEventListener('input', e => actionSetBPM(e.target.value));
+  el.bpmVal.addEventListener('input', e => actionSetBPM(e.target.value));
+  el.keySelect.addEventListener('change', rebuildFromInputs);
+  el.literalInput.addEventListener('focus', () => { if (!editMode) actionEnterEditMode(); });
+  el.literalInput.addEventListener('change', rebuildFromInputs);
+  el.patternSelect.addEventListener('change', e => actionPatternChange(e.target.value));
+
+  document.body.addEventListener('keydown', actionKeyDown);
+
+  // Initial build
+  rebuildFromInputs();
+  renderStrumPattern();
+}
+
+// Boot
+init();
+</script>
+
+Key bindings:
+<ul>
+  <li>
+    SPACE: play or stop
+  </li>
+  <li>
+    D: toggle drums on/off
+  </li>
+  <li>
+    C: toggle chords on/off
+  </li>
+  <li>
+    R: pick random chord progression
+  </li>
+  <li>
+    E: enter edit mode for chord progression
+  </li>
+  <li>
+    T: tap to tempo
+  </li>
+  <li>
+    M: mute
+  </li>
+  <li>
+    -: decrease tempo
+  </li>
+  <li>
+    +: increase tempo
+  </li>
+  </ul>
+
+Tips:
+<ul>
+  <li>
+    Turning off both drums and chords results in a metronome.
+  </li>
+  <li>
+    Repeatedly click <b>Tap Tempo</b> or the T key to set the tempo, drag the tempo slider, or use the plus (+) and (-) keys.
+  </li>
+  <li>
+    Click on strum icons to cycle through strum types. Click the dynamics indicator (S/M/L) to cycle soft/medium/loud.
+  </li>
+  <li>
+    <b>Strum Types:</b>
+    <ul>
+      <li><b>Down (D)</b> - Strum from low to high strings with slight delay</li>
+      <li><b>Up (U)</b> - Strum from high to low strings with slight delay</li>
+      <li><b>Muted (M)</b> - Muffled, percussive strum</li>
+      <li><b>Rest (r)</b> - Silent beat</li>
+      <li><b>Bass (B)</b> - Play only the bass note of the chord</li>
+      <li><b>Mid (m)</b> - Play only the middle note (third) of the chord</li>
+      <li><b>Upper (u)</b> - Play only the upper two notes of the chord</li>
+    </ul>
+  </li>
+  </ul>
+
+
+Errata:
+<ul>
+  </ul>
+
+</body>
+</html>
