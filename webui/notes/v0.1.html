@@ -113,6 +113,8 @@
   let firstTry = 0;
   let history = []; // [{noteName, clef, tries}]
   let waitingForNext = false; // true while showing green note before advancing
+  let trebleEnabled = true;
+  let bassEnabled = true;
 
   // ---------- Audio ----------
   const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
@@ -195,24 +197,19 @@
   // Middle C line is no longer drawn as a full staff line.
   // It appears only as a ledger line when a note is on or near it (handled by drawLedgerLinesFor).
 
-  // Clef drawings using proper SVG paths
-  // Treble clef: G4 line is the reference (spiral wraps around it)
-  // Bass clef: F3 line is the reference (dots straddle it)
-
-  function drawTrebleClef(xPos) {
-    // G4 is the second line of treble staff
+  // Treble clef drawing using SVG path (from UXWing, public domain)
+  // G4 line is the reference (spiral wraps around it)
+  function drawTrebleClef() {
     const yG4 = yForIndex(diatonicIndex("G", 4));
 
-    // Treble clef SVG path (from UXWing, public domain)
     // Original viewBox: 0 0 43.52 122.88
-    // Scale to fit staff height and position so G line is at correct spot
+    // The spiral center (G line) is at roughly y=55 in the original, i.e. ~45% from top
     const scale = 1.1;
     const clefHeight = 122.88 * scale;
     const clefWidth = 43.52 * scale;
 
-    // The G line should be at approximately 37% from top of the clef
-    const yOffset = yG4 - (clefHeight * 0.37);
-    const xOffset = xPos - clefWidth / 2;
+    const yOffset = yG4 - (clefHeight * 0.55);
+    const xOffset = staffX0 + 4 - clefWidth;
 
     const g = el("g", { transform: `translate(${xOffset}, ${yOffset}) scale(${scale})` });
     g.appendChild(el("path", {
@@ -222,50 +219,6 @@
     svg.appendChild(g);
   }
 
-  function drawBassClef(xPos) {
-    // F3 is the fourth line of bass staff (second from top) - dots straddle this
-    const yF3 = yForIndex(diatonicIndex("F", 3));
-    const g = el("g");
-
-    // Bass clef - main curved body with two dots
-    // Scale and position so F line aligns with the main dot
-    const scale = 0.9;
-    const x = xPos;
-
-    // Main dot on F line
-    g.appendChild(el("circle", { cx: x, cy: yF3, r: 8 * scale, fill: "#111" }));
-
-    // Main curved body extending down and left from the dot
-    g.appendChild(el("path", {
-      d: `M ${x} ${yF3}
-          C ${x + 25*scale} ${yF3 - 35*scale}, ${x + 30*scale} ${yF3 - 45*scale}, ${x + 15*scale} ${yF3 - 52*scale}
-          C ${x - 5*scale} ${yF3 - 60*scale}, ${x - 30*scale} ${yF3 - 45*scale}, ${x - 30*scale} ${yF3 - 20*scale}
-          C ${x - 30*scale} ${yF3 + 10*scale}, ${x - 15*scale} ${yF3 + 35*scale}, ${x + 5*scale} ${yF3 + 50*scale}`,
-      fill: "none", stroke: "#111", "stroke-width": 5, "stroke-linecap": "round", "stroke-linejoin": "round"
-    }));
-
-    // Two dots to the right - one above F line, one below (in the spaces E3 and G3)
-    const dotX = x + 22 * scale;
-    const dotSpacing = step; // one space = half line spacing
-    g.appendChild(el("circle", { cx: dotX, cy: yF3 - dotSpacing, r: 5 * scale, fill: "#111" }));
-    g.appendChild(el("circle", { cx: dotX, cy: yF3 + dotSpacing, r: 5 * scale, fill: "#111" }));
-
-    svg.appendChild(g);
-  }
-
-  function drawBrace() {
-    // Simple vertical brace-ish marker at the left to indicate grand staff
-    const x = staffX0 - 30;
-    const yTop = yForIndex(trebleLineIdx[4]) - 40;
-    const yBot = yForIndex(bassLineIdx[0]) + 40;
-    svg.appendChild(el("path", {
-      d: `M ${x} ${yTop} C ${x-20} ${yTop+30}, ${x-20} ${yTop+70}, ${x} ${yTop+100}
-          C ${x+12} ${yTop+120}, ${x+12} ${(yTop+yBot)/2 - 20}, ${x} ${(yTop+yBot)/2}
-          C ${x-12} ${(yTop+yBot)/2 + 20}, ${x-12} ${yBot-120}, ${x} ${yBot-100}
-          C ${x+20} ${yBot-70}, ${x+20} ${yBot-30}, ${x} ${yBot}`,
-      fill: "none", stroke: "#111", "stroke-width": 4, "stroke-linecap": "round"
-    }));
-  }
 
   function drawLedgerLinesFor(idx, xCenter) {
     // Draw ledger lines outside the staves as needed.
@@ -347,59 +300,91 @@
     }
   }
 
-  function renderBoard() {
-    clearSvg();
-
+  function drawStaff() {
     // Title text
     const title = el("text", { x: marginL, y: 40, fill: "#111", "font-size": 22, "font-weight": "600" });
     title.textContent = "Type A–G";
     svg.appendChild(title);
 
-    // Staff system
-    drawBrace();
+    // Always draw both staves
     drawStaffLines(trebleLineIdx);
     drawStaffLines(bassLineIdx);
 
-    // Clefs - positioned relative to their reference lines (G4 for treble, F3 for bass)
-    drawTrebleClef(staffX0 - 70);
-    drawBassClef(staffX0 - 60);
+    // Treble clef on the upper staff
+    drawTrebleClef();
 
-    // Current note
+    // Clef checkboxes to the left of each staff
+    const trebleMidY = (yForIndex(trebleLineIdx[0]) + yForIndex(trebleLineIdx[4])) / 2;
+    const bassMidY = (yForIndex(bassLineIdx[0]) + yForIndex(bassLineIdx[4])) / 2;
+
+    const foTreble = el("foreignObject", { x: 2, y: trebleMidY - 14, width: 82, height: 28 });
+    foTreble.innerHTML = '<label xmlns="http://www.w3.org/1999/xhtml" style="font:13px system-ui;cursor:pointer;display:flex;align-items:center;gap:3px;"><input type="checkbox" id="cbTreble"' + (trebleEnabled ? ' checked' : '') + '> Treble</label>';
+    svg.appendChild(foTreble);
+
+    const foBass = el("foreignObject", { x: 2, y: bassMidY - 14, width: 82, height: 28 });
+    foBass.innerHTML = '<label xmlns="http://www.w3.org/1999/xhtml" style="font:13px system-ui;cursor:pointer;display:flex;align-items:center;gap:3px;"><input type="checkbox" id="cbBass"' + (bassEnabled ? ' checked' : '') + '> Bass</label>';
+    svg.appendChild(foBass);
+
+    // Wire up change listeners after DOM insertion
+    setTimeout(() => {
+      const cbT = document.getElementById("cbTreble");
+      const cbB = document.getElementById("cbBass");
+      if (cbT) cbT.addEventListener("change", () => { trebleEnabled = cbT.checked; });
+      if (cbB) cbB.addEventListener("change", () => { bassEnabled = cbB.checked; });
+    }, 0);
+  }
+
+  function renderBoard() {
+    clearSvg();
+    drawStaff();
     drawNote(current.idx);
   }
 
   // Redraw the note with a specific color and optional label (for correct/hint)
   function redrawNoteAs(color, label) {
-    // Remove old note elements (last few SVG children: ellipse, stem line, possibly ledger lines)
-    // Simpler: just re-render the whole board with the colored note
     clearSvg();
-    // Redraw staff
-    const title = el("text", { x: marginL, y: 40, fill: "#111", "font-size": 22, "font-weight": "600" });
-    title.textContent = "Type A–G";
-    svg.appendChild(title);
-    drawBrace();
-    drawStaffLines(trebleLineIdx);
-    drawStaffLines(bassLineIdx);
-    drawTrebleClef(staffX0 - 70);
-    drawBassClef(staffX0 - 60);
-    const lt = el("text", { x: staffX0 - 10, y: yForIndex(trebleLineIdx[4]) - 55, fill: "#666", "font-size": 14 });
-    lt.textContent = "Treble";
-    svg.appendChild(lt);
-    const lb = el("text", { x: staffX0 - 10, y: yForIndex(bassLineIdx[4]) - 45, fill: "#666", "font-size": 14 });
-    lb.textContent = "Bass";
-    svg.appendChild(lb);
+    drawStaff();
     drawNote(current.idx, color, label);
   }
 
   // ---------- Quiz flow ----------
   function randomInt(lo, hi) { return lo + Math.floor(Math.random() * (hi - lo + 1)); }
 
+  // Note ranges for each clef
+  // Treble: E4 (bottom treble line) to E6
+  // Bass: C2 to A3 (top bass line)
+  // Middle zone (always included): B3, C4, D4
+  const MIDDLE_LO = diatonicIndex("B", 3); // 27
+  const MIDDLE_HI = diatonicIndex("D", 4); // 29
+  const TREBLE_LO = diatonicIndex("E", 4); // 30
+  const TREBLE_HI = diatonicIndex("E", 6); // 44
+  const BASS_LO   = diatonicIndex("C", 2); // 14
+  const BASS_HI   = diatonicIndex("A", 3); // 26
+
+  function buildNotePool() {
+    const pool = [];
+
+    // Always include the middle zone (B3, C4, D4)
+    for (let i = MIDDLE_LO; i <= MIDDLE_HI; i++) pool.push(i);
+
+    // Add treble notes (above middle zone)
+    if (trebleEnabled) {
+      for (let i = TREBLE_LO; i <= TREBLE_HI; i++) pool.push(i);
+    }
+
+    // Add bass notes (below middle zone)
+    if (bassEnabled) {
+      for (let i = BASS_LO; i <= BASS_HI; i++) pool.push(i);
+    }
+
+    return pool;
+  }
+
   function newQuestion() {
-    const idx = randomInt(MIN_IDX, MAX_IDX);
+    const pool = buildNotePool();
+    const idx = pool[randomInt(0, pool.length - 1)];
     const note = noteFromIndex(idx);
 
-    // “Clef” here is just what staff region it visually belongs to (for history display).
-    // Notes at/above middle C lean treble; below lean bass.
     const clef = (idx >= MID_C_IDX) ? "treble" : "bass";
 
     current = { idx, note, clef, tries: 0, hintUsed: false, startedAt: Date.now() };
@@ -490,6 +475,43 @@
     }
   }
 
+  // Show hint: label all line notes or all space notes in the current clef
+  function showClefHint() {
+    const idx = current.idx;
+    const lineIdxs = (idx >= MID_C_IDX) ? trebleLineIdx : bassLineIdx;
+    // A note is "on a line" if its index matches a staff line index,
+    // or is on a ledger line (even offset from the staff's bottom line).
+    const bottomLine = lineIdxs[0];
+    const onLine = (idx - bottomLine) % 2 === 0;
+
+    // Collect all notes on lines or spaces within the clef range (including middle zone)
+    const staffTop = lineIdxs[4];
+    const staffBot = lineIdxs[0];
+    // Extend range slightly beyond staff for common ledger line notes
+    const lo = Math.max(MIN_IDX, staffBot - 4);
+    const hi = Math.min(MAX_IDX, staffTop + 4);
+
+    // Redraw board first, then overlay labels
+    clearSvg();
+    drawStaff();
+    drawNote(current.idx);
+
+    const hintColor = "#cc8800";
+    for (let i = lo; i <= hi; i++) {
+      const isLine = (i - bottomLine) % 2 === 0;
+      if (isLine !== onLine) continue;
+      const n = noteFromIndex(i);
+      const y = yForIndex(i);
+      // Place labels to the right of the note area
+      const x = NOTE_X + 50 + ((i - lo) % 2) * 30; // stagger to avoid overlap
+      const t = el("text", { x: x, y: y + 6, fill: hintColor, "font-size": 18, "font-weight": "bold" });
+      t.textContent = n.letter;
+      svg.appendChild(t);
+      // Also draw a small dot on the staff at the note position
+      svg.appendChild(el("circle", { cx: NOTE_X - 40, cy: y, r: 4, fill: hintColor, opacity: 0.5 }));
+    }
+  }
+
   // Keyboard: A–G to answer, H for hint
   window.addEventListener("keydown", (e) => {
     if (waitingForNext) return;
@@ -501,8 +523,7 @@
       e.preventDefault();
       if (current && !waitingForNext) {
         current.hintUsed = true;
-        // Show note name next to the note
-        redrawNoteAs("#cc8800", noteName(current.note));
+        showClefHint();
       }
     } else if (k === "R" && !e.metaKey && !e.ctrlKey) {
       e.preventDefault();
