@@ -1,0 +1,698 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Stereo Spectrogram (Async)</title>
+<style>
+  :root { color-scheme: dark; }
+  html, body { margin:0; height:100%; background:#0b0d10; color:#e6e6e6; font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; }
+  #app { display:flex; flex-direction:column; height:100%; }
+  #toolbar {
+    display:flex; flex-wrap:wrap; gap:10px; align-items:center;
+    padding:10px; border-bottom:1px solid rgba(255,255,255,0.08);
+    background:linear-gradient(to bottom, rgba(255,255,255,0.04), rgba(255,255,255,0.02));
+  }
+  button {
+    background:#1a2430; color:#e6e6e6; border:1px solid rgba(255,255,255,0.12);
+    border-radius:10px; padding:8px 10px; cursor:pointer;
+  }
+  button:disabled { opacity:0.5; cursor:not-allowed; }
+  input[type="color"] { width:36px; height:30px; border:none; background:transparent; padding:0; }
+  input[type="range"] { width:220px; }
+  .spacer { flex: 1 1 auto; }
+  #status { font-size:12px; opacity:0.85; }
+  #canvases { display:flex; flex-direction:column; height:100%; min-height:0; }
+  canvas { width:100%; display:block; }
+  #overviewWrap { padding:8px 10px 0 10px; }
+  #overview { height:25px; border-radius:10px; overflow:hidden; border:1px solid rgba(255,255,255,0.10); }
+  #zoomWrap { display:flex; gap:8px; align-items:stretch; padding:10px; height:100%; min-height:0; }
+  #zoomControls {
+    display:flex; flex-direction:column; gap:8px;
+  }
+  #zoomControls button { width:54px; height:44px; font-size:18px; }
+  #zoom {
+    flex:1 1 auto;
+    border-radius:14px; overflow:hidden; border:1px solid rgba(255,255,255,0.10);
+    height: calc(66vh); /* about 2/3 of page height */
+    min-height:220px;
+  }
+  #footer {
+    padding:0 10px 10px 10px;
+    font-size:12px; opacity:0.85;
+  }
+  code { background: rgba(255,255,255,0.06); padding:2px 6px; border-radius:8px; }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="toolbar">
+    <label>Audio: <input id="file" type="file" accept="audio/*"></label>
+
+    <button id="play" disabled>Play</button>
+    <button id="pause" disabled>Pause</button>
+    <button id="stop" disabled>Stop</button>
+    <button id="back5" disabled>⟲ -5s</button>
+    <button id="fwd5" disabled>⟳ +5s</button>
+
+    <span style="display:flex; align-items:center; gap:6px;">
+      Left color <input id="leftColor" type="color" value="#2a6bff" title="Left channel color">
+      <span style="opacity:0.8;">(right is red)</span>
+    </span>
+
+    <span style="display:flex; align-items:center; gap:6px;">
+      Gain <input id="gain" type="range" min="0.5" max="3.0" step="0.05" value="1.3" title="Visual gain">
+      <span id="gainVal" style="font-variant-numeric:tabular-nums;">1.30×</span>
+    </span>
+
+    <span class="spacer"></span>
+    <div id="status">Load an audio file…</div>
+  </div>
+
+  <div id="canvases">
+    <div id="overviewWrap">
+      <canvas id="overview"></canvas>
+    </div>
+
+    <div id="zoomWrap">
+      <div id="zoomControls">
+        <button id="panLeft" disabled title="Pan view -1s">⟵</button>
+        <button id="follow" disabled title="Follow playhead">◎</button>
+        <button id="panRight" disabled title="Pan view +1s">⟶</button>
+      </div>
+      <canvas id="zoom"></canvas>
+    </div>
+
+    <div id="footer">
+      Gray regions = spectrogram tiles not computed yet. Computation runs in a worker so playback is immediate.
+      Zoom window is auto-sized to <code>2–5s</code> based on width.
+    </div>
+  </div>
+
+  <audio id="audio" crossorigin="anonymous" style="display:none;"></audio>
+</div>
+
+<script>
+(() => {
+  // ---------- UI ----------
+  const elFile = document.getElementById('file');
+  const elAudio = document.getElementById('audio');
+
+  const btnPlay  = document.getElementById('play');
+  const btnPause = document.getElementById('pause');
+  const btnStop  = document.getElementById('stop');
+  const btnBack5 = document.getElementById('back5');
+  const btnFwd5  = document.getElementById('fwd5');
+
+  const btnPanL  = document.getElementById('panLeft');
+  const btnPanR  = document.getElementById('panRight');
+  const btnFollow= document.getElementById('follow');
+
+  const elStatus = document.getElementById('status');
+  const elLeftColor = document.getElementById('leftColor');
+  const elGain = document.getElementById('gain');
+  const elGainVal = document.getElementById('gainVal');
+
+  const cvOverview = document.getElementById('overview');
+  const cvZoom = document.getElementById('zoom');
+  const ctxO = cvOverview.getContext('2d', { alpha: false });
+  const ctxZ = cvZoom.getContext('2d', { alpha: false });
+
+  // ---------- Spectrogram settings (defaults) ----------
+  const FFT_SIZE = 2048;        // power of two
+  const HOP_SIZE = 256;         // <= FFT_SIZE
+  const MIN_DB = -90;
+  const MAX_DB = -20;
+
+  // ---------- State ----------
+  let objectUrl = null;
+  let duration = 0;
+
+  // Spectrogram tiles (computed asynchronously)
+  // We store columns of packed RGB bytes for each x pixel for both overview and full-res,
+  // but render from a time->column mapping.
+  let spec = null; // { sampleRate, duration, nFrames, frameDt, nBins, colsRGBA: Uint8ClampedArray, computed: Uint8Array }
+
+  // View/pan state
+  let panMode = false;
+  let panOffsetSec = 0;
+
+  // Worker
+  let worker = null;
+
+  function setEnabled(enabled) {
+    for (const b of [btnPlay, btnPause, btnStop, btnBack5, btnFwd5, btnPanL, btnPanR, btnFollow]) b.disabled = !enabled;
+  }
+
+  function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
+
+  function parseHexColor(hex) {
+    // "#RRGGBB" -> [r,g,b]
+    const m = /^#?([0-9a-f]{6})$/i.exec(hex);
+    if (!m) return [42, 107, 255];
+    const n = parseInt(m[1], 16);
+    return [(n>>16)&255, (n>>8)&255, n&255];
+  }
+
+  function fmtTime(t) {
+    if (!isFinite(t)) return "0:00";
+    const s = Math.max(0, t|0);
+    const mm = (s/60)|0;
+    const ss = (s%60).toString().padStart(2,'0');
+    return `${mm}:${ss}`;
+  }
+
+  // ---------- Canvas sizing ----------
+  function resizeCanvases() {
+    // Ensure backing resolution matches CSS pixels for crispness
+    const dpr = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
+    const oRect = cvOverview.getBoundingClientRect();
+    cvOverview.width  = Math.max(2, Math.floor(oRect.width * dpr));
+    cvOverview.height = Math.max(2, Math.floor(oRect.height * dpr));
+
+    const zRect = cvZoom.getBoundingClientRect();
+    cvZoom.width  = Math.max(2, Math.floor(zRect.width * dpr));
+    cvZoom.height = Math.max(2, Math.floor(zRect.height * dpr));
+
+    // Draw immediately after resize
+    drawAll();
+  }
+  window.addEventListener('resize', resizeCanvases);
+
+  // ---------- Rendering helpers ----------
+  function windowSecondsForZoom() {
+    // 2..5s depending on width (in CSS pixels), so it "feels" stable across window sizes.
+    const cssW = cvZoom.getBoundingClientRect().width;
+    return clamp(cssW / 260, 2, 5);
+  }
+
+  function timeToFrame(t) {
+    if (!spec) return 0;
+    const f = Math.floor(t / spec.frameDt);
+    return clamp(f, 0, spec.nFrames - 1);
+  }
+
+  function frameToTime(f) {
+    if (!spec) return 0;
+    return f * spec.frameDt;
+  }
+
+  function drawPlaceholder(ctx, w, h, label) {
+    ctx.fillStyle = '#20242a';
+    ctx.fillRect(0,0,w,h);
+    ctx.strokeStyle = 'rgba(255,255,255,0.12)';
+    ctx.strokeRect(0.5,0.5,w-1,h-1);
+    ctx.fillStyle = 'rgba(255,255,255,0.70)';
+    ctx.font = `${Math.max(12, Math.floor(h*0.35))}px system-ui, sans-serif`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(label, w/2, h/2);
+  }
+
+  function drawOverview() {
+    const w = cvOverview.width, h = cvOverview.height;
+    if (!spec || duration <= 0) {
+      drawPlaceholder(ctxO, w, h, 'overview');
+      return;
+    }
+    // Background: gray for uncomputed
+    ctxO.fillStyle = '#6a6f78';
+    ctxO.fillRect(0,0,w,h);
+
+    // Draw spectrogram scaled to fit width (time) and height (freq bins)
+    // We render by sampling frames across width.
+    const nBins = spec.nBins;
+    const gain = parseFloat(elGain.value);
+    const leftRGB = parseHexColor(elLeftColor.value);
+    const rightRGB = [255, 40, 40];
+
+    // We'll paint pixels directly for speed.
+    const img = ctxO.createImageData(w, h);
+    const data = img.data;
+
+    for (let x = 0; x < w; x++) {
+      const t = (x / (w-1)) * duration;
+      const fIdx = timeToFrame(t);
+      const isDone = spec.computed[fIdx] === 1;
+      for (let y = 0; y < h; y++) {
+        const bin = Math.floor((1 - y / (h-1)) * (nBins - 1));
+        const off = ((fIdx * nBins + bin) * 4);
+        const idx = (y*w + x) * 4;
+
+        if (!isDone) {
+          // gray tile
+          data[idx+0] = 120;
+          data[idx+1] = 125;
+          data[idx+2] = 132;
+          data[idx+3] = 255;
+          continue;
+        }
+
+        // Stored RGBA already blended in worker? In this implementation, we store blended RGB in colsRGBA.
+        // colsRGBA is per-frame per-bin RGBA (alpha=255).
+        data[idx+0] = spec.colsRGBA[off+0];
+        data[idx+1] = spec.colsRGBA[off+1];
+        data[idx+2] = spec.colsRGBA[off+2];
+        data[idx+3] = 255;
+      }
+    }
+    ctxO.putImageData(img, 0, 0);
+
+    // Playhead indicator
+    const tNow = elAudio.currentTime || 0;
+    const xNow = Math.floor((tNow / duration) * w);
+    ctxO.fillStyle = 'rgba(255,255,255,0.85)';
+    ctxO.fillRect(xNow, 0, Math.max(1, Math.floor(w/400)), h);
+
+    // Border
+    ctxO.strokeStyle = 'rgba(255,255,255,0.12)';
+    ctxO.strokeRect(0.5,0.5,w-1,h-1);
+  }
+
+  function drawZoom() {
+    const w = cvZoom.width, h = cvZoom.height;
+    if (!spec || duration <= 0) {
+      drawPlaceholder(ctxZ, w, h, 'zoom');
+      return;
+    }
+
+    // gray background if not computed
+    ctxZ.fillStyle = '#6a6f78';
+    ctxZ.fillRect(0,0,w,h);
+
+    const winSec = windowSecondsForZoom();
+    let center = elAudio.currentTime || 0;
+    if (panMode) center = clamp(center + panOffsetSec, 0, duration);
+    const t0 = clamp(center - winSec/2, 0, Math.max(0, duration - winSec));
+    const t1 = clamp(t0 + winSec, 0, duration);
+
+    const f0 = timeToFrame(t0);
+    const f1 = timeToFrame(t1);
+    const nBins = spec.nBins;
+
+    const img = ctxZ.createImageData(w, h);
+    const data = img.data;
+
+    for (let x = 0; x < w; x++) {
+      const t = t0 + (x / (w-1)) * (t1 - t0);
+      const fIdx = timeToFrame(t);
+      const isDone = spec.computed[fIdx] === 1;
+      for (let y = 0; y < h; y++) {
+        const bin = Math.floor((1 - y / (h-1)) * (nBins - 1));
+        const off = ((fIdx * nBins + bin) * 4);
+        const idx = (y*w + x) * 4;
+        if (!isDone) {
+          data[idx+0] = 120;
+          data[idx+1] = 125;
+          data[idx+2] = 132;
+          data[idx+3] = 255;
+        } else {
+          data[idx+0] = spec.colsRGBA[off+0];
+          data[idx+1] = spec.colsRGBA[off+1];
+          data[idx+2] = spec.colsRGBA[off+2];
+          data[idx+3] = 255;
+        }
+      }
+    }
+    ctxZ.putImageData(img, 0, 0);
+
+    // Playhead indicator (always show actual playhead, even if panned away)
+    const tNow = elAudio.currentTime || 0;
+    if (tNow >= t0 && tNow <= t1) {
+      const xNow = Math.floor(((tNow - t0) / (t1 - t0)) * w);
+      ctxZ.fillStyle = 'rgba(255,255,255,0.85)';
+      ctxZ.fillRect(xNow, 0, Math.max(1, Math.floor(w/600)), h);
+    }
+
+    // Info overlay
+    ctxZ.fillStyle = 'rgba(0,0,0,0.35)';
+    ctxZ.fillRect(8, 8, 250, 44);
+    ctxZ.fillStyle = 'rgba(255,255,255,0.9)';
+    ctxZ.font = `${Math.max(12, Math.floor(h*0.03))}px system-ui, sans-serif`;
+    ctxZ.textAlign = 'left';
+    ctxZ.textBaseline = 'top';
+    ctxZ.fillText(`View: ${fmtTime(t0)} – ${fmtTime(t1)}  (${winSec.toFixed(1)}s)`, 14, 14);
+    ctxZ.fillText(`Playhead: ${fmtTime(tNow)} / ${fmtTime(duration)}`, 14, 30);
+
+    // Border
+    ctxZ.strokeStyle = 'rgba(255,255,255,0.12)';
+    ctxZ.strokeRect(0.5,0.5,w-1,h-1);
+  }
+
+  function drawAll() {
+    drawOverview();
+    drawZoom();
+  }
+
+  // ---------- Controls ----------
+  function seekTo(t) {
+    if (!isFinite(duration) || duration <= 0) return;
+    elAudio.currentTime = clamp(t, 0, Math.max(0, duration - 0.001));
+    drawAll();
+  }
+
+  btnPlay.addEventListener('click', async () => {
+    try { await elAudio.play(); } catch (e) {}
+  });
+  btnPause.addEventListener('click', () => elAudio.pause());
+  btnStop.addEventListener('click', () => { elAudio.pause(); seekTo(0); });
+  btnBack5.addEventListener('click', () => seekTo((elAudio.currentTime || 0) - 5));
+  btnFwd5.addEventListener('click', () => seekTo((elAudio.currentTime || 0) + 5));
+
+  btnPanL.addEventListener('click', () => { panMode = true; panOffsetSec -= 1; drawAll(); });
+  btnPanR.addEventListener('click', () => { panMode = true; panOffsetSec += 1; drawAll(); });
+  btnFollow.addEventListener('click', () => { panMode = false; panOffsetSec = 0; drawAll(); });
+
+  elGain.addEventListener('input', () => {
+    elGainVal.textContent = `${parseFloat(elGain.value).toFixed(2)}×`;
+    // we are storing blended RGB in spec, so changing gain doesn't retroactively change computed pixels.
+    // For a true "live gain" you’d recompute mapping or store magnitudes. For now, gain influences new tiles.
+    if (worker) worker.postMessage({ type:'setGain', gain: parseFloat(elGain.value) });
+  });
+  elLeftColor.addEventListener('input', () => {
+    if (worker) worker.postMessage({ type:'setLeftColor', leftColor: elLeftColor.value });
+    // same note as gain: affects future tiles
+  });
+
+  // ---------- Animation loop ----------
+  let raf = 0;
+  function tick() {
+    drawAll();
+    raf = requestAnimationFrame(tick);
+  }
+
+  // ---------- Spectrogram worker ----------
+  function makeWorker() {
+    // Inline worker source (single-file HTML)
+    const src = `
+      let FFT_SIZE = 2048;
+      let HOP_SIZE = 256;
+      let MIN_DB = -90;
+      let MAX_DB = -20;
+
+      let gain = 1.3;
+      let leftRGB = [42, 107, 255];
+      const rightRGB = [255, 40, 40];
+
+      function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
+      function parseHexColor(hex) {
+        const m = /^#?([0-9a-f]{6})$/i.exec(hex);
+        if (!m) return [42,107,255];
+        const n = parseInt(m[1], 16);
+        return [(n>>16)&255, (n>>8)&255, n&255];
+      }
+
+      function hannWindow(n) {
+        const w = new Float32Array(n);
+        for (let i=0;i<n;i++) w[i] = 0.5 * (1 - Math.cos(2*Math.PI*i/(n-1)));
+        return w;
+      }
+
+      // Radix-2 Cooley-Tukey FFT (in-place) on complex arrays (re, im)
+      function fft(re, im) {
+        const n = re.length;
+        // bit-reversal
+        for (let i=1, j=0; i<n; i++) {
+          let bit = n >> 1;
+          for (; j & bit; bit >>= 1) j ^= bit;
+          j ^= bit;
+          if (i < j) {
+            [re[i], re[j]] = [re[j], re[i]];
+            [im[i], im[j]] = [im[j], im[i]];
+          }
+        }
+        for (let len = 2; len <= n; len <<= 1) {
+          const ang = -2 * Math.PI / len;
+          const wlenRe = Math.cos(ang);
+          const wlenIm = Math.sin(ang);
+          for (let i=0; i<n; i+=len) {
+            let wRe = 1, wIm = 0;
+            for (let j=0; j<len/2; j++) {
+              const uRe = re[i+j], uIm = im[i+j];
+              const vRe = re[i+j+len/2]*wRe - im[i+j+len/2]*wIm;
+              const vIm = re[i+j+len/2]*wIm + im[i+j+len/2]*wRe;
+              re[i+j] = uRe + vRe;
+              im[i+j] = uIm + vIm;
+              re[i+j+len/2] = uRe - vRe;
+              im[i+j+len/2] = uIm - vIm;
+              const nextRe = wRe*wlenRe - wIm*wlenIm;
+              const nextIm = wRe*wlenIm + wIm*wlenRe;
+              wRe = nextRe; wIm = nextIm;
+            }
+          }
+        }
+      }
+
+      function magToAlphaDb(mag) {
+        // Convert magnitude to dBFS-ish, map MIN_DB..MAX_DB -> 0..1
+        // Add small epsilon to avoid -Inf.
+        const db = 20*Math.log10(mag + 1e-12);
+        let a = (db - MIN_DB) / (MAX_DB - MIN_DB);
+        a = clamp(a, 0, 1);
+        // visibility curve and gain
+        a = Math.pow(a, 0.7) * gain;
+        return clamp(a, 0, 1);
+      }
+
+      function blendAdditive(aL, aR) {
+        // Additive blend with alphas
+        const r = clamp(leftRGB[0]*aL + rightRGB[0]*aR, 0, 255);
+        const g = clamp(leftRGB[1]*aL + rightRGB[1]*aR, 0, 255);
+        const b = clamp(leftRGB[2]*aL + rightRGB[2]*aR, 0, 255);
+        return [r|0,g|0,b|0];
+      }
+
+      function computeFrame(channel, start, win, re, im) {
+        const n = re.length;
+        for (let i=0;i<n;i++) {
+          const s = channel[start + i] || 0;
+          re[i] = s * win[i];
+          im[i] = 0;
+        }
+        fft(re, im);
+      }
+
+      onmessage = async (e) => {
+        const msg = e.data;
+        if (msg.type === 'init') {
+          FFT_SIZE = msg.fftSize;
+          HOP_SIZE = msg.hopSize;
+          MIN_DB = msg.minDb;
+          MAX_DB = msg.maxDb;
+          gain = msg.gain;
+          leftRGB = parseHexColor(msg.leftColor);
+
+          const left = msg.left;
+          const right = msg.right;
+          const sampleRate = msg.sampleRate;
+
+          const win = hannWindow(FFT_SIZE);
+          const nBins = (FFT_SIZE/2)|0;
+          const nFrames = Math.max(0, Math.floor((left.length - FFT_SIZE) / HOP_SIZE) + 1);
+
+          postMessage({ type:'meta', nFrames, nBins, frameDt: HOP_SIZE / sampleRate });
+
+          // We compute in chunks so UI stays responsive.
+          const reL = new Float32Array(FFT_SIZE), imL = new Float32Array(FFT_SIZE);
+          const reR = new Float32Array(FFT_SIZE), imR = new Float32Array(FFT_SIZE);
+
+          const chunk = 64; // frames per chunk
+          for (let f=0; f<nFrames; f+=chunk) {
+            const end = Math.min(nFrames, f+chunk);
+            // Pack: for each frame, for each bin, 3 bytes RGB + 1 alpha(255)
+            const out = new Uint8ClampedArray((end - f) * nBins * 4);
+
+            let o = 0;
+            for (let i=f; i<end; i++) {
+              const start = i * HOP_SIZE;
+              computeFrame(left, start, win, reL, imL);
+              computeFrame(right, start, win, reR, imR);
+
+              for (let b=0; b<nBins; b++) {
+                const ml = Math.hypot(reL[b], imL[b]) / FFT_SIZE;
+                const mr = Math.hypot(reR[b], imR[b]) / FFT_SIZE;
+                const aL = magToAlphaDb(ml);
+                const aR = magToAlphaDb(mr);
+                const rgb = blendAdditive(aL, aR);
+                out[o++] = rgb[0];
+                out[o++] = rgb[1];
+                out[o++] = rgb[2];
+                out[o++] = 255;
+              }
+            }
+
+            postMessage({ type:'chunk', frameStart: f, frameCount: (end - f), pixels: out }, [out.buffer]);
+
+            // Yield to event loop
+            await new Promise(r => setTimeout(r, 0));
+          }
+
+          postMessage({ type:'done' });
+        } else if (msg.type === 'setGain') {
+          gain = msg.gain;
+        } else if (msg.type === 'setLeftColor') {
+          leftRGB = parseHexColor(msg.leftColor);
+        }
+      };
+    `;
+    const blob = new Blob([src], { type: 'application/javascript' });
+    return new Worker(URL.createObjectURL(blob));
+  }
+
+  async function loadFile(file) {
+    // Reset state
+    if (objectUrl) URL.revokeObjectURL(objectUrl);
+    objectUrl = URL.createObjectURL(file);
+    elAudio.src = objectUrl;
+
+    setEnabled(true);
+    panMode = false;
+    panOffsetSec = 0;
+
+    elStatus.textContent = 'Loading metadata…';
+    await new Promise((resolve) => {
+      elAudio.onloadedmetadata = () => resolve();
+      elAudio.onerror = () => resolve();
+    });
+
+    duration = elAudio.duration || 0;
+    if (!isFinite(duration) || duration <= 0) {
+      elStatus.textContent = 'Could not read duration (unsupported file?).';
+      return;
+    }
+
+    elStatus.textContent = `Ready to play. Computing spectrogram… (0%)`;
+
+    // Start draw loop once we have something to show
+    if (!raf) tick();
+
+    // Decode audio in background for spectrogram computation (playback still uses <audio>)
+    const arrayBuf = await file.arrayBuffer();
+
+    // Use AudioContext decode
+    const ac = new (window.AudioContext || window.webkitAudioContext)();
+    let audioBuf;
+    try {
+      audioBuf = await ac.decodeAudioData(arrayBuf.slice(0));
+    } catch (e) {
+      elStatus.textContent = 'Decode failed (browser cannot decode this file).';
+      return;
+    } finally {
+      // don't keep context alive unnecessarily
+      try { await ac.close(); } catch {}
+    }
+
+    const sr = audioBuf.sampleRate;
+    const ch0 = audioBuf.getChannelData(0);
+    const ch1 = audioBuf.numberOfChannels > 1 ? audioBuf.getChannelData(1) : ch0;
+
+    // Init storage for worker output
+    const nBins = (FFT_SIZE/2)|0;
+    const approxFrames = Math.max(0, Math.floor((ch0.length - FFT_SIZE) / HOP_SIZE) + 1);
+
+    spec = {
+      sampleRate: sr,
+      duration,
+      nFrames: approxFrames,
+      frameDt: HOP_SIZE / sr,
+      nBins,
+      colsRGBA: new Uint8ClampedArray(approxFrames * nBins * 4),
+      computed: new Uint8Array(approxFrames),
+    };
+
+    // Fill with "gray" as default (unused until computed check)
+    // (Not strictly required because draw checks computed[], but keeps data non-zero.)
+    for (let i=0; i<spec.colsRGBA.length; i+=4) {
+      spec.colsRGBA[i+0] = 120;
+      spec.colsRGBA[i+1] = 125;
+      spec.colsRGBA[i+2] = 132;
+      spec.colsRGBA[i+3] = 255;
+    }
+
+    // Start worker
+    if (worker) worker.terminate();
+    worker = makeWorker();
+
+    worker.onmessage = (e) => {
+      const msg = e.data;
+      if (msg.type === 'meta') {
+        // Reconcile exact worker frame count
+        if (msg.nFrames !== spec.nFrames || msg.nBins !== spec.nBins) {
+          spec.nFrames = msg.nFrames;
+          spec.nBins = msg.nBins;
+          spec.frameDt = msg.frameDt;
+          spec.colsRGBA = new Uint8ClampedArray(spec.nFrames * spec.nBins * 4);
+          spec.computed = new Uint8Array(spec.nFrames);
+          for (let i=0; i<spec.colsRGBA.length; i+=4) {
+            spec.colsRGBA[i+0] = 120;
+            spec.colsRGBA[i+1] = 125;
+            spec.colsRGBA[i+2] = 132;
+            spec.colsRGBA[i+3] = 255;
+          }
+        }
+        drawAll();
+      } else if (msg.type === 'chunk') {
+        const { frameStart, frameCount } = msg;
+        const pixels = new Uint8ClampedArray(msg.pixels);
+        const bins = spec.nBins;
+        // Copy into spec buffer
+        let srcOff = 0;
+        for (let f=0; f<frameCount; f++) {
+          const dstBase = ((frameStart + f) * bins) * 4;
+          spec.colsRGBA.set(pixels.subarray(srcOff, srcOff + bins*4), dstBase);
+          spec.computed[frameStart + f] = 1;
+          srcOff += bins*4;
+        }
+        // Update status
+        let done = 0;
+        // quick sampling-based progress (fast)
+        const step = Math.max(1, (spec.nFrames/200)|0);
+        for (let i=0; i<spec.nFrames; i+=step) done += spec.computed[i];
+        const pct = Math.floor((done / Math.ceil(spec.nFrames/step)) * 100);
+        elStatus.textContent = `Ready to play. Computing spectrogram… (${pct}%)`;
+      } else if (msg.type === 'done') {
+        elStatus.textContent = `Ready. Spectrogram computed.`;
+      }
+    };
+
+    worker.postMessage({
+      type: 'init',
+      fftSize: FFT_SIZE,
+      hopSize: HOP_SIZE,
+      minDb: MIN_DB,
+      maxDb: MAX_DB,
+      gain: parseFloat(elGain.value),
+      leftColor: elLeftColor.value,
+      sampleRate: sr,
+      left: ch0,
+      right: ch1,
+    });
+
+    resizeCanvases();
+    btnFollow.disabled = false;
+  }
+
+  // ---------- File input ----------
+  elFile.addEventListener('change', async () => {
+    const f = elFile.files && elFile.files[0];
+    if (!f) return;
+    await loadFile(f);
+  });
+
+  // ---------- Audio events ----------
+  elAudio.addEventListener('timeupdate', () => {
+    // minimal work here; rendering is driven by RAF
+  });
+  elAudio.addEventListener('ended', () => {
+    // Keep position at end, but show stopped UI vibes
+    drawAll();
+  });
+
+  // initial layout
+  resizeCanvases();
+  setEnabled(false);
+  elGainVal.textContent = `${parseFloat(elGain.value).toFixed(2)}×`;
+})();
+</script>
+</body>
+</html>
