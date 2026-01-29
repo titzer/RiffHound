@@ -49,10 +49,14 @@
   }
   .motionPath {
     fill: none;
-    stroke: #bbb;
+    stroke: #999;
     stroke-width: 3;
     stroke-linecap: round;
     stroke-linejoin: round;
+  }
+  .motionPath.rest {
+    stroke: #ccc;
+    stroke-dasharray: 6 4;
   }
   .stringLine {
     stroke: #ddd;
@@ -114,7 +118,6 @@
   .strumDirection:hover { background: rgba(0,0,0,0.1); }
   .strumDirection[data-dir="down"] { color: #0044aa; }
   .strumDirection[data-dir="up"] { color: #cc5500; }
-  .strumDirection[data-dir="none"] { color: #bbb; }
 
   /* Mute toggle */
   .strumMute {
@@ -210,11 +213,12 @@
     <div id="strumHeader">
       <label>Strum Pattern:</label>
       <select id="patternSelect">
-        <option value="basic">Basic (D D D D)</option>
-        <option value="folk" selected>Folk (D DU UD U)</option>
-        <option value="reggae">Reggae (r Mu r Mu)</option>
-        <option value="arpeggio">Arpeggio (B U U U)</option>
-        <option value="boom-chick">Boom-Chick (B U D U)</option>
+        <option value="standard" selected>Standard (DUDUDU)</option>
+        <option value="basic">Basic (D-D-D-D-)</option>
+        <option value="folk">Folk (D-DU-UDU)</option>
+        <option value="reggae">Reggae (-M-M-M-M)</option>
+        <option value="arpeggio">Arpeggio (B-U-U-U-)</option>
+        <option value="boom-chick">Boom-Chick (B-U-D-U-)</option>
         <option value="custom">Custom</option>
       </select>
     </div>
@@ -223,8 +227,8 @@
   </div>
 
   <div id="bottom">
-    Key: <select id="keySelect"></select>
-    Progression: <input id="literalInput" size="50" value="C | F | G | C">
+    Transpose: <select id="transposeSelect"></select>
+    Progression: <input id="literalInput" size="50" value="C: C | F | G | C">
     BPM: <input id="bpm" type="range" min="30" max="300" value="110"> <input id="bpmVal" type="number" min="30" max="300" value="110" style="width: 4em;">
   </div>
 
@@ -234,10 +238,11 @@
 // =========================
 
 // --- Strum beat structure ---
-// Each beat has: direction ('down'|'up'|'none'), strings {bass, mid, upper}, muted, dynamics
+// Each beat has: direction ('down'|'up'), strings {bass, mid, upper}, muted, dynamics
+// A rest is when no strings are voiced (all false) - direction still indicates hand motion
 
 const DIRECTIONS = ['down', 'up'];
-const DIRECTION_ICONS = { down: '↓', up: '↑', none: '·' };
+const DIRECTION_ICONS = { down: '↓', up: '↑' };
 
 // Dynamics levels
 const DYNAMICS = {
@@ -255,20 +260,24 @@ function strum(direction, strings = {bass: true, mid: true, upper: true}, muted 
 // Shorthand helpers for presets
 const D = (dyn = 'medium') => strum('down', {bass:true, mid:true, upper:true}, false, dyn);
 const U = (dyn = 'medium') => strum('up', {bass:true, mid:true, upper:true}, false, dyn);
-const R = () => strum('none', {bass:false, mid:false, upper:false}, false, 'medium');
+// Rest: direction still alternates but no strings are voiced
+const Rd = (dyn = 'medium') => strum('down', {bass:false, mid:false, upper:false}, false, dyn);
+const Ru = (dyn = 'medium') => strum('up', {bass:false, mid:false, upper:false}, false, dyn);
 const M = (dyn = 'medium') => strum('down', {bass:true, mid:true, upper:true}, true, dyn);
+const Mu = (dyn = 'medium') => strum('up', {bass:true, mid:true, upper:true}, true, dyn);
 const B = (dyn = 'medium') => strum('down', {bass:true, mid:false, upper:false}, false, dyn);
 const MD = (dyn = 'medium') => strum('down', {bass:false, mid:true, upper:false}, false, dyn);
 const UP = (dyn = 'medium') => strum('up', {bass:false, mid:true, upper:true}, false, dyn);
 
 // Preset patterns (8 eighth notes per bar)
 const PATTERNS = {
-  basic:       [D('loud'), R(), D('medium'), R(), D('loud'), R(), D('medium'), R()],
-  folk:        [D('loud'), R(), D('medium'), U('soft'), R(), U('soft'), D('medium'), U('soft')],
-  reggae:      [R(), M('medium'), U('soft'), R(), R(), M('medium'), U('soft'), R()],
-  arpeggio:    [B('loud'), R(), UP('soft'), R(), UP('soft'), R(), UP('soft'), R()],
-  'boom-chick': [B('loud'), R(), UP('medium'), R(), D('loud'), R(), UP('medium'), R()],
-  custom:      [D('loud'), R(), D('medium'), U('soft'), R(), U('soft'), D('medium'), U('soft')]
+  standard:    [D('loud'), U('soft'), D('medium'), U('soft'), D('loud'), U('soft'), D('medium'), U('soft')],
+  basic:       [D('loud'), Rd(), D('medium'), Rd(), D('loud'), Rd(), D('medium'), Rd()],
+  folk:        [D('loud'), Ru(), D('medium'), U('soft'), Rd(), U('soft'), D('medium'), U('soft')],
+  reggae:      [Rd(), Mu('medium'), Rd(), Mu('soft'), Rd(), Mu('medium'), Rd(), Mu('soft')],
+  arpeggio:    [B('loud'), Ru(), UP('soft'), Rd(), UP('soft'), Rd(), UP('soft'), Rd()],
+  'boom-chick': [B('loud'), Ru(), UP('medium'), Rd(), D('loud'), Ru(), UP('medium'), Rd()],
+  custom:      [D('loud'), U('soft'), D('medium'), U('soft'), D('loud'), U('soft'), D('medium'), U('soft')]
 };
 
 // --- Global state ---
@@ -278,10 +287,12 @@ let muted = false;
 let editMode = false;
 let drumsOn = false;
 let chordsOn = true;
-let chords = [];
+let originalKey = null;    // Key specified in input (e.g., "C" from "C: C | Am | F"), or null
+let originalChords = [];   // Chords as parsed from input (before transposition)
+let chords = [];           // Chords after transposition (used for playback/display)
 let chordIdx = 0;
 let barStart = 0; // audio time of current bar start
-let strumPattern = PATTERNS.folk.map(s => ({...s, strings: {...s.strings}}));
+let strumPattern = PATTERNS.standard.map(s => ({...s, strings: {...s.strings}}));
 let currentStrumIdx = -1;
 const taps = [];
 
@@ -335,7 +346,9 @@ function parseLiteralToken(tok) {
 
 function romanFor(rootSemi, quality) {
   try {
-    const key = keyToSemi(el.keySelect.value);
+    // Use effective key (transposed key or original key)
+    const key = getEffectiveKey();
+    if (key === null) return ''; // No key context, don't show roman numerals
     const deg = (rootSemi - key + 12) % 12;
     const map = { 0:'I', 2:'ii', 4:'iii', 5:'IV', 7:'V', 9:'vi', 11:'vii°' };
     let r = map[deg];
@@ -361,9 +374,9 @@ const STRUM_DELAY = 0.035; // 35ms between each string - noticeable stagger
 
 // notes = [bass, mid, upper] sorted low to high
 function voiceStrumBeat(notes, t, dur, beat) {
-  // Check if any strings are active
+  // Check if any strings are active - a rest is when no strings are voiced
   const hasActiveStrings = beat.strings.bass || beat.strings.mid || beat.strings.upper;
-  if (beat.direction === 'none' || !hasActiveStrings) return; // Silent (rest)
+  if (!hasActiveStrings) return; // Silent (rest)
 
   const grp = ctx.createGain();
   grp.gain.value = 0;
@@ -533,9 +546,9 @@ function renderStrumPattern() {
     beatEl.dataset.idx = i;
     beatEl.dataset.dynamics = beat.dynamics;
 
-    // Check if any strings are active
+    // Check if any strings are active - a rest is when no strings are voiced
     const hasActiveStrings = beat.strings.bass || beat.strings.mid || beat.strings.upper;
-    const isRest = beat.direction === 'none' || !hasActiveStrings;
+    const isRest = !hasActiveStrings;
 
     beatEl.innerHTML = `
       <div class="beatNum">${Math.floor(i/2) + 1}${i % 2 === 0 ? '' : '&'}</div>
@@ -544,13 +557,11 @@ function renderStrumPattern() {
       <div class="strumIndicator"></div>
     `;
 
-    // Direction toggle at top
+    // Direction toggle at top - cycles between down and up
     const dirEl = beatEl.querySelector('.strumDirection');
     dirEl.addEventListener('click', (e) => {
       e.stopPropagation();
-      const currentIdx = DIRECTIONS.indexOf(beat.direction);
-      const nextIdx = (currentIdx + 1) % DIRECTIONS.length;
-      strumPattern[i].direction = DIRECTIONS[nextIdx];
+      strumPattern[i].direction = (beat.direction === 'down') ? 'up' : 'down';
       el.patternSelect.value = 'custom';
       renderStrumPattern();
     });
@@ -611,7 +622,7 @@ function renderMotionOverlay() {
   const beatWidth = width / numBeats;
 
   // Strings are clustered in the middle, with more room above/below for hand motion
-  const stringClusterHeight = height * 0.25; // 25% smaller cluster for strings
+  const stringClusterHeight = height * 0.25;
   const stringAreaTop = (height - stringClusterHeight) / 2;
   const stringAreaBottom = stringAreaTop + stringClusterHeight;
   const stringSpacing = stringClusterHeight / 2;
@@ -651,137 +662,77 @@ function renderMotionOverlay() {
     svg.appendChild(line);
   }
 
-  // Motion path: hand makes continuous sinusoidal motion across ALL beats
-  // Every beat has a direction for motion purposes (even rests)
-  // Rests use natural alternation; only explicit same-direction consecutives need quick return
   const arrowSize = Math.min(beatWidth * 0.12, 12);
   const xSize = arrowSize * 0.6;
 
-  // Get explicit direction ('down', 'up') or null for rest/undefined
-  const getExplicitDir = (beat) => {
-    const dir = beat.direction;
-    if (dir === 'down' || dir === 'up') return dir;
-    return null;
-  };
+  // Helper to check if a beat is a rest (no strings voiced)
+  const isRestBeat = (beat) => !beat.strings.bass && !beat.strings.mid && !beat.strings.upper;
 
-  // Build effective direction for each beat:
-  // - If beat has explicit direction, use it
-  // - If rest, use natural alternation based on neighboring explicit strokes
-  const effectiveDirs = [];
+  // Helper to get start/end Y positions for a direction
+  const getStartY = (dir) => (dir === 'down') ? aboveStrings : belowStrings;
+  const getEndY = (dir) => (dir === 'down') ? belowStrings : aboveStrings;
 
-  // First pass: copy explicit directions
-  for (let i = 0; i < numBeats; i++) {
-    effectiveDirs[i] = getExplicitDir(strumPattern[i]);
-  }
-
-  // Second pass: fill in rests with natural alternation
-  // Find first explicit direction to establish phase
-  let firstExplicitIdx = -1;
-  let firstExplicitDir = null;
-  for (let i = 0; i < numBeats; i++) {
-    if (effectiveDirs[i]) {
-      firstExplicitIdx = i;
-      firstExplicitDir = effectiveDirs[i];
-      break;
-    }
-  }
-
-  // If no explicit strokes, default to alternating starting with down
-  if (firstExplicitIdx < 0) {
-    firstExplicitIdx = 0;
-    firstExplicitDir = 'down';
-  }
-
-  // Fill in all beats based on alternation from first explicit
-  for (let i = 0; i < numBeats; i++) {
-    if (!effectiveDirs[i]) {
-      const offset = i - firstExplicitIdx;
-      if (firstExplicitDir === 'down') {
-        effectiveDirs[i] = (offset % 2 === 0) ? 'down' : 'up';
-      } else {
-        effectiveDirs[i] = (offset % 2 === 0) ? 'up' : 'down';
-      }
-    }
-  }
-
-  // Build path as a smooth wave that wraps around
-  // Each beat has one key point at peak (above) or trough (below)
-  // Quick returns add an extra point to reverse direction
-  const pathPoints = [];
-
-  for (let i = 0; i < numBeats; i++) {
-    const dir = effectiveDirs[i];
-    const prevDir = i > 0 ? effectiveDirs[i - 1] : null;
-    const beatCenterX = beatWidth * (i + 0.5); // Center of beat
-
-    const needsQuickReturn = prevDir && (dir === prevDir);
-
-    if (needsQuickReturn) {
-      // Add quick return point at beat boundary
-      const returnX = beatWidth * i;
-      const returnY = (dir === 'down') ? aboveStrings : belowStrings;
-      pathPoints.push({ x: returnX, y: returnY, type: 'return' });
-    }
-
-    // Single point per beat at the peak/trough of the wave
-    const y = (dir === 'down') ? belowStrings : aboveStrings;
-    pathPoints.push({ x: beatCenterX, y: y, type: 'peak', dir: dir });
-  }
-
-  // Wrap around: check if we need quick return to first beat
-  const lastDir = effectiveDirs[numBeats - 1];
-  const firstDir = effectiveDirs[0];
-  const needsWrapReturn = (lastDir === firstDir);
-
-  if (needsWrapReturn) {
-    // Quick return at end to get back to start position
-    const returnY = (firstDir === 'down') ? aboveStrings : belowStrings;
-    pathPoints.push({ x: width - beatWidth * 0.2, y: returnY, type: 'return' });
-  }
-
-  // End point wraps to match start position
-  const startY = (firstDir === 'down') ? aboveStrings : belowStrings;
-  pathPoints.push({ x: width, y: startY, type: 'final' });
-
-  // Build smooth SVG path using cubic beziers
-  if (pathPoints.length > 1) {
-    let pathD = `M 0 ${startY}`;
-
-    for (let i = 0; i < pathPoints.length; i++) {
-      const curr = pathPoints[i];
-      const prevX = (i === 0) ? 0 : pathPoints[i - 1].x;
-      const prevY = (i === 0) ? startY : pathPoints[i - 1].y;
-      const dx = curr.x - prevX;
-
-      if (curr.type === 'return') {
-        // Quick return - tighter curve
-        const cp1x = prevX + dx * 0.2;
-        const cp2x = prevX + dx * 0.8;
-        pathD += ` C ${cp1x} ${prevY}, ${cp2x} ${curr.y}, ${curr.x} ${curr.y}`;
-      } else {
-        // Flattened S-curve - control points closer to middle for less sinusoidal shape
-        const cp1x = prevX + dx * 0.42;
-        const cp2x = prevX + dx * 0.58;
-        pathD += ` C ${cp1x} ${prevY}, ${cp2x} ${curr.y}, ${curr.x} ${curr.y}`;
-      }
-    }
-
+  // Helper to create a motion path element
+  const createMotionPath = (pathD, isRest) => {
     const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
     path.setAttribute('d', pathD);
-    path.setAttribute('class', 'motionPath');
+    path.setAttribute('class', 'motionPath' + (isRest ? ' rest' : ''));
     svg.appendChild(path);
+  };
+
+  // Draw motion paths for each beat
+  // - Stroke portion: first half of beat (beatStartX to beatCenterX)
+  // - Return portion: second half of beat, only if next beat alternates
+  for (let i = 0; i < numBeats; i++) {
+    const beat = strumPattern[i];
+    const dir = beat.direction;
+    const isRest = isRestBeat(beat);
+
+    const beatStartX = beatWidth * i;
+    const beatCenterX = beatWidth * (i + 0.5);
+    const beatEndX = beatWidth * (i + 1);
+
+    const startY = getStartY(dir);
+    const endY = getEndY(dir);
+
+    // Draw stroke portion (first half of beat): from startY to endY
+    // Use an S-curve that goes from (beatStartX, startY) to (beatCenterX, endY)
+    const strokeDx = beatCenterX - beatStartX;
+    const cp1x = beatStartX + strokeDx * 0.35;
+    const cp2x = beatStartX + strokeDx * 0.65;
+    const strokeD = `M ${beatStartX} ${startY} C ${cp1x} ${startY}, ${cp2x} ${endY}, ${beatCenterX} ${endY}`;
+    createMotionPath(strokeD, isRest);
+
+    // Check if next beat alternates (don't wrap around to first beat)
+    if (i < numBeats - 1) {
+      const nextBeat = strumPattern[i + 1];
+      const nextDir = nextBeat.direction;
+      const alternates = (dir !== nextDir);
+
+      if (alternates) {
+        // Draw return portion (second half of beat): connects to next beat's start
+        // For alternating: endY of this beat equals startY of next beat
+        const nextStartY = getStartY(nextDir);
+        const returnDx = beatEndX - beatCenterX;
+        const rcp1x = beatCenterX + returnDx * 0.35;
+        const rcp2x = beatCenterX + returnDx * 0.65;
+        const returnD = `M ${beatCenterX} ${endY} C ${rcp1x} ${endY}, ${rcp2x} ${nextStartY}, ${beatEndX} ${nextStartY}`;
+        // Use the current beat's rest status for the return portion
+        createMotionPath(returnD, isRest);
+      }
+      // If same direction as next, don't draw return - creates the visual gap
+    }
   }
 
   // Draw clickable string markers for each beat
-  // We need to draw all three string positions per beat (active or not) for clicking
   for (let i = 0; i < numBeats; i++) {
     const beat = strumPattern[i];
-    const beatX = beatWidth * i + beatWidth * 0.08; // Slightly offset from beat line
-    const direction = beat.direction === 'none' ? 'down' : beat.direction;
+    const beatX = beatWidth * i + beatWidth * 0.08;
+    const direction = beat.direction;
 
     ['upper', 'mid', 'bass'].forEach((stringName) => {
       const y = stringY[stringName];
-      const isActive = beat.strings[stringName] && beat.direction !== 'none';
+      const isActive = beat.strings[stringName];
 
       const g = document.createElementNS('http://www.w3.org/2000/svg', 'g');
       g.setAttribute('class', 'stringMarker' + (isActive ? '' : ' inactive'));
@@ -793,8 +744,6 @@ function renderMotionOverlay() {
       g.addEventListener('click', (e) => {
         e.stopPropagation();
         strumPattern[i].strings[stringName] = !strumPattern[i].strings[stringName];
-        // Don't auto-change direction - motion path stays consistent
-        // User must explicitly change direction if they want sound on a rest beat
         el.patternSelect.value = 'custom';
         renderStrumPattern();
       });
@@ -821,10 +770,8 @@ function renderMotionOverlay() {
         const arrow = document.createElementNS('http://www.w3.org/2000/svg', 'polygon');
         let points;
         if (direction === 'down') {
-          // Arrow pointing down
           points = `${beatX},${y + arrowSize} ${beatX - arrowSize * 0.6},${y - arrowSize * 0.5} ${beatX + arrowSize * 0.6},${y - arrowSize * 0.5}`;
         } else {
-          // Arrow pointing up
           points = `${beatX},${y - arrowSize} ${beatX - arrowSize * 0.6},${y + arrowSize * 0.5} ${beatX + arrowSize * 0.6},${y + arrowSize * 0.5}`;
         }
         arrow.setAttribute('points', points);
@@ -965,13 +912,55 @@ function tickRAF() {
 // Parsing & rebuilding
 // =========================
 function parseProgressionFromInput() {
-  const raw = el.literalInput.value;
+  let raw = el.literalInput.value.trim();
+  let parsedKey = null;
+
+  // Check for key prefix like "C:" or "Am:" at the start
+  const keyMatch = raw.match(/^([A-Ga-g][b#]?m?)\s*:\s*/);
+  if (keyMatch) {
+    const keyToken = keyMatch[1];
+    const keyParsed = parseLiteralToken(keyToken);
+    if (keyParsed) {
+      // For key, we just need the root (ignore minor for key signature purposes)
+      parsedKey = keyParsed.root;
+    }
+    // Remove the key prefix from raw
+    raw = raw.slice(keyMatch[0].length);
+  }
+
   const arr = [];
   raw.split('|').forEach(tok => {
     const p = parseLiteralToken(tok);
     if (p) arr.push(p);
   });
-  return arr.length ? arr : null;
+
+  return arr.length ? { key: parsedKey, chords: arr } : null;
+}
+
+// Transpose chords from originalKey to targetKey
+function transposeChords(chordList, fromKey, toKey) {
+  if (fromKey === null || toKey === null || fromKey === toKey) {
+    // No transposition needed
+    return chordList.map(ch => ({ ...ch }));
+  }
+  const interval = (toKey - fromKey + 12) % 12;
+  return chordList.map(ch => ({
+    root: (ch.root + interval) % 12,
+    quality: ch.quality
+  }));
+}
+
+// Get the effective key for display (transpose target or original)
+function getEffectiveKey() {
+  // If no original key specified in input, can't determine key context
+  if (originalKey === null) return null;
+
+  const transposeVal = el.transposeSelect.value;
+  if (transposeVal === '') {
+    // No transposition - use original key
+    return originalKey;
+  }
+  return keyToSemi(transposeVal);
 }
 
 function rebuildFromInputs() {
@@ -981,7 +970,21 @@ function rebuildFromInputs() {
     return false;
   }
   el.literalInput.classList.remove('invalid');
-  chords = parsed;
+
+  // Store original key and chords
+  originalKey = parsed.key;
+  originalChords = parsed.chords;
+
+  // Apply transposition if a target key is selected
+  const transposeVal = el.transposeSelect.value;
+  if (transposeVal === '' || originalKey === null) {
+    // No transposition
+    chords = originalChords.map(ch => ({ ...ch }));
+  } else {
+    const targetKey = keyToSemi(transposeVal);
+    chords = transposeChords(originalChords, originalKey, targetKey);
+  }
+
   renderStrip();
   highlightActiveCell();
   return true;
@@ -1119,17 +1122,17 @@ function actionSetBPM(val) { // slider or text input changed
 
 function actionRandom() { // pick a random progression
   const t = [
-      'C | G | Am | F',
-      'C | F | G | C',
-      'C | Am | F | G',
-      'Dm | G | C | G',
+      'C: C | G | Am | F',
+      'C: C | F | G | C',
+      'C: C | Am | F | G',
+      'C: Dm | G | C | G',
       // House of the rising sun
-      'Am | C | D | F | Am | E | Am | E',
+      'Am: Am | C | D | F | Am | E | Am | E',
       // 12-bar blues
-      'C | C | C | C | F | F | C | C | G | F | C | G',
-      'E | E | E | E | A | A | E | E | B | A | E | B',
-      'A | A | A | A | D | D | A | A | E | D | A | E',
-      'B | B | B | B | E | E | B | B | F# | E | B | F#'
+      'C: C | C | C | C | F | F | C | C | G | F | C | G',
+      'E: E | E | E | E | A | A | E | E | B | A | E | B',
+      'A: A | A | A | A | D | D | A | A | E | D | A | E',
+      'B: B | B | B | B | E | E | B | B | F# | E | B | F#'
   ];
   el.literalInput.value = t[Math.floor(Math.random() * t.length)];
   rebuildFromInputs();
@@ -1221,7 +1224,7 @@ function init() {
   el.btnChords  = document.getElementById('btnChords');
   el.btnRandom  = document.getElementById('btnRandom');
   el.strip      = document.getElementById('strip');
-  el.keySelect  = document.getElementById('keySelect');
+  el.transposeSelect = document.getElementById('transposeSelect');
   el.literalInput = document.getElementById('literalInput');
   el.bpm        = document.getElementById('bpm');
   el.bpmVal     = document.getElementById('bpmVal');
@@ -1229,13 +1232,20 @@ function init() {
   el.dynamicsContainer = document.getElementById('dynamicsContainer');
   el.patternSelect = document.getElementById('patternSelect');
 
-  // Populate keys
+  // Populate transpose dropdown
+  // First option is empty (no transposition) - this is the default
+  const noTranspose = document.createElement('option');
+  noTranspose.value = '';
+  noTranspose.textContent = '(none)';
+  el.transposeSelect.appendChild(noTranspose);
+
   KEYS.forEach(k => {
     const o = document.createElement('option');
-    o.value = k; o.textContent = k + ' Major';
-    el.keySelect.appendChild(o);
+    o.value = k;
+    o.textContent = k;
+    el.transposeSelect.appendChild(o);
   });
-  el.keySelect.value = 'C';
+  el.transposeSelect.value = '';
 
   // One-time event wiring to top-level actions
   el.btnPlay.addEventListener('click', actionPlay);
@@ -1248,7 +1258,7 @@ function init() {
 
   el.bpm.addEventListener('input', e => actionSetBPM(e.target.value));
   el.bpmVal.addEventListener('input', e => actionSetBPM(e.target.value));
-  el.keySelect.addEventListener('change', rebuildFromInputs);
+  el.transposeSelect.addEventListener('change', rebuildFromInputs);
   el.literalInput.addEventListener('focus', () => { if (!editMode) actionEnterEditMode(); });
   el.literalInput.addEventListener('change', rebuildFromInputs);
   el.patternSelect.addEventListener('change', e => actionPatternChange(e.target.value));
@@ -1309,10 +1319,18 @@ Tips:
     Repeatedly click <b>Tap Tempo</b> or the T key to set the tempo, drag the tempo slider, or use the plus (+) and (-) keys.
   </li>
   <li>
+    <b>Key and Transposition:</b>
+    <ul>
+      <li>Specify a key at the start of the progression: <code>C: C | Am | F | G</code></li>
+      <li>Roman numerals are shown when a key is specified</li>
+      <li>Use the <b>Transpose</b> dropdown to transpose to a different key</li>
+    </ul>
+  </li>
+  <li>
     <b>Strum Pattern Editing:</b>
     <ul>
-      <li>Click the <b>direction arrow</b> (↓/↑/·) at the top of each beat to cycle through down/up/rest</li>
-      <li>Click the <b>string arrows</b> to toggle individual strings on/off</li>
+      <li>Click the <b>direction arrow</b> (↓/↑) at the top of each beat to toggle down/up</li>
+      <li>Click the <b>string arrows</b> to toggle individual strings on/off (turn all off for a rest)</li>
       <li>Click <b>M</b> in the corner to toggle muted (percussive) strumming</li>
       <li>Click the <b>dynamics bar</b> below to cycle soft/medium/loud</li>
     </ul>
