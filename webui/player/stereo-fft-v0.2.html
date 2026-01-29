@@ -5,58 +5,82 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Stereo Spectrogram (Async, Log-Freq)</title>
 <style>
-  /* Intentionally minimal / old-school */
-  body { font-family: serif; margin: 10px; }
+  /* Matching chords/v0.4.html styling */
+  body { font-family: sans-serif; background: #fff; color: #000; margin: 0; }
+  #top { display: flex; flex-wrap: wrap; gap: 0.8vh; padding: 1vh; background: #eee; align-items: center; }
+  #top button { flex: 0 0 auto; font-size: 2.5vh; padding: 1.2vh 1.5vw; }
+  #top .spacer { flex: 1 1 auto; min-width: 1em; }
+  button { cursor: pointer; border: 1px solid #bbb; }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
+  button.primary { background: #f4f4f4; color: #000; border: 1px solid #bbb; }
+  button.primary.playing { background: #007700; color: #fff; border: 1px solid #007700; }
+  button.danger { background: #f4f4f4; color: #000; border: 1px solid #999; }
+  button.danger.stopped { background: #770000; color: #fff; border: 1px solid #770000; }
+  button.mute { background: #f4f4f4; color: #000; border: 1px solid #bbb; }
+  button.mute.active { background: #ffcc00; color: #000; border: 1px solid #ffcc00; }
+  button.load { background: #f4f4f4; color: #000; border: 1px solid #bbb; }
+  button.flash { background: #4CAF50; color: #fff; }
+  button.nav { background: #f4f4f4; font-size: 2vh !important; padding: 0.8vh 1vw !important; }
+
+  #trackInfo { padding: 0.8vh 1vh; background: #f8f8f8; border-bottom: 1px solid #ccc; display: flex; align-items: baseline; gap: 1em; flex-wrap: wrap; }
+  #trackName { font-size: 2.5vh; font-weight: bold; margin: 0; }
+  #trackParams { font-size: 1.8vh; color: #555; margin: 0; }
+
   canvas { width: 100%; border: 1px solid #999; display: block; }
-  #overview { height: 25px; }
-  #zoom { height: 66vh; }
-  .row { margin: 6px 0; }
-  button { margin-right: 4px; }
-  small { color: #444; }
-  label { margin-right: 10px; }
+  #overview { height: 25px; cursor: pointer; }
+  #zoom { height: 55vh; }
+
+  .row { margin: 6px 0; padding: 0 1vh; }
+  .nav-row { display: flex; gap: 0.5em; align-items: center; padding: 0.5vh 1vh; }
+  .nav-row small { color: #444; font-size: 1.8vh; }
+
+  #statusRow { padding: 1vh; background: #f0f0f0; border-top: 1px solid #ccc; font-size: 2vh; }
+  #statusRow small { color: #444; }
+
+  #colorRow { padding: 1vh; display: flex; flex-wrap: wrap; gap: 1em; align-items: center; font-size: 2vh; background: #f8f8f8; border-top: 1px solid #ccc; }
+  #colorRow label { display: flex; align-items: center; gap: 0.3em; }
+  #colorRow input[type="color"] { width: 3em; height: 2.5em; border: 1px solid #999; }
+  #colorRow input[type="range"] { width: 8em; }
+
+  /* FFT Parameters section */
+  #fftParams { padding: 1vh; background: #f8f8f8; border-top: 1px solid #ccc; }
+  #fftParams h3 { margin: 0 0 0.5em 0; font-size: 2.2vh; }
+  #fftParamsGrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 0.8em; font-size: 1.8vh; }
+  #fftParamsGrid label { display: flex; flex-direction: column; gap: 0.2em; }
+  #fftParamsGrid input { font-size: 1.8vh; padding: 0.3em; width: 100%; box-sizing: border-box; }
+  #fftParamsGrid select { font-size: 1.8vh; padding: 0.3em; }
+  #recomputeRow { margin-top: 0.8em; display: flex; gap: 1em; align-items: center; }
+  #recomputeRow button { font-size: 2vh; padding: 0.5em 1.5em; }
+  #recomputeRow button:disabled { background: #ddd; }
+  #recomputeRow button:not(:disabled) { background: #4CAF50; color: #fff; border-color: #4CAF50; }
+  #recomputeRow small { color: #666; }
 </style>
 </head>
 <body>
-  <h2>Stereo Spectrogram</h2>
-
-  <div class="row">
-    <label>Load audio:
-      <input id="file" type="file" accept="audio/*">
-    </label>
-
-    <button id="play" disabled>Play</button>
-    <button id="pause" disabled>Pause</button>
-    <button id="stop" disabled>Stop</button>
-    <button id="back5" disabled>&lt;&lt; -5s</button>
-    <button id="fwd5" disabled>+5s &gt;&gt;</button>
-
-    <small>(Space toggles Play/Stop)</small>
+  <div id="top">
+    <button id="btnLoad" class="load">📂 (L)oad</button>
+    <button id="btnPlay" class="primary" disabled>▶ Play</button>
+    <button id="btnStop" class="danger stopped" disabled>⏹ Stop</button>
+    <button id="btnMute" class="mute">🔊 Sound</button>
+    <span class="spacer"></span>
+    <button id="back5" class="nav" disabled>&lt;&lt; -5s</button>
+    <button id="panLeft" class="nav" disabled>&lt; -1s</button>
+    <button id="follow" class="nav" disabled>(F)ollow</button>
+    <button id="panRight" class="nav" disabled>+1s &gt;</button>
+    <button id="fwd5" class="nav" disabled>+5s &gt;&gt;</button>
+    <input id="file" type="file" accept="audio/*" style="display:none;">
   </div>
 
-  <div class="row">
-    <label>Left color:
-      <input id="leftColor" type="color" value="#2a6bff">
-    </label>
-    <label>Right color:
-      <input id="rightColor" type="color" value="#ff2a2a">
-    </label>
-
-    <label>Gain:
-      <input id="gain" type="range" min="0.2" max="3.0" step="0.05" value="1.0">
-      <span id="gainVal">1.00×</span>
-    </label>
-
-    <span id="status"><small>Load an audio file…</small></span>
+  <div id="trackInfo">
+    <p id="trackName">No track loaded</p>
+    <p id="trackParams">Load an audio file to view spectrogram</p>
   </div>
 
   <div class="row">
     <canvas id="overview"></canvas>
   </div>
 
-  <div class="row">
-    <button id="panLeft" disabled>&lt; -1s</button>
-    <button id="follow" disabled>Follow</button>
-    <button id="panRight" disabled>+1s &gt;</button>
+  <div class="nav-row">
     <small id="viewInfo"></small>
   </div>
 
@@ -64,27 +88,90 @@
     <canvas id="zoom"></canvas>
   </div>
 
+  <div id="statusRow">
+    <span id="status"><small>Load an audio file...</small></span>
+  </div>
+
+  <div id="colorRow">
+    <label>Left color:
+      <input id="leftColor" type="color" value="#2a6bff">
+    </label>
+    <label>Right color:
+      <input id="rightColor" type="color" value="#ff2a2a">
+    </label>
+    <label>Gain:
+      <input id="gain" type="range" min="0.2" max="3.0" step="0.05" value="1.0">
+      <span id="gainVal">1.00×</span>
+    </label>
+  </div>
+
+  <div id="fftParams">
+    <h3>Display Settings <small style="font-weight:normal;color:#666">(apply immediately)</small></h3>
+    <div id="fftParamsGrid">
+      <label>Frequency Scale:
+        <select id="paramFreqScale">
+          <option value="log" selected>Logarithmic</option>
+          <option value="linear">Linear</option>
+        </select>
+      </label>
+      <label>Min Frequency (Hz):
+        <input id="paramFreqMin" type="number" value="20" min="1" max="500" step="1">
+      </label>
+      <label>Max Frequency (Hz):
+        <input id="paramFreqMax" type="number" value="20000" min="1000" max="48000" step="100">
+      </label>
+    </div>
+
+    <h3 style="margin-top:1em;">FFT Parameters <small style="font-weight:normal;color:#666">(require recompute)</small></h3>
+    <div id="fftParamsGrid">
+      <label>FFT Size:
+        <select id="paramFftSize">
+          <option value="512">512</option>
+          <option value="1024">1024</option>
+          <option value="2048">2048</option>
+          <option value="4096">4096</option>
+          <option value="8192" selected>8192</option>
+          <option value="16384">16384</option>
+          <option value="32768">32768</option>
+        </select>
+      </label>
+      <label>Hop Size:
+        <input id="paramHopSize" type="number" value="256" min="64" max="4096" step="64">
+      </label>
+      <label>dB Floor:
+        <input id="paramDbFloor" type="number" value="-110" min="-140" max="-20" step="5">
+      </label>
+      <label>dB Ceiling:
+        <input id="paramDbCeil" type="number" value="-10" min="-60" max="0" step="5">
+      </label>
+      <label>Max Columns:
+        <input id="paramMaxCols" type="number" value="8000" min="1000" max="20000" step="1000">
+      </label>
+    </div>
+    <div id="recomputeRow">
+      <button id="btnRecompute" disabled>Recompute FFT</button>
+      <small id="recomputeHint">Change FFT parameters above to enable</small>
+    </div>
+  </div>
+
   <audio id="audio" style="display:none;" crossorigin="anonymous"></audio>
 
 <script>
 (() => {
   // ------------------------------
-  // Config (adjust if you want)
+  // Config (can be changed via UI)
   // ------------------------------
-  const FFT_SIZE = 2048;
-  const HOP_SIZE = 256;
+  let FFT_SIZE = 8192;
+  let HOP_SIZE = 256;
+  let DB_FLOOR = -110;
+  let DB_CEIL  = -10;
+  let FREQ_MIN_HZ = 20;
+  let FREQ_MAX_HZ = 20000;
+  let FREQ_SCALE = 'log'; // 'log' or 'linear'
+  let MAX_COLUMNS = 8000;
 
-  // Raw magnitude -> dBFS clamp range, then mapped to 0..255.
-  const DB_FLOOR = -110;
-  const DB_CEIL  = -10;
-
-  // Log-frequency axis
-  const FREQ_MIN_HZ = 20; // lower bound for log mapping
-
-  // Time column budget: how many time-columns we store for the whole file.
-  // This prevents huge memory use for long files while still looking good.
-  // Higher = sharper in time (zoom smoother). 4000–12000 is usually fine.
-  const MAX_COLUMNS = 8000;
+  // Track initial values for dirty detection
+  let initialParams = { FFT_SIZE, HOP_SIZE, DB_FLOOR, DB_CEIL, FREQ_MIN_HZ, FREQ_MAX_HZ, FREQ_SCALE, MAX_COLUMNS };
 
   // ------------------------------
   // DOM
@@ -92,9 +179,10 @@
   const elFile = document.getElementById('file');
   const elAudio = document.getElementById('audio');
 
-  const btnPlay = document.getElementById('play');
-  const btnPause = document.getElementById('pause');
-  const btnStop = document.getElementById('stop');
+  const btnLoad = document.getElementById('btnLoad');
+  const btnPlay = document.getElementById('btnPlay');
+  const btnStop = document.getElementById('btnStop');
+  const btnMute = document.getElementById('btnMute');
   const btnBack5 = document.getElementById('back5');
   const btnFwd5 = document.getElementById('fwd5');
 
@@ -109,11 +197,25 @@
 
   const elStatus = document.getElementById('status');
   const elViewInfo = document.getElementById('viewInfo');
+  const elTrackName = document.getElementById('trackName');
+  const elTrackParams = document.getElementById('trackParams');
 
   const cvOverview = document.getElementById('overview');
   const cvZoom = document.getElementById('zoom');
   const ctxO = cvOverview.getContext('2d', { alpha: false });
   const ctxZ = cvZoom.getContext('2d', { alpha: false });
+
+  // FFT param inputs
+  const paramFftSize = document.getElementById('paramFftSize');
+  const paramHopSize = document.getElementById('paramHopSize');
+  const paramDbFloor = document.getElementById('paramDbFloor');
+  const paramDbCeil = document.getElementById('paramDbCeil');
+  const paramFreqScale = document.getElementById('paramFreqScale');
+  const paramFreqMin = document.getElementById('paramFreqMin');
+  const paramFreqMax = document.getElementById('paramFreqMax');
+  const paramMaxCols = document.getElementById('paramMaxCols');
+  const btnRecompute = document.getElementById('btnRecompute');
+  const recomputeHint = document.getElementById('recomputeHint');
 
   // ------------------------------
   // Helpers
@@ -137,7 +239,7 @@
   }
 
   function setEnabled(on) {
-    for (const b of [btnPlay, btnPause, btnStop, btnBack5, btnFwd5, btnPanL, btnPanR, btnFollow]) {
+    for (const b of [btnPlay, btnStop, btnBack5, btnFwd5, btnPanL, btnPanR, btnFollow]) {
       b.disabled = !on;
     }
   }
@@ -156,7 +258,6 @@
   }
 
   function zoomWindowSeconds() {
-    // 2..5 seconds, based on CSS width
     const w = cvZoom.getBoundingClientRect().width;
     return clamp(w / 260, 2, 5);
   }
@@ -166,15 +267,16 @@
   // ------------------------------
   let objectUrl = null;
   let duration = 0;
+  let currentFileName = null;
+  let muted = false;
 
   let worker = null;
 
-  // Spectrogram storage:
-  // We store per-column, per-bin intensities for left and right: [L,R,L,R,...] as Uint8
-  // columns * bins * 2 bytes.
-  //
-  // Also track which columns are computed.
-  let spec = null; // { sampleRate, nyquist, nBins, nCols, colDt, dataLR, computedCols, observedMax }
+  // Decoded audio buffer (kept for recompute)
+  let decodedBuffer = null;
+
+  // Spectrogram storage
+  let spec = null;
 
   // Pan/follow for zoom view
   let panMode = false;
@@ -201,7 +303,6 @@
         return w;
       }
 
-      // In-place radix-2 FFT on complex arrays
       function fft(re, im) {
         const n = re.length;
         for (let i=1, j=0; i<n; i++) {
@@ -244,7 +345,6 @@
       }
 
       function magToU8(mag) {
-        // magnitude to dBFS-ish then map to [0..255]
         const db = 20*Math.log10(mag + 1e-12);
         let t = (db - DB_FLOOR) / (DB_CEIL - DB_FLOOR);
         t = clamp(t, 0, 1);
@@ -276,14 +376,12 @@
         const reL = new Float32Array(FFT_SIZE), imL = new Float32Array(FFT_SIZE);
         const reR = new Float32Array(FFT_SIZE), imR = new Float32Array(FFT_SIZE);
 
-        let observedMax = 1; // max intensity seen (1..255)
+        let observedMax = 1;
         let currentCol = 0;
 
-        // Column accumulators store max intensity per bin (u8) for L and R
-        let colMax = new Uint8Array(nBins * 2); // [L,R,L,R,...]
+        let colMax = new Uint8Array(nBins * 2);
 
         function flushCol(colIndex, colData) {
-          // Transfer a copy of colData (because we reuse colMax)
           const out = new Uint8Array(colData.length);
           out.set(colData);
           postMessage({ type:'col', col: colIndex, data: out, observedMax }, [out.buffer]);
@@ -306,7 +404,6 @@
           fft(reL, imL);
           fft(reR, imR);
 
-          // bins
           for (let b=0; b<nBins; b++) {
             const ml = Math.hypot(reL[b], imL[b]) / FFT_SIZE;
             const mr = Math.hypot(reR[b], imR[b]) / FFT_SIZE;
@@ -322,11 +419,9 @@
             if (uR > observedMax) observedMax = uR;
           }
 
-          // yield sometimes so UI remains responsive
           if ((f & 63) === 63) await new Promise(r => setTimeout(r, 0));
         }
 
-        // flush last
         flushCol(currentCol, colMax);
         postMessage({ type:'done', observedMax });
       };
@@ -336,54 +431,77 @@
   }
 
   // ------------------------------
-  // Load and compute
+  // FFT Parameter handling
   // ------------------------------
-  async function loadFile(file) {
-    if (objectUrl) URL.revokeObjectURL(objectUrl);
-    objectUrl = URL.createObjectURL(file);
-    elAudio.src = objectUrl;
+  function getUIParams() {
+    return {
+      FFT_SIZE: parseInt(paramFftSize.value),
+      HOP_SIZE: parseInt(paramHopSize.value),
+      DB_FLOOR: parseInt(paramDbFloor.value),
+      DB_CEIL: parseInt(paramDbCeil.value),
+      FREQ_SCALE: paramFreqScale.value,
+      FREQ_MIN_HZ: parseInt(paramFreqMin.value),
+      FREQ_MAX_HZ: parseInt(paramFreqMax.value),
+      MAX_COLUMNS: parseInt(paramMaxCols.value)
+    };
+  }
 
-    setEnabled(true);
-    panMode = false;
-    panOffsetSec = 0;
+  function checkParamsDirty() {
+    const ui = getUIParams();
+    // Only FFT computation parameters require recompute
+    const dirty = (
+      ui.FFT_SIZE !== initialParams.FFT_SIZE ||
+      ui.HOP_SIZE !== initialParams.HOP_SIZE ||
+      ui.DB_FLOOR !== initialParams.DB_FLOOR ||
+      ui.DB_CEIL !== initialParams.DB_CEIL ||
+      ui.MAX_COLUMNS !== initialParams.MAX_COLUMNS
+    );
+    btnRecompute.disabled = !dirty || !decodedBuffer;
+    recomputeHint.textContent = dirty ? (decodedBuffer ? 'Click to apply changes' : 'Load audio first') : 'Change parameters above to enable';
+  }
 
-    elStatus.innerHTML = "<small>Loading metadata…</small>";
-    await new Promise((resolve) => {
-      elAudio.onloadedmetadata = () => resolve();
-      elAudio.onerror = () => resolve();
-    });
+  function applyUIParams() {
+    const ui = getUIParams();
+    FFT_SIZE = ui.FFT_SIZE;
+    HOP_SIZE = ui.HOP_SIZE;
+    DB_FLOOR = ui.DB_FLOOR;
+    DB_CEIL = ui.DB_CEIL;
+    FREQ_SCALE = ui.FREQ_SCALE;
+    FREQ_MIN_HZ = ui.FREQ_MIN_HZ;
+    FREQ_MAX_HZ = ui.FREQ_MAX_HZ;
+    MAX_COLUMNS = ui.MAX_COLUMNS;
+    initialParams = { ...ui };
+    checkParamsDirty();
+  }
 
-    duration = elAudio.duration || 0;
-    if (!isFinite(duration) || duration <= 0) {
-      elStatus.innerHTML = "<small>Could not read duration (unsupported format?).</small>";
-      return;
-    }
+  // Apply display-only params (no recompute needed) and redraw
+  function applyDisplayParams() {
+    FREQ_SCALE = paramFreqScale.value;
+    FREQ_MIN_HZ = parseInt(paramFreqMin.value);
+    FREQ_MAX_HZ = parseInt(paramFreqMax.value);
+    drawAll();
+  }
 
-    // Start draw loop
-    if (!raf) tick();
+  // Wire up param change listeners - FFT params need recompute check
+  [paramFftSize, paramHopSize, paramDbFloor, paramDbCeil, paramMaxCols].forEach(el => {
+    el.addEventListener('input', checkParamsDirty);
+    el.addEventListener('change', checkParamsDirty);
+  });
 
-    elStatus.innerHTML = "<small>Ready to play. Decoding for spectrogram…</small>";
+  // Display params apply immediately (no recompute)
+  [paramFreqScale, paramFreqMin, paramFreqMax].forEach(el => {
+    el.addEventListener('input', applyDisplayParams);
+    el.addEventListener('change', applyDisplayParams);
+  });
 
-    // Decode (async) for FFT
-    const arrayBuf = await file.arrayBuffer();
-    const ac = new (window.AudioContext || window.webkitAudioContext)();
-    let audioBuf;
-    try {
-      audioBuf = await ac.decodeAudioData(arrayBuf.slice(0));
-    } catch (e) {
-      elStatus.innerHTML = "<small>Decode failed (browser can't decode this audio).</small>";
-      try { await ac.close(); } catch {}
-      return;
-    }
-    try { await ac.close(); } catch {}
-
+  // ------------------------------
+  // Compute spectrogram from buffer
+  // ------------------------------
+  function computeSpectrogram(audioBuf) {
     const sr = audioBuf.sampleRate;
     const ch0 = audioBuf.getChannelData(0);
     const ch1 = audioBuf.numberOfChannels > 1 ? audioBuf.getChannelData(1) : ch0;
 
-    // Choose number of stored columns (cap memory)
-    // Base this on duration: roughly ~ 200 columns per second up to MAX_COLUMNS.
-    // (Also keep some minimum so very short clips still have detail.)
     const cols = clamp(Math.floor(duration * 200), 1200, MAX_COLUMNS);
 
     const nBins = (FFT_SIZE/2)|0;
@@ -398,7 +516,6 @@
       observedMax: 1
     };
 
-    // Reset buffer to zero (meaning "black") but uncomputed is shown as gray separately
     spec.dataLR.fill(0);
     spec.computedCols.fill(0);
 
@@ -410,29 +527,27 @@
       if (!spec) return;
 
       if (msg.type === 'meta') {
-        // If needed, reconcile counts (kept simple here)
+        // reconcile if needed
       } else if (msg.type === 'col') {
         const col = msg.col;
         const colData = new Uint8Array(msg.data);
         spec.observedMax = Math.max(spec.observedMax, msg.observedMax || 1);
 
-        // Copy into main buffer
         const stride = spec.nBins * 2;
         const off = col * stride;
         spec.dataLR.set(colData, off);
         spec.computedCols[col] = 1;
 
-        // progress estimate
         if ((col % 25) === 0) {
           let done = 0;
           const step = Math.max(1, (spec.nCols / 200) | 0);
           for (let i=0;i<spec.nCols;i+=step) done += spec.computedCols[i];
           const pct = Math.floor((done / Math.ceil(spec.nCols/step)) * 100);
-          elStatus.innerHTML = `<small>Ready to play. Computing spectrogram… (${pct}%)</small>`;
+          elStatus.innerHTML = `<small>Computing spectrogram... (${pct}%)</small>`;
         }
       } else if (msg.type === 'done') {
         spec.observedMax = Math.max(spec.observedMax, msg.observedMax || 1);
-        elStatus.innerHTML = "<small>Ready. Spectrogram computed.</small>";
+        elStatus.innerHTML = "<small>Spectrogram computed.</small>";
       }
     };
 
@@ -449,14 +564,81 @@
     });
 
     btnFollow.disabled = false;
-
-    // Ensure canvases are sized before drawing
     resizeAll();
     drawAll();
   }
 
   // ------------------------------
-  // Rendering (log-frequency, recolor/rescale without recompute)
+  // Load and compute
+  // ------------------------------
+  async function loadFile(file) {
+    if (objectUrl) URL.revokeObjectURL(objectUrl);
+    objectUrl = URL.createObjectURL(file);
+    elAudio.src = objectUrl;
+    currentFileName = file.name;
+
+    setEnabled(true);
+    panMode = false;
+    panOffsetSec = 0;
+
+    elStatus.innerHTML = "<small>Loading metadata...</small>";
+    elTrackName.textContent = file.name;
+    elTrackParams.textContent = "Loading...";
+
+    await new Promise((resolve) => {
+      elAudio.onloadedmetadata = () => resolve();
+      elAudio.onerror = () => resolve();
+    });
+
+    duration = elAudio.duration || 0;
+    if (!isFinite(duration) || duration <= 0) {
+      elStatus.innerHTML = "<small>Could not read duration (unsupported format?).</small>";
+      elTrackParams.textContent = "Error loading file";
+      return;
+    }
+
+    // Update track params display (will be enhanced after decode)
+    elTrackParams.textContent = `${fmtTime(duration)}`;
+
+    // Start draw loop
+    if (!raf) tick();
+
+    elStatus.innerHTML = "<small>Decoding audio for spectrogram...</small>";
+
+    // Decode (async) for FFT
+    const arrayBuf = await file.arrayBuffer();
+    const ac = new (window.AudioContext || window.webkitAudioContext)();
+    try {
+      decodedBuffer = await ac.decodeAudioData(arrayBuf.slice(0));
+    } catch (e) {
+      elStatus.innerHTML = "<small>Decode failed (browser can't decode this audio).</small>";
+      try { await ac.close(); } catch {}
+      return;
+    }
+    try { await ac.close(); } catch {}
+
+    // Update track params with more info (on same line as title)
+    const sr = decodedBuffer.sampleRate;
+    const channels = decodedBuffer.numberOfChannels;
+    elTrackParams.textContent = `${fmtTime(duration)} | ${(sr/1000).toFixed(1)} kHz | ${channels}ch`;
+
+    // Apply current UI params and compute
+    applyUIParams();
+    computeSpectrogram(decodedBuffer);
+  }
+
+  // Recompute with new parameters
+  function recomputeFFT() {
+    if (!decodedBuffer) return;
+    applyUIParams();
+    elStatus.innerHTML = "<small>Recomputing spectrogram...</small>";
+    computeSpectrogram(decodedBuffer);
+  }
+
+  btnRecompute.addEventListener('click', recomputeFFT);
+
+  // ------------------------------
+  // Rendering (log-frequency)
   // ------------------------------
   function colIndexForTime(t) {
     if (!spec) return 0;
@@ -469,17 +651,24 @@
   }
 
   function binForY(y, h) {
-    // log-frequency mapping: y=0 top is high freq, y=h bottom is low freq
     if (!spec) return 0;
     const nyq = spec.nyquist;
     const fMin = Math.min(FREQ_MIN_HZ, nyq);
-    const fMax = nyq;
+    const fMax = Math.min(FREQ_MAX_HZ, nyq);
 
-    // normalized in [0,1], with 0 at bottom (low), 1 at top (high)
+    // u is 0 at bottom (low freq), 1 at top (high freq)
     const u = 1 - (y / Math.max(1, h - 1));
-    // exponential interpolation: f = fMin * (fMax/fMin)^u
-    const ratio = fMax / Math.max(1e-6, fMin);
-    const f = fMin * Math.pow(ratio, u);
+
+    let f;
+    if (FREQ_SCALE === 'linear') {
+      // Linear interpolation
+      f = fMin + u * (fMax - fMin);
+    } else {
+      // Log interpolation (default)
+      const ratio = fMax / Math.max(1e-6, fMin);
+      f = fMin * Math.pow(ratio, u);
+    }
+
     const b = Math.floor((f / nyq) * (spec.nBins - 1));
     return clamp(b, 0, spec.nBins - 1);
   }
@@ -488,7 +677,7 @@
     ctx.fillStyle = "#e0e0e0";
     ctx.fillRect(0,0,w,h);
     ctx.fillStyle = "#333";
-    ctx.font = Math.max(12, Math.floor(h*0.35)) + "px serif";
+    ctx.font = Math.max(12, Math.floor(h*0.35)) + "px sans-serif";
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
     ctx.fillText(label, w/2, h/2);
@@ -500,27 +689,21 @@
       return;
     }
 
-    // Colors + gain (rescale only, no recompute)
     const leftRGB = parseHexColor(elLeftColor.value);
     const rightRGB = parseHexColor(elRightColor.value);
     const gain = parseFloat(elGain.value);
 
-    // Auto-normalize based on observedMax (updates as worker runs)
     const norm = 255 / Math.max(1, spec.observedMax);
 
-    // Background for uncomputed areas
     ctx.fillStyle = "#bdbdbd";
     ctx.fillRect(0,0,w,h);
 
-    // Pixel render
     const img = ctx.createImageData(w, h);
     const data = img.data;
 
-    // Precompute bin-per-y for log mapping (fast)
     const yToBin = new Int32Array(h);
     for (let y=0;y<h;y++) yToBin[y] = binForY(y, h);
 
-    // Time->col mapping
     const c0 = colIndexForTime(t0);
     const c1 = colIndexForTime(t1);
 
@@ -545,17 +728,14 @@
 
         const b = yToBin[y];
         const i = colBase + b*2;
-        const uL = spec.dataLR[i];     // 0..255
-        const uR = spec.dataLR[i + 1]; // 0..255
+        const uL = spec.dataLR[i];
+        const uR = spec.dataLR[i + 1];
 
-        // Convert to alpha (0..1), normalize and apply gain
-        // Mild curve improves visibility
         let aL = Math.pow((uL * norm) / 255, 0.8) * gain;
         let aR = Math.pow((uR * norm) / 255, 0.8) * gain;
         aL = clamp(aL, 0, 1);
         aR = clamp(aR, 0, 1);
 
-        // Blend by alpha add (in RGB), exactly as you requested originally
         const r = clamp(leftRGB[0]*aL + rightRGB[0]*aR, 0, 255) | 0;
         const g = clamp(leftRGB[1]*aL + rightRGB[1]*aR, 0, 255) | 0;
         const bch = clamp(leftRGB[2]*aL + rightRGB[2]*aR, 0, 255) | 0;
@@ -569,7 +749,6 @@
 
     ctx.putImageData(img, 0, 0);
 
-    // Playhead line
     if (showPlayhead) {
       const tNow = elAudio.currentTime || 0;
       if (tNow >= t0 && tNow <= t1) {
@@ -603,7 +782,7 @@
     drawSpectrogram(ctxZ, w, h, t0, t1, true);
 
     elViewInfo.textContent =
-      `View ${fmtTime(t0)} – ${fmtTime(t1)}  |  Playhead ${fmtTime(elAudio.currentTime||0)} / ${fmtTime(duration)}`;
+      `View ${fmtTime(t0)} - ${fmtTime(t1)}  |  Playhead ${fmtTime(elAudio.currentTime||0)} / ${fmtTime(duration)}`;
   }
 
   function drawAll() {
@@ -620,11 +799,45 @@
     drawAll();
   }
 
+  function updatePlayStopButtons() {
+    if (elAudio.paused) {
+      btnPlay.classList.remove('playing');
+      btnStop.classList.add('stopped');
+    } else {
+      btnPlay.classList.add('playing');
+      btnStop.classList.remove('stopped');
+    }
+  }
+
+  function updateMuteButton() {
+    if (muted) {
+      btnMute.classList.add('active');
+      btnMute.textContent = '🔇 Muted';
+      elAudio.muted = true;
+    } else {
+      btnMute.classList.remove('active');
+      btnMute.textContent = '🔊 Sound';
+      elAudio.muted = false;
+    }
+  }
+
+  btnLoad.addEventListener('click', () => elFile.click());
+
   btnPlay.addEventListener('click', async () => {
     try { await elAudio.play(); } catch {}
+    updatePlayStopButtons();
   });
-  btnPause.addEventListener('click', () => elAudio.pause());
-  btnStop.addEventListener('click', () => { elAudio.pause(); seekTo(0); });
+
+  btnStop.addEventListener('click', () => {
+    elAudio.pause();
+    seekTo(0);
+    updatePlayStopButtons();
+  });
+
+  btnMute.addEventListener('click', () => {
+    muted = !muted;
+    updateMuteButton();
+  });
 
   btnBack5.addEventListener('click', () => seekTo((elAudio.currentTime||0) - 5));
   btnFwd5.addEventListener('click', () => seekTo((elAudio.currentTime||0) + 5));
@@ -633,42 +846,99 @@
   btnPanR.addEventListener('click', () => { panMode = true; panOffsetSec += 1; drawAll(); });
   btnFollow.addEventListener('click', () => { panMode = false; panOffsetSec = 0; drawAll(); });
 
-  // Space toggles PLAY/STOP (as requested)
+  // Click on overview to seek
+  cvOverview.addEventListener('click', (e) => {
+    if (!isFinite(duration) || duration <= 0) return;
+    const rect = cvOverview.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const ratio = x / rect.width;
+    const t = ratio * duration;
+    seekTo(t);
+    panMode = false;
+    panOffsetSec = 0;
+  });
+
+  // Keyboard shortcuts
   window.addEventListener('keydown', (e) => {
+    // Ignore if typing in an input
+    if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
+
     if (e.code === 'Space') {
       e.preventDefault();
       if (btnPlay.disabled) return;
       if (elAudio.paused) {
-        // if at end, restart
         if (duration > 0 && (elAudio.currentTime || 0) >= duration - 0.05) elAudio.currentTime = 0;
         elAudio.play().catch(()=>{});
       } else {
         elAudio.pause();
         elAudio.currentTime = 0;
       }
+      updatePlayStopButtons();
+    }
+
+    // L for Load
+    if (e.code === 'KeyL' && !e.metaKey && !e.ctrlKey) {
+      e.preventDefault();
+      elFile.click();
+    }
+
+    // M for Mute
+    if (e.code === 'KeyM' && !e.metaKey && !e.ctrlKey) {
+      e.preventDefault();
+      muted = !muted;
+      updateMuteButton();
+    }
+
+    // F for Follow
+    if (e.code === 'KeyF' && !e.metaKey && !e.ctrlKey) {
+      e.preventDefault();
+      if (!btnFollow.disabled) {
+        panMode = false;
+        panOffsetSec = 0;
+        drawAll();
+      }
+    }
+
+    // Arrow keys for seeking
+    if (e.code === 'ArrowLeft') {
+      e.preventDefault();
+      if (e.shiftKey) {
+        seekTo((elAudio.currentTime||0) - 5);
+      } else {
+        panMode = true;
+        panOffsetSec -= 1;
+        drawAll();
+      }
+    }
+
+    if (e.code === 'ArrowRight') {
+      e.preventDefault();
+      if (e.shiftKey) {
+        seekTo((elAudio.currentTime||0) + 5);
+      } else {
+        panMode = true;
+        panOffsetSec += 1;
+        drawAll();
+      }
     }
   });
 
   // Gain & color changes: NO recompute, just re-render
   elGain.addEventListener('input', () => {
-    elGainVal.textContent = parseFloat(elGain.value).toFixed(2) + "×";
+    elGainVal.textContent = parseFloat(elGain.value).toFixed(2) + "x";
     drawAll();
   });
   elLeftColor.addEventListener('input', drawAll);
   elRightColor.addEventListener('input', drawAll);
 
-  // ------------------------------
   // File input
-  // ------------------------------
   elFile.addEventListener('change', async () => {
     const f = elFile.files && elFile.files[0];
     if (!f) return;
     await loadFile(f);
   });
 
-  // ------------------------------
   // Resize + RAF
-  // ------------------------------
   function resizeAll() {
     let changed = false;
     changed = resizeCanvasToCSSPixels(cvOverview) || changed;
@@ -684,9 +954,46 @@
 
   // init
   setEnabled(false);
-  elGainVal.textContent = parseFloat(elGain.value).toFixed(2) + "×";
+  elGainVal.textContent = parseFloat(elGain.value).toFixed(2) + "x";
   resizeAll();
+  updateMuteButton();
+  checkParamsDirty();
 })();
 </script>
+
+<h3>Key Bindings</h3>
+<ul>
+  <li><b>SPACE</b>: Play or Stop (resets to beginning)</li>
+  <li><b>L</b>: Load audio file</li>
+  <li><b>M</b>: Toggle mute</li>
+  <li><b>F</b>: Follow playhead (exit pan mode)</li>
+  <li><b>Left Arrow</b>: Pan view left 1 second</li>
+  <li><b>Right Arrow</b>: Pan view right 1 second</li>
+  <li><b>Shift + Left Arrow</b>: Seek back 5 seconds</li>
+  <li><b>Shift + Right Arrow</b>: Seek forward 5 seconds</li>
+</ul>
+
+<h3>Tips</h3>
+<ul>
+  <li><b>Click on the overview</b> to seek to that position in the track.</li>
+  <li>The <b>overview</b> shows the entire track; the <b>zoomed view</b> shows a 2-5 second window around the playhead.</li>
+  <li><b>Left color</b> represents the left audio channel; <b>right color</b> represents the right channel. Overlapping frequencies show blended colors.</li>
+  <li>Adjust <b>Gain</b> to brighten or dim the spectrogram without recomputing.</li>
+  <li><b>Display parameters</b> (apply immediately):
+    <ul>
+      <li><b>Frequency Scale</b>: Logarithmic (default, better for music) or Linear</li>
+      <li><b>Min/Max Frequency</b>: Bounds for the frequency axis display</li>
+    </ul>
+  </li>
+  <li><b>FFT parameters</b> (click <b>Recompute FFT</b> to apply):
+    <ul>
+      <li><b>FFT Size</b>: Larger = better frequency resolution, worse time resolution</li>
+      <li><b>Hop Size</b>: Smaller = smoother time detail, slower computation</li>
+      <li><b>dB Floor/Ceiling</b>: Adjust the dynamic range mapping</li>
+      <li><b>Max Columns</b>: Controls memory usage for long files</li>
+    </ul>
+  </li>
+</ul>
+
 </body>
 </html>
