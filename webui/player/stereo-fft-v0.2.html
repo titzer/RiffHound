@@ -54,6 +54,7 @@
   #recomputeRow button:disabled { background: #ddd; }
   #recomputeRow button:not(:disabled) { background: #4CAF50; color: #fff; border-color: #4CAF50; }
   #recomputeRow small { color: #666; }
+  #computeStatus { margin-left: 1em; font-weight: 500; }
 </style>
 </head>
 <body>
@@ -124,6 +125,13 @@
 
     <h3 style="margin-top:1em;">FFT Parameters <small style="font-weight:normal;color:#666">(require recompute)</small></h3>
     <div id="fftParamsGrid">
+      <label>FFT Engine:
+        <select id="paramFftEngine">
+          <option value="js" selected>JavaScript (any size)</option>
+          <option value="pffft-simd">PFFFT SIMD (32-4096)</option>
+          <option value="pffft-nosimd">PFFFT No-SIMD (32-4096)</option>
+        </select>
+      </label>
       <label>FFT Size:
         <select id="paramFftSize">
           <option value="512">512</option>
@@ -151,6 +159,7 @@
     <div id="recomputeRow">
       <button id="btnRecompute" disabled>Recompute FFT</button>
       <small id="recomputeHint">Change FFT parameters above to enable</small>
+      <small id="computeStatus"></small>
     </div>
   </div>
 
@@ -161,6 +170,7 @@
   // ------------------------------
   // Config (can be changed via UI)
   // ------------------------------
+  let FFT_ENGINE = 'js'; // 'js', 'pffft-simd', 'pffft-nosimd'
   let FFT_SIZE = 8192;
   let HOP_SIZE = 256;
   let DB_FLOOR = -110;
@@ -170,8 +180,15 @@
   let FREQ_SCALE = 'log'; // 'log' or 'linear'
   let MAX_COLUMNS = 8000;
 
+  // PFFFT size limits
+  const PFFFT_MIN_SIZE = 32;
+  const PFFFT_MAX_SIZE = 4096;
+
   // Track initial values for dirty detection
-  let initialParams = { FFT_SIZE, HOP_SIZE, DB_FLOOR, DB_CEIL, FREQ_MIN_HZ, FREQ_MAX_HZ, FREQ_SCALE, MAX_COLUMNS };
+  let initialParams = { FFT_ENGINE, FFT_SIZE, HOP_SIZE, DB_FLOOR, DB_CEIL, FREQ_MIN_HZ, FREQ_MAX_HZ, FREQ_SCALE, MAX_COLUMNS };
+
+  // Base URL for loading WASM files (relative to this HTML file)
+  const BASE_URL = new URL('.', window.location.href).href;
 
   // ------------------------------
   // DOM
@@ -206,6 +223,7 @@
   const ctxZ = cvZoom.getContext('2d', { alpha: false });
 
   // FFT param inputs
+  const paramFftEngine = document.getElementById('paramFftEngine');
   const paramFftSize = document.getElementById('paramFftSize');
   const paramHopSize = document.getElementById('paramHopSize');
   const paramDbFloor = document.getElementById('paramDbFloor');
@@ -216,6 +234,7 @@
   const paramMaxCols = document.getElementById('paramMaxCols');
   const btnRecompute = document.getElementById('btnRecompute');
   const recomputeHint = document.getElementById('recomputeHint');
+  const computeStatus = document.getElementById('computeStatus');
 
   // ------------------------------
   // Helpers
@@ -288,34 +307,32 @@
   // ------------------------------
   // Worker (FFT + dB mapping, async)
   // ------------------------------
-  // The worker code is defined as a string so it can be loaded as a blob.
-  // The FFT implementation is pluggable - the worker accepts a 'setEngine' message
-  // to switch FFT implementations (e.g., to use WebAssembly).
-  //
-  // FFT Engine Interface:
-  //   - init(size): Initialize for given FFT size, returns engine instance
-  //   - forward(re, im): Perform in-place forward FFT on Float32Arrays
-  //
-  // To use a custom WASM FFT:
-  //   1. Load your WASM module
-  //   2. Send { type: 'setEngine', engine: 'wasm', wasmModule: module } to worker
-  //   3. The worker will use the WASM exports: fft_init(size), fft_forward(rePtr, imPtr, size)
+  // The worker supports multiple FFT engines:
+  //   - 'js': Optimized JavaScript FFT (any size, power of 2)
+  //   - 'pffft-simd': PFFFT with SIMD (32-4096)
+  //   - 'pffft-nosimd': PFFFT without SIMD (32-4096)
 
-  function makeWorker() {
+  function makeWorker(baseUrl) {
     const src = `
       // ============================================================
-      // FFT Engine - Pluggable architecture
+      // FFT Engines - Pluggable architecture
       // ============================================================
 
-      // Current engine (default: optimized JS)
       let fftEngine = null;
+      let engineType = 'js';
+      let pffftModule = null;
+      let pffftRunner = null;
+      let pffftDataPtr = null;
+      let pffftDataHeap = null;
+
+      // Base URL passed from main thread for loading WASM
+      let baseUrl = '';
 
       // ------------------------------------------------------------
       // Optimized JavaScript FFT with pre-computed twiddle factors
       // ------------------------------------------------------------
       function createJSEngine(size) {
         const n = size;
-        const halfN = n >>> 1;
         const log2n = Math.log2(n) | 0;
 
         // Pre-compute bit-reversal permutation table
@@ -328,26 +345,33 @@
           bitRev[i] = rev;
         }
 
-        // Pre-compute twiddle factors for all stages
-        // Store as interleaved [cos, -sin, cos, -sin, ...] for each stage
-        // This eliminates all trig calls during FFT and avoids error accumulation
+        // Pre-compute twiddle factors for all stages (Float64 for precision)
         const twiddles = [];
         for (let s = 1; s <= log2n; s++) {
-          const m = 1 << s;        // Current butterfly size
+          const m = 1 << s;
           const halfM = m >>> 1;
-          const twid = new Float64Array(halfM * 2);  // Use Float64 for precision
+          const twid = new Float64Array(halfM * 2);
           for (let k = 0; k < halfM; k++) {
             const angle = -2 * Math.PI * k / m;
-            twid[k * 2] = Math.cos(angle);      // Real part
-            twid[k * 2 + 1] = Math.sin(angle);  // Imag part (already negated in angle)
+            twid[k * 2] = Math.cos(angle);
+            twid[k * 2 + 1] = Math.sin(angle);
           }
           twiddles.push(twid);
         }
 
-        return {
-          size: n,
+        // Pre-compute Hann window
+        const win = new Float32Array(n);
+        const factor = 2 * Math.PI / (n - 1);
+        for (let i = 0; i < n; i++) {
+          win[i] = 0.5 * (1 - Math.cos(factor * i));
+        }
 
-          // In-place forward FFT (Cooley-Tukey radix-2 DIT)
+        return {
+          type: 'js',
+          size: n,
+          window: win,
+          usesWindow: false,  // We apply window separately
+
           forward(re, im) {
             // Bit-reversal permutation
             for (let i = 0; i < n; i++) {
@@ -360,7 +384,7 @@
 
             // Butterfly stages
             for (let s = 0; s < log2n; s++) {
-              const m = 1 << (s + 1);    // Butterfly size for this stage
+              const m = 1 << (s + 1);
               const halfM = m >>> 1;
               const twid = twiddles[s];
 
@@ -368,18 +392,12 @@
                 for (let j = 0; j < halfM; j++) {
                   const wr = twid[j * 2];
                   const wi = twid[j * 2 + 1];
-
                   const idx1 = k + j;
                   const idx2 = k + j + halfM;
-
                   const tre = re[idx2];
                   const tim = im[idx2];
-
-                  // Complex multiply: (tre + i*tim) * (wr + i*wi)
                   const vr = tre * wr - tim * wi;
                   const vi = tre * wi + tim * wr;
-
-                  // Butterfly
                   re[idx2] = re[idx1] - vr;
                   im[idx2] = im[idx1] - vi;
                   re[idx1] = re[idx1] + vr;
@@ -392,47 +410,91 @@
       }
 
       // ------------------------------------------------------------
-      // WebAssembly FFT Engine (placeholder - set via message)
+      // PFFFT Engine (WASM)
       // ------------------------------------------------------------
-      let wasmInstance = null;
-      let wasmMemory = null;
-      let wasmRePtr = 0;
-      let wasmImPtr = 0;
+      async function createPffftEngine(size, simd) {
+        const wasmFile = simd ? 'pffft.simd.wasm' : 'pffft.nosimd.wasm';
+        const wasmUrl = baseUrl + wasmFile;
 
-      function createWasmEngine(size, wasmModule) {
-        // Expected WASM exports:
-        //   memory: WebAssembly.Memory
-        //   fft_init(size: i32) -> void
-        //   fft_forward(re_ptr: i32, im_ptr: i32, size: i32) -> void
-        //   malloc(bytes: i32) -> i32
+        // Fetch and compile WASM
+        const response = await fetch(wasmUrl);
+        if (!response.ok) throw new Error('Failed to load ' + wasmFile);
+        const wasmBytes = await response.arrayBuffer();
 
-        const instance = new WebAssembly.Instance(wasmModule);
-        wasmInstance = instance;
-        wasmMemory = instance.exports.memory;
+        // Minimal Emscripten-compatible environment
+        let memory = null;
+        let HEAPU8 = null;
+        let HEAPF32 = null;
 
-        // Allocate buffers in WASM memory
-        const bytes = size * 4; // Float32
-        wasmRePtr = instance.exports.malloc(bytes);
-        wasmImPtr = instance.exports.malloc(bytes);
+        const importObject = {
+          a: {
+            // Minimal stubs for Emscripten
+            a: () => { throw new Error('assert failed'); },  // __assert_fail
+            b: () => {},  // fd_write
+            c: () => {},  // fd_seek
+            d: () => { throw new Error('OOM'); },  // emscripten_resize_heap
+            e: () => 0,   // fd_close
+            f: (dest, src, num) => { HEAPU8.copyWithin(dest, src, src + num); }  // emscripten_memcpy_big
+          }
+        };
 
-        instance.exports.fft_init(size);
+        const wasmModule = await WebAssembly.instantiate(wasmBytes, importObject);
+        const exports = wasmModule.instance.exports;
+
+        memory = exports.g;  // memory export
+        HEAPU8 = new Uint8Array(memory.buffer);
+        HEAPF32 = new Float32Array(memory.buffer);
+
+        // Initialize
+        if (exports.h) exports.h();  // __wasm_call_ctors
+
+        const _malloc = exports.i;
+        const _free = exports.j;
+        const _pffft_runner_new = exports.k;
+        const _pffft_runner_transform = exports.l;
+        const _pffft_runner_destroy = exports.n;
+
+        // Create runner (PFFFT applies Hamming window automatically)
+        const runner = _pffft_runner_new(size, 4);  // 4 bytes per float
+        if (!runner) throw new Error('Failed to create PFFFT runner for size ' + size);
+
+        // Allocate data buffer
+        const nDataBytes = size * 4;
+        const dataPtr = _malloc(nDataBytes);
+        if (!dataPtr) throw new Error('Failed to allocate PFFFT buffer');
 
         return {
+          type: simd ? 'pffft-simd' : 'pffft-nosimd',
           size: size,
+          window: null,  // PFFFT applies Hamming window internally
+          usesWindow: true,  // Don't apply external window
 
           forward(re, im) {
-            // Copy input to WASM memory
-            const reView = new Float32Array(wasmMemory.buffer, wasmRePtr, size);
-            const imView = new Float32Array(wasmMemory.buffer, wasmImPtr, size);
-            reView.set(re);
-            imView.set(im);
+            // PFFFT expects real input, returns interleaved [re, im, re, im, ...]
+            // Copy real data to WASM heap
+            const dataHeap = new Float32Array(memory.buffer, dataPtr, size);
+            dataHeap.set(re);
 
-            // Run FFT
-            wasmInstance.exports.fft_forward(wasmRePtr, wasmImPtr, size);
+            // Transform (in-place, output is interleaved complex)
+            _pffft_runner_transform(runner, dataPtr);
 
-            // Copy result back
-            re.set(reView);
-            im.set(imView);
+            // Read back interleaved result
+            const result = new Float32Array(memory.buffer, dataPtr, size);
+            for (let i = 0; i < size; i += 2) {
+              re[i >> 1] = result[i];
+              im[i >> 1] = result[i + 1];
+            }
+            // Note: PFFFT returns size/2 complex values for real input
+            // Zero out upper half
+            for (let i = size >> 1; i < size; i++) {
+              re[i] = 0;
+              im[i] = 0;
+            }
+          },
+
+          destroy() {
+            _pffft_runner_destroy(runner);
+            _free(dataPtr);
           }
         };
       }
@@ -459,15 +521,21 @@
       }
 
       // Apply window and copy to FFT buffers
-      function fillFrame(chan, start, win, re, im) {
+      function fillFrame(chan, start, win, re, im, applyWindow) {
         const n = re.length;
-        for (let i = 0; i < n; i++) {
-          re[i] = (chan[start + i] || 0) * win[i];
-          im[i] = 0;
+        if (applyWindow && win) {
+          for (let i = 0; i < n; i++) {
+            re[i] = (chan[start + i] || 0) * win[i];
+            im[i] = 0;
+          }
+        } else {
+          for (let i = 0; i < n; i++) {
+            re[i] = chan[start + i] || 0;
+            im[i] = 0;
+          }
         }
       }
 
-      // Pre-compute log10 multiplier and dB range
       let dbScale = 1;
       let dbOffset = 0;
 
@@ -476,12 +544,7 @@
         dbOffset = -DB_FLOOR * dbScale;
       }
 
-      // Optimized magnitude to U8 conversion
-      // Uses pre-computed scale factors
       function magToU8(mag) {
-        // 20 * log10(mag) mapped to 0-255
-        // = 20 * log10(mag) * scale + offset
-        // = 8.685889638... * ln(mag) * scale + offset
         const db = 8.685889638065035 * Math.log(mag + 1e-12);
         const val = db * dbScale + dbOffset;
         return val < 0 ? 0 : val > 255 ? 255 : (val + 0.5) | 0;
@@ -494,16 +557,16 @@
       onmessage = async (e) => {
         const msg = e.data;
 
-        // Handle engine switch (for WASM integration)
+        // Set base URL for loading WASM files
+        if (msg.type === 'setBaseUrl') {
+          baseUrl = msg.url;
+          return;
+        }
+
+        // Handle engine initialization
         if (msg.type === 'setEngine') {
-          if (msg.engine === 'wasm' && msg.wasmModule) {
-            try {
-              fftEngine = createWasmEngine(msg.size || 8192, msg.wasmModule);
-              postMessage({ type: 'engineReady', engine: 'wasm' });
-            } catch (err) {
-              postMessage({ type: 'engineError', error: err.message });
-            }
-          }
+          engineType = msg.engine || 'js';
+          postMessage({ type: 'engineSet', engine: engineType });
           return;
         }
 
@@ -513,6 +576,7 @@
         HOP_SIZE = msg.hopSize;
         DB_FLOOR = msg.dbFloor;
         DB_CEIL = msg.dbCeil;
+        engineType = msg.engine || 'js';
         updateDbParams();
 
         const left = msg.left;
@@ -525,20 +589,36 @@
         const nCols = msg.nCols;
         const framesPerCol = nFrames / nCols;
 
-        postMessage({ type: 'meta', nBins, nFrames, nCols, frameDt: HOP_SIZE / sampleRate });
+        postMessage({ type: 'meta', nBins, nFrames, nCols, frameDt: HOP_SIZE / sampleRate, engine: engineType });
 
-        // Initialize or re-initialize FFT engine if size changed
-        if (!fftEngine || fftEngine.size !== FFT_SIZE) {
+        // Initialize FFT engine
+        try {
+          if (fftEngine && fftEngine.destroy) fftEngine.destroy();
+
+          if (engineType === 'pffft-simd' || engineType === 'pffft-nosimd') {
+            const simd = engineType === 'pffft-simd';
+            fftEngine = await createPffftEngine(FFT_SIZE, simd);
+            postMessage({ type: 'engineReady', engine: engineType });
+          } else {
+            fftEngine = createJSEngine(FFT_SIZE);
+            postMessage({ type: 'engineReady', engine: 'js' });
+          }
+        } catch (err) {
+          postMessage({ type: 'engineError', error: err.message, engine: engineType });
+          // Fall back to JS
           fftEngine = createJSEngine(FFT_SIZE);
+          postMessage({ type: 'engineFallback', engine: 'js', reason: err.message });
         }
 
-        const win = hannWindow(FFT_SIZE);
+        // Use engine's window or create Hann window
+        const win = fftEngine.usesWindow ? null : hannWindow(FFT_SIZE);
+        const applyWindow = !fftEngine.usesWindow;
+
         const reL = new Float32Array(FFT_SIZE);
         const imL = new Float32Array(FFT_SIZE);
         const reR = new Float32Array(FFT_SIZE);
         const imR = new Float32Array(FFT_SIZE);
 
-        // Pre-compute normalization factor (1/N for standard DFT normalization)
         const normFactor = 1 / FFT_SIZE;
 
         let observedMax = 1;
@@ -551,8 +631,8 @@
           postMessage({ type: 'col', col: colIndex, data: out, observedMax }, [out.buffer]);
         }
 
-        // Process frames in batches for better performance
         const BATCH_SIZE = 64;
+        const startTime = performance.now();
 
         for (let f = 0; f < nFrames; f++) {
           const col = Math.min(nCols - 1, (f / framesPerCol) | 0);
@@ -566,16 +646,15 @@
           const start = f * HOP_SIZE;
 
           // Process left channel
-          fillFrame(left, start, win, reL, imL);
+          fillFrame(left, start, win, reL, imL, applyWindow);
           fftEngine.forward(reL, imL);
 
           // Process right channel
-          fillFrame(right, start, win, reR, imR);
+          fillFrame(right, start, win, reR, imR, applyWindow);
           fftEngine.forward(reR, imR);
 
           // Compute magnitudes and update column max
           for (let b = 0; b < nBins; b++) {
-            // Use Math.hypot for accuracy (handles overflow/underflow)
             const ml = Math.hypot(reL[b], imL[b]) * normFactor;
             const mr = Math.hypot(reR[b], imR[b]) * normFactor;
 
@@ -590,18 +669,24 @@
             if (uR > observedMax) observedMax = uR;
           }
 
-          // Yield periodically to keep UI responsive
           if ((f & (BATCH_SIZE - 1)) === (BATCH_SIZE - 1)) {
             await new Promise(r => setTimeout(r, 0));
           }
         }
 
         flushCol(currentCol, colMax);
-        postMessage({ type: 'done', observedMax });
+
+        const elapsed = performance.now() - startTime;
+        postMessage({ type: 'done', observedMax, engine: fftEngine.type, timeMs: elapsed });
       };
     `;
     const blob = new Blob([src], { type: 'application/javascript' });
-    return new Worker(URL.createObjectURL(blob));
+    const worker = new Worker(URL.createObjectURL(blob));
+
+    // Send base URL immediately
+    worker.postMessage({ type: 'setBaseUrl', url: baseUrl });
+
+    return worker;
   }
 
   // ------------------------------
@@ -609,6 +694,7 @@
   // ------------------------------
   function getUIParams() {
     return {
+      FFT_ENGINE: paramFftEngine.value,
       FFT_SIZE: parseInt(paramFftSize.value),
       HOP_SIZE: parseInt(paramHopSize.value),
       DB_FLOOR: parseInt(paramDbFloor.value),
@@ -624,18 +710,32 @@
     const ui = getUIParams();
     // Only FFT computation parameters require recompute
     const dirty = (
+      ui.FFT_ENGINE !== initialParams.FFT_ENGINE ||
       ui.FFT_SIZE !== initialParams.FFT_SIZE ||
       ui.HOP_SIZE !== initialParams.HOP_SIZE ||
       ui.DB_FLOOR !== initialParams.DB_FLOOR ||
       ui.DB_CEIL !== initialParams.DB_CEIL ||
       ui.MAX_COLUMNS !== initialParams.MAX_COLUMNS
     );
-    btnRecompute.disabled = !dirty || !decodedBuffer;
-    recomputeHint.textContent = dirty ? (decodedBuffer ? 'Click to apply changes' : 'Load audio first') : 'Change parameters above to enable';
+
+    // Check PFFFT size constraints
+    const isPffft = ui.FFT_ENGINE.startsWith('pffft');
+    const sizeValid = !isPffft || (ui.FFT_SIZE >= PFFFT_MIN_SIZE && ui.FFT_SIZE <= PFFFT_MAX_SIZE);
+
+    btnRecompute.disabled = !dirty || !decodedBuffer || !sizeValid;
+
+    if (!sizeValid) {
+      recomputeHint.textContent = `PFFFT requires size ${PFFFT_MIN_SIZE}-${PFFFT_MAX_SIZE}`;
+      recomputeHint.style.color = '#c00';
+    } else {
+      recomputeHint.style.color = '#666';
+      recomputeHint.textContent = dirty ? (decodedBuffer ? 'Click to apply changes' : 'Load audio first') : 'Change parameters above to enable';
+    }
   }
 
   function applyUIParams() {
     const ui = getUIParams();
+    FFT_ENGINE = ui.FFT_ENGINE;
     FFT_SIZE = ui.FFT_SIZE;
     HOP_SIZE = ui.HOP_SIZE;
     DB_FLOOR = ui.DB_FLOOR;
@@ -656,7 +756,21 @@
     drawAll();
   }
 
+  // Auto-cap FFT size when switching to PFFFT engine
+  function onEngineChange() {
+    const engine = paramFftEngine.value;
+    const size = parseInt(paramFftSize.value);
+
+    if (engine.startsWith('pffft') && size > PFFFT_MAX_SIZE) {
+      paramFftSize.value = String(PFFFT_MAX_SIZE);
+      computeStatus.style.color = '#c80';
+      computeStatus.textContent = `Size capped to ${PFFFT_MAX_SIZE} for PFFFT`;
+    }
+    checkParamsDirty();
+  }
+
   // Wire up param change listeners - FFT params need recompute check
+  paramFftEngine.addEventListener('change', onEngineChange);
   [paramFftSize, paramHopSize, paramDbFloor, paramDbCeil, paramMaxCols].forEach(el => {
     el.addEventListener('input', checkParamsDirty);
     el.addEventListener('change', checkParamsDirty);
@@ -694,14 +808,24 @@
     spec.computedCols.fill(0);
 
     if (worker) worker.terminate();
-    worker = makeWorker();
+    worker = makeWorker(BASE_URL);
 
     worker.onmessage = (e) => {
       const msg = e.data;
       if (!spec) return;
 
-      if (msg.type === 'meta') {
-        // reconcile if needed
+      if (msg.type === 'engineReady') {
+        computeStatus.textContent = `Engine: ${msg.engine}`;
+      } else if (msg.type === 'engineError') {
+        console.error('FFT engine error:', msg.error);
+        computeStatus.textContent = `Engine error: ${msg.error}. Using JS fallback.`;
+        computeStatus.style.color = '#c00';
+      } else if (msg.type === 'engineFallback') {
+        computeStatus.textContent = `Fell back to JS: ${msg.reason}`;
+        computeStatus.style.color = '#c80';
+      } else if (msg.type === 'meta') {
+        computeStatus.style.color = '#666';
+        computeStatus.textContent = `Computing (${msg.engine || 'js'})...`;
       } else if (msg.type === 'col') {
         const col = msg.col;
         const colData = new Uint8Array(msg.data);
@@ -717,11 +841,14 @@
           const step = Math.max(1, (spec.nCols / 200) | 0);
           for (let i=0;i<spec.nCols;i+=step) done += spec.computedCols[i];
           const pct = Math.floor((done / Math.ceil(spec.nCols/step)) * 100);
-          elStatus.innerHTML = `<small>Computing spectrogram... (${pct}%)</small>`;
+          computeStatus.textContent = `Computing... ${pct}%`;
         }
       } else if (msg.type === 'done') {
         spec.observedMax = Math.max(spec.observedMax, msg.observedMax || 1);
-        elStatus.innerHTML = "<small>Spectrogram computed.</small>";
+        const engineInfo = msg.engine || 'js';
+        const timeInfo = msg.timeMs ? ` in ${(msg.timeMs/1000).toFixed(2)}s` : '';
+        computeStatus.style.color = '#070';
+        computeStatus.textContent = `Done (${engineInfo})${timeInfo}`;
       }
     };
 
@@ -731,6 +858,7 @@
       hopSize: HOP_SIZE,
       dbFloor: DB_FLOOR,
       dbCeil: DB_CEIL,
+      engine: FFT_ENGINE,
       sampleRate: sr,
       left: ch0,
       right: ch1,
@@ -1161,6 +1289,7 @@
   </li>
   <li><b>FFT parameters</b> (click <b>Recompute FFT</b> to apply):
     <ul>
+      <li><b>FFT Engine</b>: Select computation backend (see below)</li>
       <li><b>FFT Size</b>: Larger = better frequency resolution, worse time resolution</li>
       <li><b>Hop Size</b>: Smaller = smoother time detail, slower computation</li>
       <li><b>dB Floor/Ceiling</b>: Adjust the dynamic range mapping</li>
@@ -1169,52 +1298,37 @@
   </li>
 </ul>
 
-<h3>Pluggable FFT Engine</h3>
-<p>The FFT implementation is pluggable to allow custom implementations (e.g., WebAssembly).</p>
+<h3>FFT Engine Options</h3>
 
-<h4>Default JS Engine</h4>
-<p>The default engine is an optimized Cooley-Tukey radix-2 DIT FFT with:</p>
+<h4>JavaScript (default)</h4>
+<p>Optimized Cooley-Tukey radix-2 DIT FFT with:</p>
 <ul>
   <li>Pre-computed bit-reversal permutation table</li>
-  <li>Pre-computed twiddle factors (Float64 precision) for all stages</li>
+  <li>Pre-computed twiddle factors (Float64 precision)</li>
   <li>No trigonometric calls during FFT execution</li>
+  <li>Supports <b>any power-of-2 size</b> (512 to 32768+)</li>
+  <li>Uses Hann window</li>
 </ul>
 
-<h4>WebAssembly Integration</h4>
-<p>To use a custom WASM FFT implementation:</p>
-<pre style="background:#f4f4f4;padding:1em;overflow-x:auto;font-size:1.6vh;">
-// Your WASM module must export:
-//   memory: WebAssembly.Memory
-//   malloc(bytes: i32) -> i32
-//   fft_init(size: i32) -> void
-//   fft_forward(re_ptr: i32, im_ptr: i32, size: i32) -> void
+<h4>PFFFT SIMD</h4>
+<p>High-performance WebAssembly FFT using SIMD instructions:</p>
+<ul>
+  <li>Fastest option on supported browsers (Chrome, Firefox, Edge)</li>
+  <li><b>Size limit: 32 to 4096</b> (powers of 2)</li>
+  <li>Uses Hamming window (applied automatically)</li>
+  <li>Requires <code>pffft.simd.wasm</code> in the same directory</li>
+</ul>
 
-// Example: Load and register WASM engine
-async function loadWasmFFT(worker, wasmUrl, fftSize) {
-  const response = await fetch(wasmUrl);
-  const wasmModule = await WebAssembly.compileStreaming(response);
+<h4>PFFFT No-SIMD</h4>
+<p>WebAssembly FFT without SIMD for broader compatibility:</p>
+<ul>
+  <li>Faster than JS on most browsers</li>
+  <li><b>Size limit: 32 to 4096</b> (powers of 2)</li>
+  <li>Uses Hamming window (applied automatically)</li>
+  <li>Requires <code>pffft.nosimd.wasm</code> in the same directory</li>
+</ul>
 
-  worker.postMessage({
-    type: 'setEngine',
-    engine: 'wasm',
-    wasmModule: wasmModule,
-    size: fftSize
-  });
-}
-
-// The worker will respond with:
-//   { type: 'engineReady', engine: 'wasm' }  on success
-//   { type: 'engineError', error: '...' }    on failure
-</pre>
-
-<h4>Custom Engine Interface</h4>
-<p>An FFT engine must implement:</p>
-<pre style="background:#f4f4f4;padding:1em;overflow-x:auto;font-size:1.6vh;">
-interface FFTEngine {
-  size: number;                              // FFT size
-  forward(re: Float32Array, im: Float32Array): void;  // In-place forward FFT
-}
-</pre>
+<p><b>Note:</b> If a PFFFT engine fails to load, the app automatically falls back to the JavaScript engine.</p>
 
 </body>
 </html>
