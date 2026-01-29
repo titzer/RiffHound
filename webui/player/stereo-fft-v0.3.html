@@ -1,0 +1,1404 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Stereo Spectrogram (Async, Log-Freq)</title>
+<style>
+  /* Matching chords/v0.4.html styling */
+  body { font-family: sans-serif; background: #fff; color: #000; margin: 0; }
+  #top { display: flex; flex-wrap: wrap; gap: 0.8vh; padding: 1vh; background: #eee; align-items: center; }
+  #top button { flex: 0 0 auto; font-size: 2.5vh; padding: 1.2vh 1.5vw; }
+  #top .spacer { flex: 1 1 auto; min-width: 1em; }
+  button { cursor: pointer; border: 1px solid #bbb; }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
+  button.primary { background: #f4f4f4; color: #000; border: 1px solid #bbb; }
+  button.primary.playing { background: #007700; color: #fff; border: 1px solid #007700; }
+  button.danger { background: #f4f4f4; color: #000; border: 1px solid #999; }
+  button.danger.stopped { background: #770000; color: #fff; border: 1px solid #770000; }
+  button.mute { background: #f4f4f4; color: #000; border: 1px solid #bbb; }
+  button.mute.active { background: #ffcc00; color: #000; border: 1px solid #ffcc00; }
+  button.load { background: #f4f4f4; color: #000; border: 1px solid #bbb; }
+  button.flash { background: #4CAF50; color: #fff; }
+  .speed-display { font-size: 2.5vh; font-family: monospace; min-width: 6em; text-align: center; padding: 1.2vh 1vw; background: #fff; border: 1px solid #bbb; border-radius: 3px; }
+  button.pitch-shift { background: #e8f0ff; border-color: #69c; }
+  button.pitch-preserve { background: #f0ffe8; border-color: #6c9; }
+
+  #trackInfo { padding: 0.8vh 1vh; background: #f8f8f8; border-bottom: 1px solid #ccc; display: flex; align-items: baseline; gap: 1em; flex-wrap: wrap; }
+  #trackName { font-size: 2.5vh; font-weight: bold; margin: 0; }
+  #trackParams { font-size: 1.8vh; color: #555; margin: 0; }
+
+  canvas { width: 100%; border: 1px solid #999; display: block; }
+  #overview { height: 25px; cursor: pointer; }
+  #zoom { height: 55vh; }
+
+  .row { margin: 6px 0; padding: 0 1vh; }
+  .nav-row { display: flex; gap: 0.5em; align-items: center; padding: 0.5vh 1vh; }
+  .nav-row small { color: #444; font-size: 1.8vh; }
+
+  #statusRow { padding: 1vh; background: #f0f0f0; border-top: 1px solid #ccc; font-size: 2vh; }
+  #statusRow small { color: #444; }
+
+  #colorRow { padding: 1vh; display: flex; flex-wrap: wrap; gap: 1em; align-items: center; font-size: 2vh; background: #f8f8f8; border-top: 1px solid #ccc; }
+  #colorRow label { display: flex; align-items: center; gap: 0.3em; }
+  #colorRow input[type="color"] { width: 3em; height: 2.5em; border: 1px solid #999; }
+  #colorRow input[type="range"] { width: 8em; }
+
+  /* FFT Parameters section */
+  #fftParams { padding: 1vh; background: #f8f8f8; border-top: 1px solid #ccc; }
+  #fftParams h3 { margin: 0 0 0.5em 0; font-size: 2.2vh; }
+  #fftParamsGrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 0.8em; font-size: 1.8vh; }
+  #fftParamsGrid label { display: flex; flex-direction: column; gap: 0.2em; }
+  #fftParamsGrid input { font-size: 1.8vh; padding: 0.3em; width: 100%; box-sizing: border-box; }
+  #fftParamsGrid select { font-size: 1.8vh; padding: 0.3em; }
+  #recomputeRow { margin-top: 0.8em; display: flex; gap: 1em; align-items: center; }
+  #recomputeRow button { font-size: 2vh; padding: 0.5em 1.5em; }
+  #recomputeRow button:disabled { background: #ddd; }
+  #recomputeRow button:not(:disabled) { background: #4CAF50; color: #fff; border-color: #4CAF50; }
+  #recomputeRow small { color: #666; }
+  #computeStatus { margin-left: 1em; font-weight: 500; }
+</style>
+</head>
+<body>
+  <div id="top">
+    <button id="btnLoad" class="load">📂 (L)oad</button>
+    <button id="btnPlay" class="primary" disabled>▶ Play</button>
+    <button id="btnStop" class="danger stopped" disabled>⏹ Stop</button>
+    <button id="btnMute" class="mute">🔊 Sound</button>
+    <span class="spacer"></span>
+    <button id="back5" class="load" disabled>◀◀ -5s</button>
+    <button id="fwd5" class="load" disabled>+5s ▶▶</button>
+    <span class="spacer"></span>
+    <button id="speedDown" class="load" disabled title="Slow down (-)">−</button>
+    <span id="speedDisplay" class="speed-display">1.00x</span>
+    <button id="speedUp" class="load" disabled title="Speed up (+)">+</button>
+    <button id="pitchMode" class="pitch-shift" title="Toggle pitch mode (P)">♪</button>
+    <input id="file" type="file" accept="audio/*" style="display:none;">
+  </div>
+
+  <div id="trackInfo">
+    <p id="trackName">No track loaded</p>
+    <p id="trackParams">Load an audio file to view spectrogram</p>
+  </div>
+
+  <div class="row">
+    <canvas id="overview"></canvas>
+  </div>
+
+  <div class="nav-row">
+    <small id="viewInfo"></small>
+  </div>
+
+  <div class="row">
+    <canvas id="zoom"></canvas>
+  </div>
+
+  <div id="statusRow">
+    <span id="status"><small>Load an audio file...</small></span>
+  </div>
+
+  <div id="colorRow">
+    <label>Left color:
+      <input id="leftColor" type="color" value="#2a6bff">
+    </label>
+    <label>Right color:
+      <input id="rightColor" type="color" value="#ff2a2a">
+    </label>
+    <label>Gain:
+      <input id="gain" type="range" min="0.2" max="3.0" step="0.05" value="1.0">
+      <span id="gainVal">1.00×</span>
+    </label>
+  </div>
+
+  <div id="fftParams">
+    <h3>Display Settings <small style="font-weight:normal;color:#666">(apply immediately)</small></h3>
+    <div id="fftParamsGrid">
+      <label>Frequency Scale:
+        <select id="paramFreqScale">
+          <option value="log">Logarithmic</option>
+          <option value="linear" selected>Linear</option>
+        </select>
+      </label>
+      <label>Min Frequency (Hz):
+        <input id="paramFreqMin" type="number" value="50" min="1" max="500" step="1">
+      </label>
+      <label>Max Frequency (Hz):
+        <input id="paramFreqMax" type="number" value="14000" min="1000" max="48000" step="100">
+      </label>
+    </div>
+
+    <h3 style="margin-top:1em;">FFT Parameters <small style="font-weight:normal;color:#666">(require recompute)</small></h3>
+    <div id="fftParamsGrid">
+      <label>FFT Engine:
+        <select id="paramFftEngine">
+          <option value="js" selected>JavaScript (any size)</option>
+          <option value="pffft-simd">PFFFT SIMD (32-4096)</option>
+          <option value="pffft-nosimd">PFFFT No-SIMD (32-4096)</option>
+        </select>
+      </label>
+      <label>FFT Size:
+        <select id="paramFftSize">
+          <option value="512">512</option>
+          <option value="1024">1024</option>
+          <option value="2048">2048</option>
+          <option value="4096">4096</option>
+          <option value="8192" selected>8192</option>
+          <option value="16384">16384</option>
+          <option value="32768">32768</option>
+        </select>
+      </label>
+      <label>Hop Size:
+        <input id="paramHopSize" type="number" value="256" min="64" max="4096" step="64">
+      </label>
+      <label>dB Floor:
+        <input id="paramDbFloor" type="number" value="-110" min="-140" max="-20" step="5">
+      </label>
+      <label>dB Ceiling:
+        <input id="paramDbCeil" type="number" value="-10" min="-60" max="0" step="5">
+      </label>
+      <label>Max Columns:
+        <input id="paramMaxCols" type="number" value="8000" min="1000" max="20000" step="1000">
+      </label>
+    </div>
+    <div id="recomputeRow">
+      <button id="btnRecompute" disabled>Recompute FFT</button>
+      <small id="recomputeHint">Change FFT parameters above to enable</small>
+      <small id="computeStatus"></small>
+    </div>
+  </div>
+
+  <audio id="audio" style="display:none;" crossorigin="anonymous"></audio>
+
+<script>
+(() => {
+  // ------------------------------
+  // Config (can be changed via UI)
+  // ------------------------------
+  let FFT_ENGINE = 'js'; // 'js', 'pffft-simd', 'pffft-nosimd'
+  let FFT_SIZE = 8192;
+  let HOP_SIZE = 256;
+  let DB_FLOOR = -110;
+  let DB_CEIL  = -10;
+  let FREQ_MIN_HZ = 50;
+  let FREQ_MAX_HZ = 14000;
+  let FREQ_SCALE = 'linear'; // 'log' or 'linear'
+  let MAX_COLUMNS = 8000;
+
+  // PFFFT size limits
+  const PFFFT_MIN_SIZE = 32;
+  const PFFFT_MAX_SIZE = 4096;
+
+  // Speed control: 12th root of 2 for semitone increments
+  const SPEED_RATIO = Math.pow(2, 1/12);  // ~1.0594630943592953
+  const SPEED_MIN = Math.pow(SPEED_RATIO, -12);  // -12 semitones (half speed)
+  const SPEED_MAX = Math.pow(SPEED_RATIO, 12);   // +12 semitones (double speed)
+  let currentSpeedSemitones = 0;  // Current speed in semitones from normal
+  let preservePitch = false;  // false = pitch shifts with speed, true = pitch preserved
+
+  // Track initial values for dirty detection
+  let initialParams = { FFT_ENGINE, FFT_SIZE, HOP_SIZE, DB_FLOOR, DB_CEIL, FREQ_MIN_HZ, FREQ_MAX_HZ, FREQ_SCALE, MAX_COLUMNS };
+
+  // Base URL for loading WASM files (relative to this HTML file)
+  const BASE_URL = new URL('.', window.location.href).href;
+
+  // ------------------------------
+  // DOM
+  // ------------------------------
+  const elFile = document.getElementById('file');
+  const elAudio = document.getElementById('audio');
+
+  const btnLoad = document.getElementById('btnLoad');
+  const btnPlay = document.getElementById('btnPlay');
+  const btnStop = document.getElementById('btnStop');
+  const btnMute = document.getElementById('btnMute');
+  const btnBack5 = document.getElementById('back5');
+  const btnFwd5 = document.getElementById('fwd5');
+
+  const btnSpeedDown = document.getElementById('speedDown');
+  const btnSpeedUp = document.getElementById('speedUp');
+  const elSpeedDisplay = document.getElementById('speedDisplay');
+  const btnPitchMode = document.getElementById('pitchMode');
+
+  const elLeftColor = document.getElementById('leftColor');
+  const elRightColor = document.getElementById('rightColor');
+  const elGain = document.getElementById('gain');
+  const elGainVal = document.getElementById('gainVal');
+
+  const elStatus = document.getElementById('status');
+  const elViewInfo = document.getElementById('viewInfo');
+  const elTrackName = document.getElementById('trackName');
+  const elTrackParams = document.getElementById('trackParams');
+
+  const cvOverview = document.getElementById('overview');
+  const cvZoom = document.getElementById('zoom');
+  const ctxO = cvOverview.getContext('2d', { alpha: false });
+  const ctxZ = cvZoom.getContext('2d', { alpha: false });
+
+  // FFT param inputs
+  const paramFftEngine = document.getElementById('paramFftEngine');
+  const paramFftSize = document.getElementById('paramFftSize');
+  const paramHopSize = document.getElementById('paramHopSize');
+  const paramDbFloor = document.getElementById('paramDbFloor');
+  const paramDbCeil = document.getElementById('paramDbCeil');
+  const paramFreqScale = document.getElementById('paramFreqScale');
+  const paramFreqMin = document.getElementById('paramFreqMin');
+  const paramFreqMax = document.getElementById('paramFreqMax');
+  const paramMaxCols = document.getElementById('paramMaxCols');
+  const btnRecompute = document.getElementById('btnRecompute');
+  const recomputeHint = document.getElementById('recomputeHint');
+  const computeStatus = document.getElementById('computeStatus');
+
+  // ------------------------------
+  // Helpers
+  // ------------------------------
+  function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
+
+  function parseHexColor(hex) {
+    const m = /^#?([0-9a-f]{6})$/i.exec(hex);
+    if (!m) return [42,107,255];
+    const n = parseInt(m[1], 16);
+    return [(n>>16)&255, (n>>8)&255, n&255];
+  }
+
+  function fmtTime(t) {
+    if (!isFinite(t)) return "0:00";
+    t = Math.max(0, t);
+    const s = Math.floor(t);
+    const mm = Math.floor(s / 60);
+    const ss = String(s % 60).padStart(2, '0');
+    return `${mm}:${ss}`;
+  }
+
+  function setEnabled(on) {
+    for (const b of [btnPlay, btnStop, btnBack5, btnFwd5, btnSpeedDown, btnSpeedUp]) {
+      b.disabled = !on;
+    }
+  }
+
+  function resizeCanvasToCSSPixels(canvas) {
+    const dpr = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
+    const r = canvas.getBoundingClientRect();
+    const w = Math.max(2, Math.floor(r.width * dpr));
+    const h = Math.max(2, Math.floor(r.height * dpr));
+    if (canvas.width !== w || canvas.height !== h) {
+      canvas.width = w;
+      canvas.height = h;
+      return true;
+    }
+    return false;
+  }
+
+  function zoomWindowSeconds() {
+    const w = cvZoom.getBoundingClientRect().width;
+    return clamp(w / 260, 2, 5);
+  }
+
+  // ------------------------------
+  // State
+  // ------------------------------
+  let objectUrl = null;
+  let duration = 0;
+  let currentFileName = null;
+  let muted = false;
+
+  let worker = null;
+
+  // Decoded audio buffer (kept for recompute)
+  let decodedBuffer = null;
+
+  // Spectrogram storage
+  let spec = null;
+
+  // RAF loop
+  let raf = 0;
+
+  // ------------------------------
+  // Worker (FFT + dB mapping, async)
+  // ------------------------------
+  // The worker supports multiple FFT engines:
+  //   - 'js': Optimized JavaScript FFT (any size, power of 2)
+  //   - 'pffft-simd': PFFFT with SIMD (32-4096)
+  //   - 'pffft-nosimd': PFFFT without SIMD (32-4096)
+
+  function makeWorker(baseUrl) {
+    const src = `
+      // ============================================================
+      // FFT Engines - Pluggable architecture
+      // ============================================================
+
+      let fftEngine = null;
+      let engineType = 'js';
+      let pffftModule = null;
+      let pffftRunner = null;
+      let pffftDataPtr = null;
+      let pffftDataHeap = null;
+
+      // Base URL passed from main thread for loading WASM
+      let baseUrl = '';
+
+      // ------------------------------------------------------------
+      // Optimized JavaScript FFT with pre-computed twiddle factors
+      // ------------------------------------------------------------
+      function createJSEngine(size) {
+        const n = size;
+        const log2n = Math.log2(n) | 0;
+
+        // Pre-compute bit-reversal permutation table
+        const bitRev = new Uint32Array(n);
+        for (let i = 0; i < n; i++) {
+          let rev = 0;
+          for (let j = 0; j < log2n; j++) {
+            rev = (rev << 1) | ((i >> j) & 1);
+          }
+          bitRev[i] = rev;
+        }
+
+        // Pre-compute twiddle factors for all stages (Float64 for precision)
+        const twiddles = [];
+        for (let s = 1; s <= log2n; s++) {
+          const m = 1 << s;
+          const halfM = m >>> 1;
+          const twid = new Float64Array(halfM * 2);
+          for (let k = 0; k < halfM; k++) {
+            const angle = -2 * Math.PI * k / m;
+            twid[k * 2] = Math.cos(angle);
+            twid[k * 2 + 1] = Math.sin(angle);
+          }
+          twiddles.push(twid);
+        }
+
+        // Pre-compute Hann window
+        const win = new Float32Array(n);
+        const factor = 2 * Math.PI / (n - 1);
+        for (let i = 0; i < n; i++) {
+          win[i] = 0.5 * (1 - Math.cos(factor * i));
+        }
+
+        return {
+          type: 'js',
+          size: n,
+          window: win,
+          usesWindow: false,  // We apply window separately
+
+          forward(re, im) {
+            // Bit-reversal permutation
+            for (let i = 0; i < n; i++) {
+              const j = bitRev[i];
+              if (i < j) {
+                let tmp = re[i]; re[i] = re[j]; re[j] = tmp;
+                tmp = im[i]; im[i] = im[j]; im[j] = tmp;
+              }
+            }
+
+            // Butterfly stages
+            for (let s = 0; s < log2n; s++) {
+              const m = 1 << (s + 1);
+              const halfM = m >>> 1;
+              const twid = twiddles[s];
+
+              for (let k = 0; k < n; k += m) {
+                for (let j = 0; j < halfM; j++) {
+                  const wr = twid[j * 2];
+                  const wi = twid[j * 2 + 1];
+                  const idx1 = k + j;
+                  const idx2 = k + j + halfM;
+                  const tre = re[idx2];
+                  const tim = im[idx2];
+                  const vr = tre * wr - tim * wi;
+                  const vi = tre * wi + tim * wr;
+                  re[idx2] = re[idx1] - vr;
+                  im[idx2] = im[idx1] - vi;
+                  re[idx1] = re[idx1] + vr;
+                  im[idx1] = im[idx1] + vi;
+                }
+              }
+            }
+          }
+        };
+      }
+
+      // ------------------------------------------------------------
+      // PFFFT Engine (WASM)
+      // ------------------------------------------------------------
+      async function createPffftEngine(size, simd) {
+        const wasmFile = simd ? 'pffft.simd.wasm' : 'pffft.nosimd.wasm';
+        const wasmUrl = baseUrl + wasmFile;
+
+        // Fetch and compile WASM
+        const response = await fetch(wasmUrl);
+        if (!response.ok) throw new Error('Failed to load ' + wasmFile);
+        const wasmBytes = await response.arrayBuffer();
+
+        // Minimal Emscripten-compatible environment
+        let memory = null;
+        let HEAPU8 = null;
+        let HEAPF32 = null;
+
+        const importObject = {
+          a: {
+            // Minimal stubs for Emscripten
+            a: () => { throw new Error('assert failed'); },  // __assert_fail
+            b: () => {},  // fd_write
+            c: () => {},  // fd_seek
+            d: () => { throw new Error('OOM'); },  // emscripten_resize_heap
+            e: () => 0,   // fd_close
+            f: (dest, src, num) => { HEAPU8.copyWithin(dest, src, src + num); }  // emscripten_memcpy_big
+          }
+        };
+
+        const wasmModule = await WebAssembly.instantiate(wasmBytes, importObject);
+        const exports = wasmModule.instance.exports;
+
+        memory = exports.g;  // memory export
+        HEAPU8 = new Uint8Array(memory.buffer);
+        HEAPF32 = new Float32Array(memory.buffer);
+
+        // Initialize
+        if (exports.h) exports.h();  // __wasm_call_ctors
+
+        const _malloc = exports.i;
+        const _free = exports.j;
+        const _pffft_runner_new = exports.k;
+        const _pffft_runner_transform = exports.l;
+        const _pffft_runner_destroy = exports.n;
+
+        // Create runner (PFFFT applies Hamming window automatically)
+        const runner = _pffft_runner_new(size, 4);  // 4 bytes per float
+        if (!runner) throw new Error('Failed to create PFFFT runner for size ' + size);
+
+        // Allocate data buffer
+        const nDataBytes = size * 4;
+        const dataPtr = _malloc(nDataBytes);
+        if (!dataPtr) throw new Error('Failed to allocate PFFFT buffer');
+
+        return {
+          type: simd ? 'pffft-simd' : 'pffft-nosimd',
+          size: size,
+          window: null,  // PFFFT applies Hamming window internally
+          usesWindow: true,  // Don't apply external window
+
+          forward(re, im) {
+            // PFFFT expects real input, returns interleaved [re, im, re, im, ...]
+            // Copy real data to WASM heap
+            const dataHeap = new Float32Array(memory.buffer, dataPtr, size);
+            dataHeap.set(re);
+
+            // Transform (in-place, output is interleaved complex)
+            _pffft_runner_transform(runner, dataPtr);
+
+            // Read back interleaved result
+            const result = new Float32Array(memory.buffer, dataPtr, size);
+            for (let i = 0; i < size; i += 2) {
+              re[i >> 1] = result[i];
+              im[i >> 1] = result[i + 1];
+            }
+            // Note: PFFFT returns size/2 complex values for real input
+            // Zero out upper half
+            for (let i = size >> 1; i < size; i++) {
+              re[i] = 0;
+              im[i] = 0;
+            }
+          },
+
+          destroy() {
+            _pffft_runner_destroy(runner);
+            _free(dataPtr);
+          }
+        };
+      }
+
+      // ============================================================
+      // Spectrogram computation
+      // ============================================================
+
+      let FFT_SIZE = 8192;
+      let HOP_SIZE = 256;
+      let DB_FLOOR = -110;
+      let DB_CEIL = -10;
+
+      function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
+
+      // Pre-compute Hann window
+      function hannWindow(n) {
+        const w = new Float32Array(n);
+        const factor = 2 * Math.PI / (n - 1);
+        for (let i = 0; i < n; i++) {
+          w[i] = 0.5 * (1 - Math.cos(factor * i));
+        }
+        return w;
+      }
+
+      // Apply window and copy to FFT buffers
+      function fillFrame(chan, start, win, re, im, applyWindow) {
+        const n = re.length;
+        if (applyWindow && win) {
+          for (let i = 0; i < n; i++) {
+            re[i] = (chan[start + i] || 0) * win[i];
+            im[i] = 0;
+          }
+        } else {
+          for (let i = 0; i < n; i++) {
+            re[i] = chan[start + i] || 0;
+            im[i] = 0;
+          }
+        }
+      }
+
+      let dbScale = 1;
+      let dbOffset = 0;
+
+      function updateDbParams() {
+        dbScale = 255 / (DB_CEIL - DB_FLOOR);
+        dbOffset = -DB_FLOOR * dbScale;
+      }
+
+      function magToU8(mag) {
+        const db = 8.685889638065035 * Math.log(mag + 1e-12);
+        const val = db * dbScale + dbOffset;
+        return val < 0 ? 0 : val > 255 ? 255 : (val + 0.5) | 0;
+      }
+
+      // ============================================================
+      // Message handler
+      // ============================================================
+
+      onmessage = async (e) => {
+        const msg = e.data;
+
+        // Set base URL for loading WASM files
+        if (msg.type === 'setBaseUrl') {
+          baseUrl = msg.url;
+          return;
+        }
+
+        // Handle engine initialization
+        if (msg.type === 'setEngine') {
+          engineType = msg.engine || 'js';
+          postMessage({ type: 'engineSet', engine: engineType });
+          return;
+        }
+
+        if (msg.type !== 'init') return;
+
+        FFT_SIZE = msg.fftSize;
+        HOP_SIZE = msg.hopSize;
+        DB_FLOOR = msg.dbFloor;
+        DB_CEIL = msg.dbCeil;
+        engineType = msg.engine || 'js';
+        updateDbParams();
+
+        const left = msg.left;
+        const right = msg.right;
+        const sampleRate = msg.sampleRate;
+
+        const nBins = FFT_SIZE >>> 1;
+        const nFrames = Math.max(0, Math.floor((left.length - FFT_SIZE) / HOP_SIZE) + 1);
+
+        const nCols = msg.nCols;
+        const framesPerCol = nFrames / nCols;
+
+        postMessage({ type: 'meta', nBins, nFrames, nCols, frameDt: HOP_SIZE / sampleRate, engine: engineType });
+
+        // Initialize FFT engine
+        try {
+          if (fftEngine && fftEngine.destroy) fftEngine.destroy();
+
+          if (engineType === 'pffft-simd' || engineType === 'pffft-nosimd') {
+            const simd = engineType === 'pffft-simd';
+            fftEngine = await createPffftEngine(FFT_SIZE, simd);
+            postMessage({ type: 'engineReady', engine: engineType });
+          } else {
+            fftEngine = createJSEngine(FFT_SIZE);
+            postMessage({ type: 'engineReady', engine: 'js' });
+          }
+        } catch (err) {
+          postMessage({ type: 'engineError', error: err.message, engine: engineType });
+          // Fall back to JS
+          fftEngine = createJSEngine(FFT_SIZE);
+          postMessage({ type: 'engineFallback', engine: 'js', reason: err.message });
+        }
+
+        // Use engine's window or create Hann window
+        const win = fftEngine.usesWindow ? null : hannWindow(FFT_SIZE);
+        const applyWindow = !fftEngine.usesWindow;
+
+        const reL = new Float32Array(FFT_SIZE);
+        const imL = new Float32Array(FFT_SIZE);
+        const reR = new Float32Array(FFT_SIZE);
+        const imR = new Float32Array(FFT_SIZE);
+
+        const normFactor = 1 / FFT_SIZE;
+
+        let observedMax = 1;
+        let currentCol = 0;
+        let colMax = new Uint8Array(nBins * 2);
+
+        function flushCol(colIndex, colData) {
+          const out = new Uint8Array(colData.length);
+          out.set(colData);
+          postMessage({ type: 'col', col: colIndex, data: out, observedMax }, [out.buffer]);
+        }
+
+        const BATCH_SIZE = 64;
+        const startTime = performance.now();
+
+        for (let f = 0; f < nFrames; f++) {
+          const col = Math.min(nCols - 1, (f / framesPerCol) | 0);
+
+          if (col !== currentCol) {
+            flushCol(currentCol, colMax);
+            colMax.fill(0);
+            currentCol = col;
+          }
+
+          const start = f * HOP_SIZE;
+
+          // Process left channel
+          fillFrame(left, start, win, reL, imL, applyWindow);
+          fftEngine.forward(reL, imL);
+
+          // Process right channel
+          fillFrame(right, start, win, reR, imR, applyWindow);
+          fftEngine.forward(reR, imR);
+
+          // Compute magnitudes and update column max
+          for (let b = 0; b < nBins; b++) {
+            const ml = Math.hypot(reL[b], imL[b]) * normFactor;
+            const mr = Math.hypot(reR[b], imR[b]) * normFactor;
+
+            const uL = magToU8(ml);
+            const uR = magToU8(mr);
+
+            const i = b << 1;
+            if (uL > colMax[i]) colMax[i] = uL;
+            if (uR > colMax[i + 1]) colMax[i + 1] = uR;
+
+            if (uL > observedMax) observedMax = uL;
+            if (uR > observedMax) observedMax = uR;
+          }
+
+          if ((f & (BATCH_SIZE - 1)) === (BATCH_SIZE - 1)) {
+            await new Promise(r => setTimeout(r, 0));
+          }
+        }
+
+        flushCol(currentCol, colMax);
+
+        const elapsed = performance.now() - startTime;
+        postMessage({ type: 'done', observedMax, engine: fftEngine.type, timeMs: elapsed });
+      };
+    `;
+    const blob = new Blob([src], { type: 'application/javascript' });
+    const worker = new Worker(URL.createObjectURL(blob));
+
+    // Send base URL immediately
+    worker.postMessage({ type: 'setBaseUrl', url: baseUrl });
+
+    return worker;
+  }
+
+  // ------------------------------
+  // FFT Parameter handling
+  // ------------------------------
+  function getUIParams() {
+    return {
+      FFT_ENGINE: paramFftEngine.value,
+      FFT_SIZE: parseInt(paramFftSize.value),
+      HOP_SIZE: parseInt(paramHopSize.value),
+      DB_FLOOR: parseInt(paramDbFloor.value),
+      DB_CEIL: parseInt(paramDbCeil.value),
+      FREQ_SCALE: paramFreqScale.value,
+      FREQ_MIN_HZ: parseInt(paramFreqMin.value),
+      FREQ_MAX_HZ: parseInt(paramFreqMax.value),
+      MAX_COLUMNS: parseInt(paramMaxCols.value)
+    };
+  }
+
+  function checkParamsDirty() {
+    const ui = getUIParams();
+    // Only FFT computation parameters require recompute
+    const dirty = (
+      ui.FFT_ENGINE !== initialParams.FFT_ENGINE ||
+      ui.FFT_SIZE !== initialParams.FFT_SIZE ||
+      ui.HOP_SIZE !== initialParams.HOP_SIZE ||
+      ui.DB_FLOOR !== initialParams.DB_FLOOR ||
+      ui.DB_CEIL !== initialParams.DB_CEIL ||
+      ui.MAX_COLUMNS !== initialParams.MAX_COLUMNS
+    );
+
+    // Check PFFFT size constraints
+    const isPffft = ui.FFT_ENGINE.startsWith('pffft');
+    const sizeValid = !isPffft || (ui.FFT_SIZE >= PFFFT_MIN_SIZE && ui.FFT_SIZE <= PFFFT_MAX_SIZE);
+
+    btnRecompute.disabled = !dirty || !decodedBuffer || !sizeValid;
+
+    if (!sizeValid) {
+      recomputeHint.textContent = `PFFFT requires size ${PFFFT_MIN_SIZE}-${PFFFT_MAX_SIZE}`;
+      recomputeHint.style.color = '#c00';
+    } else {
+      recomputeHint.style.color = '#666';
+      recomputeHint.textContent = dirty ? (decodedBuffer ? 'Click to apply changes' : 'Load audio first') : 'Change parameters above to enable';
+    }
+  }
+
+  function applyUIParams() {
+    const ui = getUIParams();
+    FFT_ENGINE = ui.FFT_ENGINE;
+    FFT_SIZE = ui.FFT_SIZE;
+    HOP_SIZE = ui.HOP_SIZE;
+    DB_FLOOR = ui.DB_FLOOR;
+    DB_CEIL = ui.DB_CEIL;
+    FREQ_SCALE = ui.FREQ_SCALE;
+    FREQ_MIN_HZ = ui.FREQ_MIN_HZ;
+    FREQ_MAX_HZ = ui.FREQ_MAX_HZ;
+    MAX_COLUMNS = ui.MAX_COLUMNS;
+    initialParams = { ...ui };
+    checkParamsDirty();
+  }
+
+  // Apply display-only params (no recompute needed) and redraw
+  function applyDisplayParams() {
+    FREQ_SCALE = paramFreqScale.value;
+    FREQ_MIN_HZ = parseInt(paramFreqMin.value);
+    FREQ_MAX_HZ = parseInt(paramFreqMax.value);
+    drawAll();
+  }
+
+  // Auto-cap FFT size when switching to PFFFT engine
+  function onEngineChange() {
+    const engine = paramFftEngine.value;
+    const size = parseInt(paramFftSize.value);
+
+    if (engine.startsWith('pffft') && size > PFFFT_MAX_SIZE) {
+      paramFftSize.value = String(PFFFT_MAX_SIZE);
+      computeStatus.style.color = '#c80';
+      computeStatus.textContent = `Size capped to ${PFFFT_MAX_SIZE} for PFFFT`;
+    }
+    checkParamsDirty();
+  }
+
+  // Wire up param change listeners - FFT params need recompute check
+  paramFftEngine.addEventListener('change', onEngineChange);
+  [paramFftSize, paramHopSize, paramDbFloor, paramDbCeil, paramMaxCols].forEach(el => {
+    el.addEventListener('input', checkParamsDirty);
+    el.addEventListener('change', checkParamsDirty);
+  });
+
+  // Display params apply immediately (no recompute)
+  [paramFreqScale, paramFreqMin, paramFreqMax].forEach(el => {
+    el.addEventListener('input', applyDisplayParams);
+    el.addEventListener('change', applyDisplayParams);
+  });
+
+  // ------------------------------
+  // Compute spectrogram from buffer
+  // ------------------------------
+  function computeSpectrogram(audioBuf) {
+    const sr = audioBuf.sampleRate;
+    const ch0 = audioBuf.getChannelData(0);
+    const ch1 = audioBuf.numberOfChannels > 1 ? audioBuf.getChannelData(1) : ch0;
+
+    const cols = clamp(Math.floor(duration * 200), 1200, MAX_COLUMNS);
+
+    const nBins = (FFT_SIZE/2)|0;
+    spec = {
+      sampleRate: sr,
+      nyquist: sr / 2,
+      nBins,
+      nCols: cols,
+      colDt: duration / cols,
+      dataLR: new Uint8Array(cols * nBins * 2),
+      computedCols: new Uint8Array(cols),
+      observedMax: 1
+    };
+
+    spec.dataLR.fill(0);
+    spec.computedCols.fill(0);
+
+    if (worker) worker.terminate();
+    worker = makeWorker(BASE_URL);
+
+    worker.onmessage = (e) => {
+      const msg = e.data;
+      if (!spec) return;
+
+      if (msg.type === 'engineReady') {
+        computeStatus.textContent = `Engine: ${msg.engine}`;
+      } else if (msg.type === 'engineError') {
+        console.error('FFT engine error:', msg.error);
+        computeStatus.textContent = `Engine error: ${msg.error}. Using JS fallback.`;
+        computeStatus.style.color = '#c00';
+      } else if (msg.type === 'engineFallback') {
+        computeStatus.textContent = `Fell back to JS: ${msg.reason}`;
+        computeStatus.style.color = '#c80';
+      } else if (msg.type === 'meta') {
+        computeStatus.style.color = '#666';
+        computeStatus.textContent = `Computing (${msg.engine || 'js'})...`;
+      } else if (msg.type === 'col') {
+        const col = msg.col;
+        const colData = new Uint8Array(msg.data);
+        spec.observedMax = Math.max(spec.observedMax, msg.observedMax || 1);
+
+        const stride = spec.nBins * 2;
+        const off = col * stride;
+        spec.dataLR.set(colData, off);
+        spec.computedCols[col] = 1;
+
+        if ((col % 25) === 0) {
+          let done = 0;
+          const step = Math.max(1, (spec.nCols / 200) | 0);
+          for (let i=0;i<spec.nCols;i+=step) done += spec.computedCols[i];
+          const pct = Math.floor((done / Math.ceil(spec.nCols/step)) * 100);
+          computeStatus.textContent = `Computing... ${pct}%`;
+        }
+      } else if (msg.type === 'done') {
+        spec.observedMax = Math.max(spec.observedMax, msg.observedMax || 1);
+        const engineInfo = msg.engine || 'js';
+        const timeInfo = msg.timeMs ? ` in ${(msg.timeMs/1000).toFixed(2)}s` : '';
+        computeStatus.style.color = '#070';
+        computeStatus.textContent = `Done (${engineInfo})${timeInfo}`;
+      }
+    };
+
+    worker.postMessage({
+      type: 'init',
+      fftSize: FFT_SIZE,
+      hopSize: HOP_SIZE,
+      dbFloor: DB_FLOOR,
+      dbCeil: DB_CEIL,
+      engine: FFT_ENGINE,
+      sampleRate: sr,
+      left: ch0,
+      right: ch1,
+      nCols: cols
+    });
+
+    resizeAll();
+    drawAll();
+  }
+
+  // ------------------------------
+  // Load and compute
+  // ------------------------------
+  async function loadFile(file) {
+    if (objectUrl) URL.revokeObjectURL(objectUrl);
+    objectUrl = URL.createObjectURL(file);
+    elAudio.src = objectUrl;
+    currentFileName = file.name;
+
+    setEnabled(true);
+
+    elStatus.innerHTML = "<small>Loading metadata...</small>";
+    elTrackName.textContent = file.name;
+    elTrackParams.textContent = "Loading...";
+
+    await new Promise((resolve) => {
+      elAudio.onloadedmetadata = () => resolve();
+      elAudio.onerror = () => resolve();
+    });
+
+    duration = elAudio.duration || 0;
+    if (!isFinite(duration) || duration <= 0) {
+      elStatus.innerHTML = "<small>Could not read duration (unsupported format?).</small>";
+      elTrackParams.textContent = "Error loading file";
+      return;
+    }
+
+    // Update track params display (will be enhanced after decode)
+    elTrackParams.textContent = `${fmtTime(duration)}`;
+
+    // Start draw loop
+    if (!raf) tick();
+
+    elStatus.innerHTML = "<small>Decoding audio for spectrogram...</small>";
+
+    // Decode (async) for FFT
+    const arrayBuf = await file.arrayBuffer();
+    const ac = new (window.AudioContext || window.webkitAudioContext)();
+    try {
+      decodedBuffer = await ac.decodeAudioData(arrayBuf.slice(0));
+    } catch (e) {
+      elStatus.innerHTML = "<small>Decode failed (browser can't decode this audio).</small>";
+      try { await ac.close(); } catch {}
+      return;
+    }
+    try { await ac.close(); } catch {}
+
+    // Update track params with more info (on same line as title)
+    const sr = decodedBuffer.sampleRate;
+    const channels = decodedBuffer.numberOfChannels;
+    elTrackParams.textContent = `${fmtTime(duration)} | ${(sr/1000).toFixed(1)} kHz | ${channels}ch`;
+
+    // Apply current UI params and compute
+    applyUIParams();
+    computeSpectrogram(decodedBuffer);
+  }
+
+  // Recompute with new parameters
+  function recomputeFFT() {
+    if (!decodedBuffer) return;
+    applyUIParams();
+    elStatus.innerHTML = "<small>Recomputing spectrogram...</small>";
+    computeSpectrogram(decodedBuffer);
+  }
+
+  btnRecompute.addEventListener('click', recomputeFFT);
+
+  // ------------------------------
+  // Rendering (log-frequency)
+  // ------------------------------
+  function colIndexForTime(t) {
+    if (!spec) return 0;
+    return clamp(Math.floor((t / duration) * spec.nCols), 0, spec.nCols - 1);
+  }
+
+  function timeForCol(c) {
+    if (!spec) return 0;
+    return (c / spec.nCols) * duration;
+  }
+
+  function binForY(y, h) {
+    if (!spec) return 0;
+    const nyq = spec.nyquist;
+    const fMin = Math.min(FREQ_MIN_HZ, nyq);
+    const fMax = Math.min(FREQ_MAX_HZ, nyq);
+
+    // u is 0 at bottom (low freq), 1 at top (high freq)
+    const u = 1 - (y / Math.max(1, h - 1));
+
+    let f;
+    if (FREQ_SCALE === 'linear') {
+      // Linear interpolation
+      f = fMin + u * (fMax - fMin);
+    } else {
+      // Log interpolation (default)
+      const ratio = fMax / Math.max(1e-6, fMin);
+      f = fMin * Math.pow(ratio, u);
+    }
+
+    const b = Math.floor((f / nyq) * (spec.nBins - 1));
+    return clamp(b, 0, spec.nBins - 1);
+  }
+
+  function drawPlaceholder(ctx, w, h, label) {
+    ctx.fillStyle = "#e0e0e0";
+    ctx.fillRect(0,0,w,h);
+    ctx.fillStyle = "#333";
+    ctx.font = Math.max(12, Math.floor(h*0.35)) + "px sans-serif";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(label, w/2, h/2);
+  }
+
+  function drawSpectrogram(ctx, w, h, t0, t1, showPlayhead) {
+    if (!spec || duration <= 0) {
+      drawPlaceholder(ctx, w, h, "spectrogram");
+      return;
+    }
+
+    const leftRGB = parseHexColor(elLeftColor.value);
+    const rightRGB = parseHexColor(elRightColor.value);
+    const gain = parseFloat(elGain.value);
+
+    const norm = 255 / Math.max(1, spec.observedMax);
+
+    ctx.fillStyle = "#bdbdbd";
+    ctx.fillRect(0,0,w,h);
+
+    const img = ctx.createImageData(w, h);
+    const data = img.data;
+
+    const yToBin = new Int32Array(h);
+    for (let y=0;y<h;y++) yToBin[y] = binForY(y, h);
+
+    const c0 = colIndexForTime(t0);
+    const c1 = colIndexForTime(t1);
+
+    for (let x=0; x<w; x++) {
+      const u = x / Math.max(1, w - 1);
+      const t = t0 + u * (t1 - t0);
+      const c = colIndexForTime(t);
+      const computed = spec.computedCols[c] === 1;
+
+      const colBase = c * (spec.nBins * 2);
+
+      for (let y=0; y<h; y++) {
+        const idx = (y*w + x) * 4;
+
+        if (!computed) {
+          data[idx+0] = 160;
+          data[idx+1] = 160;
+          data[idx+2] = 160;
+          data[idx+3] = 255;
+          continue;
+        }
+
+        const b = yToBin[y];
+        const i = colBase + b*2;
+        const uL = spec.dataLR[i];
+        const uR = spec.dataLR[i + 1];
+
+        let aL = Math.pow((uL * norm) / 255, 0.8) * gain;
+        let aR = Math.pow((uR * norm) / 255, 0.8) * gain;
+        aL = clamp(aL, 0, 1);
+        aR = clamp(aR, 0, 1);
+
+        const r = clamp(leftRGB[0]*aL + rightRGB[0]*aR, 0, 255) | 0;
+        const g = clamp(leftRGB[1]*aL + rightRGB[1]*aR, 0, 255) | 0;
+        const bch = clamp(leftRGB[2]*aL + rightRGB[2]*aR, 0, 255) | 0;
+
+        data[idx+0] = r;
+        data[idx+1] = g;
+        data[idx+2] = bch;
+        data[idx+3] = 255;
+      }
+    }
+
+    ctx.putImageData(img, 0, 0);
+
+    if (showPlayhead) {
+      const tNow = elAudio.currentTime || 0;
+      if (tNow >= t0 && tNow <= t1) {
+        const xNow = Math.floor(((tNow - t0) / (t1 - t0)) * w);
+        ctx.fillStyle = "#ffffff";
+        ctx.fillRect(xNow, 0, Math.max(1, Math.floor(w/700)), h);
+      }
+    }
+  }
+
+  function drawOverview() {
+    const w = cvOverview.width, h = cvOverview.height;
+    drawSpectrogram(ctxO, w, h, 0, Math.max(0.0001, duration), true);
+  }
+
+  function drawZoom() {
+    const w = cvZoom.width, h = cvZoom.height;
+    if (!spec || duration <= 0) {
+      drawPlaceholder(ctxZ, w, h, "zoom");
+      return;
+    }
+
+    const winSec = zoomWindowSeconds();
+
+    const center = elAudio.currentTime || 0;
+
+    const t0 = clamp(center - winSec/2, 0, Math.max(0, duration - winSec));
+    const t1 = clamp(t0 + winSec, 0, duration);
+
+    drawSpectrogram(ctxZ, w, h, t0, t1, true);
+
+    elViewInfo.textContent =
+      `View ${fmtTime(t0)} - ${fmtTime(t1)}  |  Playhead ${fmtTime(elAudio.currentTime||0)} / ${fmtTime(duration)}`;
+  }
+
+  function drawAll() {
+    drawOverview();
+    drawZoom();
+  }
+
+  // ------------------------------
+  // Controls
+  // ------------------------------
+  function seekTo(t) {
+    if (!isFinite(duration) || duration <= 0) return;
+    elAudio.currentTime = clamp(t, 0, Math.max(0, duration - 0.001));
+    drawAll();
+  }
+
+  function updateSpeedDisplay() {
+    const rate = Math.pow(SPEED_RATIO, currentSpeedSemitones);
+    elAudio.playbackRate = rate;
+    // Set pitch preservation mode
+    elAudio.preservesPitch = preservePitch;
+    elAudio.mozPreservesPitch = preservePitch;  // Firefox fallback
+    elAudio.webkitPreservesPitch = preservePitch;  // Safari fallback
+
+    // Format display: show rate and semitone shift
+    const rateStr = rate.toFixed(2) + 'x';
+    const semiStr = currentSpeedSemitones === 0 ? '' :
+                    (currentSpeedSemitones > 0 ? ` +${currentSpeedSemitones}` : ` ${currentSpeedSemitones}`);
+    elSpeedDisplay.textContent = rateStr + semiStr;
+
+    // Color code: green for normal, orange for changed
+    elSpeedDisplay.style.background = currentSpeedSemitones === 0 ? '#fff' : '#fff8e0';
+  }
+
+  function updatePitchModeButton() {
+    if (preservePitch) {
+      btnPitchMode.classList.remove('pitch-shift');
+      btnPitchMode.classList.add('pitch-preserve');
+      btnPitchMode.textContent = '♪=';
+      btnPitchMode.title = 'Pitch preserved (P to toggle)';
+    } else {
+      btnPitchMode.classList.remove('pitch-preserve');
+      btnPitchMode.classList.add('pitch-shift');
+      btnPitchMode.textContent = '♪';
+      btnPitchMode.title = 'Pitch shifts with speed (P to toggle)';
+    }
+  }
+
+  function togglePitchMode() {
+    preservePitch = !preservePitch;
+    updatePitchModeButton();
+    updateSpeedDisplay();
+  }
+
+  function speedUp() {
+    if (currentSpeedSemitones < 12) {
+      currentSpeedSemitones++;
+      updateSpeedDisplay();
+    }
+  }
+
+  function speedDown() {
+    if (currentSpeedSemitones > -12) {
+      currentSpeedSemitones--;
+      updateSpeedDisplay();
+    }
+  }
+
+  function speedReset() {
+    currentSpeedSemitones = 0;
+    updateSpeedDisplay();
+  }
+
+  function updatePlayStopButtons() {
+    if (elAudio.paused) {
+      btnPlay.classList.remove('playing');
+      btnStop.classList.add('stopped');
+    } else {
+      btnPlay.classList.add('playing');
+      btnStop.classList.remove('stopped');
+    }
+  }
+
+  function updateMuteButton() {
+    if (muted) {
+      btnMute.classList.add('active');
+      btnMute.textContent = '🔇 Muted';
+      elAudio.muted = true;
+    } else {
+      btnMute.classList.remove('active');
+      btnMute.textContent = '🔊 Sound';
+      elAudio.muted = false;
+    }
+  }
+
+  btnLoad.addEventListener('click', () => elFile.click());
+
+  btnPlay.addEventListener('click', async () => {
+    try { await elAudio.play(); } catch {}
+    updatePlayStopButtons();
+  });
+
+  btnStop.addEventListener('click', () => {
+    elAudio.pause();
+    seekTo(0);
+    updatePlayStopButtons();
+  });
+
+  btnMute.addEventListener('click', () => {
+    muted = !muted;
+    updateMuteButton();
+  });
+
+  btnBack5.addEventListener('click', () => seekTo((elAudio.currentTime||0) - 5));
+  btnFwd5.addEventListener('click', () => seekTo((elAudio.currentTime||0) + 5));
+
+  btnSpeedDown.addEventListener('click', speedDown);
+  btnSpeedUp.addEventListener('click', speedUp);
+  btnPitchMode.addEventListener('click', togglePitchMode);
+  // Double-click on speed display resets to 1.0x
+  elSpeedDisplay.addEventListener('dblclick', speedReset);
+  elSpeedDisplay.style.cursor = 'pointer';
+  elSpeedDisplay.title = 'Double-click to reset to 1.00x';
+
+  // Click on overview to seek
+  cvOverview.addEventListener('click', (e) => {
+    if (!isFinite(duration) || duration <= 0) return;
+    const rect = cvOverview.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const ratio = x / rect.width;
+    const t = ratio * duration;
+    seekTo(t);
+  });
+
+  // Keyboard shortcuts
+  window.addEventListener('keydown', (e) => {
+    // Ignore if typing in an input
+    if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
+
+    if (e.code === 'Space') {
+      e.preventDefault();
+      if (btnPlay.disabled) return;
+      if (elAudio.paused) {
+        if (duration > 0 && (elAudio.currentTime || 0) >= duration - 0.05) elAudio.currentTime = 0;
+        elAudio.play().catch(()=>{});
+      } else {
+        elAudio.pause();
+        elAudio.currentTime = 0;
+      }
+      updatePlayStopButtons();
+    }
+
+    // L for Load
+    if (e.code === 'KeyL' && !e.metaKey && !e.ctrlKey) {
+      e.preventDefault();
+      elFile.click();
+    }
+
+    // M for Mute
+    if (e.code === 'KeyM' && !e.metaKey && !e.ctrlKey) {
+      e.preventDefault();
+      muted = !muted;
+      updateMuteButton();
+    }
+
+    // Arrow keys for seeking ±5s
+    if (e.code === 'ArrowLeft') {
+      e.preventDefault();
+      seekTo((elAudio.currentTime||0) - 5);
+    }
+
+    if (e.code === 'ArrowRight') {
+      e.preventDefault();
+      seekTo((elAudio.currentTime||0) + 5);
+    }
+
+    // Speed controls: - and + (or = for + without shift)
+    if (e.code === 'Minus' || e.code === 'NumpadSubtract') {
+      e.preventDefault();
+      speedDown();
+    }
+
+    if (e.code === 'Equal' || e.code === 'NumpadAdd') {
+      e.preventDefault();
+      speedUp();
+    }
+
+    // Reset speed with 0
+    if (e.code === 'Digit0' || e.code === 'Numpad0') {
+      e.preventDefault();
+      speedReset();
+    }
+
+    // P for pitch mode toggle
+    if (e.code === 'KeyP' && !e.metaKey && !e.ctrlKey) {
+      e.preventDefault();
+      togglePitchMode();
+    }
+  });
+
+  // Gain & color changes: NO recompute, just re-render
+  elGain.addEventListener('input', () => {
+    elGainVal.textContent = parseFloat(elGain.value).toFixed(2) + "x";
+    drawAll();
+  });
+  elLeftColor.addEventListener('input', drawAll);
+  elRightColor.addEventListener('input', drawAll);
+
+  // File input
+  elFile.addEventListener('change', async () => {
+    const f = elFile.files && elFile.files[0];
+    if (!f) return;
+    await loadFile(f);
+  });
+
+  // Resize + RAF
+  function resizeAll() {
+    let changed = false;
+    changed = resizeCanvasToCSSPixels(cvOverview) || changed;
+    changed = resizeCanvasToCSSPixels(cvZoom) || changed;
+    if (changed) drawAll();
+  }
+  window.addEventListener('resize', resizeAll);
+
+  function tick() {
+    drawAll();
+    raf = requestAnimationFrame(tick);
+  }
+
+  // init
+  setEnabled(false);
+  elGainVal.textContent = parseFloat(elGain.value).toFixed(2) + "x";
+  resizeAll();
+  updateMuteButton();
+  updatePitchModeButton();
+  checkParamsDirty();
+  // Set initial pitch mode
+  updateSpeedDisplay();
+})();
+</script>
+
+<h3>Key Bindings</h3>
+<ul>
+  <li><b>SPACE</b>: Play or Stop (resets to beginning)</li>
+  <li><b>L</b>: Load audio file</li>
+  <li><b>M</b>: Toggle mute</li>
+  <li><b>Left Arrow</b>: Seek back 5 seconds</li>
+  <li><b>Right Arrow</b>: Seek forward 5 seconds</li>
+  <li><b>-</b>: Slow down (1 semitone = 12th root of 2)</li>
+  <li><b>+</b>: Speed up (1 semitone)</li>
+  <li><b>0</b>: Reset speed to 1.00x</li>
+  <li><b>P</b>: Toggle pitch mode (shift pitch with speed vs. preserve pitch)</li>
+</ul>
+
+<h3>Tips</h3>
+<ul>
+  <li><b>Click on the overview</b> to seek to that position in the track.</li>
+  <li>The <b>overview</b> shows the entire track; the <b>zoomed view</b> shows a 2-5 second window around the playhead.</li>
+  <li><b>Speed controls</b> adjust playback in semitone increments (12th root of 2). At +12 semitones the track plays at 2x speed (one octave up); at -12 it plays at 0.5x (one octave down). Double-click the speed display to reset.</li>
+  <li><b>Pitch mode</b> (♪ button): Toggle between pitch-shifting mode (♪, pitch changes with speed for transposition) and pitch-preserving mode (♪=, pitch stays constant while speed changes). Default is pitch-shifting.</li>
+  <li><b>Left color</b> represents the left audio channel; <b>right color</b> represents the right channel. Overlapping frequencies show blended colors.</li>
+  <li>Adjust <b>Gain</b> to brighten or dim the spectrogram without recomputing.</li>
+  <li><b>Display parameters</b> (apply immediately):
+    <ul>
+      <li><b>Frequency Scale</b>: Logarithmic (default, better for music) or Linear</li>
+      <li><b>Min/Max Frequency</b>: Bounds for the frequency axis display</li>
+    </ul>
+  </li>
+  <li><b>FFT parameters</b> (click <b>Recompute FFT</b> to apply):
+    <ul>
+      <li><b>FFT Engine</b>: Select computation backend (see below)</li>
+      <li><b>FFT Size</b>: Larger = better frequency resolution, worse time resolution</li>
+      <li><b>Hop Size</b>: Smaller = smoother time detail, slower computation</li>
+      <li><b>dB Floor/Ceiling</b>: Adjust the dynamic range mapping</li>
+      <li><b>Max Columns</b>: Controls memory usage for long files</li>
+    </ul>
+  </li>
+</ul>
+
+<h3>FFT Engine Options</h3>
+
+<h4>JavaScript (default)</h4>
+<p>Optimized Cooley-Tukey radix-2 DIT FFT with:</p>
+<ul>
+  <li>Pre-computed bit-reversal permutation table</li>
+  <li>Pre-computed twiddle factors (Float64 precision)</li>
+  <li>No trigonometric calls during FFT execution</li>
+  <li>Supports <b>any power-of-2 size</b> (512 to 32768+)</li>
+  <li>Uses Hann window</li>
+</ul>
+
+<h4>PFFFT SIMD</h4>
+<p>High-performance WebAssembly FFT using SIMD instructions:</p>
+<ul>
+  <li>Fastest option on supported browsers (Chrome, Firefox, Edge)</li>
+  <li><b>Size limit: 32 to 4096</b> (powers of 2)</li>
+  <li>Uses Hamming window (applied automatically)</li>
+  <li>Requires <code>pffft.simd.wasm</code> in the same directory</li>
+</ul>
+
+<h4>PFFFT No-SIMD</h4>
+<p>WebAssembly FFT without SIMD for broader compatibility:</p>
+<ul>
+  <li>Faster than JS on most browsers</li>
+  <li><b>Size limit: 32 to 4096</b> (powers of 2)</li>
+  <li>Uses Hamming window (applied automatically)</li>
+  <li>Requires <code>pffft.nosimd.wasm</code> in the same directory</li>
+</ul>
+
+<p><b>Note:</b> If a PFFFT engine fails to load, the app automatically falls back to the JavaScript engine.</p>
+
+</body>
+</html>

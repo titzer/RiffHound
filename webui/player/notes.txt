@@ -1,0 +1,4 @@
+Ideas
+
+- Left/right channels are shown as independent 3D layers
+- Left/right channels are on two planes coming at the user, like looking down a hallway.
