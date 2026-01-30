@@ -23,6 +23,8 @@
   .speed-display { font-size: 2.5vh; font-family: monospace; min-width: 6em; text-align: center; padding: 1.2vh 1vw; background: #fff; border: 1px solid #bbb; border-radius: 3px; }
   button.pitch-shift { background: #e8f0ff; border-color: #69c; }
   button.pitch-preserve { background: #f0ffe8; border-color: #6c9; }
+  button.mic { background: #f4f4f4; color: #000; border: 1px solid #bbb; }
+  button.mic.active { background: #cc3300; color: #fff; border: 1px solid #cc3300; }
 
   #trackInfo { padding: 0.8vh 1vh; background: #f8f8f8; border-bottom: 1px solid #ccc; display: flex; align-items: baseline; gap: 1em; flex-wrap: wrap; }
   #trackName { font-size: 2.5vh; font-weight: bold; margin: 0; }
@@ -65,6 +67,7 @@
     <button id="btnPlay" class="primary" disabled>▶ Play</button>
     <button id="btnStop" class="danger stopped" disabled>⏹ Stop</button>
     <button id="btnMute" class="mute">🔊 Sound</button>
+    <button id="btnMic" class="mic" title="Microphone input (I)">🎤 Mic</button>
     <span class="spacer"></span>
     <button id="back5" class="load" disabled>◀◀ -5s</button>
     <button id="fwd5" class="load" disabled>+5s ▶▶</button>
@@ -103,6 +106,9 @@
     </label>
     <label>Right color:
       <input id="rightColor" type="color" value="#ff2a2a">
+    </label>
+    <label>Mic color:
+      <input id="micColor" type="color" value="#00ff88">
     </label>
     <label>Gain:
       <input id="gain" type="range" min="0.2" max="3.0" step="0.05" value="1.0">
@@ -148,7 +154,7 @@
         </select>
       </label>
       <label>Hop Size:
-        <input id="paramHopSize" type="number" value="256" min="64" max="4096" step="64">
+        <input id="paramHopSize" type="number" value="128" min="32" max="4096" step="32">
       </label>
       <label>dB Floor:
         <input id="paramDbFloor" type="number" value="-110" min="-140" max="-20" step="5">
@@ -157,7 +163,7 @@
         <input id="paramDbCeil" type="number" value="-10" min="-60" max="0" step="5">
       </label>
       <label>Max Columns:
-        <input id="paramMaxCols" type="number" value="8000" min="1000" max="20000" step="1000">
+        <input id="paramMaxCols" type="number" value="50000" min="1000" max="100000" step="1000">
       </label>
     </div>
     <div id="recomputeRow">
@@ -176,13 +182,13 @@
   // ------------------------------
   let FFT_ENGINE = 'js'; // 'js', 'pffft-simd', 'pffft-nosimd'
   let FFT_SIZE = 8192;
-  let HOP_SIZE = 256;
+  let HOP_SIZE = 128;
   let DB_FLOOR = -110;
   let DB_CEIL  = -10;
   let FREQ_MIN_HZ = 50;
   let FREQ_MAX_HZ = 14000;
   let FREQ_SCALE = 'linear'; // 'log' or 'linear'
-  let MAX_COLUMNS = 8000;
+  let MAX_COLUMNS = 50000;
 
   // PFFFT size limits
   const PFFFT_MIN_SIZE = 32;
@@ -218,9 +224,11 @@
   const btnSpeedUp = document.getElementById('speedUp');
   const elSpeedDisplay = document.getElementById('speedDisplay');
   const btnPitchMode = document.getElementById('pitchMode');
+  const btnMic = document.getElementById('btnMic');
 
   const elLeftColor = document.getElementById('leftColor');
   const elRightColor = document.getElementById('rightColor');
+  const elMicColor = document.getElementById('micColor');
   const elGain = document.getElementById('gain');
   const elGainVal = document.getElementById('gainVal');
 
@@ -300,6 +308,20 @@
   let duration = 0;
   let currentFileName = null;
   let muted = false;
+
+  // Microphone state
+  let micActive = false;
+  let micAudioContext = null;
+  let micStream = null;
+  let micAnalyser = null;
+  let micFreqData = null;
+
+  // Mic history for scrolling display
+  const MIC_HISTORY_SECONDS = 10;  // Keep 10 seconds of history
+  const MIC_HISTORY_FPS = 120;     // Capture rate (higher = smoother)
+  let micHistory = [];             // Array of {time, data} objects
+  let micBaseTime = 0;             // Reference time when mic started
+  let micLastCaptureTime = 0;
 
   let worker = null;
 
@@ -798,7 +820,8 @@
     const ch0 = audioBuf.getChannelData(0);
     const ch1 = audioBuf.numberOfChannels > 1 ? audioBuf.getChannelData(1) : ch0;
 
-    const cols = clamp(Math.floor(duration * 200), 1200, MAX_COLUMNS);
+    // Aim for ~500 columns per second for good zoom resolution
+    const cols = clamp(Math.floor(duration * 500), 2000, MAX_COLUMNS);
 
     const nBins = (FFT_SIZE/2)|0;
     spec = {
@@ -990,6 +1013,68 @@
     ctx.fillText(label, w/2, h/2);
   }
 
+  // Helper to get interpolated bin value with bilinear interpolation
+  function sampleSpec(colF, binF) {
+    const c0 = Math.floor(colF);
+    const c1 = Math.min(c0 + 1, spec.nCols - 1);
+    const cFrac = colF - c0;
+
+    const b0 = Math.floor(binF);
+    const b1 = Math.min(b0 + 1, spec.nBins - 1);
+    const bFrac = binF - b0;
+
+    const stride = spec.nBins * 2;
+
+    // Check if columns are computed
+    if (spec.computedCols[c0] !== 1) return null;
+
+    // Sample 4 corners for left and right channels
+    const i00 = c0 * stride + b0 * 2;
+    const i01 = c0 * stride + b1 * 2;
+    const i10 = c1 * stride + b0 * 2;
+    const i11 = c1 * stride + b1 * 2;
+
+    // Bilinear interpolation for left channel
+    const L00 = spec.dataLR[i00];
+    const L01 = spec.dataLR[i01];
+    const L10 = spec.computedCols[c1] === 1 ? spec.dataLR[i10] : L00;
+    const L11 = spec.computedCols[c1] === 1 ? spec.dataLR[i11] : L01;
+    const L0 = L00 + (L01 - L00) * bFrac;
+    const L1 = L10 + (L11 - L10) * bFrac;
+    const L = L0 + (L1 - L0) * cFrac;
+
+    // Bilinear interpolation for right channel
+    const R00 = spec.dataLR[i00 + 1];
+    const R01 = spec.dataLR[i01 + 1];
+    const R10 = spec.computedCols[c1] === 1 ? spec.dataLR[i10 + 1] : R00;
+    const R11 = spec.computedCols[c1] === 1 ? spec.dataLR[i11 + 1] : R01;
+    const R0 = R00 + (R01 - R00) * bFrac;
+    const R1 = R10 + (R11 - R10) * bFrac;
+    const R = R0 + (R1 - R0) * cFrac;
+
+    return { L, R };
+  }
+
+  // Get fractional bin for a y position (for interpolation)
+  function binForYFrac(y, h) {
+    if (!spec) return 0;
+    const nyq = spec.nyquist;
+    const fMin = Math.min(FREQ_MIN_HZ, nyq);
+    const fMax = Math.min(FREQ_MAX_HZ, nyq);
+
+    const u = 1 - (y / Math.max(1, h - 1));
+
+    let f;
+    if (FREQ_SCALE === 'linear') {
+      f = fMin + u * (fMax - fMin);
+    } else {
+      const ratio = fMax / Math.max(1e-6, fMin);
+      f = fMin * Math.pow(ratio, u);
+    }
+
+    return (f / nyq) * (spec.nBins - 1);
+  }
+
   function drawSpectrogram(ctx, w, h, t0, t1, showPlayhead) {
     if (!spec || duration <= 0) {
       drawPlaceholder(ctx, w, h, "spectrogram");
@@ -1008,49 +1093,48 @@
     const img = ctx.createImageData(w, h);
     const data = img.data;
 
-    const yToBin = new Int32Array(h);
-    for (let y=0;y<h;y++) yToBin[y] = binForY(y, h);
+    // Pre-compute fractional bin positions for each y
+    const yToBinF = new Float32Array(h);
+    for (let y = 0; y < h; y++) {
+      yToBinF[y] = binForYFrac(y, h);
+    }
 
-    const c0 = colIndexForTime(t0);
-    const c1 = colIndexForTime(t1);
+    // Time to column mapping
+    const colsPerSec = spec.nCols / duration;
 
-    for (let x=0; x<w; x++) {
+    for (let x = 0; x < w; x++) {
       const u = x / Math.max(1, w - 1);
       const t = t0 + u * (t1 - t0);
-      const c = colIndexForTime(t);
-      const computed = spec.computedCols[c] === 1;
+      // Fractional column position for interpolation
+      const colF = clamp(t * colsPerSec, 0, spec.nCols - 1);
 
-      const colBase = c * (spec.nBins * 2);
+      for (let y = 0; y < h; y++) {
+        const idx = (y * w + x) * 4;
+        const binF = yToBinF[y];
 
-      for (let y=0; y<h; y++) {
-        const idx = (y*w + x) * 4;
+        const sample = sampleSpec(colF, binF);
 
-        if (!computed) {
-          data[idx+0] = 160;
-          data[idx+1] = 160;
-          data[idx+2] = 160;
-          data[idx+3] = 255;
+        if (!sample) {
+          data[idx + 0] = 160;
+          data[idx + 1] = 160;
+          data[idx + 2] = 160;
+          data[idx + 3] = 255;
           continue;
         }
 
-        const b = yToBin[y];
-        const i = colBase + b*2;
-        const uL = spec.dataLR[i];
-        const uR = spec.dataLR[i + 1];
-
-        let aL = Math.pow((uL * norm) / 255, 0.8) * gain;
-        let aR = Math.pow((uR * norm) / 255, 0.8) * gain;
+        let aL = Math.pow((sample.L * norm) / 255, 0.8) * gain;
+        let aR = Math.pow((sample.R * norm) / 255, 0.8) * gain;
         aL = clamp(aL, 0, 1);
         aR = clamp(aR, 0, 1);
 
-        const r = clamp(leftRGB[0]*aL + rightRGB[0]*aR, 0, 255) | 0;
-        const g = clamp(leftRGB[1]*aL + rightRGB[1]*aR, 0, 255) | 0;
-        const bch = clamp(leftRGB[2]*aL + rightRGB[2]*aR, 0, 255) | 0;
+        const r = clamp(leftRGB[0] * aL + rightRGB[0] * aR, 0, 255) | 0;
+        const g = clamp(leftRGB[1] * aL + rightRGB[1] * aR, 0, 255) | 0;
+        const bch = clamp(leftRGB[2] * aL + rightRGB[2] * aR, 0, 255) | 0;
 
-        data[idx+0] = r;
-        data[idx+1] = g;
-        data[idx+2] = bch;
-        data[idx+3] = 255;
+        data[idx + 0] = r;
+        data[idx + 1] = g;
+        data[idx + 2] = bch;
+        data[idx + 3] = 255;
       }
     }
 
@@ -1068,6 +1152,10 @@
 
   function drawOverview() {
     const w = cvOverview.width, h = cvOverview.height;
+    if (!spec || duration <= 0) {
+      drawPlaceholder(ctxO, w, h, micActive ? "Mic active - load a file for spectrogram" : "overview");
+      return;
+    }
     drawSpectrogram(ctxO, w, h, 0, Math.max(0.0001, duration), true);
   }
 
@@ -1087,8 +1175,123 @@
 
     drawSpectrogram(ctxZ, w, h, t0, t1, true);
 
+    // Overlay microphone spectrum if active - blend at playhead position
+    if (micActive) drawMicOverlay(ctxZ, w, h, t0, t1);
+
     elViewInfo.textContent =
       `View ${fmtTime(t0)} - ${fmtTime(t1)}  |  Playhead ${fmtTime(elAudio.currentTime||0)} / ${fmtTime(duration)}`;
+  }
+
+  function drawMicOverlay(ctx, w, h, t0, t1) {
+    // Only show mic overlay when playing and mic is active with history
+    if (!micActive || micHistory.length === 0) return;
+    if (elAudio.paused) return;
+    if (t0 === undefined || t1 === undefined || t1 <= t0) return;
+
+    const micRGB = parseHexColor(elMicColor.value);
+    const gain = parseFloat(elGain.value);
+    const nyq = micAudioContext ? micAudioContext.sampleRate / 2 : 22050;
+    const nBins = micHistory[0].data.length;
+
+    // Pre-compute fractional y-to-bin mapping for interpolation
+    const fMin = Math.min(FREQ_MIN_HZ, nyq);
+    const fMax = Math.min(FREQ_MAX_HZ, nyq);
+
+    const yToBinF = new Float32Array(h);
+    for (let y = 0; y < h; y++) {
+      const u = 1 - (y / Math.max(1, h - 1));
+      let f;
+      if (FREQ_SCALE === 'linear') {
+        f = fMin + u * (fMax - fMin);
+      } else {
+        const ratio = fMax / Math.max(1e-6, fMin);
+        f = fMin * Math.pow(ratio, u);
+      }
+      yToBinF[y] = clamp((f / nyq) * (nBins - 1), 0, nBins - 1);
+    }
+
+    // Get current image data to blend with
+    const img = ctx.getImageData(0, 0, w, h);
+    const data = img.data;
+
+    // Calculate time scale - mic anchored to playhead
+    const viewSeconds = t1 - t0;
+    const tNow = elAudio.currentTime || 0;
+    const xPlayhead = ((tNow - t0) / viewSeconds) * w;
+
+    const currentMicTime = performance.now() / 1000 - micBaseTime;
+    const secondsPerPixel = viewSeconds / w;
+
+    // Mic current time is at the playhead position
+    const xMicNow = xPlayhead;
+
+    // Helper to interpolate a value from a frame at a fractional bin position
+    function sampleFrame(frame, binF) {
+      const b0 = Math.floor(binF);
+      const b1 = Math.min(b0 + 1, nBins - 1);
+      const frac = binF - b0;
+      return frame.data[b0] * (1 - frac) + frame.data[b1] * frac;
+    }
+
+    // Helper to find frame index for a given mic time (binary search)
+    function findFrameIndex(targetTime) {
+      if (micHistory.length === 0) return -1;
+      if (targetTime <= micHistory[0].time) return 0;
+      if (targetTime >= micHistory[micHistory.length - 1].time) return micHistory.length - 1;
+
+      let lo = 0, hi = micHistory.length - 1;
+      while (lo < hi - 1) {
+        const mid = (lo + hi) >> 1;
+        if (micHistory[mid].time <= targetTime) lo = mid;
+        else hi = mid;
+      }
+      return lo;
+    }
+
+    // For each pixel, compute interpolated mic value
+    for (let x = 0; x < w; x++) {
+      // Convert pixel x to mic time (mic "now" is at playhead)
+      const pixelAge = (xMicNow - x) * secondsPerPixel;
+      const micTime = currentMicTime - pixelAge;
+
+      // Skip if in the future (right of playhead) or before mic history starts
+      if (x > xMicNow) continue;
+      if (micTime < micHistory[0].time) continue;
+
+      // Find bracketing frames for interpolation
+      const idx0 = findFrameIndex(micTime);
+      const idx1 = Math.min(idx0 + 1, micHistory.length - 1);
+      const frame0 = micHistory[idx0];
+      const frame1 = micHistory[idx1];
+
+      // Time interpolation factor
+      let tFrac = 0;
+      if (idx0 !== idx1 && frame1.time !== frame0.time) {
+        tFrac = clamp((micTime - frame0.time) / (frame1.time - frame0.time), 0, 1);
+      }
+
+      for (let y = 0; y < h; y++) {
+        const binF = yToBinF[y];
+
+        // Bilinear interpolation: sample both frames at fractional bin, then interpolate in time
+        const val0 = sampleFrame(frame0, binF);
+        const val1 = sampleFrame(frame1, binF);
+        const val = val0 * (1 - tFrac) + val1 * tFrac;
+
+        let intensity = Math.pow(val / 255, 0.8) * gain;
+        intensity = clamp(intensity, 0, 1);
+
+        if (intensity > 0.01) {
+          const idx = (y * w + x) * 4;
+          // Additive blend
+          data[idx + 0] = clamp(data[idx + 0] + micRGB[0] * intensity, 0, 255) | 0;
+          data[idx + 1] = clamp(data[idx + 1] + micRGB[1] * intensity, 0, 255) | 0;
+          data[idx + 2] = clamp(data[idx + 2] + micRGB[2] * intensity, 0, 255) | 0;
+        }
+      }
+    }
+
+    ctx.putImageData(img, 0, 0);
   }
 
   function drawAll() {
@@ -1184,6 +1387,99 @@
     }
   }
 
+  function updateMicButton() {
+    if (micActive) {
+      btnMic.classList.add('active');
+      btnMic.textContent = '🎤 Mic ON';
+    } else {
+      btnMic.classList.remove('active');
+      btnMic.textContent = '🎤 Mic';
+    }
+  }
+
+  async function startMic() {
+    if (micActive) return;
+    try {
+      micStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+      micAudioContext = new (window.AudioContext || window.webkitAudioContext)();
+      const source = micAudioContext.createMediaStreamSource(micStream);
+
+      // Create analyser with FFT size matching our display needs
+      micAnalyser = micAudioContext.createAnalyser();
+      micAnalyser.fftSize = 8192;  // Gives 4096 frequency bins (matches file spectrogram)
+      micAnalyser.smoothingTimeConstant = 0.2;
+      micFreqData = new Uint8Array(micAnalyser.frequencyBinCount);
+
+      source.connect(micAnalyser);
+      // Don't connect to destination - we don't want to play the mic back
+
+      micActive = true;
+      micHistory = [];
+      micBaseTime = performance.now() / 1000;
+      micLastCaptureTime = 0;
+      updateMicButton();
+
+      // Start draw loop if not already running
+      if (!raf) tick();
+    } catch (err) {
+      console.error('Microphone access denied:', err);
+      elStatus.innerHTML = `<small>Microphone access denied: ${err.message}</small>`;
+    }
+  }
+
+  function stopMic() {
+    if (!micActive) return;
+    micActive = false;
+
+    if (micStream) {
+      micStream.getTracks().forEach(track => track.stop());
+      micStream = null;
+    }
+    if (micAudioContext) {
+      micAudioContext.close().catch(() => {});
+      micAudioContext = null;
+    }
+    micAnalyser = null;
+    micFreqData = null;
+    micHistory = [];
+
+    updateMicButton();
+  }
+
+  function captureMicFrame() {
+    if (!micActive || !micAnalyser || !micFreqData) return;
+
+    const now = performance.now() / 1000;
+    const micTime = now - micBaseTime;
+
+    // Limit capture rate
+    if (micTime - micLastCaptureTime < 1 / MIC_HISTORY_FPS) return;
+    micLastCaptureTime = micTime;
+
+    // Capture current spectrum
+    micAnalyser.getByteFrequencyData(micFreqData);
+
+    // Store a copy with timestamp
+    micHistory.push({
+      time: micTime,
+      data: new Uint8Array(micFreqData)
+    });
+
+    // Prune old history
+    const cutoff = micTime - MIC_HISTORY_SECONDS;
+    while (micHistory.length > 0 && micHistory[0].time < cutoff) {
+      micHistory.shift();
+    }
+  }
+
+  function toggleMic() {
+    if (micActive) {
+      stopMic();
+    } else {
+      startMic();
+    }
+  }
+
   btnLoad.addEventListener('click', () => elFile.click());
 
   btnPlay.addEventListener('click', async () => {
@@ -1193,7 +1489,6 @@
 
   btnStop.addEventListener('click', () => {
     elAudio.pause();
-    seekTo(0);
     updatePlayStopButtons();
   });
 
@@ -1201,6 +1496,8 @@
     muted = !muted;
     updateMuteButton();
   });
+
+  btnMic.addEventListener('click', toggleMic);
 
   btnBack5.addEventListener('click', () => seekTo((elAudio.currentTime||0) - 5));
   btnFwd5.addEventListener('click', () => seekTo((elAudio.currentTime||0) + 5));
@@ -1236,7 +1533,6 @@
         elAudio.play().catch(()=>{});
       } else {
         elAudio.pause();
-        elAudio.currentTime = 0;
       }
       updatePlayStopButtons();
     }
@@ -1287,6 +1583,12 @@
       e.preventDefault();
       togglePitchMode();
     }
+
+    // I for mic input toggle
+    if (e.code === 'KeyI' && !e.metaKey && !e.ctrlKey) {
+      e.preventDefault();
+      toggleMic();
+    }
   });
 
   // Gain & color changes: NO recompute, just re-render
@@ -1296,6 +1598,7 @@
   });
   elLeftColor.addEventListener('input', drawAll);
   elRightColor.addEventListener('input', drawAll);
+  elMicColor.addEventListener('input', drawAll);
 
   // File input
   elFile.addEventListener('change', async () => {
@@ -1314,6 +1617,8 @@
   window.addEventListener('resize', resizeAll);
 
   function tick() {
+    // Capture mic frame before drawing
+    if (micActive) captureMicFrame();
     drawAll();
     raf = requestAnimationFrame(tick);
   }
@@ -1323,6 +1628,7 @@
   elGainVal.textContent = parseFloat(elGain.value).toFixed(2) + "x";
   resizeAll();
   updateMuteButton();
+  updateMicButton();
   updatePitchModeButton();
   checkParamsDirty();
   // Set initial pitch mode
@@ -1332,9 +1638,10 @@
 
 <h3>Key Bindings</h3>
 <ul>
-  <li><b>SPACE</b>: Play or Stop (resets to beginning)</li>
+  <li><b>SPACE</b>: Play/Pause</li>
   <li><b>L</b>: Load audio file</li>
   <li><b>M</b>: Toggle mute</li>
+  <li><b>I</b>: Toggle microphone input</li>
   <li><b>Left Arrow</b>: Seek back 5 seconds</li>
   <li><b>Right Arrow</b>: Seek forward 5 seconds</li>
   <li><b>-</b>: Slow down (1 semitone = 12th root of 2)</li>
@@ -1350,6 +1657,7 @@
   <li><b>Speed controls</b> adjust playback in semitone increments (12th root of 2). At +12 semitones the track plays at 2x speed (one octave up); at -12 it plays at 0.5x (one octave down). Double-click the speed display to reset.</li>
   <li><b>Pitch mode</b> (♪ button): Toggle between pitch-shifting mode (♪, pitch changes with speed for transposition) and pitch-preserving mode (♪=, pitch stays constant while speed changes). Default is pitch-shifting.</li>
   <li><b>Left color</b> represents the left audio channel; <b>right color</b> represents the right channel. Overlapping frequencies show blended colors.</li>
+  <li><b>Microphone input</b>: Click the Mic button or press I to enable real-time microphone spectrum analysis. The mic spectrum scrolls left from the playhead position, showing a history that matches the zoom view's time scale. Adjust the <b>Mic color</b> to change its appearance.</li>
   <li>Adjust <b>Gain</b> to brighten or dim the spectrogram without recomputing.</li>
   <li><b>Display parameters</b> (apply immediately):
     <ul>
