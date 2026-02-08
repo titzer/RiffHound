@@ -303,6 +303,7 @@ let editMode = false;
 let drumsOn = false;
 let chordsOn = true;
 let originalKey = null;    // Key specified in input (e.g., "C" from "C: C | Am | F"), or null
+let originalKeyName = null; // Raw key name string from input (e.g., "Eb", "D#", "C") to detect flat/sharp preference
 let originalChords = [];   // Chords as parsed from input (before transposition)
 let chords = [];           // Chords after transposition (used for playback/display)
 let chordIdx = 0;
@@ -316,6 +317,7 @@ const el = {};
 
 // --- Audio setup ---
 const NOTE_NAMES = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
+const NOTE_NAMES_FLAT = ['C','Db','D','Eb','E','F','Gb','G','Ab','A','Bb','B'];
 const KEYS = ['C','Db','D','Eb','E','F','F#','G','Ab','A','Bb','B'];
 
 const ctx = new (window.AudioContext || window.webkitAudioContext)();
@@ -340,8 +342,28 @@ function keyToSemi(k) {
   return (m[k] != null) ? m[k] : (NOTE_NAMES.indexOf(k) >= 0 ? NOTE_NAMES.indexOf(k) : 0);
 }
 
-function nameForSemi(s) {
-  return NOTE_NAMES[(s + 12) % 12];
+const NOTE_NAMES_DISPLAY = ['C','C♯','D','D♯','E','F','F♯','G','G♯','A','A♯','B'];
+const NOTE_NAMES_FLAT_DISPLAY = ['C','D♭','D','E♭','E','F','G♭','G','A♭','A','B♭','B'];
+
+function nameForSemi(s, useFlats) {
+  const names = useFlats ? NOTE_NAMES_FLAT : NOTE_NAMES;
+  return names[(s + 12) % 12];
+}
+
+function displayNameForSemi(s, useFlats) {
+  const names = useFlats ? NOTE_NAMES_FLAT_DISPLAY : NOTE_NAMES_DISPLAY;
+  return names[(s + 12) % 12];
+}
+
+function shouldUseFlats() {
+  const transposeVal = el.transposeSelect.value;
+  if (transposeVal !== '') {
+    return transposeVal.includes('b');
+  }
+  if (originalKeyName) {
+    return originalKeyName.includes('b');
+  }
+  return false;
 }
 
 function parseLiteralToken(tok) {
@@ -530,11 +552,12 @@ function voiceMetro(t, accent = false) {
 function renderStrip() {
   el.strip.innerHTML = '';
   if (!chords || chords.length === 0) return;
+  const useFlats = shouldUseFlats();
   chords.forEach((ch, i) => {
     const cell = document.createElement('div');
     cell.className = 'chord';
     cell.dataset.idx = i;
-    const lit = nameForSemi(ch.root) + (ch.quality === 'm' ? 'm' : '');
+    const lit = displayNameForSemi(ch.root, useFlats) + (ch.quality === 'm' ? 'm' : '');
     const rn  = romanFor(ch.root, ch.quality);
     cell.innerHTML = `
       <div class="beatProg"></div>
@@ -929,6 +952,7 @@ function tickRAF() {
 function parseProgressionFromInput() {
   let raw = el.literalInput.value.trim();
   let parsedKey = null;
+  let keyName = null;
 
   // Check for key prefix like "C:" or "Am:" at the start
   const keyMatch = raw.match(/^([A-Ga-g][b#]?m?)\s*:\s*/);
@@ -938,6 +962,7 @@ function parseProgressionFromInput() {
     if (keyParsed) {
       // For key, we just need the root (ignore minor for key signature purposes)
       parsedKey = keyParsed.root;
+      keyName = keyToken.replace(/m$/, ''); // Store raw name without minor suffix
     }
     // Remove the key prefix from raw
     raw = raw.slice(keyMatch[0].length);
@@ -949,7 +974,7 @@ function parseProgressionFromInput() {
     if (p) arr.push(p);
   });
 
-  return arr.length ? { key: parsedKey, chords: arr } : null;
+  return arr.length ? { key: parsedKey, keyName: keyName, chords: arr } : null;
 }
 
 // Transpose chords from originalKey to targetKey
@@ -988,6 +1013,7 @@ function rebuildFromInputs() {
 
   // Store original key and chords
   originalKey = parsed.key;
+  originalKeyName = parsed.keyName;
   originalChords = parsed.chords;
 
   // Apply transposition if a target key is selected
