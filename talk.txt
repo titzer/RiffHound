@@ -1,0 +1,48 @@
+Vibe-coding my way to Guitar Greatness
+
+- Song: The Rover
+Objective: demonstrate learning a “full” complex song with solo, riffs
+  - playing to the original track
+    - cues would be really nice! (visual, audio)
+  - playing to a backing track (it’s pre-recorded)
+    - with / without guitar track
+    - can’t speed up or slow down
+  - tabs: how to learn solo and riffs
+  - fire up TuxGuitar and walk through learning tabs
+  - mention other tab players, apps
+
+- Back to basics: riffs and drums
+  - Drum backing tracks and youtube
+  - Drum stick arduino project
+  - Introduce RiffHound Drum Buddy
+
+- What about something easier?
+  - Old time Rock N Roll: youtube chord playalongs
+  - Introduce RiffHound Chord Buddy
+
+- What about writing music?
+  - DAWs: garage band, ableton
+
+- What about accompaniment?
+  - Acquiring my signal: audio and MIDI pickup
+  - Realtime jam buddy vision
+
+
+
+Gear checklist
+- Les Paul (bowser)
+- Ibanez AR420
+- Wireless pack
+- Wireless receiver
+- Amp 1: 
+- Amp 2: Mini-orange backup amp
+- 3.5mm cables (1ft, 5ft)
+- 1/4in cables (15ft, 15ft)
+- USB-C cables (4, 6ft)
+- USB-C dongle
+- AAA batteries
+- AA batteries
+
+
+
+
