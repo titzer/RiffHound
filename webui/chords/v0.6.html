@@ -189,6 +189,7 @@
 
   #bottom { padding: 1vh; font-size: 2.2vh; display: flex; flex-wrap: wrap; gap: .6em; align-items: center; }
   #bottom button { background: #f4f4f4; border: 1px solid #bbb; border-radius: 4px; font-size: 2.2vh; padding: 0.3em 0.8em; }
+  #bottom button.toggle.on { background: #007700; color: #fff; border: 1px solid #007700; }
   input, select { font-size: 2.2vh; }
   #literalInput.editing { outline: 3px solid #66f; background: #eef; }
   #literalInput.invalid { outline: 3px solid #f00; background: #fee; }
@@ -238,7 +239,8 @@
   .simpleStrumBeat[data-simple="x"] { color: #c00; -webkit-text-stroke: 3px #c00; paint-order: stroke fill; }
   .simpleStrumBeat[data-simple="rest"] { color: #ccc; }
 
-  #btnSimpleView { font-size: 1.8vh; padding: 0.2em 0.6em; }
+  #btnSimpleView { background: #f4f4f4; border: 1px solid #bbb; border-radius: 4px; font-size: 2.2vh; padding: 0.3em 0.8em; }
+  #btnSimpleView.on { background: #007700; color: #fff; border: 1px solid #007700; }
 
   /* BPM display in top row */
   #bpmDisplay {
@@ -287,11 +289,13 @@
   </div>
 
   <div id="bottom">
-    Chords: <select id="progressionSelect"></select>
+    <label style="font-weight:bold">Chords:</label>
     <input id="literalInput" size="40" value="C: C | F | G | C">
+    <select id="progressionSelect"></select>
     <button id="btnRandom">Random</button>
     Transpose: <select id="transposeSelect"></select>
-    <input id="bpm" type="range" min="30" max="300" value="100">
+    <button id="btnDouble" class="toggle">Double</button>
+    <button id="btnHelp" onclick="document.getElementById('helpSection').scrollIntoView({behavior:'smooth'})">?</button>
   </div>
 
 <script>
@@ -349,6 +353,7 @@ let muted = false;
 let editMode = false;
 let drumsOn = false;
 let chordsOn = true;
+let doubleTime = false;
 let originalKey = null;    // Key specified in input (e.g., "C" from "C: C | Am | F"), or null
 let originalKeyName = null; // Raw key name string from input (e.g., "Eb", "D#", "C") to detect flat/sharp preference
 let originalChords = [];   // Chords as parsed from input (before transposition)
@@ -358,6 +363,7 @@ let barStart = 0; // audio time of current bar start
 let strumPattern = PATTERNS.standard.map(s => ({...s, strings: {...s.strings}}));
 let simpleStrumView = false;
 let currentStrumIdx = -1;
+let doubleTimeAdvanced = false;
 const taps = [];
 
 // --- DOM refs ---
@@ -961,15 +967,19 @@ function actionToggleSimpleView() {
   }
 }
 
-function highlightActiveCell() {
+function highlightChordCell(idx) {
   const cells = el.strip.querySelectorAll('.chord');
   cells.forEach(c => c.classList.remove('active'));
-  const active = cells[chordIdx];
+  const active = cells[idx];
   if (active) {
     active.classList.add('active');
     const prog = active.querySelector('.beatProg');
     if (prog) prog.style.width = '0%';
   }
+}
+
+function highlightActiveCell() {
+  highlightChordCell(chordIdx);
 }
 
 function highlightActiveStrum(idx) {
@@ -1000,8 +1010,17 @@ function highlightActiveStrum(idx) {
 function updateBeatProgress(now) {
   const durBar = (60 / bpm) * 4;
   const p = (now - barStart) / durBar; // 0..1 per bar
+
+  // In double time, visually highlight the second chord at the half-bar
+  if (doubleTime && !doubleTimeAdvanced && p >= 0.5 && chords.length > 0) {
+    doubleTimeAdvanced = true;
+    highlightChordCell((chordIdx + 1) % chords.length);
+  }
+
+  // Progress bar: in double time, show progress within each half
+  const chordProgress = doubleTime ? ((p % 0.5) / 0.5) : p;
   const prog = el.strip.querySelector('.chord.active .beatProg');
-  if (prog) prog.style.width = Math.max(0, Math.min(100, p * 100)) + '%';
+  if (prog) prog.style.width = Math.max(0, Math.min(100, chordProgress * 100)) + '%';
 
   // Update strum highlight
   const strumIdx = Math.floor(p * strumPattern.length);
@@ -1018,17 +1037,35 @@ function scheduleBar(t) {
   const beatDur = 60 / bpm;
   const bar  = beatDur * 4;
   const eighthNote = beatDur / 2;
+  const halfBeats = strumPattern.length / 2;
 
   if (chordsOn && chords.length) {
-    const ch = chords[chordIdx];
-    const triad = buildTriad(48 + ch.root, ch.quality);
-
-    // Schedule each strum in the pattern
-    strumPattern.forEach((strumBeat, i) => {
-      const strumTime = t + (i * eighthNote);
-      const strumDur = eighthNote * 0.9; // Slightly shorter than full eighth
-      voiceStrumBeat(triad, strumTime, strumDur, strumBeat);
-    });
+    if (doubleTime) {
+      // First half: current chord
+      const ch1 = chords[chordIdx];
+      const triad1 = buildTriad(48 + ch1.root, ch1.quality);
+      for (let i = 0; i < halfBeats; i++) {
+        const strumTime = t + (i * eighthNote);
+        const strumDur = eighthNote * 0.9;
+        voiceStrumBeat(triad1, strumTime, strumDur, strumPattern[i]);
+      }
+      // Second half: next chord
+      const ch2 = chords[(chordIdx + 1) % chords.length];
+      const triad2 = buildTriad(48 + ch2.root, ch2.quality);
+      for (let i = halfBeats; i < strumPattern.length; i++) {
+        const strumTime = t + (i * eighthNote);
+        const strumDur = eighthNote * 0.9;
+        voiceStrumBeat(triad2, strumTime, strumDur, strumPattern[i]);
+      }
+    } else {
+      const ch = chords[chordIdx];
+      const triad = buildTriad(48 + ch.root, ch.quality);
+      strumPattern.forEach((strumBeat, i) => {
+        const strumTime = t + (i * eighthNote);
+        const strumDur = eighthNote * 0.9;
+        voiceStrumBeat(triad, strumTime, strumDur, strumBeat);
+      });
+    }
   }
 
   if (drumsOn) {
@@ -1051,9 +1088,11 @@ function scheduleBar(t) {
 
 function advanceBar() {
   const durBar = (60 / bpm) * 4;
-  chordIdx = (chordIdx + 1) % chords.length;
+  const advance = doubleTime ? 2 : 1;
+  chordIdx = (chordIdx + advance) % chords.length;
   barStart += durBar;
   currentStrumIdx = -1;
+  doubleTimeAdvanced = false;
   if (chordIdx === 0) {
     const first = el.strip.querySelector('.chord[data-idx="0"]');
     if (first) {
@@ -1173,6 +1212,7 @@ function actionPlay() { // start transport
   playing = true;
   chordIdx = 0;
   currentStrumIdx = -1;
+  doubleTimeAdvanced = false;
   barStart = ctx.currentTime + 0.05;
   highlightActiveCell();
   scheduleBar(barStart);
@@ -1211,6 +1251,11 @@ function actionToggleChords() { // toggle chord playback
   el.btnChords.classList.toggle('on', chordsOn);
 }
 
+function actionToggleDouble() { // toggle double time (chords change every 2 beats)
+  doubleTime = !doubleTime;
+  el.btnDouble.classList.toggle('on', doubleTime);
+}
+
 function actionMuteToggle() { // toggle mute
   muted = !muted;
   master.gain.value = muted ? 0 : 1;
@@ -1241,7 +1286,7 @@ function actionTapSpace() { // handle a tap sample
     const avg = diffs.reduce((a, b) => a + b, 0) / diffs.length;
     const oldBpm = bpm;
     bpm = Math.max(50, Math.min(200, 60000 / avg));
-    el.bpm.value = bpm;
+
     el.bpmDisplay.value = Math.round(bpm).toString().slice(0, 3);
 
     if (playing && bpm !== oldBpm) {
@@ -1421,8 +1466,8 @@ function init() {
   el.transposeSelect = document.getElementById('transposeSelect');
   el.progressionSelect = document.getElementById('progressionSelect');
   el.literalInput = document.getElementById('literalInput');
-  el.bpm        = document.getElementById('bpm');
   el.bpmDisplay = document.getElementById('bpmDisplay');
+  el.btnDouble  = document.getElementById('btnDouble');
   el.strumContainer = document.getElementById('strumContainer');
   el.dynamicsContainer = document.getElementById('dynamicsContainer');
   el.patternSelect = document.getElementById('patternSelect');
@@ -1447,7 +1492,7 @@ function init() {
   // Populate progression dropdown
   const defaultProg = document.createElement('option');
   defaultProg.value = '';
-  defaultProg.textContent = '(select)';
+  defaultProg.textContent = '(select progression)';
   el.progressionSelect.appendChild(defaultProg);
 
   PROGRESSIONS.forEach(prog => {
@@ -1467,7 +1512,7 @@ function init() {
   el.btnChords.addEventListener('click', actionToggleChords);
   el.btnRandom.addEventListener('click', actionRandom);
 
-  el.bpm.addEventListener('input', e => actionSetBPM(e.target.value));
+  el.btnDouble.addEventListener('click', actionToggleDouble);
   el.bpmDisplay.addEventListener('input', e => {
     // Filter to only allow digits
     e.target.value = e.target.value.replace(/[^0-9]/g, '').slice(0, 3);
@@ -1498,13 +1543,16 @@ function init() {
   // Initial build
   rebuildFromInputs();
   renderStrumPattern();
+  el.btnPlay.focus();
 }
 
 // Boot
 init();
 </script>
 
-Key bindings:
+<div style="height: 100vh;"></div>
+<div id="helpSection" style="padding: 1vh 2vw;">
+<h3>Key bindings:</h3>
 <ul>
   <li>
     SPACE: play or stop
@@ -1569,6 +1617,7 @@ Tips:
 Errata:
 <ul>
   </ul>
+</div>
 
 </body>
 </html>
