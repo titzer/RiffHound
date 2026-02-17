@@ -1290,22 +1290,7 @@ function actionTapSpace() { // handle a tap sample
     el.bpmDisplay.value = Math.round(bpm).toString().slice(0, 3);
 
     if (playing && bpm !== oldBpm) {
-      // Clear currently scheduled sounds
-      chordsGain.disconnect();
-      drumsGain.disconnect();
-      metroGain.disconnect();
-      chordsGain = ctx.createGain(); chordsGain.connect(master);
-      drumsGain = ctx.createGain(); drumsGain.connect(master);
-      metroGain = ctx.createGain(); metroGain.connect(master);
-
-      // Preserve current position when changing tempo
-      const nowTime = ctx.currentTime;
-      const oldDur = (60 / oldBpm) * 4; // old bar duration
-      const elapsed = nowTime - barStart;
-      const progress = Math.min((elapsed / oldDur) % 1, 0.99); // position within current bar
-      const newDur = (60 / bpm) * 4; // new bar duration
-      barStart = nowTime - (progress * newDur); // adjust start time to maintain position
-      scheduleBar(barStart);
+      rescheduleAtNewTempo(oldBpm);
     }
 
     // Flash the tap button
@@ -1314,29 +1299,80 @@ function actionTapSpace() { // handle a tap sample
   }
 }
 
-function actionSetBPM(val) { // slider or text input changed
+function actionSetBPM(val) { // text input or keyboard changed
   const oldBpm = bpm;
   bpm = Math.max(30, Math.min(300, parseInt(val, 10) || bpm));
   el.bpmDisplay.value = Math.round(bpm).toString().slice(0, 3);
-  el.bpm.value = bpm;
 
   if (playing && bpm !== oldBpm) {
-    // Clear currently scheduled sounds
-    chordsGain.disconnect();
-    drumsGain.disconnect();
-    metroGain.disconnect();
-    chordsGain = ctx.createGain(); chordsGain.connect(master);
-    drumsGain = ctx.createGain(); drumsGain.connect(master);
-    metroGain = ctx.createGain(); metroGain.connect(master);
+    rescheduleAtNewTempo(oldBpm);
+  }
+}
 
-    // Preserve current position when changing tempo
-    const now = ctx.currentTime;
-    const oldDur = (60 / oldBpm) * 4; // old bar duration
-    const elapsed = now - barStart;
-    const progress = Math.min((elapsed / oldDur) % 1, 0.99); // position within current bar (0-1)
-    const newDur = (60 / bpm) * 4; // new bar duration
-    barStart = now - (progress * newDur);
-    scheduleBar(barStart);
+function rescheduleAtNewTempo(oldBpm) {
+  // Clear currently scheduled sounds
+  chordsGain.disconnect();
+  drumsGain.disconnect();
+  metroGain.disconnect();
+  chordsGain = ctx.createGain(); chordsGain.connect(master);
+  drumsGain = ctx.createGain(); drumsGain.connect(master);
+  metroGain = ctx.createGain(); metroGain.connect(master);
+
+  // Preserve current position when changing tempo
+  const now = ctx.currentTime;
+  const oldDur = (60 / oldBpm) * 4;
+  const elapsed = now - barStart;
+  const progress = Math.min((elapsed / oldDur) % 1, 0.99);
+  const newDur = (60 / bpm) * 4;
+  barStart = now - (progress * newDur);
+
+  // Only schedule remaining portion of the bar from now
+  const beatDur = 60 / bpm;
+  const eighthNote = beatDur / 2;
+  const currentEighth = Math.floor(progress * strumPattern.length);
+  const halfBeats = strumPattern.length / 2;
+
+  if (chordsOn && chords.length) {
+    if (doubleTime) {
+      const ch1 = chords[chordIdx];
+      const triad1 = buildTriad(48 + ch1.root, ch1.quality);
+      const nextChordIdx = (chordIdx + 1) % chords.length;
+      const ch2 = chords[doubleTimeAdvanced ? nextChordIdx : nextChordIdx];
+      const triad2 = buildTriad(48 + ch2.root, ch2.quality);
+      for (let i = currentEighth; i < strumPattern.length; i++) {
+        const strumTime = barStart + (i * eighthNote);
+        const strumDur = eighthNote * 0.9;
+        const triad = i < halfBeats ? triad1 : triad2;
+        voiceStrumBeat(triad, strumTime, strumDur, strumPattern[i]);
+      }
+    } else {
+      const ch = chords[chordIdx];
+      const triad = buildTriad(48 + ch.root, ch.quality);
+      for (let i = currentEighth; i < strumPattern.length; i++) {
+        const strumTime = barStart + (i * eighthNote);
+        const strumDur = eighthNote * 0.9;
+        voiceStrumBeat(triad, strumTime, strumDur, strumPattern[i]);
+      }
+    }
+  }
+
+  if (drumsOn) {
+    for (let b = 0; b < 4; b++) {
+      const bt = barStart + b * beatDur;
+      if (bt < now) continue;
+      if (b === 0 || b === 2) voiceKick(bt);
+      if (b === 1 || b === 3) voiceSnare(bt);
+      voiceHat(bt);
+      voiceHat(bt + beatDur / 2);
+    }
+  }
+
+  if (!drumsOn && !chordsOn) {
+    for (let b = 0; b < 4; b++) {
+      const bt = barStart + b * beatDur;
+      if (bt < now) continue;
+      voiceMetro(bt, b === 0);
+    }
   }
 }
 
