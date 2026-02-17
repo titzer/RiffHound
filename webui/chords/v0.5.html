@@ -880,8 +880,6 @@ function updateBeatProgress(now) {
 // Transport & scheduling
 // =========================
 function scheduleBar(t) {
-  if (muted) return; // Skip sound generation when muted
-
   const beatDur = 60 / bpm;
   const bar  = beatDur * 4;
   const eighthNote = beatDur / 2;
@@ -1080,6 +1078,7 @@ function actionToggleChords() { // toggle chord playback
 
 function actionMuteToggle() { // toggle mute
   muted = !muted;
+  master.gain.value = muted ? 0 : 1;
   updateMuteButton();
 
   // Flash the mute button
