@@ -20,7 +20,7 @@
   button.mute.active { background: #ffcc00; color: #000; border: 1px solid #ffcc00; }
   button.flash { background: #4CAF50; color: #fff; }
 
-  #strip { position: relative; display: flex; gap: 0; height: 30vh; border-top: 1px solid #ccc; border-bottom: 1px solid #ccc; }
+  #strip { position: relative; display: flex; gap: 0; height: 30vh; border-top: 1px solid #ccc; }
   .chord { flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; position: relative; border-right: 1px solid #ddd; text-align: center; }
   .chord:last-child { border-right: none; }
   .chord .literal { font-family: monospace; font-size: 8vw; font-weight: bold; line-height: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -32,8 +32,11 @@
   @keyframes flash { 0%{box-shadow: inset 0 0 0 6px #ff0;} 100%{box-shadow: inset 0 0 0 0px #ff0;} }
 
   /* Strum pattern display */
-  #strumSection { background: #f8f8f8; border-top: 1px solid #ccc; padding: 1vh; }
-  #strumHeader { display: flex; align-items: center; gap: 1em; margin-bottom: 0.5vh; }
+  #strumSection { background: #f8f8f8; padding: 1vh; padding-top: 0; }
+  #strumHeader { display: flex; align-items: center; gap: 1em; margin-top: 0.5vh; }
+
+  /* Zoom connector between chord strip and strum pattern */
+  #zoomConnector { border-top: 1px solid #ccc; }
   #strumHeader label { font-weight: bold; font-size: 2.2vh; }
   #strumContainer { position: relative; display: flex; gap: 0; height: 29vh; background: #fff; border: 2px solid #999; border-bottom: none; border-radius: 4px 4px 0 0; overflow: hidden; }
 
@@ -269,7 +272,12 @@
 
   <div id="strip"></div>
 
+  <svg id="zoomConnector" width="100%" height="8vh" style="display:block; background:#f8f8f8;"></svg>
+
   <div id="strumSection">
+    <div id="strumContainer"></div>
+    <div id="dynamicsContainer"></div>
+    <div id="simpleStrumContainer" style="display:none;"></div>
     <div id="strumHeader">
       <label>Strum Pattern:</label>
       <button id="btnSimpleView" class="toggle">Simple</button>
@@ -283,9 +291,6 @@
         <option value="custom">Custom</option>
       </select>
     </div>
-    <div id="strumContainer"></div>
-    <div id="dynamicsContainer"></div>
-    <div id="simpleStrumContainer" style="display:none;"></div>
   </div>
 
   <div id="bottom">
@@ -364,6 +369,7 @@ let strumPattern = PATTERNS.standard.map(s => ({...s, strings: {...s.strings}}))
 let simpleStrumView = false;
 let currentStrumIdx = -1;
 let doubleTimeAdvanced = false;
+let barStartChordIdx = 0;
 const taps = [];
 
 // --- DOM refs ---
@@ -976,10 +982,60 @@ function highlightChordCell(idx) {
     const prog = active.querySelector('.beatProg');
     if (prog) prog.style.width = '0%';
   }
+  renderZoomConnector(idx);
 }
 
 function highlightActiveCell() {
   highlightChordCell(chordIdx);
+}
+
+function renderZoomConnector(activeIdx) {
+  const svg = document.getElementById('zoomConnector');
+  svg.innerHTML = '';
+  const cells = el.strip.querySelectorAll('.chord');
+  if (!cells.length) return;
+
+  const svgRect = svg.getBoundingClientRect();
+  const svgW = svgRect.width;
+  const svgH = svgRect.height;
+  if (svgW === 0 || svgH === 0) return;
+
+  svg.setAttribute('viewBox', `0 0 ${svgW} ${svgH}`);
+  svg.setAttribute('preserveAspectRatio', 'none');
+
+  // Get strum section bounds (the visible strum container or simple view)
+  const strumEl = simpleStrumView ? el.simpleStrumContainer : el.strumContainer;
+  const strumRect = strumEl.getBoundingClientRect();
+  // Bottom targets are full width of strum section
+  const botLeft = strumRect.left - svgRect.left;
+  const botRight = strumRect.right - svgRect.left;
+
+  const drawTrapezoid = (cellIdx, bl, br) => {
+    if (cellIdx < 0 || cellIdx >= cells.length) return;
+    const cell = cells[cellIdx];
+    if (!cell) return;
+    const cellRect = cell.getBoundingClientRect();
+    const topLeft = cellRect.left - svgRect.left;
+    const topRight = cellRect.right - svgRect.left;
+
+    const poly = document.createElementNS('http://www.w3.org/2000/svg', 'polygon');
+    poly.setAttribute('points', `${topLeft},0 ${topRight},0 ${br},${svgH} ${bl},${svgH}`);
+    poly.setAttribute('fill', 'rgba(131,137,255,0.15)');
+    poly.setAttribute('stroke', 'rgba(131,137,255,0.4)');
+    poly.setAttribute('stroke-width', '1');
+    svg.appendChild(poly);
+  };
+
+  if (doubleTime) {
+    const idx = activeIdx != null ? activeIdx : chordIdx;
+    const inSecondHalf = doubleTimeAdvanced;
+    const bl = inSecondHalf ? (botLeft + botRight) / 2 : botLeft;
+    const br = inSecondHalf ? botRight : (botLeft + botRight) / 2;
+    drawTrapezoid(idx, bl, br);
+  } else {
+    const idx = activeIdx != null ? activeIdx : chordIdx;
+    drawTrapezoid(idx, botLeft, botRight);
+  }
 }
 
 function highlightActiveStrum(idx) {
@@ -1090,6 +1146,7 @@ function advanceBar() {
   const durBar = (60 / bpm) * 4;
   const advance = doubleTime ? 2 : 1;
   chordIdx = (chordIdx + advance) % chords.length;
+  barStartChordIdx = chordIdx;
   barStart += durBar;
   currentStrumIdx = -1;
   doubleTimeAdvanced = false;
@@ -1211,6 +1268,7 @@ function actionPlay() { // start transport
   ctx.resume();
   playing = true;
   chordIdx = 0;
+  barStartChordIdx = 0;
   currentStrumIdx = -1;
   doubleTimeAdvanced = false;
   barStart = ctx.currentTime + 0.05;
@@ -1571,14 +1629,16 @@ function init() {
 
   document.body.addEventListener('keydown', actionKeyDown);
 
-  // Re-render motion overlay on resize
+  // Re-render motion overlay and zoom connector on resize
   window.addEventListener('resize', () => {
     renderMotionOverlay();
+    renderZoomConnector(chordIdx);
   });
 
   // Initial build
   rebuildFromInputs();
   renderStrumPattern();
+  renderZoomConnector(chordIdx);
   el.btnPlay.focus();
 }
 
