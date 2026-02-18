@@ -304,7 +304,7 @@
     padding: 0.4vh 0.5vh; border-radius: 4px; cursor: pointer;
     font-size: 2vh; border: 1.5px solid transparent; margin-bottom: 2px;
   }
-  .sectionRow.active { background: #e0e4ff; border-color: #8389ff; }
+  .sectionRow.active { background: #e0e4ff; border-color: #8389ff; flex-direction: column; align-items: stretch; }
   .sectionRow:hover:not(.active) { background: #e8e8e8; }
   .sectionActiveDot {
     width: 1vh; height: 1vh; border-radius: 50%;
@@ -317,7 +317,7 @@
   }
   .sectionNameInput:focus { border-color: #bbb; background: #fff; outline: none; }
   .sectionProg { flex: 1; font-family: monospace; color: #666; font-size: 1.8vh; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .sectionRepeatArea { display: flex; align-items: center; gap: 3px; min-width: 5em; }
+  .sectionRepeatArea { display: flex; align-items: center; gap: 3px; min-width: 5em; margin-left: auto; }
   .sectionDots { display: flex; gap: 3px; flex-wrap: wrap; max-width: 8em; }
   .sectionDot { width: 1vh; height: 1vh; border-radius: 50%; border: 1.5px solid #555; background: transparent; }
   .sectionDot.filled { background: #555; }
@@ -326,6 +326,11 @@
   .sectionBtn:hover { background: #e0e0e0; }
   .sectionBtnDel { color: #c00; border-color: #faa; }
   .sectionBtnDel:hover { background: #fee; }
+  .sectionMainRow { display: flex; align-items: center; gap: 0.4em; flex: 1; }
+  .sectionSubRow { display: flex; align-items: center; gap: 0.5em; font-size: 1.8vh; padding-top: 0.3vh; flex-wrap: wrap; }
+  .sectionSubRow select, .sectionSubRow button { font-size: 1.8vh; }
+  .sectionMainRow #literalInput { flex: 1; font-size: 1.8vh; font-family: monospace; min-width: 0; }
+  #sectionEditor { display: none; }
 
   /* BPM display in top row */
   #bpmDisplay {
@@ -345,7 +350,7 @@
   <div id="top">
     <button id="btnPlay"   class="primary">▶ Play</button>
     <button id="btnStop"   class="danger stopped">⏹ Stop</button>
-    <button id="btnRepeat" title="Add one repeat to current section">Repeat</button>
+    <button id="btnAgain" title="Add one repeat to current section">Again</button>
     <button id="btnMute"   class="mute">🔊 Sound</button>
     <button id="btnTap">🕒 Tap</button>
     <input id="bpmDisplay" type="text" value="100" maxlength="3">
@@ -383,14 +388,20 @@
       <button id="btnAddSection">+ Add</button>
     </div>
     <div id="sectionsList"></div>
+    <div id="sectionEditor">
+      <div class="sectionEditorRow">
+        <input id="literalInput" size="40" value="C: C | F | G | C">
+      </div>
+      <div class="sectionEditorRow">
+        <select id="progressionSelect"></select>
+        <button id="btnRandom">Random</button>
+        <span>Transpose:</span>
+        <select id="transposeSelect"></select>
+      </div>
+    </div>
   </div>
 
   <div id="bottom">
-    <label style="font-weight:bold">Chords:</label>
-    <input id="literalInput" size="40" value="C: C | F | G | C">
-    <select id="progressionSelect"></select>
-    <button id="btnRandom">Random</button>
-    Transpose: <select id="transposeSelect"></select>
     <button id="btnDouble" class="toggle">Double</button>
     <button id="btnHelp" onclick="document.getElementById('helpSection').scrollIntoView({behavior:'smooth'})">?</button>
   </div>
@@ -1662,8 +1673,13 @@ function renderSectionsList() {
   if (!el.sectionsList) return;
   el.sectionsList.innerHTML = '';
   sections.forEach((section, i) => {
+    const isActive = i === sectionIdx;
     const row = document.createElement('div');
-    row.className = 'sectionRow' + (i === sectionIdx ? ' active' : '');
+    row.className = 'sectionRow' + (isActive ? ' active' : '');
+
+    // All visible content goes into mainRow
+    const mainRow = document.createElement('div');
+    mainRow.className = 'sectionMainRow';
 
     const activeDot = document.createElement('div');
     activeDot.className = 'sectionActiveDot';
@@ -1676,10 +1692,16 @@ function renderSectionsList() {
     nameInput.addEventListener('click', e => e.stopPropagation());
     nameInput.addEventListener('keydown', e => e.stopPropagation());
 
-    const prog = document.createElement('span');
-    prog.className = 'sectionProg';
-    prog.textContent = section.progression;
-    prog.title = section.progression;
+    // Active section: use the real literalInput; inactive: plain text span
+    let progEl;
+    if (isActive) {
+      progEl = el.literalInput;
+    } else {
+      progEl = document.createElement('span');
+      progEl.className = 'sectionProg';
+      progEl.textContent = section.progression;
+      progEl.title = section.progression;
+    }
 
     // Repeat display
     const repeatArea = document.createElement('div');
@@ -1691,7 +1713,7 @@ function renderSectionsList() {
       repeatArea.appendChild(inf);
     } else {
       const total = section.repeats;
-      const left = i === sectionIdx ? Math.max(0, Math.min(section.repeatsLeft, total)) : total;
+      const left = isActive ? Math.max(0, Math.min(section.repeatsLeft, total)) : total;
       const dotsEl = document.createElement('div');
       dotsEl.className = 'sectionDots';
       const show = Math.min(total, 8);
@@ -1765,7 +1787,19 @@ function renderSectionsList() {
       }
     });
 
-    row.append(activeDot, nameInput, prog, repeatArea, btnInf, btnMinus, btnPlus, btnDel);
+    mainRow.append(activeDot, nameInput, progEl, repeatArea, btnInf, btnMinus, btnPlus, btnDel);
+    row.appendChild(mainRow);
+
+    // Active section gets a second sub-row with the progression editing controls
+    if (isActive) {
+      const subRow = document.createElement('div');
+      subRow.className = 'sectionSubRow';
+      const transpLabel = document.createElement('span');
+      transpLabel.textContent = 'Transpose:';
+      subRow.append(el.progressionSelect, el.btnRandom, transpLabel, el.transposeSelect);
+      row.appendChild(subRow);
+    }
+
     row.addEventListener('click', () => {
       if (i !== sectionIdx) {
         loadSectionIntoDisplay(i);
@@ -1895,6 +1929,9 @@ function actionKeyDown(e) { // global keyboard shortcuts
   // Random (R) — avoid Cmd/Ctrl+R
   if (e.code === 'KeyR' && !e.metaKey && !e.ctrlKey) { e.preventDefault(); actionRandom(); return; }
 
+  // Again (A) — avoid Cmd/Ctrl+A
+  if (e.code === 'KeyA' && !e.metaKey && !e.ctrlKey) { e.preventDefault(); actionAddRepeat(); return; }
+
   // Edit mode (E)
   if (e.code === 'KeyE') { e.preventDefault(); actionEnterEditMode(); return; }
 
@@ -1943,7 +1980,7 @@ function init() {
   el.patternSelect = document.getElementById('patternSelect');
   el.btnSimpleView = document.getElementById('btnSimpleView');
   el.simpleStrumContainer = document.getElementById('simpleStrumContainer');
-  el.btnRepeat = document.getElementById('btnRepeat');
+  el.btnAgain = document.getElementById('btnAgain');
   el.btnAddSection = document.getElementById('btnAddSection');
   el.sectionsList = document.getElementById('sectionsList');
   el.repeatIndicator = null; // set by renderStrip()
@@ -2010,7 +2047,7 @@ function init() {
   el.literalInput.addEventListener('change', rebuildFromInputs);
   el.patternSelect.addEventListener('change', e => actionPatternChange(e.target.value));
   el.btnSimpleView.addEventListener('click', actionToggleSimpleView);
-  el.btnRepeat.addEventListener('click', actionAddRepeat);
+  el.btnAgain.addEventListener('click', actionAddRepeat);
   el.btnAddSection.addEventListener('click', actionAddSection);
 
   document.body.addEventListener('keydown', actionKeyDown);
@@ -2051,6 +2088,9 @@ init();
   </li>
   <li>
     E: enter edit mode for chord progression
+  </li>
+  <li>
+    A: repeat progression again
   </li>
   <li>
     T: tap to tempo
