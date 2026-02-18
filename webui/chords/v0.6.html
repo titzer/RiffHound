@@ -104,6 +104,24 @@
   .strumBeat .strumIcon { display: none; }
   .strumBeat .strumLabel { display: none; }
 
+  /* Tie indicator in complex view */
+  .strumBeat.is-tie { background: #f0f0f0; }
+  .strumBeat.is-tie.active { background: #d0d8ff; }
+  .strumTie {
+    position: absolute;
+    top: 3.5vh;
+    left: 50%;
+    transform: translateX(-50%);
+    font-size: 3.5vh;
+    color: #999;
+    cursor: pointer;
+    padding: 0.1em 0.3em;
+    border-radius: 4px;
+    z-index: 20;
+    user-select: none;
+  }
+  .strumTie:hover { background: rgba(0,0,0,0.1); }
+
   /* Direction toggle at top of beat */
   .strumDirection {
     position: absolute;
@@ -241,6 +259,7 @@
   .simpleStrumBeat[data-simple="up"] { color: #cc5500; -webkit-text-stroke: 5px #cc5500; paint-order: stroke fill; }
   .simpleStrumBeat[data-simple="x"] { color: #c00; -webkit-text-stroke: 3px #c00; paint-order: stroke fill; }
   .simpleStrumBeat[data-simple="rest"] { color: #ccc; }
+  .simpleStrumBeat[data-simple="tie"] { color: #888; font-size: 4vh; -webkit-text-stroke: 0; }
 
   #btnSimpleView { background: #f4f4f4; border: 1px solid #bbb; border-radius: 4px; font-size: 2.2vh; padding: 0.3em 0.8em; }
   #btnSimpleView.on { background: #007700; color: #fff; border: 1px solid #007700; }
@@ -275,14 +294,15 @@
   <svg id="zoomConnector" width="100%" height="8vh" style="display:block; background:#f8f8f8;"></svg>
 
   <div id="strumSection">
-    <div id="strumContainer"></div>
-    <div id="dynamicsContainer"></div>
-    <div id="simpleStrumContainer" style="display:none;"></div>
+    <div id="strumContainer" style="display:none;"></div>
+    <div id="dynamicsContainer" style="display:none;"></div>
+    <div id="simpleStrumContainer"></div>
     <div id="strumHeader">
       <label>Strum Pattern:</label>
-      <button id="btnSimpleView" class="toggle">Simple</button>
+      <button id="btnSimpleView" class="toggle on">Simple</button>
       <select id="patternSelect">
-        <option value="standard" selected>Standard (DUDUDU)</option>
+        <option value="standard" selected>Standard (D⌒DUDU)</option>
+        <option value="quarters">Quarter Notes (D⌒D⌒D⌒D⌒)</option>
         <option value="basic">Basic (D-D-D-D-)</option>
         <option value="folk">Folk (D-DU-UDU)</option>
         <option value="reggae">Reggae (-M-M-M-M)</option>
@@ -324,8 +344,8 @@ const DYNAMICS = {
 const DYNAMICS_ORDER = ['soft', 'medium', 'loud'];
 
 // Helper to create a strum beat
-function strum(direction, strings = {bass: true, mid: true, upper: true}, muted = false, dynamics = 'medium') {
-  return { direction, strings: {...strings}, muted, dynamics };
+function strum(direction, strings = {bass: true, mid: true, upper: true}, muted = false, dynamics = 'medium', tie = false) {
+  return { direction, strings: {...strings}, muted, dynamics, tie };
 }
 
 // Shorthand helpers for presets
@@ -339,10 +359,13 @@ const Mu = (dyn = 'medium') => strum('up', {bass:true, mid:true, upper:true}, tr
 const B = (dyn = 'medium') => strum('down', {bass:true, mid:false, upper:false}, false, dyn);
 const MD = (dyn = 'medium') => strum('down', {bass:false, mid:true, upper:false}, false, dyn);
 const UP = (dyn = 'medium') => strum('up', {bass:false, mid:true, upper:true}, false, dyn);
+// Tie: let previous strum ring, no new attack
+const Ti = () => strum('down', {bass:false, mid:false, upper:false}, false, 'medium', true);
 
 // Preset patterns (8 eighth notes per bar)
 const PATTERNS = {
-  standard:    [D('loud'), U('soft'), D('medium'), U('soft'), D('loud'), U('soft'), D('medium'), U('soft')],
+  standard:    [D('loud'), Ti(), D('soft'), U('soft'), D('soft'), U('soft'), D('soft'), U('soft')],
+  quarters:    [D('loud'), Ti(), D('medium'), Ti(), D('loud'), Ti(), D('medium'), Ti()],
   basic:       [D('loud'), Rd(), D('medium'), Rd(), D('loud'), Rd(), D('medium'), Rd()],
   folk:        [D('loud'), Ru(), D('medium'), U('soft'), Rd(), U('soft'), D('medium'), U('soft')],
   reggae:      [Rd(), Mu('medium'), Rd(), Mu('soft'), Rd(), Mu('medium'), Rd(), Mu('soft')],
@@ -366,7 +389,7 @@ let chords = [];           // Chords after transposition (used for playback/disp
 let chordIdx = 0;
 let barStart = 0; // audio time of current bar start
 let strumPattern = PATTERNS.standard.map(s => ({...s, strings: {...s.strings}}));
-let simpleStrumView = false;
+let simpleStrumView = true;
 let currentStrumIdx = -1;
 let doubleTimeAdvanced = false;
 let barStartChordIdx = 0;
@@ -647,31 +670,52 @@ function renderStrumPattern() {
     // Check if any strings are active - a rest is when no strings are voiced
     const hasActiveStrings = beat.strings.bass || beat.strings.mid || beat.strings.upper;
     const isRest = !hasActiveStrings;
+    const isTie = !!beat.tie;
 
-    beatEl.innerHTML = `
-      <div class="beatNum">${Math.floor(i/2) + 1}${i % 2 === 0 ? '' : '&'}</div>
-      <div class="strumDirection" data-dir="${beat.direction}">${DIRECTION_ICONS[beat.direction]}</div>
-      <div class="strumMute ${beat.muted ? 'active' : ''}" title="Mute">M</div>
-      <div class="strumIndicator"></div>
-    `;
+    if (isTie) {
+      beatEl.classList.add('is-tie');
+      beatEl.innerHTML = `
+        <div class="beatNum">${Math.floor(i/2) + 1}${i % 2 === 0 ? '' : '&'}</div>
+        <div class="strumTie">⌒</div>
+        <div class="strumIndicator"></div>
+      `;
+      // Clicking the tie symbol removes the tie (reverts to a down strum)
+      beatEl.querySelector('.strumTie').addEventListener('click', (e) => {
+        e.stopPropagation();
+        applySimpleState(i, 'down');
+        el.patternSelect.value = 'custom';
+        renderStrumPattern();
+      });
+    } else {
+      beatEl.innerHTML = `
+        <div class="beatNum">${Math.floor(i/2) + 1}${i % 2 === 0 ? '' : '&'}</div>
+        <div class="strumDirection" data-dir="${beat.direction}">${DIRECTION_ICONS[beat.direction]}</div>
+        <div class="strumMute ${beat.muted ? 'active' : ''}" title="Mute">M</div>
+        <div class="strumIndicator"></div>
+      `;
 
-    // Direction toggle at top - cycles between down and up
-    const dirEl = beatEl.querySelector('.strumDirection');
-    dirEl.addEventListener('click', (e) => {
-      e.stopPropagation();
-      strumPattern[i].direction = (beat.direction === 'down') ? 'up' : 'down';
-      el.patternSelect.value = 'custom';
-      renderStrumPattern();
-    });
+      // Direction toggle at top - cycles down → up → tie
+      const dirEl = beatEl.querySelector('.strumDirection');
+      dirEl.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (beat.direction === 'down') {
+          strumPattern[i].direction = 'up';
+        } else {
+          applySimpleState(i, 'tie');
+        }
+        el.patternSelect.value = 'custom';
+        renderStrumPattern();
+      });
 
-    // Mute toggle
-    const muteEl = beatEl.querySelector('.strumMute');
-    muteEl.addEventListener('click', (e) => {
-      e.stopPropagation();
-      strumPattern[i].muted = !strumPattern[i].muted;
-      el.patternSelect.value = 'custom';
-      renderStrumPattern();
-    });
+      // Mute toggle
+      const muteEl = beatEl.querySelector('.strumMute');
+      muteEl.addEventListener('click', (e) => {
+        e.stopPropagation();
+        strumPattern[i].muted = !strumPattern[i].muted;
+        el.patternSelect.value = 'custom';
+        renderStrumPattern();
+      });
+    }
 
     el.strumContainer.appendChild(beatEl);
 
@@ -680,8 +724,8 @@ function renderStrumPattern() {
     dynCell.className = 'dynamicsCell';
     dynCell.dataset.idx = i;
     dynCell.dataset.dynamics = beat.dynamics;
-    // Show empty bar for rest
-    if (isRest) {
+    // Show empty bar for rest or tie
+    if (isRest || isTie) {
       dynCell.dataset.type = 'rest';
     }
     dynCell.innerHTML = '<div class="dynamicsBar"></div>';
@@ -780,9 +824,13 @@ function renderMotionOverlay() {
 
   // Draw motion paths for each beat
   // - Stroke portion: first half of beat (beatStartX to beatCenterX)
-  // - Return portion: second half of beat, only if next beat alternates
+  // - Return portion: second half of beat, only if next beat alternates and is not a tie
   for (let i = 0; i < numBeats; i++) {
     const beat = strumPattern[i];
+
+    // Ties: no hand motion shown
+    if (beat.tie) continue;
+
     const dir = beat.direction;
     const isRest = isRestBeat(beat);
 
@@ -794,37 +842,38 @@ function renderMotionOverlay() {
     const endY = getEndY(dir);
 
     // Draw stroke portion (first half of beat): from startY to endY
-    // Use an S-curve that goes from (beatStartX, startY) to (beatCenterX, endY)
     const strokeDx = beatCenterX - beatStartX;
     const cp1x = beatStartX + strokeDx * 0.35;
     const cp2x = beatStartX + strokeDx * 0.65;
     const strokeD = `M ${beatStartX} ${startY} C ${cp1x} ${startY}, ${cp2x} ${endY}, ${beatCenterX} ${endY}`;
     createMotionPath(strokeD, isRest);
 
-    // Check if next beat alternates (don't wrap around to first beat)
+    // Check if next beat alternates and is not a tie (don't wrap around to first beat)
     if (i < numBeats - 1) {
       const nextBeat = strumPattern[i + 1];
-      const nextDir = nextBeat.direction;
-      const alternates = (dir !== nextDir);
+      if (!nextBeat.tie) {
+        const nextDir = nextBeat.direction;
+        const alternates = (dir !== nextDir);
 
-      if (alternates) {
-        // Draw return portion (second half of beat): connects to next beat's start
-        // For alternating: endY of this beat equals startY of next beat
-        const nextStartY = getStartY(nextDir);
-        const returnDx = beatEndX - beatCenterX;
-        const rcp1x = beatCenterX + returnDx * 0.35;
-        const rcp2x = beatCenterX + returnDx * 0.65;
-        const returnD = `M ${beatCenterX} ${endY} C ${rcp1x} ${endY}, ${rcp2x} ${nextStartY}, ${beatEndX} ${nextStartY}`;
-        // Use the current beat's rest status for the return portion
-        createMotionPath(returnD, isRest);
+        if (alternates) {
+          // Draw return portion (second half of beat): connects to next beat's start
+          const nextStartY = getStartY(nextDir);
+          const returnDx = beatEndX - beatCenterX;
+          const rcp1x = beatCenterX + returnDx * 0.35;
+          const rcp2x = beatCenterX + returnDx * 0.65;
+          const returnD = `M ${beatCenterX} ${endY} C ${rcp1x} ${endY}, ${rcp2x} ${nextStartY}, ${beatEndX} ${nextStartY}`;
+          createMotionPath(returnD, isRest);
+        }
+        // If same direction as next, don't draw return - creates the visual gap
       }
-      // If same direction as next, don't draw return - creates the visual gap
+      // If next beat is a tie, leave the second half blank
     }
   }
 
-  // Draw clickable string markers for each beat
+  // Draw clickable string markers for each beat (skip ties)
   for (let i = 0; i < numBeats; i++) {
     const beat = strumPattern[i];
+    if (beat.tie) continue;
     const beatX = beatWidth * i + beatWidth * 0.08;
     const direction = beat.direction;
 
@@ -895,27 +944,30 @@ function renderMotionOverlay() {
 
 // Get the simple-view state for a beat
 function getSimpleState(beat) {
+  if (beat.tie) return 'tie';
   const hasStrings = beat.strings.bass || beat.strings.mid || beat.strings.upper;
   if (!hasStrings) return 'rest';
   if (beat.muted) return 'x';
   return beat.direction; // 'down' or 'up'
 }
 
-const SIMPLE_DISPLAY = { down: '↓', up: '↑', x: '✕', rest: '' };
-const SIMPLE_CYCLE = ['down', 'up', 'x', 'rest'];
+const SIMPLE_DISPLAY = { down: '↓', up: '↑', x: '✕', rest: '', tie: '⌒' };
+const SIMPLE_CYCLE = ['down', 'up', 'x', 'rest', 'tie'];
 
 function applySimpleState(i, newState) {
   const beat = strumPattern[i];
   switch (newState) {
     case 'down':
+      beat.tie = false;
       beat.direction = 'down';
       beat.muted = false;
-      // Restore strings if currently a rest
+      // Restore strings if currently a rest or tie
       if (!beat.strings.bass && !beat.strings.mid && !beat.strings.upper) {
         beat.strings = { bass: true, mid: true, upper: true };
       }
       break;
     case 'up':
+      beat.tie = false;
       beat.direction = 'up';
       beat.muted = false;
       if (!beat.strings.bass && !beat.strings.mid && !beat.strings.upper) {
@@ -923,12 +975,19 @@ function applySimpleState(i, newState) {
       }
       break;
     case 'x':
+      beat.tie = false;
       beat.muted = true;
       if (!beat.strings.bass && !beat.strings.mid && !beat.strings.upper) {
         beat.strings = { bass: true, mid: true, upper: true };
       }
       break;
     case 'rest':
+      beat.tie = false;
+      beat.muted = false;
+      beat.strings = { bass: false, mid: false, upper: false };
+      break;
+    case 'tie':
+      beat.tie = true;
       beat.muted = false;
       beat.strings = { bass: false, mid: false, upper: false };
       break;
@@ -1089,6 +1148,15 @@ function updateBeatProgress(now) {
 // =========================
 // Transport & scheduling
 // =========================
+
+// Compute strum duration, extending through any consecutive tie beats that follow,
+// but not past maxIdx (used to keep double-time halves independent).
+function tieDuration(i, eighthNote, maxIdx) {
+  let count = 1;
+  for (let j = i + 1; j <= maxIdx && strumPattern[j] && strumPattern[j].tie; j++) count++;
+  return eighthNote * count * 0.95;
+}
+
 function scheduleBar(t) {
   const beatDur = 60 / bpm;
   const bar  = beatDur * 4;
@@ -1102,7 +1170,7 @@ function scheduleBar(t) {
       const triad1 = buildTriad(48 + ch1.root, ch1.quality);
       for (let i = 0; i < halfBeats; i++) {
         const strumTime = t + (i * eighthNote);
-        const strumDur = eighthNote * 0.9;
+        const strumDur = tieDuration(i, eighthNote, halfBeats - 1);
         voiceStrumBeat(triad1, strumTime, strumDur, strumPattern[i]);
       }
       // Second half: next chord
@@ -1110,7 +1178,7 @@ function scheduleBar(t) {
       const triad2 = buildTriad(48 + ch2.root, ch2.quality);
       for (let i = halfBeats; i < strumPattern.length; i++) {
         const strumTime = t + (i * eighthNote);
-        const strumDur = eighthNote * 0.9;
+        const strumDur = tieDuration(i, eighthNote, strumPattern.length - 1);
         voiceStrumBeat(triad2, strumTime, strumDur, strumPattern[i]);
       }
     } else {
@@ -1118,7 +1186,7 @@ function scheduleBar(t) {
       const triad = buildTriad(48 + ch.root, ch.quality);
       strumPattern.forEach((strumBeat, i) => {
         const strumTime = t + (i * eighthNote);
-        const strumDur = eighthNote * 0.9;
+        const strumDur = tieDuration(i, eighthNote, strumPattern.length - 1);
         voiceStrumBeat(triad, strumTime, strumDur, strumBeat);
       });
     }
@@ -1399,7 +1467,8 @@ function rescheduleAtNewTempo(oldBpm) {
       const triad2 = buildTriad(48 + ch2.root, ch2.quality);
       for (let i = currentEighth; i < strumPattern.length; i++) {
         const strumTime = barStart + (i * eighthNote);
-        const strumDur = eighthNote * 0.9;
+        const maxIdx = i < halfBeats ? halfBeats - 1 : strumPattern.length - 1;
+        const strumDur = tieDuration(i, eighthNote, maxIdx);
         const triad = i < halfBeats ? triad1 : triad2;
         voiceStrumBeat(triad, strumTime, strumDur, strumPattern[i]);
       }
@@ -1408,7 +1477,7 @@ function rescheduleAtNewTempo(oldBpm) {
       const triad = buildTriad(48 + ch.root, ch.quality);
       for (let i = currentEighth; i < strumPattern.length; i++) {
         const strumTime = barStart + (i * eighthNote);
-        const strumDur = eighthNote * 0.9;
+        const strumDur = tieDuration(i, eighthNote, strumPattern.length - 1);
         voiceStrumBeat(triad, strumTime, strumDur, strumPattern[i]);
       }
     }
@@ -1637,7 +1706,7 @@ function init() {
 
   // Initial build
   rebuildFromInputs();
-  renderStrumPattern();
+  renderSimpleStrumPattern();
   renderZoomConnector(chordIdx);
   el.btnPlay.focus();
 }
