@@ -1,0 +1,15 @@
+- Trying to get pipeline for beatmap generation
+  - want: `beatextract song.mp3 > song.beats.txt` which dumps beats as textual labels (1.8723487)
+  - want: `beatcompine song.mp3 song.beats.txt` which adds beatmap as IDv4 tag to mp3
+  - want: loading a track with a beatmap automatically puts into transport
+
+- Tried BTrack, but it's just a C++ library where samples are fed
+https://github.com/adamstark/BTrack
+
+- Trying to install audioowl for beat analysis
+% python3 -m pip install audioowl==0.0.14 --no-build-isolation
+ Doesn't build because of C++ compile errors
+ madmom apparenty pre-dates proper build isolation
+ 
+- beat detection on microcontrollers
+https://github.com/Steppschuh/Micro-Beat-Detection
