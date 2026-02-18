@@ -3,12 +3,12 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>RiffHound Chord Machine v0.5</title>
+<title>RiffHound Chord Machine v0.7</title>
 <style>
   /* Minimal, readable, big-click targets */
   body { font-family: sans-serif; background: #fff; color: #000; margin: 0; }
   #top { display: flex; flex-wrap: nowrap; gap: 1vh; padding: 1vh; background: #eee; align-items: stretch; }
-  #top button { flex: 1 1 0; font-size: 4vh; padding: 2vh 1vw; }
+  #top button { flex: 1 1 0; font-size: 3.2vh; padding: 1.2vh 1vw; }
   button { cursor: pointer; border: 1px solid #bbb; }
   button.primary { background: #f4f4f4; color: #000; border: 1px solid #bbb; }
   button.primary.playing { background: #007700; color: #fff; border: 1px solid #007700; }
@@ -20,20 +20,23 @@
   button.mute.active { background: #ffcc00; color: #000; border: 1px solid #ffcc00; }
   button.flash { background: #4CAF50; color: #fff; }
 
-  #strip { position: relative; display: flex; gap: 0; height: 30vh; border-top: 1px solid #ccc; border-bottom: 1px solid #ccc; }
+  #strip { position: relative; display: flex; gap: 0; height: 30vh; border-top: 1px solid #ccc; }
   .chord { flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; position: relative; border-right: 1px solid #ddd; text-align: center; }
   .chord:last-child { border-right: none; }
   .chord .literal { font-family: monospace; font-size: 8vw; font-weight: bold; line-height: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .chord .literal .acc { margin-left: -0.1em; letter-spacing: -0.1em; }
   .chord .roman { font-size: 3.5vw; color: #333; line-height: 1.2; }
   .chord.active { background: #8389ff; }
   .beatProg { position: absolute; left: 0; top: 0; bottom: 0; width: 0%; background: rgba(0,0,0,0.07); pointer-events: none; }
-  #loopMarker { width: 3vw; min-width: 20px; background: repeating-linear-gradient(90deg,#000 0,#000 2px,transparent 2px,transparent 6px); display: flex; align-items: center; justify-content: center; font-size: 2vw; }
   .loopFlash { animation: flash 0.35s ease-in-out 1; }
   @keyframes flash { 0%{box-shadow: inset 0 0 0 6px #ff0;} 100%{box-shadow: inset 0 0 0 0px #ff0;} }
 
   /* Strum pattern display */
-  #strumSection { background: #f8f8f8; border-top: 1px solid #ccc; padding: 1vh; }
-  #strumHeader { display: flex; align-items: center; gap: 1em; margin-bottom: 0.5vh; }
+  #strumSection { background: #f8f8f8; padding: 1vh; padding-top: 0; }
+  #strumHeader { display: flex; align-items: center; gap: 1em; margin-top: 0.5vh; }
+
+  /* Zoom connector between chord strip and strum pattern */
+  #zoomConnector { border-top: 1px solid #ccc; }
   #strumHeader label { font-weight: bold; font-size: 2.2vh; }
   #strumContainer { position: relative; display: flex; gap: 0; height: 29vh; background: #fff; border: 2px solid #999; border-bottom: none; border-radius: 4px 4px 0 0; overflow: hidden; }
 
@@ -94,12 +97,30 @@
   .activeMarker .stringX line {
     stroke: #4CAF50;
   }
-  .strumBeat { flex: 1 1 0; display: flex; flex-direction: column; align-items: center; justify-content: center; border-right: 2px solid #ccc; position: relative; cursor: pointer; transition: background 0.1s; }
+  .strumBeat { flex: 1 1 0; display: flex; flex-direction: column; align-items: center; justify-content: center; border-right: 2px solid #ccc; position: relative; cursor: pointer; }
   .strumBeat:last-child { border-right: none; }
   .strumBeat:hover { background: #f0f0ff; }
   .strumBeat.active { background: #a0a8ff; }
   .strumBeat .strumIcon { display: none; }
   .strumBeat .strumLabel { display: none; }
+
+  /* Tie indicator in complex view */
+  .strumBeat.is-tie { background: #f0f0f0; }
+  .strumBeat.is-tie.active { background: #d0d8ff; }
+  .strumTie {
+    position: absolute;
+    top: 3.5vh;
+    left: 50%;
+    transform: translateX(-50%);
+    font-size: 3.5vh;
+    color: #999;
+    cursor: pointer;
+    padding: 0.1em 0.3em;
+    border-radius: 4px;
+    z-index: 20;
+    user-select: none;
+  }
+  .strumTie:hover { background: rgba(0,0,0,0.1); }
 
   /* Direction toggle at top of beat */
   .strumDirection {
@@ -116,8 +137,8 @@
     user-select: none;
   }
   .strumDirection:hover { background: rgba(0,0,0,0.1); }
-  .strumDirection[data-dir="down"] { color: #0044aa; }
-  .strumDirection[data-dir="up"] { color: #cc5500; }
+  .strumDirection[data-dir="down"] { color: #0044aa; -webkit-text-stroke: 5px #0044aa; paint-order: stroke fill; }
+  .strumDirection[data-dir="up"] { color: #cc5500; -webkit-text-stroke: 5px #cc5500; paint-order: stroke fill; }
 
   /* Mute toggle */
   .strumMute {
@@ -188,12 +209,123 @@
   }
 
   #bottom { padding: 1vh; font-size: 2.2vh; display: flex; flex-wrap: wrap; gap: .6em; align-items: center; }
+  #bottom button { background: #f4f4f4; border: 1px solid #bbb; border-radius: 4px; font-size: 2.2vh; padding: 0.3em 0.8em; }
+  #bottom button.toggle.on { background: #007700; color: #fff; border: 1px solid #007700; }
   input, select { font-size: 2.2vh; }
   #literalInput.editing { outline: 3px solid #66f; background: #eef; }
   #literalInput.invalid { outline: 3px solid #f00; background: #fee; }
 
   /* Pattern selector */
   #patternSelect { font-size: 2vh; padding: 0.3em; }
+
+  /* Simple strum view */
+  #simpleStrumContainer {
+    display: flex;
+    gap: 0;
+    height: 6vh;
+    background: #fff;
+    border: 2px solid #999;
+    border-radius: 4px;
+    overflow: hidden;
+  }
+  .simpleStrumBeat {
+    flex: 1 1 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-right: 2px solid #ccc;
+    cursor: pointer;
+    user-select: none;
+    font-size: 3.5vh;
+    font-weight: bold;
+    transition: background 0.1s;
+    position: relative;
+  }
+  .simpleStrumBeat:last-child { border-right: none; }
+  .simpleStrumBeat:hover { background: #f0f0ff; }
+  .simpleStrumBeat.active { background: #d0d8ff; }
+  .simpleStrumBeat .simpleBeatNum {
+    font-size: 2vh;
+    font-weight: 900;
+    color: #666;
+    position: absolute;
+    top: 1px;
+    left: 50%;
+    transform: translateX(-50%);
+    -webkit-text-stroke: 0;
+  }
+  .simpleStrumBeat { padding-top: calc(2vh + 5px); }
+  .simpleStrumBeat[data-simple="down"] { color: #0044aa; -webkit-text-stroke: 5px #0044aa; paint-order: stroke fill; }
+  .simpleStrumBeat[data-simple="up"] { color: #cc5500; -webkit-text-stroke: 5px #cc5500; paint-order: stroke fill; }
+  .simpleStrumBeat[data-simple="x"] { color: #c00; -webkit-text-stroke: 3px #c00; paint-order: stroke fill; }
+  .simpleStrumBeat[data-simple="rest"] { color: #ccc; }
+  .simpleStrumBeat[data-simple="tie"] { color: #888; font-size: 4vh; -webkit-text-stroke: 0; }
+
+  #btnSimpleView { background: #f4f4f4; border: 1px solid #bbb; border-radius: 4px; font-size: 2.2vh; padding: 0.3em 0.8em; }
+  #btnSimpleView.on { background: #007700; color: #fff; border: 1px solid #007700; }
+
+  /* Repeat indicator (right side of chord strip) */
+  #repeatIndicator {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0 1vw;
+    border-left: 2px solid #ddd;
+    background: #f8f8f8;
+    cursor: pointer;
+    flex-shrink: 0;
+  }
+  .repeatDots {
+    display: grid;
+    grid-template-rows: repeat(4, 4vh);
+    grid-auto-columns: 4vh;
+    grid-auto-flow: column;
+    gap: 1vh;
+  }
+  .repeatDot {
+    width: 4vh; height: 4vh; border-radius: 50%;
+    box-sizing: border-box;
+    border: 2.5px solid #555; background: transparent;
+    transition: background 0.15s;
+  }
+  .repeatDot.filled { background: #555; }
+  .repeatInfinity { font-size: 7vh; color: #555; line-height: 1; }
+
+  /* Sections panel */
+  #sectionsPanel { background: #f0f0f0; border-top: 2px solid #ccc; padding: 0.5vh 1vh; }
+  .sectionsHeader {
+    display: flex; align-items: center; gap: 0.5em;
+    padding: 0.3vh 0; font-size: 2vh; font-weight: bold; color: #555;
+  }
+  .sectionsHeader button { font-size: 2vh; padding: 0.2em 0.6em; background: #f4f4f4; border: 1px solid #bbb; border-radius: 4px; cursor: pointer; }
+  .sectionsHeader button:hover { background: #e0e0e0; }
+  .sectionRow {
+    display: flex; align-items: center; gap: 0.4em;
+    padding: 0.4vh 0.5vh; border-radius: 4px; cursor: pointer;
+    font-size: 2vh; border: 1.5px solid transparent; margin-bottom: 2px;
+  }
+  .sectionRow.active { background: #e0e4ff; border-color: #8389ff; }
+  .sectionRow:hover:not(.active) { background: #e8e8e8; }
+  .sectionActiveDot {
+    width: 1vh; height: 1vh; border-radius: 50%;
+    background: #ccc; border: 1.5px solid #999; flex-shrink: 0;
+  }
+  .sectionRow.active .sectionActiveDot { background: #8389ff; border-color: #8389ff; }
+  .sectionNameInput {
+    font-size: 2vh; border: 1px solid transparent; background: transparent;
+    border-radius: 3px; padding: 0 0.3em; width: 8em; font-weight: bold;
+  }
+  .sectionNameInput:focus { border-color: #bbb; background: #fff; outline: none; }
+  .sectionProg { flex: 1; font-family: monospace; color: #666; font-size: 1.8vh; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .sectionRepeatArea { display: flex; align-items: center; gap: 3px; min-width: 5em; }
+  .sectionDots { display: flex; gap: 3px; flex-wrap: wrap; max-width: 8em; }
+  .sectionDot { width: 1vh; height: 1vh; border-radius: 50%; border: 1.5px solid #555; background: transparent; }
+  .sectionDot.filled { background: #555; }
+  .sectionInfSymbol { font-size: 2.5vh; color: #555; line-height: 1; }
+  .sectionBtn { background: #f4f4f4; border: 1px solid #bbb; border-radius: 3px; font-size: 1.8vh; padding: 0.1em 0.4em; cursor: pointer; flex-shrink: 0; }
+  .sectionBtn:hover { background: #e0e0e0; }
+  .sectionBtnDel { color: #c00; border-color: #faa; }
+  .sectionBtnDel:hover { background: #fee; }
 
   /* BPM display in top row */
   #bpmDisplay {
@@ -213,20 +345,28 @@
   <div id="top">
     <button id="btnPlay"   class="primary">▶ Play</button>
     <button id="btnStop"   class="danger stopped">⏹ Stop</button>
+    <button id="btnRepeat" title="Add one repeat to current section">Repeat</button>
     <button id="btnMute"   class="mute">🔊 Sound</button>
     <button id="btnTap">🕒 Tap</button>
-    <input id="bpmDisplay" type="text" value="110" maxlength="3">
+    <input id="bpmDisplay" type="text" value="100" maxlength="3">
     <button id="btnDrums"  class="toggle">🥁 Drums</button>
     <button id="btnChords" class="toggle on">🎹 Chords</button>
   </div>
 
   <div id="strip"></div>
 
+  <svg id="zoomConnector" width="100%" height="8vh" style="display:block; background:#f8f8f8;"></svg>
+
   <div id="strumSection">
+    <div id="strumContainer" style="display:none;"></div>
+    <div id="dynamicsContainer" style="display:none;"></div>
+    <div id="simpleStrumContainer"></div>
     <div id="strumHeader">
       <label>Strum Pattern:</label>
+      <button id="btnSimpleView" class="toggle on">Simple</button>
       <select id="patternSelect">
-        <option value="standard" selected>Standard (DUDUDU)</option>
+        <option value="standard" selected>Standard (D⌒DUDU)</option>
+        <option value="quarters">Quarter Notes (D⌒D⌒D⌒D⌒)</option>
         <option value="basic">Basic (D-D-D-D-)</option>
         <option value="folk">Folk (D-DU-UDU)</option>
         <option value="reggae">Reggae (-M-M-M-M)</option>
@@ -235,16 +375,24 @@
         <option value="custom">Custom</option>
       </select>
     </div>
-    <div id="strumContainer"></div>
-    <div id="dynamicsContainer"></div>
+  </div>
+
+  <div id="sectionsPanel">
+    <div class="sectionsHeader">
+      <span>Sections</span>
+      <button id="btnAddSection">+ Add</button>
+    </div>
+    <div id="sectionsList"></div>
   </div>
 
   <div id="bottom">
-    Transpose: <select id="transposeSelect"></select>
-    Progression: <select id="progressionSelect"></select>
+    <label style="font-weight:bold">Chords:</label>
     <input id="literalInput" size="40" value="C: C | F | G | C">
+    <select id="progressionSelect"></select>
     <button id="btnRandom">Random</button>
-    <input id="bpm" type="range" min="30" max="300" value="110">
+    Transpose: <select id="transposeSelect"></select>
+    <button id="btnDouble" class="toggle">Double</button>
+    <button id="btnHelp" onclick="document.getElementById('helpSection').scrollIntoView({behavior:'smooth'})">?</button>
   </div>
 
 <script>
@@ -268,8 +416,8 @@ const DYNAMICS = {
 const DYNAMICS_ORDER = ['soft', 'medium', 'loud'];
 
 // Helper to create a strum beat
-function strum(direction, strings = {bass: true, mid: true, upper: true}, muted = false, dynamics = 'medium') {
-  return { direction, strings: {...strings}, muted, dynamics };
+function strum(direction, strings = {bass: true, mid: true, upper: true}, muted = false, dynamics = 'medium', tie = false) {
+  return { direction, strings: {...strings}, muted, dynamics, tie };
 }
 
 // Shorthand helpers for presets
@@ -283,10 +431,13 @@ const Mu = (dyn = 'medium') => strum('up', {bass:true, mid:true, upper:true}, tr
 const B = (dyn = 'medium') => strum('down', {bass:true, mid:false, upper:false}, false, dyn);
 const MD = (dyn = 'medium') => strum('down', {bass:false, mid:true, upper:false}, false, dyn);
 const UP = (dyn = 'medium') => strum('up', {bass:false, mid:true, upper:true}, false, dyn);
+// Tie: let previous strum ring, no new attack
+const Ti = () => strum('down', {bass:false, mid:false, upper:false}, false, 'medium', true);
 
 // Preset patterns (8 eighth notes per bar)
 const PATTERNS = {
-  standard:    [D('loud'), U('soft'), D('medium'), U('soft'), D('loud'), U('soft'), D('medium'), U('soft')],
+  standard:    [D('loud'), Ti(), D('soft'), U('soft'), D('soft'), U('soft'), D('soft'), U('soft')],
+  quarters:    [D('loud'), Ti(), D('medium'), Ti(), D('loud'), Ti(), D('medium'), Ti()],
   basic:       [D('loud'), Rd(), D('medium'), Rd(), D('loud'), Rd(), D('medium'), Rd()],
   folk:        [D('loud'), Ru(), D('medium'), U('soft'), Rd(), U('soft'), D('medium'), U('soft')],
   reggae:      [Rd(), Mu('medium'), Rd(), Mu('soft'), Rd(), Mu('medium'), Rd(), Mu('soft')],
@@ -296,12 +447,13 @@ const PATTERNS = {
 };
 
 // --- Global state ---
-let bpm = 92;
+let bpm = 100;
 let playing = false;
 let muted = false;
 let editMode = false;
 let drumsOn = false;
 let chordsOn = true;
+let doubleTime = false;
 let originalKey = null;    // Key specified in input (e.g., "C" from "C: C | Am | F"), or null
 let originalKeyName = null; // Raw key name string from input (e.g., "Eb", "D#", "C") to detect flat/sharp preference
 let originalChords = [];   // Chords as parsed from input (before transposition)
@@ -309,8 +461,18 @@ let chords = [];           // Chords after transposition (used for playback/disp
 let chordIdx = 0;
 let barStart = 0; // audio time of current bar start
 let strumPattern = PATTERNS.standard.map(s => ({...s, strings: {...s.strings}}));
+let simpleStrumView = true;
 let currentStrumIdx = -1;
+let doubleTimeAdvanced = false;
+let barStartChordIdx = 0;
 const taps = [];
+
+// --- Song structure ---
+function makeSection(name, progression, repeats, patternName) {
+  return { name, progression, repeats, repeatsLeft: repeats, patternName: patternName || 'standard' };
+}
+let sections = [];  // initialized in init()
+let sectionIdx = 0;
 
 // --- DOM refs ---
 const el = {};
@@ -557,7 +719,8 @@ function renderStrip() {
     const cell = document.createElement('div');
     cell.className = 'chord';
     cell.dataset.idx = i;
-    const lit = displayNameForSemi(ch.root, useFlats) + (ch.quality === 'm' ? 'm' : '');
+    const lit = (displayNameForSemi(ch.root, useFlats) + (ch.quality === 'm' ? 'm' : ''))
+                  .replace(/(♯|♭)/g, '<span class="acc">$1</span>');
     const rn  = romanFor(ch.root, ch.quality);
     cell.innerHTML = `
       <div class="beatProg"></div>
@@ -566,11 +729,12 @@ function renderStrip() {
     `;
     el.strip.appendChild(cell);
   });
-  const loop = document.createElement('div');
-  loop.id = 'loopMarker';
-  loop.title = 'Loop start';
-  loop.textContent = '↩';
-  el.strip.appendChild(loop);
+  // Repeat indicator (rebuilt each time since strip innerHTML is cleared)
+  const ri = document.createElement('div');
+  ri.id = 'repeatIndicator';
+  el.strip.appendChild(ri);
+  el.repeatIndicator = ri;
+  renderRepeatIndicator();
 }
 
 function renderStrumPattern() {
@@ -587,31 +751,52 @@ function renderStrumPattern() {
     // Check if any strings are active - a rest is when no strings are voiced
     const hasActiveStrings = beat.strings.bass || beat.strings.mid || beat.strings.upper;
     const isRest = !hasActiveStrings;
+    const isTie = !!beat.tie;
 
-    beatEl.innerHTML = `
-      <div class="beatNum">${Math.floor(i/2) + 1}${i % 2 === 0 ? '' : '&'}</div>
-      <div class="strumDirection" data-dir="${beat.direction}">${DIRECTION_ICONS[beat.direction]}</div>
-      <div class="strumMute ${beat.muted ? 'active' : ''}" title="Mute">M</div>
-      <div class="strumIndicator"></div>
-    `;
+    if (isTie) {
+      beatEl.classList.add('is-tie');
+      beatEl.innerHTML = `
+        <div class="beatNum">${Math.floor(i/2) + 1}${i % 2 === 0 ? '' : '&'}</div>
+        <div class="strumTie">⌒</div>
+        <div class="strumIndicator"></div>
+      `;
+      // Clicking the tie symbol removes the tie (reverts to a down strum)
+      beatEl.querySelector('.strumTie').addEventListener('click', (e) => {
+        e.stopPropagation();
+        applySimpleState(i, 'down');
+        el.patternSelect.value = 'custom';
+        renderStrumPattern();
+      });
+    } else {
+      beatEl.innerHTML = `
+        <div class="beatNum">${Math.floor(i/2) + 1}${i % 2 === 0 ? '' : '&'}</div>
+        <div class="strumDirection" data-dir="${beat.direction}">${DIRECTION_ICONS[beat.direction]}</div>
+        <div class="strumMute ${beat.muted ? 'active' : ''}" title="Mute">M</div>
+        <div class="strumIndicator"></div>
+      `;
 
-    // Direction toggle at top - cycles between down and up
-    const dirEl = beatEl.querySelector('.strumDirection');
-    dirEl.addEventListener('click', (e) => {
-      e.stopPropagation();
-      strumPattern[i].direction = (beat.direction === 'down') ? 'up' : 'down';
-      el.patternSelect.value = 'custom';
-      renderStrumPattern();
-    });
+      // Direction toggle at top - cycles down → up → tie
+      const dirEl = beatEl.querySelector('.strumDirection');
+      dirEl.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (beat.direction === 'down') {
+          strumPattern[i].direction = 'up';
+        } else {
+          applySimpleState(i, 'tie');
+        }
+        el.patternSelect.value = 'custom';
+        renderStrumPattern();
+      });
 
-    // Mute toggle
-    const muteEl = beatEl.querySelector('.strumMute');
-    muteEl.addEventListener('click', (e) => {
-      e.stopPropagation();
-      strumPattern[i].muted = !strumPattern[i].muted;
-      el.patternSelect.value = 'custom';
-      renderStrumPattern();
-    });
+      // Mute toggle
+      const muteEl = beatEl.querySelector('.strumMute');
+      muteEl.addEventListener('click', (e) => {
+        e.stopPropagation();
+        strumPattern[i].muted = !strumPattern[i].muted;
+        el.patternSelect.value = 'custom';
+        renderStrumPattern();
+      });
+    }
 
     el.strumContainer.appendChild(beatEl);
 
@@ -620,8 +805,8 @@ function renderStrumPattern() {
     dynCell.className = 'dynamicsCell';
     dynCell.dataset.idx = i;
     dynCell.dataset.dynamics = beat.dynamics;
-    // Show empty bar for rest
-    if (isRest) {
+    // Show empty bar for rest or tie
+    if (isRest || isTie) {
       dynCell.dataset.type = 'rest';
     }
     dynCell.innerHTML = '<div class="dynamicsBar"></div>';
@@ -647,8 +832,8 @@ function renderMotionOverlay() {
   if (existing) existing.remove();
 
   const container = el.strumContainer;
-  const width = container.offsetWidth;
-  const height = container.offsetHeight;
+  const width = container.clientWidth;
+  const height = container.clientHeight;
   if (width === 0 || height === 0) return;
 
   const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
@@ -720,9 +905,13 @@ function renderMotionOverlay() {
 
   // Draw motion paths for each beat
   // - Stroke portion: first half of beat (beatStartX to beatCenterX)
-  // - Return portion: second half of beat, only if next beat alternates
+  // - Return portion: second half of beat, only if next beat alternates and is not a tie
   for (let i = 0; i < numBeats; i++) {
     const beat = strumPattern[i];
+
+    // Ties: no hand motion shown
+    if (beat.tie) continue;
+
     const dir = beat.direction;
     const isRest = isRestBeat(beat);
 
@@ -734,37 +923,38 @@ function renderMotionOverlay() {
     const endY = getEndY(dir);
 
     // Draw stroke portion (first half of beat): from startY to endY
-    // Use an S-curve that goes from (beatStartX, startY) to (beatCenterX, endY)
     const strokeDx = beatCenterX - beatStartX;
     const cp1x = beatStartX + strokeDx * 0.35;
     const cp2x = beatStartX + strokeDx * 0.65;
     const strokeD = `M ${beatStartX} ${startY} C ${cp1x} ${startY}, ${cp2x} ${endY}, ${beatCenterX} ${endY}`;
     createMotionPath(strokeD, isRest);
 
-    // Check if next beat alternates (don't wrap around to first beat)
+    // Check if next beat alternates and is not a tie (don't wrap around to first beat)
     if (i < numBeats - 1) {
       const nextBeat = strumPattern[i + 1];
-      const nextDir = nextBeat.direction;
-      const alternates = (dir !== nextDir);
+      if (!nextBeat.tie) {
+        const nextDir = nextBeat.direction;
+        const alternates = (dir !== nextDir);
 
-      if (alternates) {
-        // Draw return portion (second half of beat): connects to next beat's start
-        // For alternating: endY of this beat equals startY of next beat
-        const nextStartY = getStartY(nextDir);
-        const returnDx = beatEndX - beatCenterX;
-        const rcp1x = beatCenterX + returnDx * 0.35;
-        const rcp2x = beatCenterX + returnDx * 0.65;
-        const returnD = `M ${beatCenterX} ${endY} C ${rcp1x} ${endY}, ${rcp2x} ${nextStartY}, ${beatEndX} ${nextStartY}`;
-        // Use the current beat's rest status for the return portion
-        createMotionPath(returnD, isRest);
+        if (alternates) {
+          // Draw return portion (second half of beat): connects to next beat's start
+          const nextStartY = getStartY(nextDir);
+          const returnDx = beatEndX - beatCenterX;
+          const rcp1x = beatCenterX + returnDx * 0.35;
+          const rcp2x = beatCenterX + returnDx * 0.65;
+          const returnD = `M ${beatCenterX} ${endY} C ${rcp1x} ${endY}, ${rcp2x} ${nextStartY}, ${beatEndX} ${nextStartY}`;
+          createMotionPath(returnD, isRest);
+        }
+        // If same direction as next, don't draw return - creates the visual gap
       }
-      // If same direction as next, don't draw return - creates the visual gap
+      // If next beat is a tie, leave the second half blank
     }
   }
 
-  // Draw clickable string markers for each beat
+  // Draw clickable string markers for each beat (skip ties)
   for (let i = 0; i < numBeats; i++) {
     const beat = strumPattern[i];
+    if (beat.tie) continue;
     const beatX = beatWidth * i + beatWidth * 0.08;
     const direction = beat.direction;
 
@@ -833,14 +1023,158 @@ function renderMotionOverlay() {
   container.appendChild(svg);
 }
 
-function highlightActiveCell() {
+// Get the simple-view state for a beat
+function getSimpleState(beat) {
+  if (beat.tie) return 'tie';
+  const hasStrings = beat.strings.bass || beat.strings.mid || beat.strings.upper;
+  if (!hasStrings) return 'rest';
+  if (beat.muted) return 'x';
+  return beat.direction; // 'down' or 'up'
+}
+
+const SIMPLE_DISPLAY = { down: '↓', up: '↑', x: '✕', rest: '', tie: '⌒' };
+const SIMPLE_CYCLE = ['down', 'up', 'x', 'rest', 'tie'];
+
+function applySimpleState(i, newState) {
+  const beat = strumPattern[i];
+  switch (newState) {
+    case 'down':
+      beat.tie = false;
+      beat.direction = 'down';
+      beat.muted = false;
+      // Restore strings if currently a rest or tie
+      if (!beat.strings.bass && !beat.strings.mid && !beat.strings.upper) {
+        beat.strings = { bass: true, mid: true, upper: true };
+      }
+      break;
+    case 'up':
+      beat.tie = false;
+      beat.direction = 'up';
+      beat.muted = false;
+      if (!beat.strings.bass && !beat.strings.mid && !beat.strings.upper) {
+        beat.strings = { bass: true, mid: true, upper: true };
+      }
+      break;
+    case 'x':
+      beat.tie = false;
+      beat.muted = true;
+      if (!beat.strings.bass && !beat.strings.mid && !beat.strings.upper) {
+        beat.strings = { bass: true, mid: true, upper: true };
+      }
+      break;
+    case 'rest':
+      beat.tie = false;
+      beat.muted = false;
+      beat.strings = { bass: false, mid: false, upper: false };
+      break;
+    case 'tie':
+      beat.tie = true;
+      beat.muted = false;
+      beat.strings = { bass: false, mid: false, upper: false };
+      break;
+  }
+}
+
+function renderSimpleStrumPattern() {
+  el.simpleStrumContainer.innerHTML = '';
+  strumPattern.forEach((beat, i) => {
+    const state = getSimpleState(beat);
+    const cell = document.createElement('div');
+    cell.className = 'simpleStrumBeat';
+    cell.dataset.idx = i;
+    cell.dataset.simple = state;
+    cell.innerHTML = `<div class="simpleBeatNum">${Math.floor(i/2) + 1}${i % 2 === 0 ? '' : '&'}</div>${SIMPLE_DISPLAY[state]}`;
+
+    cell.addEventListener('click', () => {
+      const curState = getSimpleState(strumPattern[i]);
+      const nextIdx = (SIMPLE_CYCLE.indexOf(curState) + 1) % SIMPLE_CYCLE.length;
+      applySimpleState(i, SIMPLE_CYCLE[nextIdx]);
+      el.patternSelect.value = 'custom';
+      renderSimpleStrumPattern();
+    });
+
+    el.simpleStrumContainer.appendChild(cell);
+  });
+}
+
+function actionToggleSimpleView() {
+  simpleStrumView = !simpleStrumView;
+  el.btnSimpleView.classList.toggle('on', simpleStrumView);
+  if (simpleStrumView) {
+    el.strumContainer.style.display = 'none';
+    el.dynamicsContainer.style.display = 'none';
+    el.simpleStrumContainer.style.display = 'flex';
+    renderSimpleStrumPattern();
+  } else {
+    el.strumContainer.style.display = 'flex';
+    el.dynamicsContainer.style.display = 'flex';
+    el.simpleStrumContainer.style.display = 'none';
+    renderStrumPattern();
+  }
+}
+
+function highlightChordCell(idx) {
   const cells = el.strip.querySelectorAll('.chord');
   cells.forEach(c => c.classList.remove('active'));
-  const active = cells[chordIdx];
+  const active = cells[idx];
   if (active) {
     active.classList.add('active');
     const prog = active.querySelector('.beatProg');
     if (prog) prog.style.width = '0%';
+  }
+  renderZoomConnector(idx);
+}
+
+function highlightActiveCell() {
+  highlightChordCell(chordIdx);
+}
+
+function renderZoomConnector(activeIdx) {
+  const svg = document.getElementById('zoomConnector');
+  svg.innerHTML = '';
+  const cells = el.strip.querySelectorAll('.chord');
+  if (!cells.length) return;
+
+  const svgRect = svg.getBoundingClientRect();
+  const svgW = svgRect.width;
+  const svgH = svgRect.height;
+  if (svgW === 0 || svgH === 0) return;
+
+  svg.setAttribute('viewBox', `0 0 ${svgW} ${svgH}`);
+  svg.setAttribute('preserveAspectRatio', 'none');
+
+  // Get strum section bounds (the visible strum container or simple view)
+  const strumEl = simpleStrumView ? el.simpleStrumContainer : el.strumContainer;
+  const strumRect = strumEl.getBoundingClientRect();
+  // Bottom targets are full width of strum section
+  const botLeft = strumRect.left - svgRect.left;
+  const botRight = strumRect.right - svgRect.left;
+
+  const drawTrapezoid = (cellIdx, bl, br) => {
+    if (cellIdx < 0 || cellIdx >= cells.length) return;
+    const cell = cells[cellIdx];
+    if (!cell) return;
+    const cellRect = cell.getBoundingClientRect();
+    const topLeft = cellRect.left - svgRect.left;
+    const topRight = cellRect.right - svgRect.left;
+
+    const poly = document.createElementNS('http://www.w3.org/2000/svg', 'polygon');
+    poly.setAttribute('points', `${topLeft},0 ${topRight},0 ${br},${svgH} ${bl},${svgH}`);
+    poly.setAttribute('fill', 'rgba(131,137,255,0.15)');
+    poly.setAttribute('stroke', 'rgba(131,137,255,0.4)');
+    poly.setAttribute('stroke-width', '1');
+    svg.appendChild(poly);
+  };
+
+  if (doubleTime) {
+    const idx = activeIdx != null ? activeIdx : chordIdx;
+    const inSecondHalf = doubleTimeAdvanced;
+    const bl = inSecondHalf ? (botLeft + botRight) / 2 : botLeft;
+    const br = inSecondHalf ? botRight : (botLeft + botRight) / 2;
+    drawTrapezoid(idx, bl, br);
+  } else {
+    const idx = activeIdx != null ? activeIdx : chordIdx;
+    drawTrapezoid(idx, botLeft, botRight);
   }
 }
 
@@ -849,6 +1183,13 @@ function highlightActiveStrum(idx) {
   beats.forEach(b => b.classList.remove('active'));
   if (idx >= 0 && idx < beats.length) {
     beats[idx].classList.add('active');
+  }
+
+  // Simple view highlight
+  const simpleBeats = el.simpleStrumContainer.querySelectorAll('.simpleStrumBeat');
+  simpleBeats.forEach(b => b.classList.remove('active'));
+  if (idx >= 0 && idx < simpleBeats.length) {
+    simpleBeats[idx].classList.add('active');
   }
 
   // Update motion overlay markers using data-beat attribute
@@ -865,8 +1206,17 @@ function highlightActiveStrum(idx) {
 function updateBeatProgress(now) {
   const durBar = (60 / bpm) * 4;
   const p = (now - barStart) / durBar; // 0..1 per bar
+
+  // In double time, visually highlight the second chord at the half-bar
+  if (doubleTime && !doubleTimeAdvanced && p >= 0.5 && chords.length > 0) {
+    doubleTimeAdvanced = true;
+    highlightChordCell((chordIdx + 1) % chords.length);
+  }
+
+  // Progress bar: in double time, show progress within each half
+  const chordProgress = doubleTime ? ((p % 0.5) / 0.5) : p;
   const prog = el.strip.querySelector('.chord.active .beatProg');
-  if (prog) prog.style.width = Math.max(0, Math.min(100, p * 100)) + '%';
+  if (prog) prog.style.width = Math.max(0, Math.min(100, chordProgress * 100)) + '%';
 
   // Update strum highlight
   const strumIdx = Math.floor(p * strumPattern.length);
@@ -879,21 +1229,48 @@ function updateBeatProgress(now) {
 // =========================
 // Transport & scheduling
 // =========================
+
+// Compute strum duration, extending through any consecutive tie beats that follow,
+// but not past maxIdx (used to keep double-time halves independent).
+function tieDuration(i, eighthNote, maxIdx) {
+  let count = 1;
+  for (let j = i + 1; j <= maxIdx && strumPattern[j] && strumPattern[j].tie; j++) count++;
+  return eighthNote * count * 0.95;
+}
+
 function scheduleBar(t) {
   const beatDur = 60 / bpm;
   const bar  = beatDur * 4;
   const eighthNote = beatDur / 2;
+  const halfBeats = strumPattern.length / 2;
 
   if (chordsOn && chords.length) {
-    const ch = chords[chordIdx];
-    const triad = buildTriad(48 + ch.root, ch.quality);
-
-    // Schedule each strum in the pattern
-    strumPattern.forEach((strumBeat, i) => {
-      const strumTime = t + (i * eighthNote);
-      const strumDur = eighthNote * 0.9; // Slightly shorter than full eighth
-      voiceStrumBeat(triad, strumTime, strumDur, strumBeat);
-    });
+    if (doubleTime) {
+      // First half: current chord
+      const ch1 = chords[chordIdx];
+      const triad1 = buildTriad(48 + ch1.root, ch1.quality);
+      for (let i = 0; i < halfBeats; i++) {
+        const strumTime = t + (i * eighthNote);
+        const strumDur = tieDuration(i, eighthNote, halfBeats - 1);
+        voiceStrumBeat(triad1, strumTime, strumDur, strumPattern[i]);
+      }
+      // Second half: next chord
+      const ch2 = chords[(chordIdx + 1) % chords.length];
+      const triad2 = buildTriad(48 + ch2.root, ch2.quality);
+      for (let i = halfBeats; i < strumPattern.length; i++) {
+        const strumTime = t + (i * eighthNote);
+        const strumDur = tieDuration(i, eighthNote, strumPattern.length - 1);
+        voiceStrumBeat(triad2, strumTime, strumDur, strumPattern[i]);
+      }
+    } else {
+      const ch = chords[chordIdx];
+      const triad = buildTriad(48 + ch.root, ch.quality);
+      strumPattern.forEach((strumBeat, i) => {
+        const strumTime = t + (i * eighthNote);
+        const strumDur = tieDuration(i, eighthNote, strumPattern.length - 1);
+        voiceStrumBeat(triad, strumTime, strumDur, strumBeat);
+      });
+    }
   }
 
   if (drumsOn) {
@@ -916,14 +1293,29 @@ function scheduleBar(t) {
 
 function advanceBar() {
   const durBar = (60 / bpm) * 4;
-  chordIdx = (chordIdx + 1) % chords.length;
+  const advance = doubleTime ? 2 : 1;
+  chordIdx = (chordIdx + advance) % chords.length;
+  barStartChordIdx = chordIdx;
   barStart += durBar;
   currentStrumIdx = -1;
+  doubleTimeAdvanced = false;
   if (chordIdx === 0) {
     const first = el.strip.querySelector('.chord[data-idx="0"]');
     if (first) {
       first.classList.add('loopFlash');
       setTimeout(() => first.classList.remove('loopFlash'), 350);
+    }
+    // Section repeat countdown
+    const currSection = sections[sectionIdx];
+    if (currSection && currSection.repeats !== Infinity) {
+      currSection.repeatsLeft--;
+      if (currSection.repeatsLeft <= 0) {
+        // Advance to next section before scheduling — updates chords/pattern
+        advanceSection();
+      } else {
+        renderRepeatIndicator();
+        renderSectionsList();
+      }
     }
   }
   scheduleBar(barStart);
@@ -1009,6 +1401,12 @@ function rebuildFromInputs() {
   }
   el.literalInput.classList.remove('invalid');
 
+  // Save progression back to current section
+  if (sections.length > 0) {
+    sections[sectionIdx].progression = el.literalInput.value.trim();
+    if (el.sectionsList) renderSectionsList();
+  }
+
   // Store original key and chords
   originalKey = parsed.key;
   originalKeyName = parsed.keyName;
@@ -1037,7 +1435,9 @@ function actionPlay() { // start transport
   ctx.resume();
   playing = true;
   chordIdx = 0;
+  barStartChordIdx = 0;
   currentStrumIdx = -1;
+  doubleTimeAdvanced = false;
   barStart = ctx.currentTime + 0.05;
   highlightActiveCell();
   scheduleBar(barStart);
@@ -1076,6 +1476,11 @@ function actionToggleChords() { // toggle chord playback
   el.btnChords.classList.toggle('on', chordsOn);
 }
 
+function actionToggleDouble() { // toggle double time (chords change every 2 beats)
+  doubleTime = !doubleTime;
+  el.btnDouble.classList.toggle('on', doubleTime);
+}
+
 function actionMuteToggle() { // toggle mute
   muted = !muted;
   master.gain.value = muted ? 0 : 1;
@@ -1106,26 +1511,11 @@ function actionTapSpace() { // handle a tap sample
     const avg = diffs.reduce((a, b) => a + b, 0) / diffs.length;
     const oldBpm = bpm;
     bpm = Math.max(50, Math.min(200, 60000 / avg));
-    el.bpm.value = bpm;
+
     el.bpmDisplay.value = Math.round(bpm).toString().slice(0, 3);
 
     if (playing && bpm !== oldBpm) {
-      // Clear currently scheduled sounds
-      chordsGain.disconnect();
-      drumsGain.disconnect();
-      metroGain.disconnect();
-      chordsGain = ctx.createGain(); chordsGain.connect(master);
-      drumsGain = ctx.createGain(); drumsGain.connect(master);
-      metroGain = ctx.createGain(); metroGain.connect(master);
-
-      // Preserve current position when changing tempo
-      const nowTime = ctx.currentTime;
-      const oldDur = (60 / oldBpm) * 4; // old bar duration
-      const elapsed = nowTime - barStart;
-      const progress = Math.min((elapsed / oldDur) % 1, 0.99); // position within current bar
-      const newDur = (60 / bpm) * 4; // new bar duration
-      barStart = nowTime - (progress * newDur); // adjust start time to maintain position
-      scheduleBar(barStart);
+      rescheduleAtNewTempo(oldBpm);
     }
 
     // Flash the tap button
@@ -1134,30 +1524,289 @@ function actionTapSpace() { // handle a tap sample
   }
 }
 
-function actionSetBPM(val) { // slider or text input changed
+function actionSetBPM(val) { // text input or keyboard changed
   const oldBpm = bpm;
   bpm = Math.max(30, Math.min(300, parseInt(val, 10) || bpm));
   el.bpmDisplay.value = Math.round(bpm).toString().slice(0, 3);
-  el.bpm.value = bpm;
 
   if (playing && bpm !== oldBpm) {
-    // Clear currently scheduled sounds
-    chordsGain.disconnect();
-    drumsGain.disconnect();
-    metroGain.disconnect();
-    chordsGain = ctx.createGain(); chordsGain.connect(master);
-    drumsGain = ctx.createGain(); drumsGain.connect(master);
-    metroGain = ctx.createGain(); metroGain.connect(master);
-
-    // Preserve current position when changing tempo
-    const now = ctx.currentTime;
-    const oldDur = (60 / oldBpm) * 4; // old bar duration
-    const elapsed = now - barStart;
-    const progress = Math.min((elapsed / oldDur) % 1, 0.99); // position within current bar (0-1)
-    const newDur = (60 / bpm) * 4; // new bar duration
-    barStart = now - (progress * newDur);
-    scheduleBar(barStart);
+    rescheduleAtNewTempo(oldBpm);
   }
+}
+
+function rescheduleAtNewTempo(oldBpm) {
+  // Clear currently scheduled sounds
+  chordsGain.disconnect();
+  drumsGain.disconnect();
+  metroGain.disconnect();
+  chordsGain = ctx.createGain(); chordsGain.connect(master);
+  drumsGain = ctx.createGain(); drumsGain.connect(master);
+  metroGain = ctx.createGain(); metroGain.connect(master);
+
+  // Preserve current position when changing tempo
+  const now = ctx.currentTime;
+  const oldDur = (60 / oldBpm) * 4;
+  const elapsed = now - barStart;
+  const progress = Math.min((elapsed / oldDur) % 1, 0.99);
+  const newDur = (60 / bpm) * 4;
+  barStart = now - (progress * newDur);
+
+  // Only schedule remaining portion of the bar from now
+  const beatDur = 60 / bpm;
+  const eighthNote = beatDur / 2;
+  const currentEighth = Math.floor(progress * strumPattern.length);
+  const halfBeats = strumPattern.length / 2;
+
+  if (chordsOn && chords.length) {
+    if (doubleTime) {
+      const ch1 = chords[chordIdx];
+      const triad1 = buildTriad(48 + ch1.root, ch1.quality);
+      const nextChordIdx = (chordIdx + 1) % chords.length;
+      const ch2 = chords[doubleTimeAdvanced ? nextChordIdx : nextChordIdx];
+      const triad2 = buildTriad(48 + ch2.root, ch2.quality);
+      for (let i = currentEighth; i < strumPattern.length; i++) {
+        const strumTime = barStart + (i * eighthNote);
+        const maxIdx = i < halfBeats ? halfBeats - 1 : strumPattern.length - 1;
+        const strumDur = tieDuration(i, eighthNote, maxIdx);
+        const triad = i < halfBeats ? triad1 : triad2;
+        voiceStrumBeat(triad, strumTime, strumDur, strumPattern[i]);
+      }
+    } else {
+      const ch = chords[chordIdx];
+      const triad = buildTriad(48 + ch.root, ch.quality);
+      for (let i = currentEighth; i < strumPattern.length; i++) {
+        const strumTime = barStart + (i * eighthNote);
+        const strumDur = tieDuration(i, eighthNote, strumPattern.length - 1);
+        voiceStrumBeat(triad, strumTime, strumDur, strumPattern[i]);
+      }
+    }
+  }
+
+  if (drumsOn) {
+    for (let b = 0; b < 4; b++) {
+      const bt = barStart + b * beatDur;
+      if (bt < now) continue;
+      if (b === 0 || b === 2) voiceKick(bt);
+      if (b === 1 || b === 3) voiceSnare(bt);
+      voiceHat(bt);
+      voiceHat(bt + beatDur / 2);
+    }
+  }
+
+  if (!drumsOn && !chordsOn) {
+    for (let b = 0; b < 4; b++) {
+      const bt = barStart + b * beatDur;
+      if (bt < now) continue;
+      voiceMetro(bt, b === 0);
+    }
+  }
+}
+
+// =========================
+// Section management
+// =========================
+
+function loadSectionIntoDisplay(idx) {
+  sectionIdx = idx;
+  const section = sections[idx];
+  el.literalInput.value = section.progression;
+  rebuildFromInputs();
+  const patName = PATTERNS[section.patternName] ? section.patternName : 'standard';
+  strumPattern = PATTERNS[patName].map(s => ({...s, strings: {...s.strings}}));
+  el.patternSelect.value = patName;
+  if (simpleStrumView) renderSimpleStrumPattern();
+  else renderStrumPattern();
+}
+
+function renderRepeatIndicator() {
+  if (!el.repeatIndicator || !sections.length) return;
+  el.repeatIndicator.innerHTML = '';
+  const section = sections[sectionIdx];
+
+  if (section.repeats === Infinity) {
+    const inf = document.createElement('div');
+    inf.className = 'repeatInfinity';
+    inf.textContent = '∞';
+    inf.title = 'Infinite loop — click to set repeat count';
+    inf.addEventListener('click', e => {
+      e.stopPropagation();
+      sections[sectionIdx].repeats = 4;
+      sections[sectionIdx].repeatsLeft = 4;
+      renderRepeatIndicator();
+      renderSectionsList();
+    });
+    el.repeatIndicator.appendChild(inf);
+  } else {
+    const total = Math.max(section.repeats, section.repeatsLeft);
+    const left = Math.max(0, section.repeatsLeft);
+    const dots = document.createElement('div');
+    dots.className = 'repeatDots';
+    dots.title = `${left} of ${total} repeat(s) remaining — click to toggle infinite`;
+    for (let i = 0; i < total; i++) {
+      const dot = document.createElement('div');
+      dot.className = 'repeatDot' + (i < left ? ' filled' : '');
+      dots.appendChild(dot);
+    }
+    dots.addEventListener('click', e => {
+      e.stopPropagation();
+      sections[sectionIdx].repeats = Infinity;
+      sections[sectionIdx].repeatsLeft = Infinity;
+      renderRepeatIndicator();
+      renderSectionsList();
+    });
+    el.repeatIndicator.appendChild(dots);
+  }
+}
+
+function renderSectionsList() {
+  if (!el.sectionsList) return;
+  el.sectionsList.innerHTML = '';
+  sections.forEach((section, i) => {
+    const row = document.createElement('div');
+    row.className = 'sectionRow' + (i === sectionIdx ? ' active' : '');
+
+    const activeDot = document.createElement('div');
+    activeDot.className = 'sectionActiveDot';
+
+    const nameInput = document.createElement('input');
+    nameInput.type = 'text';
+    nameInput.className = 'sectionNameInput';
+    nameInput.value = section.name;
+    nameInput.addEventListener('change', e => { sections[i].name = e.target.value; });
+    nameInput.addEventListener('click', e => e.stopPropagation());
+    nameInput.addEventListener('keydown', e => e.stopPropagation());
+
+    const prog = document.createElement('span');
+    prog.className = 'sectionProg';
+    prog.textContent = section.progression;
+    prog.title = section.progression;
+
+    // Repeat display
+    const repeatArea = document.createElement('div');
+    repeatArea.className = 'sectionRepeatArea';
+    if (section.repeats === Infinity) {
+      const inf = document.createElement('span');
+      inf.className = 'sectionInfSymbol';
+      inf.textContent = '∞';
+      repeatArea.appendChild(inf);
+    } else {
+      const total = section.repeats;
+      const left = i === sectionIdx ? Math.max(0, Math.min(section.repeatsLeft, total)) : total;
+      const dotsEl = document.createElement('div');
+      dotsEl.className = 'sectionDots';
+      const show = Math.min(total, 8);
+      for (let j = 0; j < show; j++) {
+        const d = document.createElement('div');
+        d.className = 'sectionDot' + (j < left ? ' filled' : '');
+        dotsEl.appendChild(d);
+      }
+      if (total > 8) {
+        const more = document.createElement('span');
+        more.style.cssText = 'font-size:1.5vh;color:#555;';
+        more.textContent = `+${total - 8}`;
+        dotsEl.appendChild(more);
+      }
+      repeatArea.appendChild(dotsEl);
+    }
+
+    // Controls
+    const btnInf = document.createElement('button');
+    btnInf.className = 'sectionBtn';
+    btnInf.textContent = '∞';
+    btnInf.title = 'Toggle infinite';
+    btnInf.addEventListener('click', e => {
+      e.stopPropagation();
+      if (sections[i].repeats === Infinity) {
+        sections[i].repeats = 4; sections[i].repeatsLeft = 4;
+      } else {
+        sections[i].repeats = Infinity; sections[i].repeatsLeft = Infinity;
+      }
+      renderSectionsList();
+      if (i === sectionIdx) renderRepeatIndicator();
+    });
+
+    const btnMinus = document.createElement('button');
+    btnMinus.className = 'sectionBtn';
+    btnMinus.textContent = '−';
+    btnMinus.title = 'Fewer repeats';
+    btnMinus.addEventListener('click', e => {
+      e.stopPropagation();
+      if (sections[i].repeats !== Infinity && sections[i].repeats > 1) {
+        sections[i].repeats--;
+        sections[i].repeatsLeft = Math.min(sections[i].repeatsLeft, sections[i].repeats);
+      }
+      renderSectionsList();
+      if (i === sectionIdx) renderRepeatIndicator();
+    });
+
+    const btnPlus = document.createElement('button');
+    btnPlus.className = 'sectionBtn';
+    btnPlus.textContent = '+';
+    btnPlus.title = 'More repeats';
+    btnPlus.addEventListener('click', e => {
+      e.stopPropagation();
+      if (sections[i].repeats !== Infinity) sections[i].repeats++;
+      renderSectionsList();
+      if (i === sectionIdx) renderRepeatIndicator();
+    });
+
+    const btnDel = document.createElement('button');
+    btnDel.className = 'sectionBtn sectionBtnDel';
+    btnDel.textContent = '✕';
+    btnDel.title = 'Delete section';
+    btnDel.addEventListener('click', e => {
+      e.stopPropagation();
+      if (sections.length > 1) {
+        sections.splice(i, 1);
+        const newIdx = Math.min(sectionIdx, sections.length - 1);
+        loadSectionIntoDisplay(newIdx);
+        renderRepeatIndicator();
+        renderSectionsList();
+      }
+    });
+
+    row.append(activeDot, nameInput, prog, repeatArea, btnInf, btnMinus, btnPlus, btnDel);
+    row.addEventListener('click', () => {
+      if (i !== sectionIdx) {
+        loadSectionIntoDisplay(i);
+        renderRepeatIndicator();
+        renderSectionsList();
+      }
+    });
+    el.sectionsList.appendChild(row);
+  });
+}
+
+function advanceSection() {
+  // Reset outgoing section countdown for next time through
+  const curr = sections[sectionIdx];
+  curr.repeatsLeft = curr.repeats;
+  // Move to next section
+  sectionIdx = (sectionIdx + 1) % sections.length;
+  const next = sections[sectionIdx];
+  next.repeatsLeft = next.repeats;
+  // Load new section (updates chords, pattern, literalInput)
+  loadSectionIntoDisplay(sectionIdx);
+}
+
+function actionAddSection() {
+  const newSection = makeSection(
+    `Section ${sections.length + 1}`,
+    el.literalInput.value.trim(),
+    4,
+    el.patternSelect.value
+  );
+  sections.push(newSection);
+  loadSectionIntoDisplay(sections.length - 1);
+  renderRepeatIndicator();
+  renderSectionsList();
+}
+
+function actionAddRepeat() {
+  const section = sections[sectionIdx];
+  if (section.repeats === Infinity) return;
+  section.repeatsLeft++;
+  renderRepeatIndicator();
 }
 
 // Preset chord progressions with labels
@@ -1199,7 +1848,9 @@ function actionProgressionChange(value) {
 function actionPatternChange(patternName) {
   if (PATTERNS[patternName]) {
     strumPattern = PATTERNS[patternName].map(s => ({...s, strings: {...s.strings}}));
-    renderStrumPattern();
+    if (sections.length > 0) sections[sectionIdx].patternName = patternName;
+    if (simpleStrumView) renderSimpleStrumPattern();
+    else renderStrumPattern();
   }
 }
 
@@ -1285,11 +1936,21 @@ function init() {
   el.transposeSelect = document.getElementById('transposeSelect');
   el.progressionSelect = document.getElementById('progressionSelect');
   el.literalInput = document.getElementById('literalInput');
-  el.bpm        = document.getElementById('bpm');
   el.bpmDisplay = document.getElementById('bpmDisplay');
+  el.btnDouble  = document.getElementById('btnDouble');
   el.strumContainer = document.getElementById('strumContainer');
   el.dynamicsContainer = document.getElementById('dynamicsContainer');
   el.patternSelect = document.getElementById('patternSelect');
+  el.btnSimpleView = document.getElementById('btnSimpleView');
+  el.simpleStrumContainer = document.getElementById('simpleStrumContainer');
+  el.btnRepeat = document.getElementById('btnRepeat');
+  el.btnAddSection = document.getElementById('btnAddSection');
+  el.sectionsList = document.getElementById('sectionsList');
+  el.repeatIndicator = null; // set by renderStrip()
+
+  // Initialize sections from current input
+  sections = [ makeSection('Section 1', el.literalInput.value.trim(), Infinity, el.patternSelect.value) ];
+  sectionIdx = 0;
 
   // Populate transpose dropdown
   // First option is empty (no transposition) - this is the default
@@ -1309,7 +1970,7 @@ function init() {
   // Populate progression dropdown
   const defaultProg = document.createElement('option');
   defaultProg.value = '';
-  defaultProg.textContent = '(select)';
+  defaultProg.textContent = '(select progression)';
   el.progressionSelect.appendChild(defaultProg);
 
   PROGRESSIONS.forEach(prog => {
@@ -1329,7 +1990,7 @@ function init() {
   el.btnChords.addEventListener('click', actionToggleChords);
   el.btnRandom.addEventListener('click', actionRandom);
 
-  el.bpm.addEventListener('input', e => actionSetBPM(e.target.value));
+  el.btnDouble.addEventListener('click', actionToggleDouble);
   el.bpmDisplay.addEventListener('input', e => {
     // Filter to only allow digits
     e.target.value = e.target.value.replace(/[^0-9]/g, '').slice(0, 3);
@@ -1348,24 +2009,33 @@ function init() {
   el.literalInput.addEventListener('focus', () => { if (!editMode) actionEnterEditMode(); });
   el.literalInput.addEventListener('change', rebuildFromInputs);
   el.patternSelect.addEventListener('change', e => actionPatternChange(e.target.value));
+  el.btnSimpleView.addEventListener('click', actionToggleSimpleView);
+  el.btnRepeat.addEventListener('click', actionAddRepeat);
+  el.btnAddSection.addEventListener('click', actionAddSection);
 
   document.body.addEventListener('keydown', actionKeyDown);
 
-  // Re-render motion overlay on resize
+  // Re-render motion overlay and zoom connector on resize
   window.addEventListener('resize', () => {
     renderMotionOverlay();
+    renderZoomConnector(chordIdx);
   });
 
   // Initial build
   rebuildFromInputs();
-  renderStrumPattern();
+  renderSimpleStrumPattern();
+  renderSectionsList();
+  renderZoomConnector(chordIdx);
+  el.btnPlay.focus();
 }
 
 // Boot
 init();
 </script>
 
-Key bindings:
+<div style="height: 100vh;"></div>
+<div id="helpSection" style="padding: 1vh 2vw;">
+<h3>Key bindings:</h3>
 <ul>
   <li>
     SPACE: play or stop
@@ -1430,6 +2100,7 @@ Tips:
 Errata:
 <ul>
   </ul>
+</div>
 
 </body>
 </html>
