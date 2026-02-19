@@ -6,7 +6,7 @@
 
 #import <Cocoa/Cocoa.h>
 
-@interface AppDelegate : NSObject <NSApplicationDelegate>
+@interface AppDelegate : NSObject <NSApplicationDelegate, NSTextFieldDelegate>
 @property (strong) NSWindow *window;
 @property (strong) NSTextField *label;         // general status / click feedback
 @property (strong) NSTextField *statusLabel;   // Playing / Stopped
@@ -105,11 +105,13 @@
     [self setStatus:[NSString stringWithFormat:@"Clicked: %@", title]];
 }
 
-- (void)readTextClicked:(id)sender {
+- (void)textFieldAccepted:(id)sender {
     (void)sender;
     NSString *s = [self.textField stringValue];
     if (s.length == 0) s = @"(empty)";
-    [self setStatus:[NSString stringWithFormat:@"Text: %@", s]];
+    [self.label setStringValue:s];
+    [self.textField setStringValue:@""];
+    [self.window makeFirstResponder:self.playButton];
 }
 
 - (void)menuSayHello:(id)sender {
@@ -217,16 +219,21 @@ static NSButton *MakeToggle(NSView *content, NSString *title,
     CGFloat sx = 25;
     CGFloat topY = 250;
 
-    // Momentary push buttons
+    // Momentary push buttons — NSViewMinYMargin keeps them pinned to the top
     self.playButton = MakeButton(content, @"Play",  sx+(bw+gap)*0, topY, bw, bh, self, @selector(playClicked:));
+    [self.playButton setAutoresizingMask:NSViewMinYMargin];
     self.stopButton = MakeButton(content, @"Stop",  sx+(bw+gap)*1, topY, bw, bh, self, @selector(stopClicked:));
-    MakeButton(content, @"Again", sx+(bw+gap)*2, topY, bw, bh, self, @selector(buttonClicked:));
-    MakeButton(content, @"Tap",   sx+(bw+gap)*4, topY, bw, bh, self, @selector(buttonClicked:));
+    [self.stopButton setAutoresizingMask:NSViewMinYMargin];
+    NSButton *againButton = MakeButton(content, @"Again", sx+(bw+gap)*2, topY, bw, bh, self, @selector(buttonClicked:));
+    [againButton setAutoresizingMask:NSViewMinYMargin];
+    NSButton *tapButton   = MakeButton(content, @"Tap",   sx+(bw+gap)*4, topY, bw, bh, self, @selector(buttonClicked:));
+    [tapButton setAutoresizingMask:NSViewMinYMargin];
 
     // Sound — toggle, starts ON, title flips between "Sound" and "Muted".
     // Frame is fixed so the button never resizes when the label changes.
     self.soundButton = MakeToggle(content, @"Sound", sx+(bw+gap)*3, topY, bw, bh,
                                   YES, self, @selector(soundClicked:));
+    [self.soundButton setAutoresizingMask:NSViewMinYMargin];
 
     // ── Tempo display: 3-character numeric readout between Tap and Drums ──
     CGFloat tempoX = sx + (bw+gap)*5;   // right of Tap + gap
@@ -236,15 +243,18 @@ static NSButton *MakeToggle(NSView *content, NSString *title,
     [tempoDisplay setAlignment:NSTextAlignmentCenter];
     [tempoDisplay setFont:[NSFont monospacedDigitSystemFontOfSize:13 weight:NSFontWeightRegular]];
     [tempoDisplay setStringValue:@"120"];
+    [tempoDisplay setAutoresizingMask:NSViewMinYMargin];
     [content addSubview:tempoDisplay];
 
     // Drums — toggle, starts OFF
     CGFloat drumsX = tempoX + dw + gap;
     self.drumsButton  = MakeToggle(content, @"Drums",  drumsX,        topY, bw, bh,
                                    NO,  self, @selector(drumsClicked:));
+    [self.drumsButton setAutoresizingMask:NSViewMinYMargin];
     // Chords — toggle, starts ON
     self.chordsButton = MakeToggle(content, @"Chords", drumsX+bw+gap, topY, bw, bh,
                                    YES, self, @selector(chordsClicked:));
+    [self.chordsButton setAutoresizingMask:NSViewMinYMargin];
 
     // ── Status line (middle of window) ───────────────────────────────────
     self.statusLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(0, 196, 640, 36)];
@@ -261,27 +271,17 @@ static NSButton *MakeToggle(NSView *content, NSString *title,
     [self.label setBezeled:NO];
     [self.label setDrawsBackground:NO];
     [self.label setFont:[NSFont systemFontOfSize:13]];
-    [self.label setStringValue:@"HelloWorld — click a button, use the menu, or type in the field."];
+    [self.label setStringValue:@""];
     [content addSubview:self.label];
 
-    // ── Existing demo buttons ─────────────────────────────────────────────
-    MakeButton(content, @"Button One",   20, 108, 150, 36, self, @selector(buttonClicked:));
-    MakeButton(content, @"Button Two",  190, 108, 150, 36, self, @selector(buttonClicked:));
-    MakeButton(content, @"Do Something", 360, 108, 180, 36, self, @selector(buttonClicked:));
-
-    // ── Checkbox ──────────────────────────────────────────────────────────
-    NSButton *cb = [[NSButton alloc] initWithFrame:NSMakeRect(20, 76, 260, 24)];
-    [cb setButtonType:NSButtonTypeSwitch];
-    [cb setTitle:@"Enable extra happiness"];
-    [cb setState:NSControlStateValueOn];
-    [content addSubview:cb];
-
-    // ── Text field + Read button ──────────────────────────────────────────
-    self.textField = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 34, 420, 28)];
-    [self.textField setPlaceholderString:@"Type here… (keystrokes should NOT go to Terminal)"];
+    // ── Text field — NSViewMaxYMargin+NSViewWidthSizable pins it to the bottom ──
+    self.textField = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 12, 600, 28)];
+    [self.textField setPlaceholderString:@"Type here… press Enter to accept"];
+    [self.textField setDelegate:self];
+    [self.textField setTarget:self];
+    [self.textField setAction:@selector(textFieldAccepted:)];
+    [self.textField setAutoresizingMask:NSViewWidthSizable | NSViewMaxYMargin];
     [content addSubview:self.textField];
-
-    MakeButton(content, @"Read Text", 460, 28, 160, 32, self, @selector(readTextClicked:));
 
     // ── Initialise state and sync UI ──────────────────────────────────────
     self.isPlaying     = NO;
