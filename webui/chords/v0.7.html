@@ -390,7 +390,7 @@
     <div id="sectionsList"></div>
     <div id="sectionEditor">
       <div class="sectionEditorRow">
-        <input id="literalInput" size="40" value="C: C | F | G | C">
+        <input id="literalInput" size="40" value="C: C F G C">
       </div>
       <div class="sectionEditorRow">
         <select id="progressionSelect"></select>
@@ -465,7 +465,7 @@ let editMode = false;
 let drumsOn = false;
 let chordsOn = true;
 let doubleTime = false;
-let originalKey = null;    // Key specified in input (e.g., "C" from "C: C | Am | F"), or null
+let originalKey = null;    // Key specified in input (e.g., "C" from "C: C Am F"), or null
 let originalKeyName = null; // Raw key name string from input (e.g., "Eb", "D#", "C") to detect flat/sharp preference
 let originalChords = [];   // Chords as parsed from input (before transposition)
 let chords = [];           // Chords after transposition (used for playback/display)
@@ -1370,7 +1370,7 @@ function parseProgressionFromInput() {
   }
 
   const arr = [];
-  raw.split('|').forEach(tok => {
+  raw.split(/\s+/).forEach(tok => {
     const p = parseLiteralToken(tok);
     if (p) arr.push(p);
   });
@@ -1699,8 +1699,9 @@ function renderSectionsList() {
     } else {
       progEl = document.createElement('span');
       progEl.className = 'sectionProg';
-      progEl.textContent = section.progression;
-      progEl.title = section.progression;
+      const normProg = section.progression.replace(/\s+/g, ' ');
+      progEl.textContent = normProg;
+      progEl.title = normProg;
     }
 
     // Repeat display
@@ -1845,25 +1846,25 @@ function actionAddRepeat() {
 
 // Preset chord progressions with labels
 const PROGRESSIONS = [
-  { label: "I-V-vi-IV (Don't Stop Believin')", value: 'C: C | G | Am | F' },
-  { label: "I-vi-IV-V - 50s (Stand By Me)", value: 'C: C | Am | F | G' },
-  { label: "vi-IV-I-V (With or Without You)", value: 'C: Am | F | C | G' },
-  { label: "I-IV-V-IV (La Bamba)", value: 'C: C | F | G | F' },
-  { label: "Pachelbel's Canon", value: 'C: C | G | Am | Em | F | C | F | G' },
-  { label: "ii-V-I Jazz (Sunday Morning)", value: 'C: Dm | G | C | C' },
-  { label: "I-IV-vi-V (What Makes You Beautiful)", value: 'C: C | F | Am | G' },
-  { label: "12-Bar Blues", value: 'C: C | C | C | C | F | F | C | C | G | F | C | G' },
-  { label: "House of the Rising Sun", value: 'Am: Am | C | D | F | Am | E | Am | E' },
-  { label: "Sweet Home Alabama", value: 'G: D | C | G | G' },
-  { label: "Knockin' on Heaven's Door", value: 'G: G | D | Am | Am | G | D | C | C' },
-  { label: "Country Roads", value: 'G: G | Em | C | G | G | Em | D | D' },
-  { label: "Wagon Wheel", value: 'G: G | D | Em | C | G | D | C | C' },
-  { label: "Ring of Fire", value: 'G: G | C | G | G | G | D | G | G' },
-  { label: "Hallelujah", value: 'C: C | Am | C | Am | F | G | C | G' },
-  { label: "Let It Be", value: 'C: C | G | Am | F | C | G | F | C' },
-  { label: "Someone Like You (Adele)", value: 'A: A | E | F#m | D' },
-  { label: "Rolling in the Deep", value: 'Am: Am | G | F | G' },
-  { label: "Creep (Radiohead)", value: 'G: G | B | C | Cm' },
+  { label: "I-V-vi-IV (Don't Stop Believin')", value: 'C: C G Am F' },
+  { label: "I-vi-IV-V - 50s (Stand By Me)", value: 'C: C Am F G' },
+  { label: "vi-IV-I-V (With or Without You)", value: 'C: Am F C G' },
+  { label: "I-IV-V-IV (La Bamba)", value: 'C: C F G F' },
+  { label: "Pachelbel's Canon", value: 'C: C G Am Em F C F G' },
+  { label: "ii-V-I Jazz (Sunday Morning)", value: 'C: Dm G C C' },
+  { label: "I-IV-vi-V (What Makes You Beautiful)", value: 'C: C F Am G' },
+  { label: "12-Bar Blues", value: 'C: C C C C F F C C G F C G' },
+  { label: "House of the Rising Sun", value: 'Am: Am C D F Am E Am E' },
+  { label: "Sweet Home Alabama", value: 'G: D C G G' },
+  { label: "Knockin' on Heaven's Door", value: 'G: G D Am Am G D C C' },
+  { label: "Country Roads", value: 'G: G Em C G G Em D D' },
+  { label: "Wagon Wheel", value: 'G: G D Em C G D C C' },
+  { label: "Ring of Fire", value: 'G: G C G G G D G G' },
+  { label: "Hallelujah", value: 'C: C Am C Am F G C G' },
+  { label: "Let It Be", value: 'C: C G Am F C G F C' },
+  { label: "Someone Like You (Adele)", value: 'A: A E F#m D' },
+  { label: "Rolling in the Deep", value: 'Am: Am G F G' },
+  { label: "Creep (Radiohead)", value: 'G: G B C Cm' },
 ];
 
 function actionRandom() { // pick a random progression
@@ -2120,7 +2121,7 @@ Tips:
   <li>
     <b>Key and Transposition:</b>
     <ul>
-      <li>Specify a key at the start of the progression: <code>C: C | Am | F | G</code></li>
+      <li>Specify a key at the start of the progression: <code>C: C Am F G</code></li>
       <li>Roman numerals are shown when a key is specified</li>
       <li>Use the <b>Transpose</b> dropdown to transpose to a different key</li>
     </ul>
