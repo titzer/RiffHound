@@ -212,7 +212,7 @@
   #bottom button { background: #f4f4f4; border: 1px solid #bbb; border-radius: 4px; font-size: 2.2vh; padding: 0.3em 0.8em; }
   #bottom button.toggle.on { background: #007700; color: #fff; border: 1px solid #007700; }
   input, select { font-size: 2.2vh; }
-  #literalInput.editing { outline: 3px solid #66f; background: #eef; }
+  #literalInput.editing { outline: 3px solid #66f; background: #aaf; }
   #literalInput.invalid { outline: 3px solid #f00; background: #fee; }
 
   /* Pattern selector */
@@ -293,13 +293,7 @@
 
   /* Sections panel */
   #sectionsPanel { background: #f0f0f0; border-top: 2px solid #ccc; padding: 0.5vh 1vh; }
-  .sectionsHeader {
-    display: flex; align-items: center; gap: 0.5em;
-    padding: 0.3vh 0; font-size: 2vh; font-weight: bold; color: #555;
-  }
-  .sectionsHeader button { font-size: 2vh; padding: 0.2em 0.6em; background: #f4f4f4; border: 1px solid #bbb; border-radius: 4px; cursor: pointer; }
-  .sectionsHeader button:hover { background: #e0e0e0; }
-  .sectionRow {
+.sectionRow {
     display: flex; align-items: center; gap: 0.4em;
     padding: 0.4vh 0.5vh; border-radius: 4px; cursor: pointer;
     font-size: 2vh; border: 1.5px solid transparent; margin-bottom: 2px;
@@ -327,10 +321,11 @@
   .sectionBtnDel { color: #c00; border-color: #faa; }
   .sectionBtnDel:hover { background: #fee; }
   .sectionMainRow { display: flex; align-items: center; gap: 0.4em; flex: 1; }
-  .sectionSubRow { display: flex; align-items: center; gap: 0.5em; font-size: 1.8vh; padding-top: 0.3vh; flex-wrap: wrap; }
-  .sectionSubRow select, .sectionSubRow button { font-size: 1.8vh; }
-  .sectionMainRow #literalInput { flex: 1; font-size: 1.8vh; font-family: monospace; min-width: 0; }
-  #sectionEditor { display: none; }
+  #sectionEditor { padding: 0.5vh 1vh; background: #f0f0f0; border-top: 1px solid #ccc; display: flex; flex-wrap: wrap; gap: 0.5em; align-items: center; }
+  body.chord-editing #sectionEditor { background: #ffaaaa; border-top-color: #f8b8b8; }
+  #literalInput { flex: 1; min-width: 14em; font-family: monospace; font-size: 2.2vh; }
+  .sectionProg.linked { border-radius: 3px; padding: 0 0.3em; }
+  body.chord-editing .sectionProg.linked { background: #ffaaaa; }
 
   /* BPM display in top row */
   #bpmDisplay {
@@ -383,22 +378,16 @@
   </div>
 
   <div id="sectionsPanel">
-    <div class="sectionsHeader">
-      <span>Sections</span>
-      <button id="btnAddSection">+ Add</button>
-    </div>
     <div id="sectionsList"></div>
-    <div id="sectionEditor">
-      <div class="sectionEditorRow">
-        <input id="literalInput" size="40" value="C: C F G C">
-      </div>
-      <div class="sectionEditorRow">
-        <select id="progressionSelect"></select>
-        <button id="btnRandom">Random</button>
-        <span>Transpose:</span>
-        <select id="transposeSelect"></select>
-      </div>
-    </div>
+  </div>
+
+  <div id="sectionEditor">
+    <label>Edit Chords:</label>
+    <input id="literalInput" value="C: C F G C">
+    <select id="progressionSelect"></select>
+    <button id="btnRandom">Random</button>
+    <span>Transpose:</span>
+    <select id="transposeSelect"></select>
   </div>
 
   <div id="bottom">
@@ -484,6 +473,7 @@ function makeSection(name, progression, repeats, patternName) {
 }
 let sections = [];  // initialized in init()
 let sectionIdx = 0;
+let editSectionIdx = 0; // which section the editor is showing (may differ from sectionIdx during playback)
 
 // --- DOM refs ---
 const el = {};
@@ -1404,6 +1394,28 @@ function getEffectiveKey() {
   return keyToSemi(transposeVal);
 }
 
+// Load chords for a progression string directly, without touching literalInput.
+// Used by advanceSection() during playback when user is editing.
+function applyProgressionStr(str) {
+  const saved = el.literalInput.value;
+  el.literalInput.value = str;
+  const parsed = parseProgressionFromInput();
+  el.literalInput.value = saved;
+  if (!parsed) return;
+  originalKey = parsed.key;
+  originalKeyName = parsed.keyName;
+  originalChords = parsed.chords;
+  const transposeVal = el.transposeSelect.value;
+  if (transposeVal === '' || originalKey === null) {
+    chords = originalChords.map(ch => ({ ...ch }));
+  } else {
+    const targetKey = keyToSemi(transposeVal);
+    chords = transposeChords(originalChords, originalKey, targetKey);
+  }
+  renderStrip();
+  highlightActiveCell();
+}
+
 function rebuildFromInputs() {
   const parsed = parseProgressionFromInput();
   if (!parsed) {
@@ -1412,9 +1424,9 @@ function rebuildFromInputs() {
   }
   el.literalInput.classList.remove('invalid');
 
-  // Save progression back to current section
+  // Save progression back to the section being edited
   if (sections.length > 0) {
-    sections[sectionIdx].progression = el.literalInput.value.trim();
+    sections[editSectionIdx].progression = el.literalInput.value.trim();
     if (el.sectionsList) renderSectionsList();
   }
 
@@ -1619,6 +1631,7 @@ function rescheduleAtNewTempo(oldBpm) {
 
 function loadSectionIntoDisplay(idx) {
   sectionIdx = idx;
+  editSectionIdx = idx;
   const section = sections[idx];
   el.literalInput.value = section.progression;
   rebuildFromInputs();
@@ -1692,17 +1705,11 @@ function renderSectionsList() {
     nameInput.addEventListener('click', e => e.stopPropagation());
     nameInput.addEventListener('keydown', e => e.stopPropagation());
 
-    // Active section: use the real literalInput; inactive: plain text span
-    let progEl;
-    if (isActive) {
-      progEl = el.literalInput;
-    } else {
-      progEl = document.createElement('span');
-      progEl.className = 'sectionProg';
-      const normProg = section.progression.replace(/\s+/g, ' ');
-      progEl.textContent = normProg;
-      progEl.title = normProg;
-    }
+    const progEl = document.createElement('span');
+    progEl.className = 'sectionProg' + (i === editSectionIdx ? ' linked' : '');
+    const normProg = section.progression.replace(/\s+/g, ' ');
+    progEl.textContent = normProg;
+    progEl.title = normProg;
 
     // Repeat display
     const repeatArea = document.createElement('div');
@@ -1788,18 +1795,17 @@ function renderSectionsList() {
       }
     });
 
-    mainRow.append(activeDot, nameInput, progEl, repeatArea, btnInf, btnMinus, btnPlus, btnDel);
-    row.appendChild(mainRow);
+    const btnAdd = document.createElement('button');
+    btnAdd.className = 'sectionBtn';
+    btnAdd.textContent = 'add';
+    btnAdd.title = 'Add section after';
+    btnAdd.addEventListener('click', e => {
+      e.stopPropagation();
+      actionAddSectionAfter(i);
+    });
 
-    // Active section gets a second sub-row with the progression editing controls
-    if (isActive) {
-      const subRow = document.createElement('div');
-      subRow.className = 'sectionSubRow';
-      const transpLabel = document.createElement('span');
-      transpLabel.textContent = 'Transpose:';
-      subRow.append(el.progressionSelect, el.btnRandom, transpLabel, el.transposeSelect);
-      row.appendChild(subRow);
-    }
+    mainRow.append(activeDot, nameInput, progEl, repeatArea, btnInf, btnMinus, btnPlus, btnDel, btnAdd);
+    row.appendChild(mainRow);
 
     row.addEventListener('click', () => {
       if (i !== sectionIdx) {
@@ -1820,19 +1826,31 @@ function advanceSection() {
   sectionIdx = (sectionIdx + 1) % sections.length;
   const next = sections[sectionIdx];
   next.repeatsLeft = next.repeats;
-  // Load new section (updates chords, pattern, literalInput)
-  loadSectionIntoDisplay(sectionIdx);
+  // Load chords and pattern for new section.
+  // If user is actively editing, don't clobber the editor.
+  if (editMode) {
+    applyProgressionStr(next.progression);
+    const patName = PATTERNS[next.patternName] ? next.patternName : 'standard';
+    strumPattern = PATTERNS[patName].map(s => ({...s, strings: {...s.strings}}));
+    if (simpleStrumView) renderSimpleStrumPattern(); else renderStrumPattern();
+    renderSectionsList();
+    renderRepeatIndicator();
+  } else {
+    loadSectionIntoDisplay(sectionIdx);
+    renderRepeatIndicator();
+    renderSectionsList();
+  }
 }
 
-function actionAddSection() {
+function actionAddSectionAfter(afterIdx) {
   const newSection = makeSection(
     `Section ${sections.length + 1}`,
     el.literalInput.value.trim(),
     4,
     el.patternSelect.value
   );
-  sections.push(newSection);
-  loadSectionIntoDisplay(sections.length - 1);
+  sections.splice(afterIdx + 1, 0, newSection);
+  loadSectionIntoDisplay(afterIdx + 1);
   renderRepeatIndicator();
   renderSectionsList();
 }
@@ -1894,6 +1912,7 @@ function actionEnterEditMode() { // focus progression input, disable global shor
   tapMode = false;
   el.btnTap.classList.remove('on');
   el.literalInput.classList.add('editing');
+  document.body.classList.add('chord-editing');
   el.literalInput.focus();
   el.literalInput.selectionStart = el.literalInput.value.length;
   el.literalInput.selectionEnd = el.literalInput.value.length;
@@ -1904,6 +1923,7 @@ function actionExitEditMode() { // validate, update strip, stay if invalid
   if (!ok) return; // remain in edit mode until fixed
   editMode = false;
   el.literalInput.classList.remove('editing');
+  document.body.classList.remove('chord-editing');
   el.literalInput.blur();
 }
 
@@ -1982,13 +2002,13 @@ function init() {
   el.btnSimpleView = document.getElementById('btnSimpleView');
   el.simpleStrumContainer = document.getElementById('simpleStrumContainer');
   el.btnAgain = document.getElementById('btnAgain');
-  el.btnAddSection = document.getElementById('btnAddSection');
   el.sectionsList = document.getElementById('sectionsList');
   el.repeatIndicator = null; // set by renderStrip()
 
   // Initialize sections from current input
   sections = [ makeSection('Section 1', el.literalInput.value.trim(), Infinity, el.patternSelect.value) ];
   sectionIdx = 0;
+  editSectionIdx = 0;
 
   // Populate transpose dropdown
   // First option is empty (no transposition) - this is the default
@@ -2045,11 +2065,11 @@ function init() {
   el.transposeSelect.addEventListener('change', rebuildFromInputs);
   el.progressionSelect.addEventListener('change', e => actionProgressionChange(e.target.value));
   el.literalInput.addEventListener('focus', () => { if (!editMode) actionEnterEditMode(); });
+  el.literalInput.addEventListener('blur', () => { if (editMode) actionExitEditMode(); });
   el.literalInput.addEventListener('change', rebuildFromInputs);
   el.patternSelect.addEventListener('change', e => actionPatternChange(e.target.value));
   el.btnSimpleView.addEventListener('click', actionToggleSimpleView);
   el.btnAgain.addEventListener('click', actionAddRepeat);
-  el.btnAddSection.addEventListener('click', actionAddSection);
 
   document.body.addEventListener('keydown', actionKeyDown);
 
