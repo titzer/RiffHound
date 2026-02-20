@@ -52,7 +52,7 @@ static const char* realtime_name(uint8_t b) {
 
 static void print_msg_line(int show_ts, uint64_t ts, const uint8_t *msg, int n) {
     if (show_ts) printf("\r%12" PRIu64 " : ", ts);
-    else         printf("\r             ");  // 15 chars
+    else         printf("\r                ");  // 16 chars
 
     int base_col = 15;  // timestamp width including " : "
     int cur_col  = base_col;
@@ -72,7 +72,10 @@ static void print_msg_line(int show_ts, uint64_t ts, const uint8_t *msg, int n) 
         putchar(' ');
         cur_col++;
     }
-
+    
+    // Print channel
+    printf("ch=%d ", ch);
+    
     // Print hex bytes
     for (int i = 0; i < 3; i++) {
         if (i < n) printf("%02X", msg[i]);
@@ -81,14 +84,23 @@ static void print_msg_line(int show_ts, uint64_t ts, const uint8_t *msg, int n) 
     }
 
     // Decode
+    static const char *note_names[] = {
+        "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"
+    };
+
     if (is_note) {
         uint8_t note = msg[1];
         uint8_t vel  = msg[2];
+        const char *name = note_names[note % 12];
+        int octave = (note / 12) - 1;
+
+        char full[8];
+        snprintf(full, sizeof(full), "%s%d", name, octave);
 
         if (hi == 0x90 && vel != 0)
-            printf("   NOTE_ON   ch=%u note=%u", ch, note);
+            printf("   NOTE_ON   %-4s", full);
         else
-            printf("   NOTE_OFF  ch=%u note=%u", ch, note);
+            printf("   NOTE_OFF  %-4s", full);
 
     } else if (is_cc) {
         printf("   CC ch=%u ctrl=%u val=%u", ch, msg[1], msg[2]);
