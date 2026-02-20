@@ -13,3 +13,12 @@ https://github.com/adamstark/BTrack
  
 - beat detection on microcontrollers
 https://github.com/Steppschuh/Micro-Beat-Detection
+
+- Define model in Wasm (state, actions) and make the GUI (view) outside of Wasm, controls are exported action functions
+- Define authoritative *state* in Wasm
+ - e.g. a JS/Dom button's state is determined by a pointer into Wasm memory
+ - e.g. place in track, chords and beats, strum pattern
+ - make readable from UI
+ - can only update with actions
+- GUI polls the state of buttons very cheaply as part of update
+- Guarantees that button state reflects internal Wasm state
