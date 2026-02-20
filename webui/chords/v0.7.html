@@ -217,6 +217,11 @@
 
   /* Pattern selector */
   #patternSelect { font-size: 2vh; padding: 0.3em; }
+  #bpcLabel { font-size: 2vh; margin-left: 0.5em; }
+  #bpcGroup { display: flex; gap: 0.1em; }
+  #bpcGroup label { display: flex; align-items: center; gap: 0.2em; font-size: 2vh; padding: 0.2em 0.5em; border: 1px solid #bbb; border-radius: 3px; cursor: pointer; background: #f4f4f4; }
+  #bpcGroup label:has(input:checked) { background: #007700; color: #fff; border-color: #007700; }
+  #bpcGroup input[type=radio] { display: none; }
 
   /* Simple strum view */
   #simpleStrumContainer {
@@ -374,6 +379,13 @@
         <option value="boom-chick">Boom-Chick (B-U-D-U-)</option>
         <option value="custom">Custom</option>
       </select>
+      <label id="bpcLabel">Beats/chord:</label>
+      <div id="bpcGroup">
+        <label><input type="radio" name="bpc" value="1"> 1</label>
+        <label><input type="radio" name="bpc" value="2"> 2</label>
+        <label><input type="radio" name="bpc" value="3"> 3</label>
+        <label><input type="radio" name="bpc" value="4" checked> 4</label>
+      </div>
     </div>
   </div>
 
@@ -391,7 +403,6 @@
   </div>
 
   <div id="bottom">
-    <button id="btnDouble" class="toggle">Double</button>
     <button id="btnHelp" onclick="document.getElementById('helpSection').scrollIntoView({behavior:'smooth'})">?</button>
   </div>
 
@@ -453,7 +464,7 @@ let muted = false;
 let editMode = false;
 let drumsOn = false;
 let chordsOn = true;
-let doubleTime = false;
+let beatsPerChord = 4;
 let originalKey = null;    // Key specified in input (e.g., "C" from "C: C Am F"), or null
 let originalKeyName = null; // Raw key name string from input (e.g., "Eb", "D#", "C") to detect flat/sharp preference
 let originalChords = [];   // Chords as parsed from input (before transposition)
@@ -463,7 +474,9 @@ let barStart = 0; // audio time of current bar start
 let strumPattern = PATTERNS.standard.map(s => ({...s, strings: {...s.strings}}));
 let simpleStrumView = true;
 let currentStrumIdx = -1;
-let doubleTimeAdvanced = false;
+let beatsIntoChord = 0;   // beats already used from current chord at start of current bar
+let barSections = [];     // [{ci, startFrac, endFrac}] chord sections within current bar
+let currentBarSection = 0;
 let barStartChordIdx = 0;
 const taps = [];
 
@@ -1167,16 +1180,13 @@ function renderZoomConnector(activeIdx) {
     svg.appendChild(poly);
   };
 
-  if (doubleTime) {
-    const idx = activeIdx != null ? activeIdx : chordIdx;
-    const inSecondHalf = doubleTimeAdvanced;
-    const bl = inSecondHalf ? (botLeft + botRight) / 2 : botLeft;
-    const br = inSecondHalf ? botRight : (botLeft + botRight) / 2;
-    drawTrapezoid(idx, bl, br);
-  } else {
-    const idx = activeIdx != null ? activeIdx : chordIdx;
-    drawTrapezoid(idx, botLeft, botRight);
-  }
+  const cs = barSections[currentBarSection];
+  const startFrac = cs ? cs.startFrac : 0;
+  const endFrac   = cs ? cs.endFrac   : 1;
+  const bl = botLeft + startFrac * (botRight - botLeft);
+  const br = botLeft + endFrac   * (botRight - botLeft);
+  const idx = activeIdx != null ? activeIdx : chordIdx;
+  drawTrapezoid(idx, bl, br);
 }
 
 function highlightActiveStrum(idx) {
@@ -1208,14 +1218,17 @@ function updateBeatProgress(now) {
   const durBar = (60 / bpm) * 4;
   const p = (now - barStart) / durBar; // 0..1 per bar
 
-  // In double time, visually highlight the second chord at the half-bar
-  if (doubleTime && !doubleTimeAdvanced && p >= 0.5 && chords.length > 0) {
-    doubleTimeAdvanced = true;
-    highlightChordCell((chordIdx + 1) % chords.length);
+  // Advance through mid-bar chord sections as time progresses
+  for (let s = currentBarSection + 1; s < barSections.length; s++) {
+    if (p >= barSections[s].startFrac) {
+      currentBarSection = s;
+      highlightChordCell(barSections[s].ci);
+    }
   }
 
-  // Progress bar: in double time, show progress within each half
-  const chordProgress = doubleTime ? ((p % 0.5) / 0.5) : p;
+  // Progress bar: show progress within the current chord's section
+  const cs = barSections[currentBarSection];
+  const chordProgress = cs ? (p - cs.startFrac) / (cs.endFrac - cs.startFrac) : p;
   const prog = el.strip.querySelector('.chord.active .beatProg');
   if (prog) prog.style.width = Math.max(0, Math.min(100, chordProgress * 100)) + '%';
 
@@ -1241,36 +1254,30 @@ function tieDuration(i, eighthNote, maxIdx) {
 
 function scheduleBar(t) {
   const beatDur = 60 / bpm;
-  const bar  = beatDur * 4;
   const eighthNote = beatDur / 2;
-  const halfBeats = strumPattern.length / 2;
+  const totalEighths = strumPattern.length;
+  const eighthsPerChord = beatsPerChord * 2;
+
+  barSections = [];
+  currentBarSection = 0;
 
   if (chordsOn && chords.length) {
-    if (doubleTime) {
-      // First half: current chord
-      const ch1 = chords[chordIdx];
-      const triad1 = buildTriad(48 + ch1.root, ch1.quality);
-      for (let i = 0; i < halfBeats; i++) {
-        const strumTime = t + (i * eighthNote);
-        const strumDur = tieDuration(i, eighthNote, halfBeats - 1);
-        voiceStrumBeat(triad1, strumTime, strumDur, strumPattern[i]);
-      }
-      // Second half: next chord
-      const ch2 = chords[(chordIdx + 1) % chords.length];
-      const triad2 = buildTriad(48 + ch2.root, ch2.quality);
-      for (let i = halfBeats; i < strumPattern.length; i++) {
-        const strumTime = t + (i * eighthNote);
-        const strumDur = tieDuration(i, eighthNote, strumPattern.length - 1);
-        voiceStrumBeat(triad2, strumTime, strumDur, strumPattern[i]);
-      }
-    } else {
-      const ch = chords[chordIdx];
+    let eighth = 0;
+    let chordPos = beatsIntoChord * 2; // eighths already used from current chord
+    let localAdvance = 0;
+    while (eighth < totalEighths) {
+      const count = Math.min(eighthsPerChord - chordPos, totalEighths - eighth);
+      const ci = (chordIdx + localAdvance) % chords.length;
+      barSections.push({ ci, startFrac: eighth / totalEighths, endFrac: (eighth + count) / totalEighths });
+      const ch = chords[ci];
       const triad = buildTriad(48 + ch.root, ch.quality);
-      strumPattern.forEach((strumBeat, i) => {
-        const strumTime = t + (i * eighthNote);
-        const strumDur = tieDuration(i, eighthNote, strumPattern.length - 1);
-        voiceStrumBeat(triad, strumTime, strumDur, strumBeat);
-      });
+      const sectionEnd = eighth + count - 1;
+      for (let i = eighth; i < eighth + count; i++) {
+        voiceStrumBeat(triad, t + i * eighthNote, tieDuration(i, eighthNote, sectionEnd), strumPattern[i]);
+      }
+      eighth += count;
+      chordPos = 0;
+      localAdvance++;
     }
   }
 
@@ -1294,12 +1301,21 @@ function scheduleBar(t) {
 
 function advanceBar() {
   const durBar = (60 / bpm) * 4;
-  const advance = doubleTime ? 2 : 1;
-  chordIdx = (chordIdx + advance) % chords.length;
+  // Compute how many chord advances happen in one bar
+  const eighthsPerChord = beatsPerChord * 2;
+  let pos = beatsIntoChord * 2, remaining = strumPattern.length, advances = 0;
+  while (remaining > 0) {
+    const left = eighthsPerChord - pos;
+    if (remaining >= left) { remaining -= left; pos = 0; advances++; }
+    else { pos += remaining; remaining = 0; }
+  }
+  beatsIntoChord = pos / 2;
+  chordIdx = (chordIdx + advances) % chords.length;
   barStartChordIdx = chordIdx;
   barStart += durBar;
   currentStrumIdx = -1;
-  doubleTimeAdvanced = false;
+  barSections = [];
+  currentBarSection = 0;
   if (chordIdx === 0) {
     const first = el.strip.querySelector('.chord[data-idx="0"]');
     if (first) {
@@ -1460,7 +1476,9 @@ function actionPlay() { // start transport
   chordIdx = 0;
   barStartChordIdx = 0;
   currentStrumIdx = -1;
-  doubleTimeAdvanced = false;
+  beatsIntoChord = 0;
+  barSections = [];
+  currentBarSection = 0;
   barStart = ctx.currentTime + 0.05;
   highlightActiveCell();
   scheduleBar(barStart);
@@ -1499,10 +1517,6 @@ function actionToggleChords() { // toggle chord playback
   el.btnChords.classList.toggle('on', chordsOn);
 }
 
-function actionToggleDouble() { // toggle double time (chords change every 2 beats)
-  doubleTime = !doubleTime;
-  el.btnDouble.classList.toggle('on', doubleTime);
-}
 
 function actionMuteToggle() { // toggle mute
   muted = !muted;
@@ -1578,30 +1592,17 @@ function rescheduleAtNewTempo(oldBpm) {
   const beatDur = 60 / bpm;
   const eighthNote = beatDur / 2;
   const currentEighth = Math.floor(progress * strumPattern.length);
-  const halfBeats = strumPattern.length / 2;
 
   if (chordsOn && chords.length) {
-    if (doubleTime) {
-      const ch1 = chords[chordIdx];
-      const triad1 = buildTriad(48 + ch1.root, ch1.quality);
-      const nextChordIdx = (chordIdx + 1) % chords.length;
-      const ch2 = chords[doubleTimeAdvanced ? nextChordIdx : nextChordIdx];
-      const triad2 = buildTriad(48 + ch2.root, ch2.quality);
-      for (let i = currentEighth; i < strumPattern.length; i++) {
-        const strumTime = barStart + (i * eighthNote);
-        const maxIdx = i < halfBeats ? halfBeats - 1 : strumPattern.length - 1;
-        const strumDur = tieDuration(i, eighthNote, maxIdx);
-        const triad = i < halfBeats ? triad1 : triad2;
-        voiceStrumBeat(triad, strumTime, strumDur, strumPattern[i]);
-      }
-    } else {
-      const ch = chords[chordIdx];
+    for (let i = currentEighth; i < strumPattern.length; i++) {
+      // Find which bar section this eighth falls in
+      const frac = (i + 0.5) / strumPattern.length;
+      let section = barSections[0];
+      for (const s of barSections) { if (frac >= s.startFrac) section = s; }
+      const ch = chords[section.ci];
       const triad = buildTriad(48 + ch.root, ch.quality);
-      for (let i = currentEighth; i < strumPattern.length; i++) {
-        const strumTime = barStart + (i * eighthNote);
-        const strumDur = tieDuration(i, eighthNote, strumPattern.length - 1);
-        voiceStrumBeat(triad, strumTime, strumDur, strumPattern[i]);
-      }
+      const sectionEnd = Math.round(section.endFrac * strumPattern.length) - 1;
+      voiceStrumBeat(triad, barStart + i * eighthNote, tieDuration(i, eighthNote, sectionEnd), strumPattern[i]);
     }
   }
 
@@ -1995,7 +1996,6 @@ function init() {
   el.progressionSelect = document.getElementById('progressionSelect');
   el.literalInput = document.getElementById('literalInput');
   el.bpmDisplay = document.getElementById('bpmDisplay');
-  el.btnDouble  = document.getElementById('btnDouble');
   el.strumContainer = document.getElementById('strumContainer');
   el.dynamicsContainer = document.getElementById('dynamicsContainer');
   el.patternSelect = document.getElementById('patternSelect');
@@ -2048,8 +2048,7 @@ function init() {
   el.btnChords.addEventListener('click', actionToggleChords);
   el.btnRandom.addEventListener('click', actionRandom);
 
-  el.btnDouble.addEventListener('click', actionToggleDouble);
-  el.bpmDisplay.addEventListener('input', e => {
+el.bpmDisplay.addEventListener('input', e => {
     // Filter to only allow digits
     e.target.value = e.target.value.replace(/[^0-9]/g, '').slice(0, 3);
   });
@@ -2068,6 +2067,12 @@ function init() {
   el.literalInput.addEventListener('blur', () => { if (editMode) actionExitEditMode(); });
   el.literalInput.addEventListener('change', rebuildFromInputs);
   el.patternSelect.addEventListener('change', e => actionPatternChange(e.target.value));
+  document.querySelectorAll('input[name="bpc"]').forEach(r => {
+    r.addEventListener('change', e => {
+      beatsPerChord = parseInt(e.target.value);
+      beatsIntoChord = 0; // reset phase on change
+    });
+  });
   el.btnSimpleView.addEventListener('click', actionToggleSimpleView);
   el.btnAgain.addEventListener('click', actionAddRepeat);
 
