@@ -15,8 +15,10 @@
   button.danger { background: #f4f4f4; color: #000; border: 1px solid #999; }
   button.danger.stopped { background: #770000; color: #fff; border: 1px solid #770000; }
   button.toggle { background: #f4f4f4; border: 1px solid #bbb; }
-  button.toggle.on { background: #007700; color: #fff; border: 1px solid #007700; }
-  button.mute { background: #f4f4f4; color: #000; border: 1px solid #bbb; }
+  button.toggle.on { background: #8389ff; color: #fff; border: 1px solid #8389ff; }
+  body.playing button.toggle.on { background: #007700; color: #fff; border: 1px solid #007700; }
+  button.mute { background: #8389ff; color: #fff; border: 1px solid #8389ff; }
+  body.playing button.mute:not(.active) { background: #007700; color: #fff; border: 1px solid #007700; }
   button.mute.active { background: #ffcc00; color: #000; border: 1px solid #ffcc00; }
   button.flash { background: #4CAF50; color: #fff; }
 
@@ -27,6 +29,9 @@
   .chord .literal .acc { margin-left: -0.1em; letter-spacing: -0.1em; }
   .chord .roman { font-size: 3.5vw; color: #333; line-height: 1.2; }
   .chord.active { background: #8389ff; }
+  body.playing .chord.active { background: #007700; }
+  body.playing .chord.active .literal { color: #fff; }
+  body.playing .chord.active .roman { color: rgba(255,255,255,0.75); }
   .beatProg { position: absolute; left: 0; top: 0; bottom: 0; width: 0%; background: rgba(0,0,0,0.07); pointer-events: none; }
   .loopFlash { animation: flash 0.35s ease-in-out 1; }
   @keyframes flash { 0%{box-shadow: inset 0 0 0 6px #ff0;} 100%{box-shadow: inset 0 0 0 0px #ff0;} }
@@ -107,6 +112,7 @@
   /* Tie indicator in complex view */
   .strumBeat.is-tie { background: #f0f0f0; }
   .strumBeat.is-tie.active { background: #d0d8ff; }
+  body.playing .strumBeat.is-tie.active { background: #c0eac0; }
   .strumTie {
     position: absolute;
     top: 3.5vh;
@@ -160,6 +166,7 @@
   /* Beat background - subtle based on having active strings */
   .strumBeat { background: #fafafa; }
   .strumBeat.active { background: #d0d8ff; }
+  body.playing .strumBeat.active { background: #c0eac0; }
 
   /* Dynamics bar container */
   #dynamicsContainer {
@@ -227,6 +234,8 @@
   #simpleStrumContainer {
     display: flex;
     gap: 0;
+    flex: 1 1 0;
+    min-width: 0;
     height: 6vh;
     background: #fff;
     border: 2px solid #999;
@@ -249,6 +258,7 @@
   .simpleStrumBeat:last-child { border-right: none; }
   .simpleStrumBeat:hover { background: #f0f0ff; }
   .simpleStrumBeat.active { background: #d0d8ff; }
+  body.playing .simpleStrumBeat.active { background: #c0eac0; }
   .simpleStrumBeat .simpleBeatNum {
     font-size: 2vh;
     font-weight: 900;
@@ -266,8 +276,7 @@
   .simpleStrumBeat[data-simple="rest"] { color: #ccc; }
   .simpleStrumBeat[data-simple="tie"] { color: #888; font-size: 4vh; -webkit-text-stroke: 0; }
 
-  #btnSimpleView { background: #f4f4f4; border: 1px solid #bbb; border-radius: 4px; font-size: 2.2vh; padding: 0.3em 0.8em; }
-  #btnSimpleView.on { background: #007700; color: #fff; border: 1px solid #007700; }
+  #rhythmLabel { font-weight: bold; font-size: 2.2vh; cursor: pointer; user-select: none; white-space: nowrap; }
 
   /* Repeat indicator (right side of chord strip) */
   #repeatIndicator {
@@ -304,12 +313,14 @@
     font-size: 2vh; border: 1.5px solid transparent; margin-bottom: 2px;
   }
   .sectionRow.active { background: #e0e4ff; border-color: #8389ff; flex-direction: column; align-items: stretch; }
+  body.playing .sectionRow.active { background: #d0eed0; border-color: #007700; }
   .sectionRow:hover:not(.active) { background: #e8e8e8; }
   .sectionActiveDot {
     width: 1vh; height: 1vh; border-radius: 50%;
     background: #ccc; border: 1.5px solid #999; flex-shrink: 0;
   }
   .sectionRow.active .sectionActiveDot { background: #8389ff; border-color: #8389ff; }
+  body.playing .sectionRow.active .sectionActiveDot { background: #007700; border-color: #007700; }
   .sectionNameInput {
     font-size: 2vh; border: 1px solid transparent; background: transparent;
     border-radius: 3px; padding: 0 0.3em; width: 8em; font-weight: bold;
@@ -336,7 +347,7 @@
   #cueStrip {
     display: block;
     width: 100%;
-    height: 6.9vh;
+    height: 8vh;
     border-bottom: 1px solid #ddd;
     background: #f4f4f8;
   }
@@ -376,10 +387,9 @@
   <div id="strumSection">
     <div id="strumContainer" style="display:none;"></div>
     <div id="dynamicsContainer" style="display:none;"></div>
-    <div id="simpleStrumContainer"></div>
     <div id="strumHeader">
-      <label>Strum Pattern:</label>
-      <button id="btnSimpleView" class="toggle on">Simple</button>
+      <label id="rhythmLabel">Rhythm ▸</label>
+      <div id="simpleStrumContainer"></div>
       <select id="patternSelect">
         <option value="standard" selected>Standard (D⌒DUDU)</option>
         <option value="quarters">Quarter Notes (D⌒D⌒D⌒D⌒)</option>
@@ -482,6 +492,7 @@ let originalChords = [];   // Chords as parsed from input (before transposition)
 let chords = [];           // Chords after transposition (used for playback/display)
 let chordIdx = 0;
 let barStart = 0; // audio time of current bar start
+let cueNow = 0;   // frozen audio time for cue strip (live when playing, frozen when stopped)
 let strumPattern = PATTERNS.standard.map(s => ({...s, strings: {...s.strings}}));
 let simpleStrumView = true;
 let currentStrumIdx = -1;
@@ -494,7 +505,7 @@ const taps = [];
 
 // --- Song structure ---
 function makeSection(name, progression, repeats, patternName) {
-  return { name, progression, repeats, repeatsLeft: repeats, patternName: patternName || 'standard' };
+  return { name, progression, repeats, repeatsLeft: repeats, patternName: patternName || 'standard', customBeats: null };
 }
 let sections = [];  // initialized in init()
 let sectionIdx = 0;
@@ -782,7 +793,7 @@ function renderStrumPattern() {
     if (isTie) {
       beatEl.classList.add('is-tie');
       beatEl.innerHTML = `
-        <div class="beatNum">${Math.floor(i/2) + 1}${i % 2 === 0 ? '' : '&'}</div>
+        <div class="beatNum">${i % 2 === 0 ? Math.floor(i/2) + 1 : ''}</div>
         <div class="strumTie">⌒</div>
         <div class="strumIndicator"></div>
       `;
@@ -795,7 +806,7 @@ function renderStrumPattern() {
       });
     } else {
       beatEl.innerHTML = `
-        <div class="beatNum">${Math.floor(i/2) + 1}${i % 2 === 0 ? '' : '&'}</div>
+        <div class="beatNum">${i % 2 === 0 ? Math.floor(i/2) + 1 : ''}</div>
         <div class="strumDirection" data-dir="${beat.direction}">${DIRECTION_ICONS[beat.direction]}</div>
         <div class="strumMute ${beat.muted ? 'active' : ''}" title="Mute">M</div>
         <div class="strumIndicator"></div>
@@ -1109,7 +1120,7 @@ function renderSimpleStrumPattern() {
     cell.className = 'simpleStrumBeat';
     cell.dataset.idx = i;
     cell.dataset.simple = state;
-    cell.innerHTML = `<div class="simpleBeatNum">${Math.floor(i/2) + 1}${i % 2 === 0 ? '' : '&'}</div>${SIMPLE_DISPLAY[state]}`;
+    cell.innerHTML = `<div class="simpleBeatNum">${i % 2 === 0 ? Math.floor(i/2) + 1 : ''}</div>${SIMPLE_DISPLAY[state]}`;
 
     cell.addEventListener('click', () => {
       const curState = getSimpleState(strumPattern[i]);
@@ -1125,7 +1136,7 @@ function renderSimpleStrumPattern() {
 
 function actionToggleSimpleView() {
   simpleStrumView = !simpleStrumView;
-  el.btnSimpleView.classList.toggle('on', simpleStrumView);
+  el.rhythmLabel.textContent = simpleStrumView ? 'Rhythm ▸' : 'Rhythm ▾';
   if (simpleStrumView) {
     el.strumContainer.style.display = 'none';
     el.dynamicsContainer.style.display = 'none';
@@ -1186,8 +1197,9 @@ function renderZoomConnector(activeIdx) {
 
     const poly = document.createElementNS('http://www.w3.org/2000/svg', 'polygon');
     poly.setAttribute('points', `${topLeft},0 ${topRight},0 ${br},${svgH} ${bl},${svgH}`);
-    poly.setAttribute('fill', 'rgba(131,137,255,0.15)');
-    poly.setAttribute('stroke', 'rgba(131,137,255,0.4)');
+    const zc = playing ? '0,119,0' : '131,137,255';
+    poly.setAttribute('fill', `rgba(${zc},0.15)`);
+    poly.setAttribute('stroke', `rgba(${zc},0.4)`);
     poly.setAttribute('stroke-width', '1');
     svg.appendChild(poly);
   };
@@ -1365,6 +1377,7 @@ function tickRAF() {
   } else {
     updateBeatProgress(now);
   }
+  cueNow = now;
   drawCueStrip();
   requestAnimationFrame(tickRAF);
 }
@@ -1501,6 +1514,7 @@ function actionPlay() { // start transport
   tickRAF();
   el.btnPlay.classList.add('playing');
   el.btnStop.classList.remove('stopped');
+  document.body.classList.add('playing');
   updateMuteButton();
 }
 
@@ -1520,6 +1534,7 @@ function actionStop() { // stop transport
 
   el.btnPlay.classList.remove('playing');
   el.btnStop.classList.add('stopped');
+  document.body.classList.remove('playing');
   updateMuteButton();
   drawCueStrip();
 }
@@ -1546,11 +1561,7 @@ function actionMuteToggle() { // toggle mute
 }
 
 function updateMuteButton() {
-  if (muted && playing) {
-    el.btnMute.classList.add('active');
-  } else {
-    el.btnMute.classList.remove('active');
-  }
+  el.btnMute.classList.toggle('active', muted);
 
   // Update icon based on muted state
   el.btnMute.textContent = muted ? '🔇 Muted' : '🔊 Sound';
@@ -1648,14 +1659,23 @@ function rescheduleAtNewTempo(oldBpm) {
 // =========================
 
 function loadSectionIntoDisplay(idx) {
+  // Snapshot current pattern into the section we're leaving
+  if (sections[editSectionIdx]) {
+    sections[editSectionIdx].customBeats = strumPattern.map(b => ({...b, strings: {...b.strings}}));
+  }
   sectionIdx = idx;
   editSectionIdx = idx;
   const section = sections[idx];
   el.literalInput.value = section.progression;
   rebuildFromInputs();
-  const patName = PATTERNS[section.patternName] ? section.patternName : 'standard';
-  strumPattern = PATTERNS[patName].map(s => ({...s, strings: {...s.strings}}));
-  el.patternSelect.value = patName;
+  if (section.customBeats) {
+    strumPattern = section.customBeats.map(b => ({...b, strings: {...b.strings}}));
+    el.patternSelect.value = section.patternName;
+  } else {
+    const patName = PATTERNS[section.patternName] ? section.patternName : 'standard';
+    strumPattern = PATTERNS[patName].map(s => ({...s, strings: {...s.strings}}));
+    el.patternSelect.value = patName;
+  }
   if (simpleStrumView) renderSimpleStrumPattern();
   else renderStrumPattern();
 }
@@ -1847,9 +1867,20 @@ function advanceSection() {
   // Load chords and pattern for new section.
   // If user is actively editing, don't clobber the editor.
   if (editMode) {
+    // Save the pattern being left, then restore the next section's saved pattern
+    if (sections[editSectionIdx]) {
+      sections[editSectionIdx].customBeats = strumPattern.map(b => ({...b, strings: {...b.strings}}));
+    }
+    editSectionIdx = sectionIdx;
     applyProgressionStr(next.progression);
-    const patName = PATTERNS[next.patternName] ? next.patternName : 'standard';
-    strumPattern = PATTERNS[patName].map(s => ({...s, strings: {...s.strings}}));
+    if (next.customBeats) {
+      strumPattern = next.customBeats.map(b => ({...b, strings: {...b.strings}}));
+      el.patternSelect.value = next.patternName;
+    } else {
+      const patName = PATTERNS[next.patternName] ? next.patternName : 'standard';
+      strumPattern = PATTERNS[patName].map(s => ({...s, strings: {...s.strings}}));
+      el.patternSelect.value = patName;
+    }
     if (simpleStrumView) renderSimpleStrumPattern(); else renderStrumPattern();
     renderSectionsList();
     renderRepeatIndicator();
@@ -1919,7 +1950,10 @@ function actionProgressionChange(value) {
 function actionPatternChange(patternName) {
   if (PATTERNS[patternName]) {
     strumPattern = PATTERNS[patternName].map(s => ({...s, strings: {...s.strings}}));
-    if (sections.length > 0) sections[sectionIdx].patternName = patternName;
+    if (sections.length > 0) {
+      sections[sectionIdx].patternName = patternName;
+      sections[sectionIdx].customBeats = null; // preset selection replaces any custom edits
+    }
     if (simpleStrumView) renderSimpleStrumPattern();
     else renderStrumPattern();
   }
@@ -2061,14 +2095,14 @@ function generateCueEvents(windowStart, windowEnd) {
     }
     prevCi = sect.ci;
 
-    // Strum events within the window (skip ties and rests)
+    // Strum events within the window (skip rests only)
     for (let i = sect.startE; i < sect.endE; i++) {
       const t = sect.barT + i * eighthNote;
       if (t < windowStart || t > windowEnd) continue;
       const beat = strumPattern[i];
-      if (beat.tie) continue;
-      if (!beat.strings.bass && !beat.strings.mid && !beat.strings.upper) continue;
-      events.push({ t, kind: 'strum', dir: beat.direction, muted: beat.muted });
+      const state = getSimpleState(beat);
+      if (state === 'rest') continue;
+      events.push({ t, kind: 'strum', state });
     }
   }
   return events;
@@ -2117,22 +2151,7 @@ function drawCueStrip() {
 
   const nowX = Wl * 0.25; // "now" marker position
 
-  if (!playing) {
-    // Show dimmed placeholder
-    ctx2d.fillStyle = 'rgba(0,0,0,0.04)';
-    ctx2d.fillRect(0, 0, Wl, Hl);
-    // Draw the now-marker line even when stopped
-    ctx2d.strokeStyle = 'rgba(131,137,255,0.35)';
-    ctx2d.lineWidth = 2;
-    ctx2d.beginPath();
-    ctx2d.moveTo(nowX, 0);
-    ctx2d.lineTo(nowX, Hl);
-    ctx2d.stroke();
-    ctx2d.restore();
-    return;
-  }
-
-  const now = ctx.currentTime;
+  const now = cueNow;
   const beatDur = 60 / bpm;
   const barDur = beatDur * 4;
 
@@ -2174,9 +2193,17 @@ function drawCueStrip() {
   const chordFontSize = Math.round(Hl * 0.82);
   const strumFontSize = Math.round(Hl * 0.52);
   const chordCy = Hl * 0.5;  // vertically centered
-  const strumCy  = Hl * 0.68;
+  const strumCy  = Hl * 0.5;
 
-  // Draw strum arrows first (chord pills will overlay them at chord-change moments)
+  // Strum icon lookup: state -> { icon, fill, stroke, useStroke }
+  const strumStyle = {
+    down: { icon: '↓', fill: '#0044aa', stroke: '#fff', useStroke: true },
+    up:   { icon: '↑', fill: '#cc5500', stroke: '#fff', useStroke: true },
+    x:    { icon: '✕', fill: '#cc0000', stroke: '#fff', useStroke: true },
+    tie:  { icon: '⌒', fill: '#888888', stroke: null,   useStroke: false },
+  };
+
+  // Draw strum arrows first (chord rects will overlay them at chord-change moments)
   ctx2d.font = `bold ${strumFontSize}px sans-serif`;
   ctx2d.textAlign = 'center';
   ctx2d.textBaseline = 'middle';
@@ -2184,9 +2211,16 @@ function drawCueStrip() {
     if (ev.kind !== 'strum') continue;
     const x = timeToX(ev.t);
     if (x < -30 || x > Wl + 30) continue;
+    const st = strumStyle[ev.state];
+    if (!st) continue;
     ctx2d.globalAlpha = x < nowX ? 0.35 : 1.0;
-    ctx2d.fillStyle = ev.dir === 'down' ? '#0044aa' : '#cc5500';
-    ctx2d.fillText(ev.dir === 'down' ? '↓' : '↑', x, strumCy);
+    if (st.useStroke) {
+      ctx2d.lineWidth = Math.max(2, strumFontSize * 0.12);
+      ctx2d.strokeStyle = st.stroke;
+      ctx2d.strokeText(st.icon, x, strumCy);
+    }
+    ctx2d.fillStyle = st.fill;
+    ctx2d.fillText(st.icon, x, strumCy);
   }
   ctx2d.globalAlpha = 1.0;
 
@@ -2257,7 +2291,7 @@ function init() {
   el.strumContainer = document.getElementById('strumContainer');
   el.dynamicsContainer = document.getElementById('dynamicsContainer');
   el.patternSelect = document.getElementById('patternSelect');
-  el.btnSimpleView = document.getElementById('btnSimpleView');
+  el.rhythmLabel = document.getElementById('rhythmLabel');
   el.simpleStrumContainer = document.getElementById('simpleStrumContainer');
   el.btnAgain = document.getElementById('btnAgain');
   el.sectionsList = document.getElementById('sectionsList');
@@ -2332,7 +2366,7 @@ el.bpmDisplay.addEventListener('input', e => {
       beatsIntoChord = 0; // reset phase on change
     });
   });
-  el.btnSimpleView.addEventListener('click', actionToggleSimpleView);
+  el.rhythmLabel.addEventListener('click', actionToggleSimpleView);
   el.btnAgain.addEventListener('click', actionAddRepeat);
 
   document.body.addEventListener('keydown', actionKeyDown);
