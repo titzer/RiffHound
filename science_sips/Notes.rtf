@@ -74,6 +74,42 @@ Gear checklist\
 \
 RAAGA - https://raaga.riteshkr.com/\
 \
+skills (versus techniques):\
+- precisely matching a constant beat\
+- counting notes\
+- quick chord changes\
+- trills\
+- triplets\
+- strumming patterns\
+- riff repetition\
+- ear training\
+- sight reading\
+- tab reading\
+- riff creation\
+- chord progressions\
+- alternate picking\
+- sweep picking\
+\
+Separate of UI from internal state\
+- wasm module exports a small range of memory (100s of bytes)\
+  - e.g. button state might be 1 byte, with bits (enabled/disabled, highlighted, styling class)\
+  - some bytes might be handles to buffers of bytes or strings\
+- wasm module exports functions for user actions\
+- wasm module exports functions for inputs\
+  - transport time steps, beats\
+  - midi inputs\
+  - audio input\
+- map bytes within the UI snapshot to UI elements\
+- UI takes snapshots of bytes and compares\
+- map byte to UI element, restyle elements that had any bytes change\
+- asynchronous update of UI state by wasm module requires atomic snapshot\
+  - maybe handshake to double-buffer\
+- wasm module "outputs": control of devices\
+  - schedule timer callbacks\
+  - Mute: enable / disable audio out\
+  - write audio samples\
+  - send MIDI messages\
+\
 \
 \
 }

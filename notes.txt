@@ -21,4 +21,11 @@ https://github.com/Steppschuh/Micro-Beat-Detection
  - make readable from UI
  - can only update with actions
 - GUI polls the state of buttons very cheaply as part of update
+  - make a copy of a small range of bytes, compare for delta
 - Guarantees that button state reflects internal Wasm state
+
+- Chord buddy features
+  - Load song: multiple sections, strum patterns
+  - Cue strip:
+    - animated bouncing ball at about 1/4th from left
+    - (only important) changes scroll in from right
