@@ -143,8 +143,8 @@
     user-select: none;
   }
   .strumDirection:hover { background: rgba(0,0,0,0.1); }
-  .strumDirection[data-dir="down"] { color: #0044aa; -webkit-text-stroke: 5px #0044aa; paint-order: stroke fill; }
-  .strumDirection[data-dir="up"] { color: #cc5500; -webkit-text-stroke: 5px #cc5500; paint-order: stroke fill; }
+  .strumDirection[data-dir="down"] { color: #0044aa; -webkit-text-stroke: 1.5px #0044aa; paint-order: stroke fill; }
+  .strumDirection[data-dir="up"] { color: #cc5500; -webkit-text-stroke: 1.5px #cc5500; paint-order: stroke fill; }
 
   /* Mute toggle */
   .strumMute {
@@ -161,7 +161,7 @@
   }
   .strumMute:hover { background: rgba(0,0,0,0.1); }
   .strumMute.active { color: #c00; background: rgba(255,0,0,0.1); }
-  .strumBeat .beatNum { font-size: 1.8vh; font-weight: bold; color: #666; position: absolute; top: 2px; left: 50%; transform: translateX(-50%); }
+  .strumBeat .beatNum { font-size: 1.8vh; font-weight: bold; color: #666; position: absolute; bottom: 2px; left: 3px; }
 
   /* Beat background - subtle based on having active strings */
   .strumBeat { background: #fafafa; }
@@ -260,21 +260,20 @@
   .simpleStrumBeat.active { background: #d0d8ff; }
   body.playing .simpleStrumBeat.active { background: #c0eac0; }
   .simpleStrumBeat .simpleBeatNum {
-    font-size: 2vh;
-    font-weight: 900;
+    font-size: 1.8vh;
+    font-weight: bold;
     color: #666;
     position: absolute;
-    top: 1px;
-    left: 50%;
-    transform: translateX(-50%);
+    bottom: 2px;
+    left: 3px;
     -webkit-text-stroke: 0;
   }
-  .simpleStrumBeat { padding-top: calc(2vh + 5px); }
-  .simpleStrumBeat[data-simple="down"] { color: #0044aa; -webkit-text-stroke: 5px #0044aa; paint-order: stroke fill; }
-  .simpleStrumBeat[data-simple="up"] { color: #cc5500; -webkit-text-stroke: 5px #cc5500; paint-order: stroke fill; }
-  .simpleStrumBeat[data-simple="x"] { color: #c00; -webkit-text-stroke: 3px #c00; paint-order: stroke fill; }
+  .simpleStrumBeat { padding-top: 0; }
+  .simpleStrumBeat[data-simple="down"] { color: #0044aa; -webkit-text-stroke: 1.5px #0044aa; paint-order: stroke fill; }
+  .simpleStrumBeat[data-simple="up"] { color: #cc5500; -webkit-text-stroke: 1.5px #cc5500; paint-order: stroke fill; }
+  .simpleStrumBeat[data-simple="x"] { color: #c00; -webkit-text-stroke: 1.5px #c00; paint-order: stroke fill; }
   .simpleStrumBeat[data-simple="rest"] { color: #ccc; }
-  .simpleStrumBeat[data-simple="tie"] { color: #888; font-size: 4vh; -webkit-text-stroke: 0; }
+  .simpleStrumBeat[data-simple="tie"] { color: #888; font-size: 4vh; }
 
   #rhythmLabel { font-weight: bold; font-size: 2.2vh; cursor: pointer; user-select: none; white-space: nowrap; }
 
@@ -1276,32 +1275,39 @@ function tieDuration(i, eighthNote, maxIdx) {
   return eighthNote * count * 0.95;
 }
 
+// Build barSections from current bar-start state (chordIdx, beatsIntoChord, beatsPerChord).
+// Always called unconditionally so barSections is valid even in metronome mode.
+function buildBarSections() {
+  barSections = [];
+  currentBarSection = 0;
+  if (!chords.length) return;
+  const totalEighths = strumPattern.length;
+  const eighthsPerChord = beatsPerChord * 2;
+  let eighth = 0, chordPos = beatsIntoChord * 2, localAdvance = 0;
+  while (eighth < totalEighths) {
+    const count = Math.min(eighthsPerChord - chordPos, totalEighths - eighth);
+    const ci = (chordIdx + localAdvance) % chords.length;
+    barSections.push({ ci, startFrac: eighth / totalEighths, endFrac: (eighth + count) / totalEighths });
+    eighth += count; chordPos = 0; localAdvance++;
+  }
+}
+
 function scheduleBar(t) {
   const beatDur = 60 / bpm;
   const eighthNote = beatDur / 2;
-  const totalEighths = strumPattern.length;
-  const eighthsPerChord = beatsPerChord * 2;
 
-  barSections = [];
-  currentBarSection = 0;
+  buildBarSections();
 
   if (chordsOn && chords.length) {
-    let eighth = 0;
-    let chordPos = beatsIntoChord * 2; // eighths already used from current chord
-    let localAdvance = 0;
-    while (eighth < totalEighths) {
-      const count = Math.min(eighthsPerChord - chordPos, totalEighths - eighth);
-      const ci = (chordIdx + localAdvance) % chords.length;
-      barSections.push({ ci, startFrac: eighth / totalEighths, endFrac: (eighth + count) / totalEighths });
-      const ch = chords[ci];
+    for (const section of barSections) {
+      const ch = chords[section.ci];
       const triad = buildTriad(48 + ch.root, ch.quality);
-      const sectionEnd = eighth + count - 1;
-      for (let i = eighth; i < eighth + count; i++) {
+      const startEighth = Math.round(section.startFrac * strumPattern.length);
+      const endEighth   = Math.round(section.endFrac   * strumPattern.length);
+      const sectionEnd  = endEighth - 1;
+      for (let i = startEighth; i < endEighth; i++) {
         voiceStrumBeat(triad, t + i * eighthNote, tieDuration(i, eighthNote, sectionEnd), strumPattern[i]);
       }
-      eighth += count;
-      chordPos = 0;
-      localAdvance++;
     }
   }
 
@@ -1536,17 +1542,20 @@ function actionStop() { // stop transport
   el.btnStop.classList.add('stopped');
   document.body.classList.remove('playing');
   updateMuteButton();
+  highlightActiveCell();
   drawCueStrip();
 }
 
 function actionToggleDrums() { // toggle drums
   drumsOn = !drumsOn;
   el.btnDrums.classList.toggle('on', drumsOn);
+  rescheduleCurrentBar();
 }
 
 function actionToggleChords() { // toggle chord playback
   chordsOn = !chordsOn;
   el.btnChords.classList.toggle('on', chordsOn);
+  rescheduleCurrentBar();
 }
 
 
@@ -1599,8 +1608,9 @@ function actionSetBPM(val) { // text input or keyboard changed
   }
 }
 
-function rescheduleAtNewTempo(oldBpm) {
-  // Clear currently scheduled sounds
+function rescheduleCurrentBar() {
+  if (!playing) return;
+  // Cancel all scheduled sounds by recreating gain nodes
   chordsGain.disconnect();
   drumsGain.disconnect();
   metroGain.disconnect();
@@ -1608,22 +1618,19 @@ function rescheduleAtNewTempo(oldBpm) {
   drumsGain = ctx.createGain(); drumsGain.connect(master);
   metroGain = ctx.createGain(); metroGain.connect(master);
 
-  // Preserve current position when changing tempo
+  // Schedule remaining portion of current bar from now
   const now = ctx.currentTime;
-  const oldDur = (60 / oldBpm) * 4;
-  const elapsed = now - barStart;
-  const progress = Math.min((elapsed / oldDur) % 1, 0.99);
-  const newDur = (60 / bpm) * 4;
-  barStart = now - (progress * newDur);
-
-  // Only schedule remaining portion of the bar from now
   const beatDur = 60 / bpm;
   const eighthNote = beatDur / 2;
-  const currentEighth = Math.floor(progress * strumPattern.length);
+  const durBar = beatDur * 4;
+  const progress = Math.min((now - barStart) / durBar, 0.99);
+  const currentEighth = Math.max(0, Math.floor(progress * strumPattern.length));
+
+  // Rebuild barSections — may be empty if we were in metronome mode
+  buildBarSections();
 
   if (chordsOn && chords.length) {
     for (let i = currentEighth; i < strumPattern.length; i++) {
-      // Find which bar section this eighth falls in
       const frac = (i + 0.5) / strumPattern.length;
       let section = barSections[0];
       for (const s of barSections) { if (frac >= s.startFrac) section = s; }
@@ -1652,6 +1659,15 @@ function rescheduleAtNewTempo(oldBpm) {
       voiceMetro(bt, b === 0);
     }
   }
+}
+
+function rescheduleAtNewTempo(oldBpm) {
+  // Adjust barStart to preserve position within the bar at new tempo
+  const now = ctx.currentTime;
+  const oldDur = (60 / oldBpm) * 4;
+  const progress = Math.min((now - barStart) / oldDur % 1, 0.99);
+  barStart = now - (progress * (60 / bpm) * 4);
+  rescheduleCurrentBar();
 }
 
 // =========================
@@ -2195,33 +2211,15 @@ function drawCueStrip() {
   const chordCy = Hl * 0.5;  // vertically centered
   const strumCy  = Hl * 0.5;
 
-  // Strum icon lookup: state -> { icon, fill, stroke, useStroke }
+  // Strum icon lookup: state -> { icon, fill, strokeW }
+  // strokeW=1 adds a thin same-color stroke before fill, slightly fattening the glyph.
   const strumStyle = {
-    down: { icon: '↓', fill: '#0044aa', stroke: '#fff', useStroke: true },
-    up:   { icon: '↑', fill: '#cc5500', stroke: '#fff', useStroke: true },
-    x:    { icon: '✕', fill: '#cc0000', stroke: '#fff', useStroke: true },
-    tie:  { icon: '⌒', fill: '#888888', stroke: null,   useStroke: false },
+    down: { icon: '↓', fill: '#0044aa', strokeW: 1 },
+    up:   { icon: '↑', fill: '#cc5500', strokeW: 1 },
+    x:    { icon: '✕', fill: '#cc0000', strokeW: 1 },
+    tie:  { icon: '⌒', fill: '#888888', strokeW: 0 },
   };
 
-  // Draw strum arrows first (chord rects will overlay them at chord-change moments)
-  ctx2d.font = `bold ${strumFontSize}px sans-serif`;
-  ctx2d.textAlign = 'center';
-  ctx2d.textBaseline = 'middle';
-  for (const ev of events) {
-    if (ev.kind !== 'strum') continue;
-    const x = timeToX(ev.t);
-    if (x < -30 || x > Wl + 30) continue;
-    const st = strumStyle[ev.state];
-    if (!st) continue;
-    ctx2d.globalAlpha = x < nowX ? 0.35 : 1.0;
-    if (st.useStroke) {
-      ctx2d.lineWidth = Math.max(2, strumFontSize * 0.12);
-      ctx2d.strokeStyle = st.stroke;
-      ctx2d.strokeText(st.icon, x, strumCy);
-    }
-    ctx2d.fillStyle = st.fill;
-    ctx2d.fillText(st.icon, x, strumCy);
-  }
   ctx2d.globalAlpha = 1.0;
 
   // Draw chord change labels as full-height rectangles, 1 beat wide
@@ -2248,6 +2246,26 @@ function drawCueStrip() {
     ctx2d.fillStyle = '#fff';
     ctx2d.fillText(name, x + Math.round(Hl * 0.06), chordCy);
     ctx2d.globalAlpha = 1.0;
+  }
+
+  // Draw strum arrows first (chord rects will overlay them at chord-change moments)
+  ctx2d.font = `bold ${strumFontSize}px sans-serif`;
+  ctx2d.textAlign = 'center';
+  ctx2d.textBaseline = 'middle';
+  ctx2d.lineWidth = 1.5;
+  for (const ev of events) {
+    if (ev.kind !== 'strum') continue;
+    const x = timeToX(ev.t);
+    if (x < -30 || x > Wl + 30) continue;
+    const st = strumStyle[ev.state];
+    if (!st) continue;
+    ctx2d.globalAlpha = x < nowX ? 0.35 : 1.0;
+    ctx2d.fillStyle = st.fill;
+    if (st.strokeW) {
+      ctx2d.strokeStyle = st.fill;
+      ctx2d.strokeText(st.icon, x, strumCy);
+    }
+    ctx2d.fillText(st.icon, x, strumCy);
   }
 
   // "Now" playhead line
