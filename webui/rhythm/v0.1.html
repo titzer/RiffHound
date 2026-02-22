@@ -1,0 +1,816 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>RiffHound Beat Follower</title>
+<style>
+  body { font-family: sans-serif; background: #fff; color: #000; margin: 0; }
+  #top { display: flex; flex-wrap: nowrap; gap: 1vh; padding: 1vh; background: #eee; align-items: stretch; }
+  #top button { flex: 1 1 0; font-size: 3.2vh; padding: 1.2vh 1vw; }
+  button { cursor: pointer; border: 1px solid #bbb; }
+
+  /* Top row buttons: blue by default, green when playing */
+  #top button { background: #8389ff; color: #fff; border: 1px solid #8389ff; }
+  body.playing #top button { background: #007700; color: #fff; border: 1px solid #007700; }
+
+  /* Play: green when not playing, neutral when playing */
+  #top #btnPlay { background: #007700; color: #fff; border: 1px solid #007700; }
+  body.playing #top #btnPlay { background: #f4f4f4; color: #000; border: 1px solid #bbb; }
+
+  /* Stop: neutral when stopped, red when playing */
+  #top #btnStop { background: #f4f4f4; color: #000; border: 1px solid #bbb; }
+  body.playing #top #btnStop { background: #770000; color: #fff; border: 1px solid #770000; }
+
+  /* Pause: yellow when paused */
+  #top #btnPause.paused { background: #ffcc00; color: #000; border: 1px solid #ccaa00; }
+  body.playing #top #btnPause.paused { background: #ffcc00; color: #000; border: 1px solid #ccaa00; }
+
+  /* Mute button active: yellow */
+  #top button.mute.active { background: #ffcc00; color: #000; border: 1px solid #ffcc00; }
+  body.playing #top button.mute.active { background: #ffcc00; color: #000; border: 1px solid #ffcc00; }
+
+  /* Neutral buttons */
+  #top #btnTap, #top #btnPause { background: #f4f4f4; color: #000; border: 1px solid #bbb; }
+  body.playing #top #btnTap, body.playing #top #btnPause { background: #f4f4f4; color: #000; border: 1px solid #bbb; }
+
+  button.flash { background: #4CAF50; color: #fff; }
+
+  /* BPM display: 5 chars with decimal */
+  #bpmDisplay {
+    font-size: 5.5vh;
+    font-weight: bold;
+    padding: 0.5vh 0.3vw;
+    background: #f4f4f4;
+    border: 1px solid #bbb;
+    border-radius: 4px;
+    width: 5.2ch;
+    text-align: center;
+    box-sizing: border-box;
+  }
+
+  /* Status area */
+  #statusBar{
+    padding: 0.8vh 1vw;
+    background:#f8f8f8;
+    border-top:1px solid #ddd;
+    font-size: 2.2vh;
+    display:flex;
+    gap: 2vw;
+    flex-wrap: wrap;
+    align-items: baseline;
+  }
+  #lockLamp{
+    display:inline-block;
+    padding: 0.2vh 0.8vw;
+    border:1px solid #bbb;
+    border-radius: 999px;
+    background:#eee;
+    font-weight:700;
+  }
+  body.listening #lockLamp{
+    background:#ffcc00;
+    color:#000;
+    border-color:#ccaa00;
+  }
+  body.tracking #lockLamp{
+    background:#2680ff;
+    color:#fff;
+    border-color:#2680ff;
+  }
+  body.locked #lockLamp{
+    background:#0a0;
+    color:#fff;
+    border-color:#0a0;
+  }
+
+  #mono{
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+    white-space: nowrap;
+  }
+</style>
+</head>
+<body>
+  <div id="top">
+    <button id="btnPlay"   class="primary">▶️ Play</button>
+    <button id="btnPause">⏸ Pause</button>
+    <button id="btnStop"   class="danger stopped">⏹ Stop</button>
+    <button id="btnMute"   class="mute">🔊 Sound</button>
+    <button id="btnTap">🕒 Tap Tempo</button>
+    <input id="bpmDisplay" type="text" value="110.0" maxlength="5">
+  </div>
+
+  <div id="statusBar">
+    <span id="lockLamp">IDLE</span>
+    <span id="statusText">Press L to listen.</span>
+    <span id="mono">err: <span id="errMs">—</span> ms | floor: <span id="floorV">—</span> | e: <span id="eV">—</span></span>
+  </div>
+
+<script>
+// =========================
+// Beat Follower v0.2 — mechanical metronome friendly
+// =========================
+
+// --- Global state (template-ish) ---
+let bpm = 110.0;            // quarter-note BPM (float)
+let playing = false;
+let paused = false;
+let pausedElapsed = 0;
+let muted = false;
+let startTime = 0;
+const taps = [];
+
+// --- DOM refs ---
+const el = {};
+
+// --- Audio ---
+const ctx = new (window.AudioContext || window.webkitAudioContext)();
+const master = ctx.createGain();
+master.connect(ctx.destination);
+
+// =========================
+// UI helpers
+// =========================
+function fmtBpm(x) {
+  x = Math.max(30, Math.min(300, x));
+  return x.toFixed(1); // always 1 decimal => 5 chars for 30.0..300.0
+}
+function setBpmDisplay(x) {
+  bpm = Math.max(30, Math.min(300, x));
+  el.bpmDisplay.value = fmtBpm(bpm);
+}
+function setLamp(text) { el.lockLamp.textContent = text; }
+function setStatus(msg) { el.statusText.textContent = msg; }
+
+function setBodyFlags() {
+  document.body.classList.toggle('playing', playing);
+  document.body.classList.toggle('listening', BF.active && BF.state === 'ACQUIRE');
+  document.body.classList.toggle('tracking', BF.active && BF.state === 'TRACK');
+  document.body.classList.toggle('locked', BF.active && BF.state === 'LOCKED');
+}
+
+// =========================
+// Template transport (kept minimal)
+// =========================
+function stepDuration() { return (60 / bpm) / 2; } // 8th-note grid
+
+function tickRAF() {
+  if (!playing || paused) return;
+  requestAnimationFrame(tickRAF);
+}
+
+function ensurePlayingUI() {
+  if (playing) return;
+  playing = true;
+  startTime = ctx.currentTime + 0.03;
+  el.btnPlay.classList.add('playing');
+  el.btnStop.classList.remove('stopped');
+  setBodyFlags();
+  updateMuteButton();
+  requestAnimationFrame(tickRAF);
+}
+
+function ensureStoppedUI() {
+  playing = false;
+  paused = false;
+  pausedElapsed = 0;
+  el.btnPause.classList.remove('paused');
+  el.btnPlay.classList.remove('playing');
+  el.btnStop.classList.add('stopped');
+  setBodyFlags();
+  updateMuteButton();
+}
+
+// =========================
+// Tick sound (metronome-ish)
+// =========================
+function playTick(atTime, accent=false) {
+  if (muted) return;
+
+  const osc = ctx.createOscillator();
+  const g = ctx.createGain();
+
+  osc.type = 'square';
+  osc.frequency.setValueAtTime(accent ? 1320 : 990, atTime);
+
+  // short clicky envelope
+  g.gain.setValueAtTime(0.0001, atTime);
+  g.gain.exponentialRampToValueAtTime(accent ? 0.25 : 0.18, atTime + 0.0015);
+  g.gain.exponentialRampToValueAtTime(0.0001, atTime + 0.030);
+
+  osc.connect(g); g.connect(master);
+  osc.start(atTime);
+  osc.stop(atTime + 0.040);
+}
+
+// =========================
+// Beat follower
+// =========================
+const BF = {
+  active: false,
+  state: 'IDLE',            // IDLE | ACQUIRE | TRACK | LOCKED
+  stream: null,
+  src: null,
+  hp: null,
+  analyser: null,
+  buf: null,
+
+  // detector
+  floor: 0.0,
+  e: 0.0,
+  threshMul: 6.0,
+  refractoryBase: 0.12,
+  lastTrig: -1e9,
+
+  // acquisition
+  acquireStart: 0.0,
+  events: [],               // beat times
+  estPeriod: null,
+  estBpm: null,
+
+  // clock
+  period: 60/110,
+  t0: 0.0,                  // phase origin for beat 0
+  nextTick: 0.0,
+  lookahead: 0.20,
+
+  // tracking
+  alpha: 0.14,              // phase correction gain
+  errAbsHist: [],
+  lockWindow: 12,
+  lockMedMs: 22.0,          // median abs error threshold for locking
+  unlockMedMs: 35.0,
+
+  // dropout
+  lastBeatSeen: -1e9,
+  maxAcquireSec: 20.0,
+};
+
+function resetFollowerUI() {
+  el.errMs.textContent = '—';
+  el.floorV.textContent = '—';
+  el.eV.textContent = '—';
+  setLamp('IDLE');
+  setStatus('Press L to listen.');
+  setBodyFlags();
+}
+
+function hardResetFollowerState() {
+  BF.state = 'IDLE';
+  BF.events = [];
+  BF.estPeriod = null;
+  BF.estBpm = null;
+  BF.floor = 0.0;
+  BF.e = 0.0;
+  BF.lastTrig = -1e9;
+  BF.errAbsHist = [];
+  BF.lastBeatSeen = -1e9;
+  resetFollowerUI();
+}
+
+function median(arr) {
+  const a = arr.slice().sort((x,y)=>x-y);
+  const n = a.length;
+  if (!n) return NaN;
+  return (n % 2) ? a[(n>>1)] : 0.5*(a[(n>>1)-1] + a[(n>>1)]);
+}
+function clamp(x, lo, hi) { return Math.max(lo, Math.min(hi, x)); }
+
+async function startMicAndAcquire() {
+  const constraints = {
+    audio: {
+      echoCancellation: false,
+      noiseSuppression: false,
+      autoGainControl: false
+    }
+  };
+
+  BF.stream = await navigator.mediaDevices.getUserMedia(constraints);
+  BF.src = ctx.createMediaStreamSource(BF.stream);
+
+  // Mechanical metronome: remove rumble / thump, keep click edge
+  BF.hp = ctx.createBiquadFilter();
+  BF.hp.type = 'highpass';
+  BF.hp.frequency.value = 600;
+  BF.hp.Q.value = 0.707;
+
+  BF.analyser = ctx.createAnalyser();
+  BF.analyser.fftSize = 2048;
+  BF.buf = new Float32Array(BF.analyser.fftSize);
+
+  BF.src.connect(BF.hp);
+  BF.hp.connect(BF.analyser);
+
+  BF.active = true;
+  BF.state = 'ACQUIRE';
+  BF.acquireStart = ctx.currentTime;
+  BF.events = [];
+  BF.estPeriod = null;
+  BF.estBpm = null;
+  BF.errAbsHist = [];
+  BF.lastBeatSeen = -1e9;
+
+  setLamp('LISTEN');
+  setStatus('Listening… click 4 times (metronome). Press L again to commit.');
+  setBodyFlags();
+
+  requestAnimationFrame(beatFollowerRAF);
+}
+
+function stopMic() {
+  if (BF.src) { try { BF.src.disconnect(); } catch(_) {} }
+  if (BF.hp)  { try { BF.hp.disconnect(); } catch(_) {} }
+  if (BF.analyser) { try { BF.analyser.disconnect(); } catch(_) {} }
+
+  BF.src = null;
+  BF.hp = null;
+  BF.analyser = null;
+  BF.buf = null;
+
+  if (BF.stream) {
+    for (const t of BF.stream.getTracks()) t.stop();
+  }
+  BF.stream = null;
+
+  BF.active = false;
+  hardResetFollowerState();
+}
+
+// One-stop stop: cancels locking + stops playing (SPACE should do this)
+function stopEverything() {
+  if (BF.active) stopMic();
+  ensureStoppedUI();
+  hardResetFollowerState();
+}
+
+// =========================
+// Detector: mean(|dx|) with adaptive floor + refractory
+// =========================
+function currentRefractory() {
+  if (BF.state === 'TRACK' || BF.state === 'LOCKED') {
+    // prevent double-trigger within a beat; scale with tempo
+    return clamp(0.40 * BF.period, 0.08, 0.25);
+  }
+  return BF.refractoryBase;
+}
+
+function detectBeat(now) {
+  if (!BF.analyser) return null;
+
+  BF.analyser.getFloatTimeDomainData(BF.buf);
+
+  let sum = 0.0;
+  let prev = BF.buf[0];
+  for (let i = 1; i < BF.buf.length; i++) {
+    const x = BF.buf[i];
+    sum += Math.abs(x - prev);
+    prev = x;
+  }
+  const e = sum / (BF.buf.length - 1);
+  BF.e = e;
+
+  // floor tracks typical energy slowly, but resists spikes
+  if (BF.floor === 0.0) BF.floor = e;
+  const capped = Math.min(e, BF.floor * 2.0);
+  BF.floor = BF.floor * 0.99 + capped * 0.01;
+
+  el.floorV.textContent = BF.floor.toFixed(4);
+  el.eV.textContent = BF.e.toFixed(4);
+
+  const refractory = currentRefractory();
+  const enoughTime = (now - BF.lastTrig) > refractory;
+  const above = e > (BF.floor * BF.threshMul);
+
+  if (enoughTime && above) {
+    BF.lastTrig = now;
+    BF.lastBeatSeen = now;
+    return now;
+  }
+  return null;
+}
+
+// =========================
+// Acquire tempo from 4 beats total (3 intervals)
+// Show live estimate while acquiring.
+// =========================
+function updateAcquireEstimate() {
+  if (BF.events.length < 2) return;
+
+  // use up to last 6 intervals for stability
+  const t = BF.events;
+  const n = t.length;
+  const dts = [];
+  for (let i = Math.max(1, n - 6); i < n; i++) dts.push(t[i] - t[i-1]);
+
+  const minT = 60/240, maxT = 60/40;
+  const ok = dts.filter(dt => dt >= minT && dt <= maxT);
+  if (ok.length < 1) return;
+
+  const T = median(ok);
+  const estBpm = 60 / T;
+
+  BF.estPeriod = T;
+  BF.estBpm = estBpm;
+
+  // show estimate while acquiring
+  setBpmDisplay(estBpm);
+  setLamp('LISTEN');
+  setStatus(`Estimating… ~${fmtBpm(estBpm)} BPM (${BF.events.length} beats). Press L to commit.`);
+}
+
+function tryPromoteToTrackFromAcquire() {
+  // Your spec: "after having listened for 4 beats" => 4 timestamps => 3 intervals
+  if (BF.events.length < 4) return false;
+
+  // Use last 3 intervals for the actual acquire decision
+  const t = BF.events;
+  const n = t.length;
+  const dts = [t[n-1]-t[n-2], t[n-2]-t[n-3], t[n-3]-t[n-4]];
+
+  const minT = 60/240, maxT = 60/40;
+  if (dts.some(dt => dt < minT || dt > maxT)) return false;
+
+  const T = median(dts);
+  const tol = 0.060; // 60ms tolerance for mechanical + room
+  if (Math.max(...dts.map(dt => Math.abs(dt - T))) > tol) return false;
+
+  BF.period = T;
+  BF.t0 = t[n-1];            // align beat 0 at last observed beat
+  BF.nextTick = BF.t0 + BF.period;
+
+  // Update BPM UI
+  setBpmDisplay(60 / BF.period);
+
+  BF.state = 'TRACK';
+  BF.errAbsHist = [];
+
+  setLamp('TRACK');
+  setStatus(`Tracking… ${fmtBpm(60/BF.period)} BPM (phase adapting). Press L to freeze/lock.`);
+  setBodyFlags();
+
+  // Start playing UI if not already
+  ensurePlayingUI();
+  return true;
+}
+
+// =========================
+// Phase error using modulo (avoids beat-index snapping)
+// err in [-T/2, +T/2]
+// =========================
+function phaseError(tBeat) {
+  const T = BF.period;
+  let ph = (tBeat - BF.t0) % T;
+  if (ph < 0) ph += T;
+  if (ph > T/2) ph -= T;
+  return ph;
+}
+
+function updateLockFromErr(errSec) {
+  const errMs = Math.abs(errSec) * 1000.0;
+  BF.errAbsHist.push(errMs);
+  while (BF.errAbsHist.length > BF.lockWindow) BF.errAbsHist.shift();
+
+  if (BF.errAbsHist.length < BF.lockWindow) return;
+
+  const med = median(BF.errAbsHist);
+
+  if (BF.state === 'TRACK') {
+    if (med <= BF.lockMedMs) {
+      BF.state = 'LOCKED';
+      setLamp('LOCKED');
+      setStatus(`Locked. ${fmtBpm(60/BF.period)} BPM (frozen). Press SPACE to stop.`);
+      setBodyFlags();
+    }
+  } else if (BF.state === 'LOCKED') {
+    if (med >= BF.unlockMedMs) {
+      BF.state = 'TRACK';
+      setLamp('TRACK');
+      setStatus(`Drift detected. Tracking again… (press L to freeze).`);
+      setBodyFlags();
+    }
+  }
+}
+
+function onBeatDetected(tBeat) {
+  if (BF.state === 'ACQUIRE') {
+    BF.events.push(tBeat);
+    if (BF.events.length > 16) BF.events.shift();
+
+    updateAcquireEstimate();
+
+    // auto-promote once stable
+    if (tryPromoteToTrackFromAcquire()) return;
+    return;
+  }
+
+  if (BF.state === 'TRACK' || BF.state === 'LOCKED') {
+    const err = phaseError(tBeat);
+    el.errMs.textContent = (err * 1000).toFixed(1);
+    updateLockFromErr(err);
+
+    if (BF.state === 'TRACK') {
+      // adjust phase origin a bit toward observed beat
+      BF.t0 += BF.alpha * err;
+      // keep tick schedule from falling behind
+      const now = ctx.currentTime;
+      while (BF.nextTick < now + 0.01) BF.nextTick += BF.period;
+    }
+  }
+}
+
+// =========================
+// Commit behavior on L
+// - If IDLE: start acquire (and start playing)
+// - If ACQUIRE: commit using current estimate (if any), start ticking
+// - If TRACK: freeze -> LOCKED
+// - If LOCKED: toggle off -> IDLE (optional)
+// =========================
+function commitFromAcquire() {
+  if (!BF.estPeriod || BF.events.length < 3) {
+    setStatus('Need a few clicks first (at least 3 beats).');
+    return;
+  }
+  BF.period = BF.estPeriod;
+
+  // choose phase origin:
+  // if we have events, align to most recent beat; else align to now
+  const now = ctx.currentTime;
+  const last = BF.events.length ? BF.events[BF.events.length-1] : now;
+  BF.t0 = last;
+  BF.nextTick = BF.t0 + BF.period;
+
+  setBpmDisplay(60 / BF.period);
+
+  BF.state = 'LOCKED'; // commit = freeze immediately (your requirement #4)
+  BF.errAbsHist = [];
+
+  setLamp('LOCKED');
+  setStatus(`Committed. ${fmtBpm(60/BF.period)} BPM (frozen). Playing ticks.`);
+  setBodyFlags();
+
+  ensurePlayingUI();
+}
+
+async function actionListenOrCommit() {
+  await ctx.resume();
+
+  if (!BF.active) {
+    // starting locking process should transition to playing
+    ensurePlayingUI();
+    try {
+      await startMicAndAcquire();
+    } catch (err) {
+      console.error(err);
+      setLamp('ERROR');
+      setStatus('Mic failed (permission? HTTPS/localhost?). See console.');
+      setBodyFlags();
+    }
+    return;
+  }
+
+  // Already active:
+  if (BF.state === 'ACQUIRE') {
+    commitFromAcquire();
+    return;
+  }
+  if (BF.state === 'TRACK') {
+    BF.state = 'LOCKED';
+    setLamp('LOCKED');
+    setStatus(`Frozen. ${fmtBpm(60/BF.period)} BPM (no more adjustment).`);
+    setBodyFlags();
+    return;
+  }
+  if (BF.state === 'LOCKED') {
+    // toggle off
+    stopEverything();
+    return;
+  }
+}
+
+// =========================
+// Tick scheduler + detector loop
+// =========================
+let beatCount = 0;
+
+function scheduleTicks(now) {
+  if (paused) return;
+  if (!(BF.state === 'TRACK' || BF.state === 'LOCKED')) return;
+
+  const horizon = now + BF.lookahead;
+  while (BF.nextTick < horizon) {
+    // accent every 4 beats for sanity (purely local counter)
+    const accent = (beatCount % 4) === 0;
+    playTick(BF.nextTick, accent);
+    beatCount++;
+    BF.nextTick += BF.period;
+  }
+}
+
+function beatFollowerRAF() {
+  if (!BF.active) return;
+
+  const now = ctx.currentTime;
+
+  // timeout during acquire
+  if (BF.state === 'ACQUIRE' && (now - BF.acquireStart) > BF.maxAcquireSec) {
+    setStatus('Gave up (20s). Press L to try again.');
+    stopMic();
+    // keep playing state? spec says go back to idle; also stop playing
+    ensureStoppedUI();
+    return;
+  }
+
+  const trig = detectBeat(now);
+  if (trig !== null) onBeatDetected(trig);
+
+  // optional dropout: if tracking/locked and no beats heard for a while, return to acquire
+  if ((BF.state === 'TRACK' || BF.state === 'LOCKED') && BF.lastBeatSeen > 0) {
+    const silence = now - BF.lastBeatSeen;
+    if (silence > Math.max(2.5 * BF.period, 1.2)) {
+      BF.state = 'ACQUIRE';
+      BF.acquireStart = now;
+      BF.events = [];
+      BF.estPeriod = null;
+      BF.estBpm = null;
+      BF.errAbsHist = [];
+      setLamp('LISTEN');
+      setStatus('Lost beats. Re-acquiring…');
+      setBodyFlags();
+      // keep playing UI, but stop scheduling ticks until we re-commit/promote
+    }
+  }
+
+  scheduleTicks(now);
+  requestAnimationFrame(beatFollowerRAF);
+}
+
+// =========================
+// UI actions (top-level)
+// =========================
+function actionPlay() {
+  if (playing) return;
+  ctx.resume();
+  ensurePlayingUI();
+}
+
+function actionPause() {
+  if (!playing && !BF.active) return;
+  if (!paused) {
+    paused = true;
+    pausedElapsed = ctx.currentTime - startTime;
+    el.btnPause.classList.add('paused');
+    setStatus('Paused.');
+  } else {
+    paused = false;
+    startTime = ctx.currentTime - pausedElapsed;
+    el.btnPause.classList.remove('paused');
+    requestAnimationFrame(tickRAF);
+    setStatus('Resumed.');
+  }
+}
+
+function actionStop() {
+  // stop cancels locking and goes back to stopped
+  stopEverything();
+}
+
+function actionMuteToggle() {
+  muted = !muted;
+  updateMuteButton();
+  el.btnMute.classList.add('flash');
+  setTimeout(() => el.btnMute.classList.remove('flash'), 150);
+}
+
+function updateMuteButton() {
+  const active = muted && (playing || (BF.state === 'TRACK' || BF.state === 'LOCKED'));
+  el.btnMute.classList.toggle('active', active);
+  el.btnMute.textContent = muted ? '🔇 Muted' : '🔊 Sound';
+}
+
+function actionTapSpace() {
+  const now = performance.now();
+  taps.push(now);
+  while (taps.length > 6) taps.shift();
+
+  if (taps.length >= 2) {
+    const diffs = taps.slice(1).map((t,i) => t - taps[i]);
+    const avg = diffs.reduce((a,b) => a + b, 0) / diffs.length;
+    const newBpm = clamp(60000 / avg, 30, 300);
+    setBpmDisplay(newBpm);
+
+    el.btnTap.classList.add('flash');
+    setTimeout(() => el.btnTap.classList.remove('flash'), 150);
+  }
+}
+
+function actionSetBPM(val) {
+  // accept float
+  const x = parseFloat(val);
+  if (!Number.isFinite(x)) { el.bpmDisplay.value = fmtBpm(bpm); return; }
+  setBpmDisplay(clamp(x, 30, 300));
+}
+
+function actionKeyDown(e) {
+  // SPACE: if locking/tracking/locked, cancel everything; else toggle play
+  if (e.code === 'Space') {
+    e.preventDefault();
+    if (BF.active || playing) { actionStop(); }
+    else actionPlay();
+    return;
+  }
+
+  if (e.code === 'KeyL') { e.preventDefault(); actionListenOrCommit(); return; }
+  if (e.code === 'KeyT') { e.preventDefault(); actionTapSpace(); return; }
+  if (e.code === 'KeyP') { e.preventDefault(); actionPause(); return; }
+  if (e.code === 'KeyM') { e.preventDefault(); actionMuteToggle(); return; }
+
+  if (e.code === 'Minus' || e.code === 'NumpadSubtract') {
+    const rounded = Math.ceil(bpm / 5) * 5;
+    setBpmDisplay(clamp(rounded - 5, 30, 300));
+    return;
+  }
+  if (e.code === 'Equal' || e.code === 'NumpadAdd') {
+    const rounded = Math.floor(bpm / 5) * 5;
+    setBpmDisplay(clamp(rounded + 5, 30, 300));
+    return;
+  }
+}
+
+function getButtonAndAddAction(name, action) {
+  var btn = document.getElementById(name);
+  btn.addEventListener('click', action);
+  return btn;
+}
+
+// =========================
+// Wiring
+// =========================
+function init() {
+  el.btnPlay   = getButtonAndAddAction('btnPlay', actionPlay);
+  el.btnPause  = getButtonAndAddAction('btnPause', actionPause);
+  el.btnStop   = getButtonAndAddAction('btnStop', actionStop);
+  el.btnMute   = getButtonAndAddAction('btnMute', actionMuteToggle);
+  el.btnTap    = getButtonAndAddAction('btnTap', actionTapSpace);
+
+  el.bpmDisplay = document.getElementById('bpmDisplay');
+  el.bpmDisplay.addEventListener('input', e => {
+    // allow digits + one dot, max 5 chars
+    let s = e.target.value;
+    s = s.replace(/[^0-9.]/g, '');
+    const firstDot = s.indexOf('.');
+    if (firstDot >= 0) {
+      s = s.slice(0, firstDot + 1) + s.slice(firstDot + 1).replace(/\./g, '');
+    }
+    s = s.slice(0, 5);
+    e.target.value = s;
+  });
+  el.bpmDisplay.addEventListener('change', e => {
+    actionSetBPM(e.target.value);
+    e.target.value = fmtBpm(bpm);
+  });
+
+  el.lockLamp = document.getElementById('lockLamp');
+  el.statusText = document.getElementById('statusText');
+  el.errMs = document.getElementById('errMs');
+  el.floorV = document.getElementById('floorV');
+  el.eV = document.getElementById('eV');
+
+  document.body.addEventListener('keydown', actionKeyDown);
+
+  setBpmDisplay(bpm);
+  hardResetFollowerState();
+  ensureStoppedUI();
+  setStatus('Press L to listen (starts playing). SPACE stops everything.');
+}
+
+// Boot
+init();
+</script>
+
+<div style="padding: 1vh 1vw;">
+  <button id="btnHelp" onclick="document.getElementById('helpSection').scrollIntoView({behavior:'smooth'})">Help ↓</button>
+</div>
+
+<div style="height: 120vh;"></div>
+
+<div id="helpSection" style="padding: 1vh 1vw; font-size: 2vh;">
+Key bindings:
+<ul>
+  <li><b>L</b>: start listening / commit (freeze) / toggle off</li>
+  <li><b>SPACE</b>: stop everything (cancels locking)</li>
+  <li>P: pause</li>
+  <li>T: tap tempo</li>
+  <li>M: mute</li>
+  <li>- / +: change tempo by 5</li>
+</ul>
+
+Notes:
+<ul>
+  <li>Mic access requires HTTPS or localhost.</li>
+  <li>For a mechanical metronome, point the mic toward it and keep speaker volume moderate.</li>
+  <li>During acquire, BPM updates live. After 4 beats, it will auto-enter TRACK if stable. Press L any time to commit/freeze and start ticks.</li>
+  <li>If it can’t acquire within 20 seconds, it gives up and returns to idle.</li>
+</ul>
+</div>
+</body>
+</html>
