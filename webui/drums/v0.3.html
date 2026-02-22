@@ -84,8 +84,10 @@
   /* per-voice randomize button */
   button.voiceRandom { background: none; border: 1px solid #ddd; border-radius: 3px; padding: 1px 3px; font-size: 13px; cursor: pointer; line-height: 1; }
   button.voiceRandom:hover { background: #f0f0f0; }
-  /* inactive cell overlay */
-  .cell.inactive::after { content: ''; position: absolute; top: 0; left: 0; right: 0; bottom: 0; background: rgba(200, 200, 200, 0.7); pointer-events: none; }
+  /* inactive cells: almost invisible — white wash, light gray borders, faded pseudo-elements */
+  .cell.inactive { box-shadow: inset 0 0 0 1000px rgba(255, 255, 255, 0.95); border-color: #ddd !important; }
+  .cell.inactive::before { background: #ddd !important; }
+  .cell.inactive::after  { background: #ddd !important; }
   /* gap column between main pattern and fill */
   .fillGap { pointer-events: none; }
   /* right-facing triangle on end-column and fill-start cells */
@@ -757,6 +759,7 @@ function actionStop() { // stop transport
   currentIteration = 1;
   highlightRepeatBox(0); // Clear highlight
   updateCellActivity(1); // Reset to first iteration state
+  el.grid.querySelectorAll('.cell.inactive').forEach(c => c.classList.remove('inactive'));
   updateMuteButton();
 }
 
