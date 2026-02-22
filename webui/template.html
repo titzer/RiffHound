@@ -63,17 +63,10 @@
 let bpm = 110;              // quarter-note BPM
 let playing = false;
 let paused = false;
-let timeSig = '4/4';   // '4/4', '3/4', or '6/8'
 let pausedElapsed = 0;   // ctx time elapsed at the moment of pause
 let muted = false;
-let steps = 16;             // 16 or 32 eighth-note steps
-let currentStep = 0;        // which step is currently playing (0..steps-1)
 let startTime = 0;          // audio time for transport start
 const taps = [];
-
-// pattern[voiceIndex][stepIndex] -> boolean (eighth-note grid)
-let pattern = [];      // main pattern
-let fillPattern = [];  // fill pattern (last 4 steps)
 
 // --- DOM refs ---
 const el = {};
@@ -81,26 +74,11 @@ const el = {};
 // --- Audio setup ---
 const ctx = new (window.AudioContext || window.webkitAudioContext)();
 const master = ctx.createGain(); master.connect(ctx.destination);
-const bus = { drums: ctx.createGain() };
-Object.values(bus).forEach(g => g.connect(master));
-
-// One-off buffers
-const noiseBuf = (() => {
-  const b = ctx.createBuffer(1, ctx.sampleRate * 0.2, ctx.sampleRate);
-  const d = b.getChannelData(0);
-  for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
-  return b;
-})();
-
 
 // =========================
 // Transport & scheduling (8th notes)
 // =========================
 function stepDuration() { return (60 / bpm) / 2; } // 8th-note grid
-
-function scheduleStep(si, when, useFill) {
-  if (muted) return; // Skip sound generation when muted
-}
 
 function tickRAF() { // visuals & near-future scheduling
   if (!playing || paused) return;
@@ -120,7 +98,6 @@ function actionPlay() { // start transport
   ctx.resume();
   playing = true;
   startTime = ctx.currentTime + 0.03;
-  currentStep = 0;
   requestAnimationFrame(tickRAF);
   el.btnPlay.classList.add('playing');
   el.btnStop.classList.remove('stopped');
@@ -151,7 +128,6 @@ function actionStop() { // stop transport
   el.btnPlay.classList.remove('playing');
   el.btnStop.classList.add('stopped');
   document.body.classList.remove('playing');
-  el.grid.querySelectorAll('.cell.inactive').forEach(c => c.classList.remove('inactive'));
   updateMuteButton();
 }
 
@@ -184,7 +160,6 @@ function actionTapSpace() { // accumulate taps → BPM
     const avg = diffs.reduce((a,b) => a + b, 0) / diffs.length;
     bpm = Math.max(30, Math.min(300, Math.round(60000 / avg)));
     el.bpmDisplay.value = bpm;
-    updatePatternText();
     if (playing) { startTime = ctx.currentTime; }
 
     // Flash the tap button
@@ -207,12 +182,7 @@ function actionSetBPM(val) { // slider or text input changed
     const newDur = stepDuration();
     startTime = now - (totalSteps * newDur);
   }
-
-  if (bpm !== oldBpm) {
-    updatePatternText();
-  }
 }
-
 
 function actionKeyDown(e) { // global keyboard shortcuts
   if (e.code === 'Space') { e.preventDefault(); if (playing) actionStop(); else actionPlay(); return; }
