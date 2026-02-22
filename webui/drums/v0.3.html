@@ -1,0 +1,937 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>RiffHound Drum Machine v0.2</title>
+<style>
+  /* Minimal, readable, big-click targets */
+  body { font-family: sans-serif; background: #fff; color: #000; margin: 0; }
+  #top { display: flex; flex-wrap: nowrap; gap: 1vh; padding: 1vh; background: #eee; align-items: stretch; }
+  #top button, #top select { flex: 1 1 0; font-size: 3.2vh; padding: 1.2vh 1vw; }
+  button { cursor: pointer; border: 1px solid #bbb; }
+  /* Top row buttons: blue by default, green when playing */
+  #top button { background: #8389ff; color: #fff; border: 1px solid #8389ff; }
+  body.playing #top button { background: #007700; color: #fff; border: 1px solid #007700; }
+  /* Play: green when not playing, neutral when playing */
+  #top #btnPlay { background: #007700; color: #fff; border: 1px solid #007700; }
+  body.playing #top #btnPlay { background: #f4f4f4; color: #000; border: 1px solid #bbb; }
+  /* Stop: neutral when stopped, red when playing */
+  #top #btnStop { background: #f4f4f4; color: #000; border: 1px solid #bbb; }
+  body.playing #top #btnStop { background: #770000; color: #fff; border: 1px solid #770000; }
+  /* Mute button active: yellow (persists even while playing) */
+  #top button.mute.active { background: #ffcc00; color: #000; border: 1px solid #ffcc00; }
+  body.playing #top button.mute.active { background: #ffcc00; color: #000; border: 1px solid #ffcc00; }
+  /* Neutral buttons: no color state */
+  #btnTap { background: #f4f4f4; color: #000; border: 1px solid #bbb; }
+  body.playing #btnTap { background: #f4f4f4; color: #000; border: 1px solid #bbb; }
+  button.flash { background: #4CAF50; color: #fff; }
+
+  #repeatViz { padding: 1vh 1vw; display: flex; gap: 1rem; align-items: center; }
+  #repeatViz .label { font-weight: bold; }
+  #repeatBoxes { display: flex; gap: 0.4rem; }
+  .repeatBox { width: 48px; height: 48px; border: 2px solid #999; background: #f0f0f0; display: flex; align-items: center; justify-content: center; font-weight: bold; font-size: 16px; border-radius: 4px; }
+  .repeatBox.typeA { background: #d0d4ff; border-color: #8389ff; color: #8389ff; }
+  body.playing .repeatBox.typeA { background: #d0ffd0; border-color: #007700; color: #007700; }
+  .repeatBox.typeB { background: linear-gradient(to top left, #bb5500 35%, #d0d4ff 35%); border-color: #8389ff; color: #8389ff; }
+  body.playing .repeatBox.typeB { background: linear-gradient(to top left, #bb5500 35%, #d0ffd0 35%); border-color: #007700; color: #007700; }
+  .repeatBox.active { box-shadow: 0 0 0 4px #8389ff; outline: 3px solid #8389ff; }
+
+  #grid { padding: 1vh 1vw; }
+  .row { display: grid; grid-template-columns: auto auto 1fr; align-items: center; gap: .4rem; margin: .2rem 0; }
+  .row .name { min-width: 6ch; text-align: right; }
+  button.voiceMute { min-width: 6ch; text-align: center; font-size: 1.8vh; padding: 0.4vh 0.4vw; border-radius: 3px; background: #8389ff; color: #fff; border: 1px solid #8389ff; }
+  body.playing button.voiceMute { background: #007700; color: #fff; border-color: #007700; }
+  button.voiceMute.active { background: #ffcc00; color: #000; border-color: #ffcc00; }
+  body.playing button.voiceMute.active { background: #ffcc00; color: #000; border-color: #ffcc00; }
+  .steps { display: grid; gap: 2px; grid-auto-flow: column; width: 100%; }
+  .cell { height: 8vh; border: 1px solid #bbb; background: #fafafa; display: inline-flex; align-items: center; justify-content: center; font-size: 12px; user-select: none; box-sizing: border-box; position: relative; }
+
+  /* on cells: blue when not playing, green when playing */
+  .cell.on { background: #8389ff; color: #fff; border-color: #8389ff; }
+  body.playing .cell.on { background: #007700; color: #fff; border-color: #007700; }
+  /* bar start tint: light blue / light green */
+  .cell.barStart { background-color: #e0e4ff; }
+  body.playing .cell.barStart { background-color: #e0ffe0; }
+  .cell.on.barStart { background-color: #6066cc; border-color: #6066cc; }
+  body.playing .cell.on.barStart { background-color: #2f8f2f; border-color: #2f8f2f; }
+  .cell.beat { box-shadow: inset 0 0 0 2px #000; }
+  .cell.columnActive { outline: 3px solid #8389ff; }
+  /* fill pattern styling: keep orange to distinguish from main pattern */
+  .cell.fill { background-color: #ffe0e0; }
+  .cell.on.fill { background-color: #bb5500; border-color: #bb5500; }
+  body.playing .cell.on.fill { background-color: #bb5500; border-color: #bb5500; }
+  /* per-voice randomize button */
+  button.voiceRandom { background: none; border: 1px solid #ddd; border-radius: 3px; padding: 1px 3px; font-size: 13px; cursor: pointer; line-height: 1; }
+  button.voiceRandom:hover { background: #f0f0f0; }
+  /* inactive cell overlay */
+  .cell.inactive::after { content: ''; position: absolute; top: 0; left: 0; right: 0; bottom: 0; background: rgba(200, 200, 200, 0.7); pointer-events: none; }
+  /* ruler row */
+  .rulerCell { height: 2.5vh; display: inline-flex; align-items: center; justify-content: center; box-sizing: border-box; overflow: hidden; }
+  .rulerCell.beatNum { font-size: 9px; color: #888; }
+  .rulerCell.barNum { font-size: 12px; font-weight: bold; color: #333; }
+  .rulerCell.fillLabel { font-size: 12px; font-weight: bold; color: #bb5500; }
+
+  /* BPM display in top row */
+  #bpmDisplay {
+    font-size: 5.5vh;
+    font-weight: bold;
+    padding: 0.5vh 0.3vw;
+    background: #f4f4f4;
+    border: 1px solid #bbb;
+    border-radius: 4px;
+    width: 3.2ch;
+    text-align: center;
+    box-sizing: border-box;
+  }
+  #bottom { padding: 1vh 1vw; font-size: 2.2vh; display: flex; flex-wrap: wrap; gap: .6em; align-items: center; }
+  input, select { font-size: 2.2vh; }
+</style>
+</head>
+<body>
+  <div id="top">
+    <button id="btnPlay"   class="primary">▶️ Play</button>
+    <button id="btnStop"   class="danger stopped">⏹ Stop</button>
+    <button id="btnMute"   class="mute">🔊 Sound</button>
+    <button id="btnTap">🕒 Tap Tempo</button>
+    <input id="bpmDisplay" type="text" value="110" maxlength="3">
+  </div>
+  <div id="repeatViz">
+    <span class="label">Loop:</span>
+    <div id="repeatBoxes"></div>
+    <select id="selRepeat" style="font-size: 2.2vh; padding: 0.4vh 0.5vw; margin-left: 1em;">
+      <option value="2" selected>2× + fill</option>
+      <option value="3">3× + fill</option>
+      <option value="4">4× + fill</option>
+      <option value="8">8× + fill</option>
+    </select>
+  </div>
+
+  <div id="grid"></div>
+
+  <div style="padding: 0.5vh 1vw; display: flex; gap: 0.5em; align-items: center;">
+    <select id="selSteps" style="font-size: 2vh; padding: 0.4vh 0.5vw;">
+      <option value="16" selected>16 steps (8th notes ×2 bars)</option>
+      <option value="24">24 steps (8th notes ×4 bars, 6/8)</option>
+      <option value="32">32 steps (8th notes ×4 bars)</option>
+    </select>
+    <button id="btnClear" style="font-size: 2vh; padding: 0.5vh 1.2vw;">🧹 Clear</button>
+  </div>
+
+  <div style="padding: 1vh 1vw;">
+    <div style="margin-bottom: 0.5em; font-weight: bold;">Pattern:</div>
+    <textarea id="patternText" style="width: 98%; height: 8vh; font-family: monospace; font-size: 1.8vh;"></textarea>
+  </div>
+
+<script>
+// =========================
+// Drum Practice v0.1.1 — step editor (5 voices, 16/32 steps)
+// =========================
+
+// --- Global state ---
+let bpm = 110;              // quarter-note BPM
+let playing = false;
+let muted = false;
+let steps = 16;             // 16 or 32 eighth-note steps
+let currentStep = 0;        // which step is currently playing (0..steps-1)
+let startTime = 0;          // audio time for transport start
+const taps = [];
+let repeatCount = 3;        // how many times to repeat before playing fill
+let currentIteration = 1;   // current iteration (1..repeatCount)
+function getFillLength() { return getBarSize() === 6 ? 6 : 4; } // one bar in 6/8, half bar in 4/4
+let deserializing = false;  // flag to prevent pattern text updates during deserialization
+
+// 5 drum voices
+const VOICES = [
+  { id: 'kick',  name: 'Kick',  muted: false },
+  { id: 'snare', name: 'Snare', muted: false },
+  { id: 'hat',   name: 'Hat',   muted: false },
+  { id: 'tom',   name: 'Tom',   muted: false },
+  { id: 'clap',  name: 'Clap',  muted: false },
+];
+
+// pattern[voiceIndex][stepIndex] -> boolean (eighth-note grid)
+let pattern = [];      // main pattern
+let fillPattern = [];  // fill pattern (last 4 steps)
+
+// --- DOM refs ---
+const el = {};
+
+// --- Audio setup ---
+const ctx = new (window.AudioContext || window.webkitAudioContext)();
+const master = ctx.createGain(); master.connect(ctx.destination);
+const bus = { drums: ctx.createGain() };
+Object.values(bus).forEach(g => g.connect(master));
+
+// One-off buffers
+const noiseBuf = (() => {
+  const b = ctx.createBuffer(1, ctx.sampleRate * 0.2, ctx.sampleRate);
+  const d = b.getChannelData(0);
+  for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+  return b;
+})();
+
+// =========================
+// Audio voices
+// =========================
+function voiceKick(t) {
+  const o = ctx.createOscillator(); o.type = 'sine';
+  const g = ctx.createGain();
+  o.frequency.setValueAtTime(120, t);
+  o.frequency.exponentialRampToValueAtTime(50, t + 0.08);
+  g.gain.setValueAtTime(1.0, t);
+  g.gain.exponentialRampToValueAtTime(0.001, t + 0.12);
+  o.connect(g).connect(bus.drums);
+  o.start(t); o.stop(t + 0.14);
+}
+
+function voiceSnare(t) {
+  const s = ctx.createBufferSource(); s.buffer = noiseBuf;
+  const bp = ctx.createBiquadFilter(); bp.type = 'bandpass'; bp.frequency.value = 1800; bp.Q = 0.8;
+  const g = ctx.createGain(); g.gain.setValueAtTime(0.7, t); g.gain.exponentialRampToValueAtTime(0.001, t + 0.12);
+  s.connect(bp).connect(g).connect(bus.drums);
+  s.start(t); s.stop(t + 0.12);
+}
+
+function voiceHat(t) {
+  const s = ctx.createBufferSource(); s.buffer = noiseBuf;
+  const hp = ctx.createBiquadFilter(); hp.type = 'highpass'; hp.frequency.value = 6000;
+  const g = ctx.createGain(); g.gain.setValueAtTime(0.25, t); g.gain.exponentialRampToValueAtTime(0.001, t + 0.05);
+  s.connect(hp).connect(g).connect(bus.drums);
+  s.start(t); s.stop(t + 0.06);
+}
+
+function voiceTom(t) {
+  const o = ctx.createOscillator(); o.type = 'sine';
+  const g = ctx.createGain();
+  o.frequency.setValueAtTime(180, t);
+  o.frequency.exponentialRampToValueAtTime(110, t + 0.1);
+  g.gain.setValueAtTime(0.8, t);
+  g.gain.exponentialRampToValueAtTime(0.001, t + 0.14);
+  o.connect(g).connect(bus.drums);
+  o.start(t); o.stop(t + 0.16);
+}
+
+function voiceClap(t) {
+  const s = ctx.createBufferSource(); s.buffer = noiseBuf;
+  const hp = ctx.createBiquadFilter(); hp.type = 'highpass'; hp.frequency.value = 2000;
+  const g = ctx.createGain(); g.gain.setValueAtTime(0.7, t); g.gain.exponentialRampToValueAtTime(0.001, t + 0.06);
+  s.connect(hp).connect(g).connect(bus.drums);
+  s.start(t); s.stop(t + 0.08);
+}
+
+function triggerVoice(id, t) {
+  switch(id) {
+    case 'kick':  voiceKick(t); break;
+    case 'snare': voiceSnare(t); break;
+    case 'hat':   voiceHat(t); break;
+    case 'tom':   voiceTom(t); break;
+    case 'clap':  voiceClap(t); break;
+  }
+}
+
+// =========================
+// Pattern serialization
+// =========================
+function serializePattern() {
+  const voiceChars = ['K', 'S', 'H', 'T', 'C'];
+
+  // Serialize main pattern
+  const drumsSteps = [];
+  for (let si = 0; si < steps; si++) {
+    let stepStr = '';
+    for (let vi = 0; vi < VOICES.length; vi++) {
+      if (pattern[vi][si]) stepStr += voiceChars[vi];
+    }
+    drumsSteps.push(stepStr || '_'); // Use '_' for rest
+  }
+
+  // Serialize fill pattern
+  const fillSteps = [];
+  for (let fi = 0; fi < getFillLength(); fi++) {
+    let stepStr = '';
+    for (let vi = 0; vi < VOICES.length; vi++) {
+      if (fillPattern[vi][fi]) stepStr += voiceChars[vi];
+    }
+    fillSteps.push(stepStr || '_'); // Use '_' for rest
+  }
+
+  return `tempo: ${bpm}; drums: ${drumsSteps.join(',')}; fill: ${fillSteps.join(',')}`;
+}
+
+function deserializePattern(text) {
+  deserializing = true;
+  try {
+    // Parse the format: "tempo: <NUM>; drums: ...; fill: ..."
+    const parts = text.split(';').map(p => p.trim());
+
+    // Parse tempo
+    const tempoMatch = parts[0].match(/tempo:\s*(\d+)/);
+    if (tempoMatch) {
+      actionSetBPM(parseInt(tempoMatch[1], 10));
+    }
+
+    // Parse drums
+    const drumsMatch = parts[1].match(/drums:\s*(.+)/);
+    if (drumsMatch) {
+      const drumSteps = drumsMatch[1].split(',').map(s => s.trim());
+      const voiceMap = { 'K': 0, 'S': 1, 'H': 2, 'T': 3, 'C': 4 };
+
+      for (let si = 0; si < Math.min(drumSteps.length, steps); si++) {
+        const stepStr = drumSteps[si];
+        // Clear this step first
+        for (let vi = 0; vi < VOICES.length; vi++) {
+          pattern[vi][si] = false;
+        }
+        // Set voices that are present
+        if (stepStr !== '_') {
+          for (let char of stepStr) {
+            if (voiceMap.hasOwnProperty(char)) {
+              pattern[voiceMap[char]][si] = true;
+            }
+          }
+        }
+      }
+    }
+
+    // Parse fill
+    const fillMatch = parts[2].match(/fill:\s*(.+)/);
+    if (fillMatch) {
+      const fillSteps = fillMatch[1].split(',').map(s => s.trim());
+      const voiceMap = { 'K': 0, 'S': 1, 'H': 2, 'T': 3, 'C': 4 };
+
+      for (let fi = 0; fi < Math.min(fillSteps.length, getFillLength()); fi++) {
+        const stepStr = fillSteps[fi];
+        // Clear this step first
+        for (let vi = 0; vi < VOICES.length; vi++) {
+          fillPattern[vi][fi] = false;
+        }
+        // Set voices that are present
+        if (stepStr !== '_') {
+          for (let char of stepStr) {
+            if (voiceMap.hasOwnProperty(char)) {
+              fillPattern[voiceMap[char]][fi] = true;
+            }
+          }
+        }
+      }
+    }
+
+    renderGrid();
+  } catch (e) {
+    console.error('Error parsing pattern:', e);
+  } finally {
+    deserializing = false;
+  }
+}
+
+function updatePatternText() {
+  if (deserializing) return; // Don't update while deserializing to avoid cursor jumps
+  el.patternText.value = serializePattern();
+}
+
+// =========================
+// Rendering the grid
+// =========================
+function renderRepeatBoxes() {
+  el.repeatBoxes.innerHTML = '';
+  for (let i = 0; i < repeatCount; i++) {
+    const box = document.createElement('div');
+    box.className = 'repeatBox';
+    const isFill = (i === repeatCount - 1);
+    box.classList.add(isFill ? 'typeB' : 'typeA');
+    box.textContent = isFill ? "A'" : 'A';
+    const targetIteration = i + 1;
+    box.dataset.iteration = targetIteration;
+    box.style.cursor = 'pointer';
+    box.addEventListener('click', () => actionJumpToRepeat(targetIteration));
+    el.repeatBoxes.appendChild(box);
+  }
+}
+
+function renderGrid() {
+  el.grid.innerHTML = '';
+  VOICES.forEach((v, vi) => {
+    const row = document.createElement('div');
+    row.className = 'row';
+
+    // Per-voice randomize button
+    const cb = document.createElement('button');
+    cb.className = 'voiceRandom';
+    cb.textContent = '🎲';
+    cb.title = `Randomize ${v.name}`;
+    cb.addEventListener('click', () => randomizeVoice(vi));
+
+    // Per-voice mute button
+    const name = document.createElement('button');
+    name.className = 'voiceMute' + (v.muted ? ' active' : '');
+    name.textContent = v.name;
+    name.addEventListener('click', () => actionToggleVoiceMute(vi));
+
+    // Steps grid (main pattern + fill)
+    const stepsWrap = document.createElement('div');
+    stepsWrap.className = 'steps';
+    const totalCols = steps + getFillLength();
+    stepsWrap.style.gridTemplateColumns = `repeat(${totalCols}, 1fr)`;
+
+    // Main pattern cells
+    for (let si = 0; si < steps; si++) {
+      const cell = document.createElement('div');
+      cell.className = 'cell';
+      if (pattern[vi][si]) cell.classList.add('on');
+      // beat/bar marking adapts to 4/4 (8 per bar) vs 6/8 (6 per bar)
+      const bar = getBarSize();         // 8 for 4/4, 6 for 6/8
+      const beatDiv = getBeatDiv();     // 2 for 4/4, 3 for 6/8
+      if ((si % beatDiv) === 0) cell.classList.add('beat');
+      if ((si % bar) === 0)     cell.classList.add('barStart');
+      cell.addEventListener('click', () => actionToggleStep(vi, si, false));
+      stepsWrap.appendChild(cell);
+    }
+
+    // Fill pattern cells
+    for (let fi = 0; fi < getFillLength(); fi++) {
+      const cell = document.createElement('div');
+      cell.className = 'cell fill';
+      if (fillPattern[vi][fi]) cell.classList.add('on');
+      // Mark beats in fill as well
+      const beatDiv = getBeatDiv();
+      if ((fi % beatDiv) === 0) cell.classList.add('beat');
+      cell.addEventListener('click', () => actionToggleStep(vi, fi, true));
+      stepsWrap.appendChild(cell);
+    }
+
+    row.appendChild(cb);
+    row.appendChild(name);
+    row.appendChild(stepsWrap);
+    el.grid.appendChild(row);
+  });
+  highlightColumn(currentStep);
+  renderRuler();
+}
+
+function renderRuler() {
+  const bar = getBarSize();
+  const beatDiv = getBeatDiv();
+  const totalCols = steps + getFillLength();
+
+  const row = document.createElement('div');
+  row.className = 'row';
+
+  const spacer1 = document.createElement('button');
+  spacer1.className = 'voiceRandom';
+  spacer1.style.visibility = 'hidden';
+  const spacer2 = document.createElement('button');
+  spacer2.className = 'voiceMute';
+  spacer2.style.visibility = 'hidden';
+  row.appendChild(spacer1);
+  row.appendChild(spacer2);
+
+  const stepsWrap = document.createElement('div');
+  stepsWrap.className = 'steps';
+  stepsWrap.style.gridTemplateColumns = `repeat(${totalCols}, 1fr)`;
+
+  for (let si = 0; si < steps; si++) {
+    const cell = document.createElement('div');
+    cell.className = 'rulerCell';
+    if (si % bar === 0) {
+      cell.textContent = si / bar + 1;
+      cell.classList.add('barNum');
+    } else if (si % beatDiv === 0) {
+      cell.textContent = (si % bar) / beatDiv + 1;
+      cell.classList.add('beatNum');
+    }
+    stepsWrap.appendChild(cell);
+  }
+
+  for (let fi = 0; fi < getFillLength(); fi++) {
+    const cell = document.createElement('div');
+    cell.className = 'rulerCell';
+    if (fi === 0) {
+      cell.textContent = 'fill';
+      cell.classList.add('fillLabel');
+    } else if (fi % beatDiv === 0) {
+      cell.textContent = fi / beatDiv + 1;
+      cell.classList.add('beatNum');
+    }
+    stepsWrap.appendChild(cell);
+  }
+
+  row.appendChild(stepsWrap);
+  el.grid.appendChild(row);
+}
+
+// Determine grouping: force 6/8 for 24 steps, else fallback heuristic
+function getBarSize() {
+  if (steps === 24) return 6;               // 24 eighths = 4 bars of 6/8
+  return (steps % 6 === 0 && steps % 8 !== 0) ? 6 : 8;
+}
+function getBeatDiv() {                     // beats per bar marker spacing (in eighths)
+  return 2;                                 // always quarter-note beats (every 2 eighths)
+}
+
+function highlightColumn(stepIdx) {
+  el.grid.querySelectorAll('.cell.columnActive').forEach(c => c.classList.remove('columnActive'));
+  const rows = el.grid.querySelectorAll('.row');
+  rows.forEach(row => {
+    const cells = row.querySelectorAll('.steps .cell');
+    if (cells[stepIdx]) cells[stepIdx].classList.add('columnActive');
+  });
+}
+
+function highlightRepeatBox(iteration) {
+  el.repeatBoxes.querySelectorAll('.repeatBox.active').forEach(b => b.classList.remove('active'));
+  const boxes = el.repeatBoxes.querySelectorAll('.repeatBox');
+  if (boxes[iteration - 1]) boxes[iteration - 1].classList.add('active');
+}
+
+function updateCellActivity(iteration) {
+  const isFinalIteration = (iteration === repeatCount);
+  const rows = el.grid.querySelectorAll('.row');
+
+  rows.forEach(row => {
+    const cells = row.querySelectorAll('.steps .cell');
+    cells.forEach((cell, idx) => {
+      if (isFinalIteration) {
+        // Final iteration: main cells in fill region are inactive, fill cells are active
+        if (idx >= steps - getFillLength() && idx < steps) {
+          // Main pattern cells that get replaced by fill
+          cell.classList.add('inactive');
+        } else if (idx >= steps) {
+          // Fill cells are active
+          cell.classList.remove('inactive');
+        } else {
+          // Main pattern cells before fill region are active
+          cell.classList.remove('inactive');
+        }
+      } else {
+        // Normal iterations: fill cells are inactive
+        if (idx >= steps) {
+          cell.classList.add('inactive');
+        } else {
+          cell.classList.remove('inactive');
+        }
+      }
+    });
+  });
+}
+
+// =========================
+// Transport & scheduling (8th notes)
+// =========================
+function stepDuration() { return (60 / bpm) / 2; } // 8th-note grid
+
+function scheduleStep(si, when, useFill) {
+  if (muted) return; // Skip sound generation when muted
+  VOICES.forEach((v, vi) => {
+    if (v.muted) return; // Skip muted voices
+    if (useFill) {
+      if (fillPattern[vi][si]) triggerVoice(v.id, when);
+    } else {
+      if (pattern[vi][si]) triggerVoice(v.id, when);
+    }
+  });
+}
+
+function actionToggleVoiceMute(vi) {
+  VOICES[vi].muted = !VOICES[vi].muted;
+  renderGrid();
+}
+
+function tickRAF() { // visuals & near-future scheduling
+  if (!playing) return;
+  const now = ctx.currentTime;
+  const dur = stepDuration();
+  const elapsed = now - startTime;
+  const totalSteps = Math.floor(elapsed / dur);
+
+  // Calculate which iteration we're in (1..repeatCount)
+  const stepsPerIteration = steps;
+  const iteration = Math.floor(totalSteps / stepsPerIteration) % repeatCount + 1;
+  const stepInIteration = totalSteps % stepsPerIteration;
+
+  // Determine if we're playing the fill
+  const isFinalIteration = (iteration === repeatCount);
+  const inFillRegion = isFinalIteration && (stepInIteration >= steps - getFillLength());
+
+  let displayStep, useFill, scheduleIndex;
+  if (inFillRegion) {
+    // Playing fill: map to fill pattern index and display in fill columns
+    scheduleIndex = stepInIteration - (steps - getFillLength());
+    displayStep = steps + scheduleIndex;
+    useFill = true;
+  } else {
+    // Playing main pattern
+    scheduleIndex = stepInIteration;
+    displayStep = stepInIteration;
+    useFill = false;
+  }
+
+  // Track iteration changes
+  if (iteration !== currentIteration) {
+    currentIteration = iteration;
+    highlightRepeatBox(iteration);
+    updateCellActivity(iteration);
+  }
+
+  if (displayStep !== currentStep) {
+    const thisWhen = startTime + totalSteps * dur;
+    scheduleStep(scheduleIndex, thisWhen, useFill);
+    highlightColumn(displayStep);
+    currentStep = displayStep;
+  }
+
+  requestAnimationFrame(tickRAF);
+}
+
+// =========================
+// UI actions (top-level)
+// =========================
+function actionPlay() { // start transport
+  if (playing) return;
+  ctx.resume();
+  playing = true;
+  startTime = ctx.currentTime + 0.03;
+  currentStep = 0;
+  currentIteration = 1;
+  highlightColumn(currentStep);
+  highlightRepeatBox(1);
+  updateCellActivity(1);
+  requestAnimationFrame(tickRAF);
+  el.btnPlay.classList.add('playing');
+  el.btnStop.classList.remove('stopped');
+  document.body.classList.add('playing');
+  updateMuteButton();
+}
+
+function actionStop() { // stop transport
+  if (!playing) return;
+  playing = false;
+  el.btnPlay.classList.remove('playing');
+  el.btnStop.classList.add('stopped');
+  document.body.classList.remove('playing');
+  currentIteration = 1;
+  highlightRepeatBox(0); // Clear highlight
+  updateCellActivity(1); // Reset to first iteration state
+  updateMuteButton();
+}
+
+function actionMuteToggle() { // toggle mute
+  muted = !muted;
+  updateMuteButton();
+
+  // Flash the mute button
+  el.btnMute.classList.add('flash');
+  setTimeout(() => el.btnMute.classList.remove('flash'), 150);
+}
+
+function updateMuteButton() {
+  if (muted && playing) {
+    el.btnMute.classList.add('active');
+  } else {
+    el.btnMute.classList.remove('active');
+  }
+
+  // Update icon based on muted state
+  el.btnMute.textContent = muted ? '🔇 Muted' : '🔊 Sound';
+}
+
+function actionTapSpace() { // accumulate taps → BPM
+  const now = performance.now();
+  taps.push(now);
+  while (taps.length > 6) taps.shift();
+  if (taps.length >= 2) {
+    const diffs = taps.slice(1).map((t,i) => t - taps[i]);
+    const avg = diffs.reduce((a,b) => a + b, 0) / diffs.length;
+    bpm = Math.max(30, Math.min(300, Math.round(60000 / avg)));
+    el.bpmDisplay.value = bpm;
+    updatePatternText();
+    if (playing) { startTime = ctx.currentTime; }
+
+    // Flash the tap button
+    el.btnTap.classList.add('flash');
+    setTimeout(() => el.btnTap.classList.remove('flash'), 150);
+  }
+}
+
+function actionSetBPM(val) { // slider or text input changed
+  const oldBpm = bpm;
+  bpm = Math.max(30, Math.min(300, parseInt(val, 10) || bpm));
+  el.bpmDisplay.value = bpm;
+
+  if (playing && bpm !== oldBpm) {
+    // Preserve current position when changing tempo
+    const now = ctx.currentTime;
+    const oldDur = (60 / oldBpm) / 2;
+    const elapsed = now - startTime;
+    const totalSteps = Math.floor(elapsed / oldDur);
+    const newDur = stepDuration();
+    startTime = now - (totalSteps * newDur);
+  }
+
+  if (bpm !== oldBpm) {
+    updatePatternText();
+  }
+}
+
+function actionSetSteps(n) { // change grid length (16/32)
+  steps = n;
+  VOICES.forEach((_, vi) => {
+    const old = pattern[vi];
+    const next = new Array(steps).fill(false);
+    for (let i = 0; i < Math.min(old.length, next.length); i++) next[i] = old[i];
+    pattern[vi] = next;
+    const oldFill = fillPattern[vi];
+    const newFill = new Array(getFillLength()).fill(false);
+    for (let i = 0; i < Math.min(oldFill.length, newFill.length); i++) newFill[i] = oldFill[i];
+    fillPattern[vi] = newFill;
+  });
+  currentStep = 0;
+  renderGrid();
+  updatePatternText();
+}
+
+function actionSetRepeat(n) { // change repeat count
+  repeatCount = n;
+  renderRepeatBoxes();
+  if (playing) {
+    // Re-highlight and update activity for current iteration
+    highlightRepeatBox(currentIteration);
+    updateCellActivity(currentIteration);
+  } else {
+    currentIteration = 1;
+    updateCellActivity(1);
+  }
+}
+
+function actionJumpToRepeat(targetIteration) { // jump to a specific repeat
+  if (!playing) return; // Only works during playback
+
+  const now = ctx.currentTime;
+  const dur = stepDuration();
+  const elapsed = now - startTime;
+  const totalSteps = Math.floor(elapsed / dur);
+  const stepInIteration = totalSteps % steps;
+
+  // Calculate new totalSteps to preserve position within the beat
+  const targetTotalSteps = (targetIteration - 1) * steps + stepInIteration;
+
+  // Adjust startTime to jump to the target iteration
+  startTime = now - (targetTotalSteps * dur);
+
+  // Force immediate update
+  currentIteration = targetIteration;
+  highlightRepeatBox(targetIteration);
+  updateCellActivity(targetIteration);
+}
+
+function randomizeVoicePattern(vi) { // update pattern data for one voice
+  const K=0, S=1, H=2, T=3, C=4;
+  const bar = getBarSize();
+  const beatDiv = getBeatDiv();
+  pattern[vi].fill(false);
+  fillPattern[vi].fill(false);
+
+  switch (VOICES[vi].id) {
+    case 'kick':
+      for (let i = 0; i < steps; i++) {
+        const pos = i % bar;
+        const snare = pattern[S][i];
+        if (pos === 0)                              { pattern[vi][i] = true; }               // beat 1: always
+        else if (pos === bar/2 && !snare)           { pattern[vi][i] = Math.random() < 0.65; } // beat 3: 65%
+        else if (pos % beatDiv === 0 && !snare)     { pattern[vi][i] = Math.random() < 0.2; }  // other beats: 20%
+        else if (!snare)                            { pattern[vi][i] = Math.random() < 0.08; }  // offbeats: 8%
+      }
+      fillPattern[vi][0] = Math.random() < 0.4;
+      break;
+
+    case 'snare':
+      for (let i = 0; i < steps; i++) {
+        const pos = i % bar;
+        const kick = pattern[K][i];
+        if (bar === 8) {
+          if (pos === 2)        { pattern[vi][i] = Math.random() < 0.9; }
+          else if (pos === 6)   { pattern[vi][i] = Math.random() < 0.85; }
+          else if (!kick)       { pattern[vi][i] = Math.random() < 0.08; }
+        } else {
+          if (pos === 3)        { pattern[vi][i] = Math.random() < 0.9; }
+          else if (!kick)       { pattern[vi][i] = Math.random() < 0.08; }
+        }
+      }
+      for (let fi = 0; fi < getFillLength(); fi++) fillPattern[vi][fi] = true;
+      break;
+
+    case 'hat':
+      for (let i = 0; i < steps; i++) {
+        const busy = pattern[K][i] || pattern[S][i];
+        if (i % beatDiv === 0) { pattern[vi][i] = Math.random() < 0.85; }
+        else                   { pattern[vi][i] = Math.random() < (busy ? 0.3 : 0.55); }
+      }
+      // hat drops out during fill
+      break;
+
+    case 'tom':
+      for (let i = 0; i < steps; i++) {
+        if (!pattern[K][i] && !pattern[S][i]) { pattern[vi][i] = Math.random() < 0.12; }
+      }
+      for (let fi = 0; fi < getFillLength(); fi++) fillPattern[vi][fi] = true;
+      break;
+
+    case 'clap':
+      for (let i = 0; i < steps; i++) {
+        const pos = i % bar;
+        const snare = pattern[S][i];
+        if (bar === 8) {
+          if (pos === 6)              { pattern[vi][i] = Math.random() < 0.7; }
+          else if (pos === 2 && !snare) { pattern[vi][i] = Math.random() < 0.25; }
+          else if (!snare)            { pattern[vi][i] = Math.random() < 0.05; }
+        } else {
+          if (pos === 3 && !snare)    { pattern[vi][i] = Math.random() < 0.4; }
+        }
+      }
+      fillPattern[vi][getFillLength() - 1] = Math.random() < 0.7;
+      break;
+  }
+}
+
+function randomizeVoice(vi) { // randomize one voice and re-render
+  randomizeVoicePattern(vi);
+  renderGrid();
+  updatePatternText();
+}
+
+function actionToggleStep(vi, si, isFill) { // toggle a cell on/off
+  if (isFill) {
+    fillPattern[vi][si] = !fillPattern[vi][si];
+  } else {
+    pattern[vi][si] = !pattern[vi][si];
+  }
+  renderGrid();
+  updatePatternText();
+}
+
+function actionClear() { // clear all steps
+  VOICES.forEach((_, vi) => {
+    pattern[vi].fill(false);
+    fillPattern[vi].fill(false);
+  });
+  renderGrid();
+  updatePatternText();
+}
+
+function actionRandom() { // randomize all voices in dependency order
+  VOICES.forEach((_, vi) => { pattern[vi].fill(false); fillPattern[vi].fill(false); });
+  [0, 1, 2, 3, 4].forEach(vi => randomizeVoicePattern(vi)); // kick→snare→hat→tom→clap
+  renderGrid();
+  updatePatternText();
+}
+
+function actionKeyDown(e) { // global keyboard shortcuts
+  if (e.code === 'Space') { e.preventDefault(); if (playing) actionStop(); else actionPlay(); return; }
+if (e.code === 'KeyT' && document.activeElement !== el.patternText) { e.preventDefault(); actionTapSpace(); return; } // T triggers tap tempo
+  if (e.code === 'KeyM') { e.preventDefault(); actionMuteToggle(); return; } // M toggles mute
+  if (e.code === 'Minus' || e.code === 'NumpadSubtract') {
+    // Round up to nearest 5, then subtract 5
+    const rounded = Math.ceil(bpm / 5) * 5;
+    const newBpm = rounded - 5;
+    actionSetBPM(newBpm >= 30 ? newBpm : 30);
+    return;
+  }
+  if (e.code === 'Equal' || e.code === 'NumpadAdd') {
+    // Round down to nearest 5, then add 5
+    const rounded = Math.floor(bpm / 5) * 5;
+    const newBpm = rounded + 5;
+    actionSetBPM(newBpm <= 300 ? newBpm : 300);
+  }
+}
+
+// =========================
+// Wiring (once)
+// =========================
+function init() {
+  // Cache DOM
+  el.btnPlay   = document.getElementById('btnPlay');
+  el.btnStop   = document.getElementById('btnStop');
+  el.btnMute   = document.getElementById('btnMute');
+  el.btnTap    = document.getElementById('btnTap');
+  el.btnClear  = document.getElementById('btnClear');
+  el.selSteps  = document.getElementById('selSteps');
+  el.selRepeat = document.getElementById('selRepeat');
+  el.grid      = document.getElementById('grid');
+  el.bpmDisplay = document.getElementById('bpmDisplay');
+  el.repeatBoxes = document.getElementById('repeatBoxes');
+  el.patternText = document.getElementById('patternText');
+
+  // Initialize from state
+  repeatCount = parseInt(el.selRepeat.value, 10);
+  actionSetBPM(bpm);
+
+  // Initialize pattern
+  pattern = VOICES.map(() => new Array(steps).fill(false));
+  fillPattern = VOICES.map(() => new Array(getFillLength()).fill(false));
+
+  // Wire events to actions
+  el.btnPlay.addEventListener('click', actionPlay);
+  el.btnStop.addEventListener('click', actionStop);
+  el.btnMute.addEventListener('click', actionMuteToggle);
+  el.btnTap.addEventListener('click', actionTapSpace);
+  el.btnClear.addEventListener('click', actionClear);
+  el.selSteps.addEventListener('change', e => actionSetSteps(parseInt(e.target.value,10)));
+  el.selRepeat.addEventListener('change', e => actionSetRepeat(parseInt(e.target.value,10)));
+
+  el.bpmDisplay.addEventListener('input', e => {
+    e.target.value = e.target.value.replace(/[^0-9]/g, '').slice(0, 3);
+  });
+  el.bpmDisplay.addEventListener('change', e => {
+    const val = parseInt(e.target.value, 10);
+    if (val >= 30 && val <= 300) {
+      actionSetBPM(val);
+    } else {
+      e.target.value = Math.round(bpm).toString();
+    }
+  });
+  el.patternText.addEventListener('input', e => deserializePattern(e.target.value));
+  document.body.addEventListener('keydown', actionKeyDown);
+
+  // First render
+  renderRepeatBoxes();
+  renderGrid();
+  updateCellActivity(1); // Initialize with first iteration state
+
+  // Start with a random pattern
+  actionRandom(); // This also calls updatePatternText()
+}
+
+// Boot
+init();
+</script>
+
+<div style="padding: 1vh 1vw;">
+    <button id="btnHelp" onclick="document.getElementById('helpSection').scrollIntoView({behavior:'smooth'})">Help ↓</button>
+</div>
+
+<div style="height: 60vh;"></div>
+
+<div id="helpSection" style="padding: 1vh 1vw; font-size: 2vh;">
+Key bindings:
+<ul>
+  <li>SPACE: play or stop</li>
+  <li>R: randomize selected elements</li>
+  <li>T: tap to tempo</li>
+  <li>M: mute</li>
+  <li>-: decrease tempo</li>
+  <li>+: increase tempo</li>
+</ul>
+
+TODO:
+<ul>
+    <li>Visualization of animated drum set (swinging arm)</li>
+    <li>Configurable loop length</li>
+    <li>Store and retrieve named patterns</li>
+    <li>(S)implify and (C)omplexify buttons</li>
+    <li>Samples for voices</li>
+    <li>Extensible number of voices</li>
+    <li>Allow remote control from Music Coordinator Program (MCP)</li>
+</ul>
+</div>
+</body>
+</html>
