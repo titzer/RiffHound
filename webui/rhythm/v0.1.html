@@ -64,7 +64,7 @@
   }
   #lockLamp{
     display:inline-block;
-    padding: 0.2vh 0.8vw;
+    padding: 0.3vh 0.9vw;
     border:1px solid #bbb;
     border-radius: 999px;
     background:#eee;
@@ -90,6 +90,13 @@
     font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
     white-space: nowrap;
   }
+
+  #visCanvas {
+    display: block;
+    width: 100%;
+    height: 75vh;
+    border-top: 1px solid #ddd;
+  }
 </style>
 </head>
 <body>
@@ -97,7 +104,7 @@
     <button id="btnPlay"   class="primary">▶️ Play</button>
     <button id="btnPause">⏸ Pause</button>
     <button id="btnStop"   class="danger stopped">⏹ Stop</button>
-    <button id="btnAcquire">🎙 Acquire</button>
+    <button id="btnAcquire">⚡Acquire</button>
     <button id="btnTrack">🎯 Track</button>
     <button id="btnMute"   class="mute">🔊 Sound</button>
     <button id="btnTap">🕒 Tap Tempo</button>
@@ -105,10 +112,15 @@
   </div>
 
   <div id="statusBar">
+    <div style="padding: 1vh 1vw;">
+      <button id="btnHelp" onclick="document.getElementById('helpSection').scrollIntoView({behavior:'smooth'})">Help ↓</button>
+    </div>
+
     <span id="lockLamp">IDLE</span>
     <span id="statusText">A: acquire   R: track   SPACE: play</span>
     <span id="mono">err: <span id="errMs">—</span> ms | floor: <span id="floorV">—</span> | e: <span id="eV">—</span></span>
   </div>
+  <canvas id="visCanvas"></canvas>
 
 <script>
 // =========================
@@ -152,6 +164,8 @@ function fmtBpm(x) {
 function setBpmDisplay(x) {
   bpm = Math.max(30, Math.min(300, x));
   el.bpmDisplay.value = fmtBpm(bpm);
+  // Propagate immediately when free-running (no mic adjusting the period)
+  if (BF.state === 'LOCKED') BF.period = 60 / bpm;
 }
 function setLamp(text) { el.lockLamp.textContent = text; }
 function setStatus(msg) { el.statusText.textContent = msg; }
@@ -222,7 +236,7 @@ const BF = {
   stream: null, src: null, hp: null, analyser: null, buf: null,
 
   // detector
-  floor: 0.0, e: 0.0,
+  floor: 0.0, e: 0.0, eRef: 0,   // eRef = fast visual reference (separate from slow floor)
   threshMul: 6.0, refractoryBase: 0.12, lastTrig: -1e9,
 
   // acquisition
@@ -250,7 +264,7 @@ function resetFollowerUI() {
 function hardResetFollowerState() {
   BF.state = 'IDLE';
   BF.events = []; BF.estPeriod = null; BF.estBpm = null;
-  BF.floor = 0.0; BF.e = 0.0; BF.lastTrig = -1e9;
+  BF.floor = 0.0; BF.e = 0.0; BF.eRef = 0; BF.lastTrig = -1e9;
   BF.errAbsHist = []; BF.lastBeatSeen = -1e9;
   BF.trackBeatCount = 0;
   BF.nextTick = -1.0;
@@ -301,21 +315,21 @@ async function openMic() {
 
 // Full stop: mic off, state IDLE, stop playing
 function stopEverything() {
+  VIS.frozenNow = ctx.currentTime;
   stopMicHardware();
   hardResetFollowerState();
   ensureStoppedUI();
 }
 
 // =========================
-// Transition to LOCKED (mic off, ticks continue)
+// Transition to LOCKED (mic stays open for energy display; beatFollowerRAF keeps running)
 // =========================
 function transitionToLocked() {
-  stopMicHardware();     // mic off; beatFollowerRAF exits next frame
   BF.state = 'LOCKED';
   setLamp('LOCKED');
   setStatus(`Locked. ${fmtBpm(60/BF.period)} BPM. SPACE: stop   R: track   A: re-acquire`);
   setBodyFlags();
-  ensurePlayingUI();     // tickRAF will schedule ticks (BF.active now false)
+  ensurePlayingUI();
 }
 
 // =========================
@@ -344,8 +358,14 @@ function detectBeat(now) {
   const capped = Math.min(e, BF.floor * 2.0);
   BF.floor = BF.floor * 0.99 + capped * 0.01;
 
+  // Fast-adapting visual reference (α=0.15, no cap) — seeded on first non-zero sample.
+  // eRefPrev is stored with the sample so bar height reflects the pre-sample background.
+  const eRefPrev = BF.eRef > 0 ? BF.eRef : e;
+  BF.eRef = BF.eRef > 0 ? BF.eRef * 0.85 + e * 0.15 : e;
+
   el.floorV.textContent = BF.floor.toFixed(4);
   el.eV.textContent     = BF.e.toFixed(4);
+  VIS.energySamples.push({time: now, e, floor: BF.floor, eRef: eRefPrev});
 
   const enoughTime = (now - BF.lastTrig) > currentRefractory();
   const above      = e > (BF.floor * BF.threshMul);
@@ -371,7 +391,7 @@ function updateAcquireEstimate() {
   const T = median(ok);
   BF.estPeriod = T; BF.estBpm = 60/T;
   setBpmDisplay(BF.estBpm);
-  setLamp('LISTEN');
+  setLamp('ACQUIRE');
   setStatus(`Estimating… ~${fmtBpm(BF.estBpm)} BPM (${BF.events.length} beats). R to commit.`);
 }
 
@@ -415,6 +435,8 @@ function onBeatDetected(tBeat) {
     BF.events.push(tBeat);
     if (BF.events.length > 16) BF.events.shift();
     updateAcquireEstimate();
+    VIS.detectedBeats.push({time: tBeat, bpm: BF.estBpm, errMs: null});
+    if (BF.estBpm != null) VIS.bpmSamples.push({time: tBeat, bpm: BF.estBpm, errMs: null});
     tryPromoteToTrackFromAcquire();
     return;
   }
@@ -422,6 +444,8 @@ function onBeatDetected(tBeat) {
   if (BF.state === 'TRACK') {
     const err = phaseError(tBeat);
     el.errMs.textContent = (err * 1000).toFixed(1);
+    VIS.detectedBeats.push({time: tBeat, bpm: 60 / BF.period, errMs: err * 1000});
+    VIS.bpmSamples.push({time: tBeat, bpm: 60 / BF.period, errMs: err * 1000});
 
     BF.t0 += BF.alpha * err;
     const now = ctx.currentTime;
@@ -466,8 +490,7 @@ let beatCount = 0;
 
 function scheduleTicks(now) {
   if (paused) return;
-  if (BF.state !== 'TRACK' && BF.state !== 'LOCKED' &&
-      !(BF.state === 'ACQUIRE' && BF.nextTick >= 0)) return;
+  if (BF.state !== 'TRACK' && BF.state !== 'LOCKED') return;
   if (BF.nextTick < 0) return;  // not yet initialized
   // skip stale cursor (e.g. long pause) without burst
   if (BF.nextTick < now - BF.period) BF.nextTick = now;
@@ -487,6 +510,7 @@ function beatFollowerRAF() {
   // ACQUIRE timeout → IDLE
   if (BF.state === 'ACQUIRE' && (now - BF.acquireStart) > BF.maxAcquireSec) {
     setStatus('Gave up (20s). Press A to try again.');
+    VIS.frozenNow = now;
     stopMicHardware();
     hardResetFollowerState();
     ensureStoppedUI();
@@ -510,11 +534,14 @@ async function actionAcquire() {
   // Stop mic if somehow on (shouldn't happen in normal flow)
   if (BF.active) stopMicHardware();
 
+  // Fresh start from IDLE: clear visualization and stale phase
+  if (BF.state === 'IDLE') { VIS.detectedBeats = []; VIS.energySamples = []; VIS.bpmSamples = []; BF.t0 = 0; }
+
   // Preserve period/nextTick so ticks continue if coming from LOCKED
   BF.state       = 'ACQUIRE';
   BF.acquireStart = ctx.currentTime;
   BF.events      = []; BF.estPeriod = null; BF.estBpm = null;
-  BF.floor       = 0.0; BF.e = 0.0; BF.lastTrig = -1e9;
+  BF.floor       = 0.0; BF.e = 0.0; BF.eRef = 0; BF.lastTrig = -1e9;
   BF.errAbsHist  = []; BF.lastBeatSeen = -1e9; BF.trackBeatCount = 0;
 
   try {
@@ -528,8 +555,8 @@ async function actionAcquire() {
     return;
   }
 
-  setLamp('LISTEN');
-  setStatus('Listening… wait for 4 beats. R to commit early.');
+  setLamp('ACQUIRE');
+  setStatus('Listening…');
   setBodyFlags();
   requestAnimationFrame(beatFollowerRAF);
 }
@@ -539,6 +566,7 @@ async function actionTrack() {
 
   if (BF.state === 'IDLE') {
     // IDLE → TRACK: use current BPM, open mic
+    VIS.detectedBeats = []; VIS.energySamples = []; VIS.bpmSamples = [];
     BF.period = 60 / bpm;
     BF.t0 = ctx.currentTime;
     BF.nextTick = BF.t0;
@@ -567,22 +595,26 @@ async function actionTrack() {
   if (BF.state === 'TRACK') { transitionToLocked(); return; }
 
   if (BF.state === 'LOCKED') {
-    // LOCKED → TRACK: re-open mic
+    // LOCKED → TRACK: mic may already be open (kept on for energy display)
     BF.errAbsHist = []; BF.trackBeatCount = 0; BF.lastBeatSeen = -1e9;
+    const wasActive = BF.active;
 
-    try { await openMic(); } catch (err) {
-      console.error(err);
-      setLamp('ERROR');
-      setStatus('Mic failed (permission? HTTPS/localhost?).');
-      setBodyFlags();
-      return;
+    if (!wasActive) {
+      // Mic was off (came via SPACE→LOCKED); open it now
+      try { await openMic(); } catch (err) {
+        console.error(err);
+        setLamp('ERROR');
+        setStatus('Mic failed (permission? HTTPS/localhost?).');
+        setBodyFlags();
+        return;
+      }
     }
 
     BF.state = 'TRACK';
     setLamp('TRACK');
     setStatus(`Tracking… ${fmtBpm(60/BF.period)} BPM. Locks after 8 beats. R to lock now.`);
     setBodyFlags();
-    requestAnimationFrame(beatFollowerRAF);
+    if (!wasActive) requestAnimationFrame(beatFollowerRAF);  // only start if not already running
   }
 }
 
@@ -679,6 +711,268 @@ function getButtonAndAddAction(name, action) {
 }
 
 // =========================
+// Visualization
+// =========================
+const VIS = {
+  detectedBeats: [],   // {time, bpm, errMs}
+  energySamples: [],   // {time, e, floor}
+  bpmSamples:    [],   // {time, bpm, errMs} — one per beat detection
+  windowSec: 6.0,
+  nowFrac:   2/3,      // "now" line at 2/3 canvas width
+  frozenNow: null,     // ctx.currentTime captured when entering IDLE (canvas freezes)
+};
+
+function drawDiamond(cx, x, y, r, filled) {
+  cx.beginPath();
+  cx.moveTo(x,     y - r);
+  cx.lineTo(x + r, y    );
+  cx.lineTo(x,     y + r);
+  cx.lineTo(x - r, y    );
+  cx.closePath();
+  if (filled) cx.fill();
+  cx.stroke();
+}
+
+function drawVis() {
+  requestAnimationFrame(drawVis);
+
+  const canvas = document.getElementById('visCanvas');
+  if (!canvas) return;
+
+  // Resize canvas buffer to match CSS size (DPR-aware)
+  const dpr = window.devicePixelRatio || 1;
+  const W   = canvas.offsetWidth;
+  const H   = canvas.offsetHeight;
+  if (W === 0 || H === 0) return;
+  if (canvas.width !== W * dpr || canvas.height !== H * dpr) {
+    canvas.width  = W * dpr;
+    canvas.height = H * dpr;
+  }
+
+  const cx  = canvas.getContext('2d');
+  cx.setTransform(dpr, 0, 0, dpr, 0, 0);   // reset to CSS-pixel space
+
+  // In IDLE, freeze at the captured snapshot time so the canvas doesn't animate
+  const now      = (BF.state === 'IDLE' && VIS.frozenNow !== null)
+                   ? VIS.frozenNow : ctx.currentTime;
+  const pxPerSec = W / VIS.windowSec;
+  const nowX     = W * VIS.nowFrac;
+  function timeToX(t) { return nowX + (t - now) * pxPerSec; }
+
+  // Layout rows
+  const detectedY  = H * 0.11;
+  const predictedY = H * 0.23;
+  const bpmTopY    = H * 0.34;
+  const bpmBotY    = H * 0.62;
+  const bpmCenterY = (bpmTopY + bpmBotY) / 2;
+  const bpmH       = bpmBotY - bpmTopY;
+  const energyTopY = H * 0.68;
+  const energyH    = H - energyTopY;
+
+  // Time window edges
+  const leftT  = now - VIS.windowSec * VIS.nowFrac;
+  const rightT = now + VIS.windowSec * (1 - VIS.nowFrac);
+
+  // Background
+  cx.fillStyle = '#f8f8f8';
+  cx.fillRect(0, 0, W, H);
+  cx.fillStyle = '#f2f0f8';  // subtle tint for BPM zone
+  cx.fillRect(0, bpmTopY, W, bpmH);
+  cx.fillStyle = '#efefef';
+  cx.fillRect(0, energyTopY, W, energyH);
+
+  // --- 250ms vertical grid lines ---
+  {
+    const gridInterval = 0.250;
+    let gridT = Math.ceil(leftT / gridInterval) * gridInterval;
+    cx.strokeStyle = '#e4e4e4';
+    cx.lineWidth   = 1;
+    cx.setLineDash([]);
+    cx.beginPath();
+    while (gridT <= rightT) {
+      const gx = timeToX(gridT);
+      cx.moveTo(gx, 0);
+      cx.lineTo(gx, H);
+      gridT += gridInterval;
+    }
+    cx.stroke();
+  }
+
+  // Track guide lines
+  cx.strokeStyle = '#d0d0d0';
+  cx.lineWidth   = 1;
+  cx.setLineDash([]);
+  cx.beginPath();
+  cx.moveTo(0, detectedY);  cx.lineTo(W, detectedY);
+  cx.moveTo(0, predictedY); cx.lineTo(W, predictedY);
+  cx.moveTo(0, bpmTopY);    cx.lineTo(W, bpmTopY);
+  cx.moveTo(0, energyTopY); cx.lineTo(W, energyTopY);
+  cx.stroke();
+
+  // Track labels
+  cx.fillStyle    = '#bbb';
+  cx.font         = '10px sans-serif';
+  cx.textAlign    = 'left';
+  cx.textBaseline = 'bottom';
+  cx.fillText('beats',     4, detectedY  - 3);
+  cx.fillText('predicted', 4, predictedY - 3);
+  cx.textBaseline = 'top';
+  cx.fillText('bpm',       4, bpmTopY    + 2);
+  cx.fillText('energy',    4, energyTopY + 2);
+
+  // "Now" line
+  cx.strokeStyle = '#bbb';
+  cx.lineWidth   = 1;
+  cx.setLineDash([4, 4]);
+  cx.beginPath();
+  cx.moveTo(nowX, 0);
+  cx.lineTo(nowX, H);
+  cx.stroke();
+  cx.setLineDash([]);
+  cx.fillStyle    = '#bbb';
+  cx.textAlign    = 'center';
+  cx.textBaseline = 'top';
+  cx.fillText('now', nowX, 2);
+
+  // --- Detected beats ---
+  cx.textAlign = 'center';
+  for (const b of VIS.detectedBeats) {
+    const x = timeToX(b.time);
+    if (x < -30 || x > W + 30) continue;
+
+    // Filled diamond
+    cx.fillStyle   = '#2266ee';
+    cx.strokeStyle = '#2266ee';
+    cx.lineWidth   = 1.5;
+    drawDiamond(cx, x, detectedY, 10, true);
+
+    // BPM label above diamond
+    if (b.bpm != null) {
+      cx.fillStyle    = '#2266ee';
+      cx.font         = 'bold 12px monospace';
+      cx.textBaseline = 'bottom';
+      cx.fillText(b.bpm.toFixed(1), x, detectedY - 11);
+    }
+
+    // Error label below diamond
+    if (b.errMs != null) {
+      const sign = b.errMs >= 0 ? '+' : '';
+      cx.fillStyle    = '#888';
+      cx.font         = '11px monospace';
+      cx.textBaseline = 'top';
+      cx.fillText(`${sign}${b.errMs.toFixed(0)}ms`, x, detectedY + 11);
+    }
+  }
+
+  // --- Predicted beats ---
+  // Show only when actively tracking or locked (not in IDLE or early ACQUIRE)
+  if ((BF.state === 'TRACK' || BF.state === 'LOCKED') && BF.t0 > 0 && BF.period > 0) {
+    let beatT = BF.t0 + Math.ceil((leftT - BF.t0) / BF.period) * BF.period;
+    while (beatT <= rightT) {
+      const x = timeToX(beatT);
+      if (x >= -10 && x <= W + 10) {
+        cx.strokeStyle = beatT > now ? '#ee8800' : '#ccc';
+        cx.lineWidth   = 1.5;
+        drawDiamond(cx, x, predictedY, 10, false);
+      }
+      beatT += BF.period;
+    }
+  }
+
+  // --- BPM zone ---
+  {
+    const nomBpm = bpm;                  // display BPM — center reference line
+    const halfRange = 15;                // ±15 BPM visible range
+    const bpmToY = b => bpmCenterY - Math.max(-1, Math.min(1, (b - nomBpm) / halfRange)) * (bpmH / 2);
+
+    // Dashed center line at nominal BPM
+    cx.strokeStyle = '#ccc8dd';
+    cx.lineWidth   = 1;
+    cx.setLineDash([4, 4]);
+    cx.beginPath();
+    cx.moveTo(0, bpmCenterY); cx.lineTo(W, bpmCenterY);
+    cx.stroke();
+    cx.setLineDash([]);
+
+    // Nominal BPM label on right edge of center line
+    cx.fillStyle    = '#aaa';
+    cx.font         = '10px monospace';
+    cx.textAlign    = 'right';
+    cx.textBaseline = 'middle';
+    cx.fillText(nomBpm.toFixed(1), W - 4, bpmCenterY);
+
+    const visBpm = VIS.bpmSamples.filter(s => s.bpm != null);
+    if (visBpm.length > 0) {
+      // BPM line connecting dots
+      cx.strokeStyle = '#7755bb';
+      cx.lineWidth   = 1.5;
+      cx.setLineDash([]);
+      cx.beginPath();
+      let first = true;
+      for (const s of visBpm) {
+        const x = timeToX(s.time);
+        const y = bpmToY(s.bpm);
+        if (first) { cx.moveTo(x, y); first = false; } else { cx.lineTo(x, y); }
+      }
+      // Extend flat to "now" when LOCKED (mic off, no new beats)
+      if (BF.state === 'LOCKED') {
+        cx.lineTo(nowX, bpmToY(60 / BF.period));
+      }
+      cx.stroke();
+
+      // Dots + error ticks
+      for (const s of visBpm) {
+        const x = timeToX(s.time);
+        const y = bpmToY(s.bpm);
+
+        // Dot
+        cx.fillStyle = '#7755bb';
+        cx.beginPath();
+        cx.arc(x, y, 3, 0, Math.PI * 2);
+        cx.fill();
+
+        // Error tick: extends from center line, proportional to phase error
+        // ±50ms of phase error → ±45% of bpm zone height
+        if (s.errMs != null) {
+          const tickH = Math.max(-bpmH * 0.45, Math.min(bpmH * 0.45,
+                        s.errMs * (bpmH * 0.45) / 50));
+          cx.strokeStyle = Math.abs(s.errMs) > 30 ? '#cc5544' : '#9988cc';
+          cx.lineWidth   = 1.5;
+          cx.beginPath();
+          cx.moveTo(x, bpmCenterY);
+          cx.lineTo(x, bpmCenterY - tickH);
+          cx.stroke();
+        }
+      }
+    }
+  }
+
+  // --- Energy bar graph ---
+  for (const s of VIS.energySamples) {
+    const x = timeToX(s.time);
+    if (x < 0 || x > W) continue;
+    // Height: use fast visual reference so bars show transients above recent background.
+    // Color: use beat-detector floor so red = actually above trigger threshold.
+    const ref        = s.eRef > 0 ? s.eRef : s.floor;
+    const ratio      = ref > 0 ? s.e / ref : 0;
+    const normalized = ratio > 1 ? Math.min(Math.log(ratio) / Math.log(BF.threshMul), 1.0) : 0;
+    const threshold  = s.floor * BF.threshMul;
+    const barH       = normalized * energyH;
+    cx.fillStyle = s.e > threshold ? '#dd4444' : '#44aa66';
+    cx.fillRect(x - 1.5, H - barH, 3, barH);
+  }
+
+  // Cull data older than the visible window
+  const cullBefore = now - VIS.windowSec - 0.5;
+  if (VIS.detectedBeats.length && VIS.detectedBeats[0].time < cullBefore)
+    VIS.detectedBeats = VIS.detectedBeats.filter(b => b.time >= cullBefore);
+  if (VIS.energySamples.length && VIS.energySamples[0].time < cullBefore)
+    VIS.energySamples = VIS.energySamples.filter(s => s.time >= cullBefore);
+  if (VIS.bpmSamples.length && VIS.bpmSamples[0].time < cullBefore)
+    VIS.bpmSamples = VIS.bpmSamples.filter(s => s.time >= cullBefore);
+}
+
+// =========================
 // Wiring
 // =========================
 function init() {
@@ -713,51 +1007,67 @@ function init() {
   setBpmDisplay(bpm);
   hardResetFollowerState();
   ensureStoppedUI();
+  requestAnimationFrame(drawVis);
 }
 
 // Boot
 init();
 </script>
 
-<div style="padding: 1vh 1vw;">
-  <button id="btnHelp" onclick="document.getElementById('helpSection').scrollIntoView({behavior:'smooth'})">Help ↓</button>
-</div>
-
 <div style="height: 120vh;"></div>
 
 <div id="helpSection" style="padding: 1vh 1vw; font-size: 2vh;">
+Buttons &amp; keys:
+<table style="border-collapse:collapse; font-size:inherit;">
+<tr><th style="text-align:left;padding:0.3em 1em 0.3em 0">Button</th><th style="text-align:left;padding:0.3em 1em 0.3em 0">Key</th><th style="text-align:left;padding:0.3em 0">Action</th></tr>
+<tr><td>▶️ Play</td><td><b>SPACE</b></td><td>From IDLE: start playing ticks at current BPM (no mic)</td></tr>
+<tr><td>⏸ Pause</td><td><b>P</b></td><td>Pause / resume</td></tr>
+<tr><td>⏹ Stop</td><td><b>SPACE</b></td><td>Stop everything and return to IDLE</td></tr>
+<tr><td>🎙 Acquire</td><td><b>A</b></td><td>Open mic, listen for beats to estimate BPM; from LOCKED, re-acquires while ticks continue</td></tr>
+<tr><td>🎯 Track</td><td><b>R</b></td><td>Open mic and phase-track at current BPM (from IDLE); commit estimate (from ACQUIRING); force lock (from TRACKING); re-open mic (from LOCKED)</td></tr>
+<tr><td>🔊 Sound</td><td><b>M</b></td><td>Mute / unmute tick output</td></tr>
+<tr><td>🕒 Tap Tempo</td><td><b>T</b></td><td>Tap to set BPM; takes effect immediately if playing</td></tr>
+<tr><td>BPM display</td><td><b>- / +</b></td><td>Edit BPM directly or step by 5; takes effect immediately if playing</td></tr>
+</table>
+
 State machine:
 <ul>
-  <li><b>IDLE →A→ ACQUIRING</b>: mic opens, listens for beats to estimate BPM</li>
-  <li><b>IDLE →R→ TRACKING</b>: mic opens, starts playing at current BPM, phase-adjusts</li>
+  <li><b>IDLE →A→ ACQUIRING</b>: mic opens, collects beats to estimate BPM</li>
+  <li><b>IDLE →R→ TRACKING</b>: mic opens, plays at current BPM, phase-adjusts to mic</li>
   <li><b>IDLE →SPACE→ LOCKED</b>: plays at current BPM immediately (no mic)</li>
-  <li><b>ACQUIRING →auto→ TRACKING</b>: after 4 consistent beats</li>
+  <li><b>ACQUIRING →auto→ TRACKING</b>: after 4 consistent beats detected</li>
   <li><b>ACQUIRING →R→ LOCKED</b>: commit current estimate early</li>
-  <li><b>ACQUIRING →auto→ IDLE</b>: error after 20s timeout</li>
-  <li><b>TRACKING →auto→ LOCKED</b>: after phase stabilises or 8 beats</li>
+  <li><b>ACQUIRING →auto→ IDLE</b>: timeout after 20 s</li>
+  <li><b>TRACKING →auto→ LOCKED</b>: after phase stabilises or 8 beats seen</li>
   <li><b>TRACKING →R→ LOCKED</b>: force lock now</li>
-  <li><b>LOCKED →R→ TRACKING</b>: re-open mic, phase-adjust</li>
-  <li><b>LOCKED →A→ ACQUIRING</b>: re-open mic, re-collect (ticks continue)</li>
+  <li><b>LOCKED →R→ TRACKING</b>: re-open mic, resume phase-adjustment</li>
+  <li><b>LOCKED →A→ ACQUIRING</b>: re-open mic, re-collect (ticks keep playing)</li>
   <li><b>any →SPACE→ IDLE</b>: stop everything</li>
 </ul>
 
-Key bindings:
+Canvas:
 <ul>
-  <li><b>A</b>: Acquire</li>
-  <li><b>R</b>: Track / commit / lock</li>
-  <li><b>SPACE</b>: Play (from IDLE) or stop everything</li>
-  <li>P: pause/resume</li>
-  <li>T: tap tempo</li>
-  <li>M: mute</li>
-  <li>- / +: change tempo by 5 BPM</li>
+  <li>Filled blue diamonds = detected beats; BPM estimate above, phase error below.</li>
+  <li>Empty orange diamonds = predicted future beats; grey = predicted past.</li>
+  <li>Bar graph = acoustic energy; red bars = beat triggered.</li>
+  <li>"now" line is at ⅔ width; 6 seconds spans the full canvas.</li>
 </ul>
 
 Notes:
 <ul>
   <li>Mic access requires HTTPS or localhost.</li>
   <li>For a mechanical metronome, aim the mic at it and keep speaker volume moderate.</li>
-  <li>When re-acquiring from LOCKED, existing ticks keep playing while new beats are collected.</li>
 </ul>
+
+TODO:
+<ul>
+  <li>Graph state over time as well. Use some vertical space in the timeline canvas to show the state over time as a line about the thickness of text. Use yellow for ACQUIRING, red for TRACKING and green for locked. Display the text name of the current state just to the right of the now line. </li>
+  <li>Fix the beat detection. Energy levels still look weird, often fully red at the start</li>
+  <li>Add manual tracking adjustment buttons. Plus 10ms (the ] key) and Minus 10ms (the [ key) for when the tone is played.</li>
+  <li>Fix tone detection. Use suggestions from ChatGPT. (multiple tones, listen for *the end* of specific tones).
+</ul>
+</ul>
+
 </div>
 </body>
 </html>
