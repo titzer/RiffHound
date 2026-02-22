@@ -120,7 +120,8 @@
 
   <div id="grid"></div>
 
-  <div style="padding: 0.5vh 1vw; display: flex; gap: 0.5em; align-items: center;">
+  <div style="padding: 0.5vh 1vw; display: flex; gap: 0.5em; align-items: center; flex-wrap: wrap;">
+    <select id="selPreset" style="font-size: 2vh; padding: 0.4vh 0.5vw;"></select>
     <select id="selSteps" style="font-size: 2vh; padding: 0.4vh 0.5vw;">
       <option value="16" selected>16 steps (8th notes ×2 bars)</option>
       <option value="24">24 steps (8th notes ×4 bars, 6/8)</option>
@@ -153,6 +154,77 @@ let repeatCount = 3;        // how many times to repeat before playing fill
 let currentIteration = 1;   // current iteration (1..repeatCount)
 function getFillLength() { return getBarSize() === 6 ? 6 : 4; } // one bar in 6/8, half bar in 4/4
 let deserializing = false;  // flag to prevent pattern text updates during deserialization
+
+// =========================
+// Built-in patterns
+// =========================
+const BUILT_IN_PATTERNS = [
+  // ── 16 steps (4/4, 2 bars) ──
+  { name: 'Basic Rock',        steps: 16,
+    drums: 'KH,H,SH,H,KH,H,SH,H,KH,H,SH,H,KH,H,SH,H',
+    fill:  'S,S,ST,ST' },
+  { name: 'Half Time',         steps: 16,
+    drums: 'KH,_,H,_,SH,_,H,_,KH,_,H,_,SH,_,H,_',
+    fill:  'S,T,T,ST' },
+  { name: 'Four on the Floor', steps: 16,
+    drums: 'K,H,KS,H,K,H,KS,H,K,H,KS,H,K,H,KS,H',
+    fill:  'K,KS,KT,KST' },
+  { name: 'Funk Pocket',       steps: 16,
+    drums: 'KH,H,SH,KH,H,H,SH,H,KH,H,SH,KH,H,H,SH,H',
+    fill:  'S,S,T,KST' },
+  { name: 'Boom Bap',          steps: 16,
+    drums: 'KH,_,H,K,SH,_,H,_,KH,_,KH,_,SH,_,H,_',
+    fill:  'S,S,T,T' },
+  { name: 'One Drop Reggae',   steps: 16,
+    drums: '_,H,C,H,KS,H,C,H,_,H,C,H,KS,H,C,H',
+    fill:  'K,S,T,KS' },
+  { name: 'March',             steps: 16,
+    drums: 'K,_,S,_,K,_,S,_,K,_,S,_,K,_,S,_',
+    fill:  'S,S,S,KS' },
+  { name: 'Disco',             steps: 16,
+    drums: 'KC,H,KS,H,KC,H,KS,H,KC,H,KS,H,KC,H,KS,H',
+    fill:  'K,KS,KC,KST' },
+
+  // ── 24 steps (6/8, 4 bars) ──
+  { name: '6/8 Groove',        steps: 24,
+    drums: 'KH,H,H,SH,H,H,KH,H,H,SH,H,H,KH,H,H,SH,H,H,KH,H,H,SH,H,H',
+    fill:  'H,H,SH,H,ST,KST' },
+  { name: 'Compound March',    steps: 24,
+    drums: 'K,T,_,S,T,_,K,T,_,S,T,_,K,T,_,S,T,_,K,T,_,S,T,_',
+    fill:  'K,T,S,T,ST,KST' },
+  { name: 'Celtic Jig',        steps: 24,
+    drums: 'KH,_,H,KH,_,H,KH,_,H,KH,_,H,KH,_,H,KH,_,H,KH,_,H,KH,_,H',
+    fill:  'H,H,KH,H,H,KSH' },
+  { name: 'Afro 6/8',          steps: 24,
+    drums: 'KH,H,KH,SH,H,H,H,H,KH,SH,H,H,KH,H,KH,SH,H,H,H,H,KH,SH,H,H',
+    fill:  'K,H,S,H,ST,KST' },
+  { name: '6/8 Ballad',        steps: 24,
+    drums: 'K,_,_,S,_,_,K,_,_,S,_,_,K,_,_,S,_,_,K,_,_,S,_,_',
+    fill:  'S,_,T,_,T,KS' },
+
+  // ── 32 steps (4/4, 4 bars) ──
+  { name: 'Extended Rock',     steps: 32,
+    drums: 'KH,H,SH,H,KH,H,SH,H,KH,H,SH,H,KH,H,SH,H,KH,H,SH,H,KH,H,SH,H,KH,H,SH,KH,KH,H,SH,H',
+    fill:  'S,S,ST,ST' },
+  { name: 'Syncopated Funk',   steps: 32,
+    drums: 'KH,H,SH,KH,H,H,SH,H,KH,_,SH,_,KH,H,SH,H,KH,H,SH,KH,H,KH,SH,H,KH,_,SH,_,KH,H,SH,H',
+    fill:  'S,S,T,KST' },
+  { name: 'Samba',             steps: 32,
+    drums: 'KH,H,K,H,SH,H,K,H,KH,H,K,H,SH,H,K,H,KH,H,K,H,SH,H,K,H,KH,H,K,H,SH,H,K,H',
+    fill:  'K,KS,T,KST' },
+  { name: 'Afrobeat',          steps: 32,
+    drums: 'KH,_,H,SH,_,H,KH,H,_,H,SH,_,H,KH,_,H,KH,_,H,SH,_,H,KH,H,_,H,SH,_,H,KH,_,H',
+    fill:  'S,ST,T,KST' },
+  { name: 'Trap Feel',         steps: 32,
+    drums: 'K,H,H,H,SH,H,H,H,K,H,K,H,SH,H,H,H,K,H,H,H,SH,H,H,H,K,H,K,H,SH,H,H,H',
+    fill:  'K,S,T,KST' },
+  { name: 'Dembow',            steps: 32,
+    drums: 'KH,H,SH,KH,H,H,SH,H,KH,H,SH,KH,H,H,SH,H,KH,H,SH,KH,H,H,SH,H,KH,H,SH,KH,H,H,SH,H',
+    fill:  'K,KS,T,KST' },
+  { name: 'Sparse Groove',     steps: 32,
+    drums: 'KH,_,_,SH,_,_,KH,_,KH,_,_,SH,_,_,KH,_,KH,_,_,SH,_,_,KH,_,KH,_,_,SH,_,_,K,_',
+    fill:  'S,_,T,KST' },
+];
 
 // 5 drum voices
 const VOICES = [
@@ -897,6 +969,36 @@ if (e.code === 'KeyT' && document.activeElement !== el.patternText) { e.preventD
   }
 }
 
+function loadBuiltInPattern(p) {
+  if (p.steps !== steps) {
+    steps = p.steps;
+    el.selSteps.value = String(p.steps);
+    pattern     = VOICES.map(() => new Array(steps).fill(false));
+    fillPattern = VOICES.map(() => new Array(getFillLength()).fill(false));
+  }
+  deserializePattern(`tempo: ${bpm}; drums: ${p.drums}; fill: ${p.fill}`);
+  updatePatternText();
+}
+
+function initPresetSelect() {
+  const sel = el.selPreset;
+  sel.innerHTML = '<option value="">— Preset —</option>';
+  const labels = { 16: '── 16 steps (4/4, 2 bars) ──', 24: '── 24 steps (6/8, 4 bars) ──', 32: '── 32 steps (4/4, 4 bars) ──' };
+  const groups = {};
+  [16, 24, 32].forEach(s => {
+    const g = document.createElement('optgroup');
+    g.label = labels[s];
+    groups[s] = g;
+  });
+  BUILT_IN_PATTERNS.forEach((p, i) => {
+    const opt = document.createElement('option');
+    opt.value = i;
+    opt.textContent = p.name;
+    groups[p.steps].appendChild(opt);
+  });
+  [16, 24, 32].forEach(s => sel.appendChild(groups[s]));
+}
+
 // =========================
 // Wiring (once)
 // =========================
@@ -909,8 +1011,9 @@ function init() {
   el.btnClear    = document.getElementById('btnClear');
   el.btnSimplify = document.getElementById('btnSimplify');
   el.btnPermute  = document.getElementById('btnPermute');
-  el.selSteps  = document.getElementById('selSteps');
-  el.selRepeat = document.getElementById('selRepeat');
+  el.selSteps   = document.getElementById('selSteps');
+  el.selPreset  = document.getElementById('selPreset');
+  el.selRepeat  = document.getElementById('selRepeat');
   el.grid      = document.getElementById('grid');
   el.bpmDisplay = document.getElementById('bpmDisplay');
   el.repeatBoxes = document.getElementById('repeatBoxes');
@@ -933,6 +1036,11 @@ function init() {
   el.btnSimplify.addEventListener('click', actionSimplify);
   el.btnPermute.addEventListener('click', actionPermute);
   el.selSteps.addEventListener('change', e => actionSetSteps(parseInt(e.target.value,10)));
+  el.selPreset.addEventListener('change', e => {
+    if (e.target.value === '') return;
+    loadBuiltInPattern(BUILT_IN_PATTERNS[parseInt(e.target.value)]);
+    e.target.value = '';
+  });
   el.selRepeat.addEventListener('change', e => actionSetRepeat(parseInt(e.target.value,10)));
 
   el.bpmDisplay.addEventListener('input', e => {
@@ -950,6 +1058,7 @@ function init() {
   document.body.addEventListener('keydown', actionKeyDown);
 
   // First render
+  initPresetSelect();
   renderRepeatBoxes();
   renderGrid();
   updateCellActivity(1); // Initialize with first iteration state
