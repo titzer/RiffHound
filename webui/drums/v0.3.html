@@ -19,12 +19,15 @@
   /* Stop: neutral when stopped, red when playing */
   #top #btnStop { background: #f4f4f4; color: #000; border: 1px solid #bbb; }
   body.playing #top #btnStop { background: #770000; color: #fff; border: 1px solid #770000; }
+  /* Pause: yellow when paused (overrides the green playing color) */
+  #top #btnPause.paused { background: #ffcc00; color: #000; border: 1px solid #ccaa00; }
+  body.playing #top #btnPause.paused { background: #ffcc00; color: #000; border: 1px solid #ccaa00; }
   /* Mute button active: yellow (persists even while playing) */
   #top button.mute.active { background: #ffcc00; color: #000; border: 1px solid #ffcc00; }
   body.playing #top button.mute.active { background: #ffcc00; color: #000; border: 1px solid #ffcc00; }
   /* Neutral buttons: no color state */
-  #btnTap { background: #f4f4f4; color: #000; border: 1px solid #bbb; }
-  body.playing #btnTap { background: #f4f4f4; color: #000; border: 1px solid #bbb; }
+  #top #btnTap, #top #btnPause { background: #f4f4f4; color: #000; border: 1px solid #bbb; }
+  body.playing #top #btnTap, body.playing #top #btnPause { background: #f4f4f4; color: #000; border: 1px solid #bbb; }
   button.flash { background: #4CAF50; color: #fff; }
 
   #repeatViz { padding: 1vh 1vw; display: flex; gap: 1rem; align-items: center; }
@@ -47,25 +50,33 @@
   .steps { display: grid; gap: 2px; grid-auto-flow: column; width: 100%; }
   .cell { height: 8vh; border: 1px solid #bbb; background: #fafafa; display: inline-flex; align-items: center; justify-content: center; font-size: 12px; user-select: none; box-sizing: border-box; position: relative; }
 
-  /* on cells: blue when not playing, green when playing */
+  /* on cells: blue when stopped or future (not yet played) */
   .cell.on { background: #8389ff; color: #fff; border-color: #8389ff; }
-  body.playing .cell.on { background: #007700; color: #fff; border-color: #007700; }
-  /* beat left border (quarter notes) — always black */
+  /* beat borders — always black */
   .cell.beat { border: 2px solid #000; }
   body.playing .cell.beat { border-color: #000; }
   .cell.on.beat { border-color: #000; }
   body.playing .cell.on.beat { border-color: #000; }
-  /* bar start: thick left border, no background tint */
+  /* bar start: darker blue tint when stopped/future */
   .cell.on.barStart { background-color: #6066cc; }
-  body.playing .cell.on.barStart { background-color: #2f8f2f; }
   /* bar start circle: gray when off, black when on */
   .cell.barStart::before { content: ''; position: absolute; width: 70%; aspect-ratio: 1; border-radius: 50%; background: #aaa; pointer-events: none; }
   .cell.barStart.on::before { background: #000; }
+  /* current column: thick green border + green fill on active cells */
   body.playing .cell.columnActive { border: 8px solid #007700 !important; }
-  /* fill pattern styling: keep orange to distinguish from main pattern */
+  body.playing .cell.on.columnActive { background: #007700; border-color: #007700; }
+  body.playing .cell.on.barStart.columnActive { background-color: #2f8f2f; }
+  body.playing .cell.on.fill.columnActive { background: #007700; border-color: #007700; }
+  /* past cells (already played): light green */
+  body.playing .cell.on.past { background: #99cc99; color: #333; border-color: #99cc99; }
+  body.playing .cell.on.past.beat { border-color: #000; }
+  body.playing .cell.on.barStart.past { background-color: #77aa77; }
+  /* fill pattern: orange when stopped; blue when playing+future; light green when playing+past */
   .cell.fill { background-color: #ffe0e0; }
   .cell.on.fill { background-color: #bb5500; border-color: #bb5500; }
-  body.playing .cell.on.fill { background-color: #bb5500; border-color: #bb5500; }
+  body.playing .cell.on.fill { background: #8389ff; border-color: #8389ff; }
+  body.playing .cell.on.fill.past { background-color: #99cc99; border-color: #99cc99; }
+  body.playing .cell.on.fill.past.beat { border-color: #000; }
   /* muted voice: enabled cells yellow regardless of state */
   .voiceMuted .cell.on { background: #ffcc00 !important; border-color: #ccaa00 !important; }
   .voiceMuted .cell.on.beat { border-color: #000 !important; }
@@ -102,6 +113,7 @@
 <body>
   <div id="top">
     <button id="btnPlay"   class="primary">▶️ Play</button>
+    <button id="btnPause">⏸ Pause</button>
     <button id="btnStop"   class="danger stopped">⏹ Stop</button>
     <button id="btnMute"   class="mute">🔊 Sound</button>
     <button id="btnTap">🕒 Tap Tempo</button>
@@ -145,6 +157,8 @@
 // --- Global state ---
 let bpm = 110;              // quarter-note BPM
 let playing = false;
+let paused = false;
+let pausedElapsed = 0;   // ctx time elapsed at the moment of pause
 let muted = false;
 let steps = 16;             // 16 or 32 eighth-note steps
 let currentStep = 0;        // which step is currently playing (0..steps-1)
@@ -558,11 +572,14 @@ function getBeatDiv() {                     // beats per bar marker spacing (in 
 }
 
 function highlightColumn(stepIdx) {
-  el.grid.querySelectorAll('.columnActive').forEach(c => c.classList.remove('columnActive'));
+  el.grid.querySelectorAll('.columnActive, .past').forEach(c => c.classList.remove('columnActive', 'past'));
   const rows = el.grid.querySelectorAll('.row');
   rows.forEach(row => {
     const cells = row.querySelectorAll('.steps .cell, .steps .rulerCell');
-    if (cells[stepIdx]) cells[stepIdx].classList.add('columnActive');
+    cells.forEach((cell, idx) => {
+      if (idx === stepIdx) cell.classList.add('columnActive');
+      else if (idx < stepIdx) cell.classList.add('past');
+    });
   });
 }
 
@@ -626,7 +643,7 @@ function actionToggleVoiceMute(vi) {
 }
 
 function tickRAF() { // visuals & near-future scheduling
-  if (!playing) return;
+  if (!playing || paused) return;
   const now = ctx.currentTime;
   const dur = stepDuration();
   const elapsed = now - startTime;
@@ -691,9 +708,26 @@ function actionPlay() { // start transport
   updateMuteButton();
 }
 
+function actionPause() { // toggle pause
+  if (!playing) return;
+  if (!paused) {
+    paused = true;
+    pausedElapsed = ctx.currentTime - startTime;
+    el.btnPause.classList.add('paused');
+  } else {
+    paused = false;
+    startTime = ctx.currentTime - pausedElapsed;
+    el.btnPause.classList.remove('paused');
+    requestAnimationFrame(tickRAF);
+  }
+}
+
 function actionStop() { // stop transport
   if (!playing) return;
   playing = false;
+  paused = false;
+  pausedElapsed = 0;
+  el.btnPause.classList.remove('paused');
   el.btnPlay.classList.remove('playing');
   el.btnStop.classList.add('stopped');
   document.body.classList.remove('playing');
@@ -953,6 +987,7 @@ function actionRandom() { // randomize all voices in dependency order
 function actionKeyDown(e) { // global keyboard shortcuts
   if (e.code === 'Space') { e.preventDefault(); if (playing) actionStop(); else actionPlay(); return; }
 if (e.code === 'KeyT' && document.activeElement !== el.patternText) { e.preventDefault(); actionTapSpace(); return; } // T triggers tap tempo
+  if (e.code === 'KeyP' && document.activeElement !== el.patternText) { e.preventDefault(); actionPause(); return; } // P toggles pause
   if (e.code === 'KeyM') { e.preventDefault(); actionMuteToggle(); return; } // M toggles mute
   if (e.code === 'Minus' || e.code === 'NumpadSubtract') {
     // Round up to nearest 5, then subtract 5
@@ -1005,6 +1040,7 @@ function initPresetSelect() {
 function init() {
   // Cache DOM
   el.btnPlay   = document.getElementById('btnPlay');
+  el.btnPause  = document.getElementById('btnPause');
   el.btnStop   = document.getElementById('btnStop');
   el.btnMute   = document.getElementById('btnMute');
   el.btnTap    = document.getElementById('btnTap');
@@ -1029,6 +1065,7 @@ function init() {
 
   // Wire events to actions
   el.btnPlay.addEventListener('click', actionPlay);
+  el.btnPause.addEventListener('click', actionPause);
   el.btnStop.addEventListener('click', actionStop);
   el.btnMute.addEventListener('click', actionMuteToggle);
   el.btnTap.addEventListener('click', actionTapSpace);
