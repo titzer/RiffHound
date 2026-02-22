@@ -129,8 +129,6 @@
       <span style="opacity:0.7">offset:</span>
       <span id="offsetMs">0</span><span style="opacity:0.7">ms</span>
     </span>
-
-    <span id="mono">err: <span id="errMs">—</span> ms | floor: <span id="floorV">—</span> | e: <span id="eV">—</span></span>
   </div>
 
   <canvas id="visCanvas"></canvas>
@@ -269,9 +267,6 @@ const BF = {
 };
 
 function resetFollowerUI() {
-  el.errMs.textContent  = '—';
-  el.floorV.textContent = '—';
-  el.eV.textContent     = '—';
   el.offsetMs.textContent = '0';
   setLamp('IDLE');
   setStatus('');
@@ -394,9 +389,6 @@ function detectBeat(now) {
   BF.eFast = (BF.eFast > 0) ? (BF.eFast * 0.85 + e * 0.15) : e;
 
   BF.floor = updateFloor(BF.floor, e);
-
-  el.floorV.textContent = BF.floor.toFixed(4);
-  el.eV.textContent     = BF.e.toFixed(4);
 
   VIS.energySamples.push({time: now, e, floor: BF.floor, eFast: BF.eFast});
 
@@ -1178,9 +1170,6 @@ function init() {
 
   el.lockLamp   = document.getElementById('lockLamp');
   el.statusText = document.getElementById('statusText');
-  el.errMs      = document.getElementById('errMs');
-  el.floorV     = document.getElementById('floorV');
-  el.eV         = document.getElementById('eV');
   el.offsetMs   = document.getElementById('offsetMs');
 
   document.body.addEventListener('keydown', actionKeyDown);
