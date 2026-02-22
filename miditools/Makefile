@@ -8,12 +8,13 @@ else ifeq ($(UNAME), Linux)
   LDFLAGS := -lasound
 endif
 
-COMMON := midi_stream.c midi_platform.c
+SRCS := midi_stream.c midi_platform.c
+HDRS := midi_stream.h midi_platform.h midi_decode.h
 
 all: midiecho
 
-midiecho: midiecho.c $(COMMON)
-	$(CC) $(CFLAGS) $^ -o $@ $(LDFLAGS)
+midiecho: midiecho.c $(SRCS) $(HDRS)
+	$(CC) $(CFLAGS) midiecho.c $(SRCS) -o $@ $(LDFLAGS)
 
 clean:
 	rm -f midiecho

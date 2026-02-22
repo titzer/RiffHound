@@ -14,33 +14,28 @@ static void print_msg_line(int show_ts, uint64_t ts, const uint8_t *msg, int n) 
 
     int base_col   = 15;
     int cur_col    = base_col;
-    uint8_t st     = msg[0];
-    uint8_t hi     = st & 0xF0;
-    uint8_t ch     = (st & 0x0F) + 1;
-    int is_cc      = (hi == 0xB0 && n >= 3);
-    int is_note    = ((hi == 0x90 || hi == 0x80) && n >= 3);
-    int target_col = base_col + (is_cc ? CC_COL : NOTE_COL);
+    int target_col = base_col + (msg_is_cc(msg, n) ? CC_COL : NOTE_COL);
 
     while (cur_col < target_col) { putchar(' '); cur_col++; }
 
-    printf("ch=%d ", ch);
+    printf("ch=%d ", msg_channel(msg));
     for (int i = 0; i < 3; i++) {
         if (i < n) printf("%02X", msg[i]);
         else       printf("  ");
         if (i != 2) putchar(' ');
     }
 
-    if (is_note) {
-        uint8_t note = msg[1];
-        uint8_t vel  = msg[2];
+    if (msg_is_note(msg, n)) {
         char full[8];
-        snprintf(full, sizeof(full), "%s%d", note_name(note), note_octave(note));
-        if (hi == 0x90 && vel != 0)
+        snprintf(full, sizeof(full), "%s%d",
+                 note_name(msg_note_num(msg)), note_octave(msg_note_num(msg)));
+        if (msg_is_note_on(msg, n))
             printf("   NOTE_ON   %-4s", full);
         else
             printf("   NOTE_OFF  %-4s", full);
-    } else if (is_cc) {
-        printf("   CC ch=%u ctrl=%u val=%u", ch, msg[1], msg[2]);
+    } else if (msg_is_cc(msg, n)) {
+        printf("   CC ch=%u ctrl=%u val=%u",
+               msg_channel(msg), msg_cc_num(msg), msg_cc_val(msg));
     }
 
     putchar('\n');
