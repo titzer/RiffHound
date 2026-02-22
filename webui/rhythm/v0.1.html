@@ -34,6 +34,8 @@
   #top #btnTap, #top #btnPause { background: #f4f4f4; color: #000; border: 1px solid #bbb; }
   body.playing #top #btnTap, body.playing #top #btnPause { background: #f4f4f4; color: #000; border: 1px solid #bbb; }
 
+  /* Acquire and Track inherit the default top-row blue/green style */
+
   button.flash { background: #4CAF50; color: #fff; }
 
   /* BPM display: 5 chars with decimal */
@@ -95,6 +97,8 @@
     <button id="btnPlay"   class="primary">▶️ Play</button>
     <button id="btnPause">⏸ Pause</button>
     <button id="btnStop"   class="danger stopped">⏹ Stop</button>
+    <button id="btnAcquire">🎙 Acquire</button>
+    <button id="btnTrack">🎯 Track</button>
     <button id="btnMute"   class="mute">🔊 Sound</button>
     <button id="btnTap">🕒 Tap Tempo</button>
     <input id="bpmDisplay" type="text" value="110.0" maxlength="5">
@@ -102,17 +106,29 @@
 
   <div id="statusBar">
     <span id="lockLamp">IDLE</span>
-    <span id="statusText">Press L to listen.</span>
+    <span id="statusText">A: acquire   R: track   SPACE: play</span>
     <span id="mono">err: <span id="errMs">—</span> ms | floor: <span id="floorV">—</span> | e: <span id="eV">—</span></span>
   </div>
 
 <script>
 // =========================
-// Beat Follower v0.2 — mechanical metronome friendly
+// Beat Follower v0.3
+// State machine: IDLE | ACQUIRE | TRACK | LOCKED
+//
+// IDLE      --A--> ACQUIRE   (start mic, collect beats)
+// IDLE      --R--> TRACK     (use current BPM, start mic, play)
+// IDLE   --SPACE-> LOCKED    (use current BPM, no mic, play)
+// ACQUIRE   --auto-> TRACK   (4 good beats collected)
+// ACQUIRE   --auto-> IDLE    (20s timeout, error)
+// ACQUIRE   --R--> LOCKED    (commit estimate early)
+// TRACK     --auto-> LOCKED  (phase stable OR 8 beats seen)
+// TRACK     --R--> LOCKED    (force lock now)
+// LOCKED    --R--> TRACK     (re-open mic, phase-adjust)
+// LOCKED    --A--> ACQUIRE   (re-open mic, re-collect)
+// any playing --SPACE-> IDLE (stop everything)
 // =========================
 
-// --- Global state (template-ish) ---
-let bpm = 110.0;            // quarter-note BPM (float)
+let bpm = 110.0;
 let playing = false;
 let paused = false;
 let pausedElapsed = 0;
@@ -120,10 +136,8 @@ let muted = false;
 let startTime = 0;
 const taps = [];
 
-// --- DOM refs ---
 const el = {};
 
-// --- Audio ---
 const ctx = new (window.AudioContext || window.webkitAudioContext)();
 const master = ctx.createGain();
 master.connect(ctx.destination);
@@ -133,7 +147,7 @@ master.connect(ctx.destination);
 // =========================
 function fmtBpm(x) {
   x = Math.max(30, Math.min(300, x));
-  return x.toFixed(1); // always 1 decimal => 5 chars for 30.0..300.0
+  return x.toFixed(1);
 }
 function setBpmDisplay(x) {
   bpm = Math.max(30, Math.min(300, x));
@@ -143,19 +157,19 @@ function setLamp(text) { el.lockLamp.textContent = text; }
 function setStatus(msg) { el.statusText.textContent = msg; }
 
 function setBodyFlags() {
-  document.body.classList.toggle('playing', playing);
+  document.body.classList.toggle('playing',  playing);
   document.body.classList.toggle('listening', BF.active && BF.state === 'ACQUIRE');
-  document.body.classList.toggle('tracking', BF.active && BF.state === 'TRACK');
-  document.body.classList.toggle('locked', BF.active && BF.state === 'LOCKED');
+  document.body.classList.toggle('tracking',  BF.active && BF.state === 'TRACK');
+  document.body.classList.toggle('locked',    BF.state === 'LOCKED');  // mic may be off
 }
 
 // =========================
-// Template transport (kept minimal)
+// Transport
 // =========================
-function stepDuration() { return (60 / bpm) / 2; } // 8th-note grid
-
 function tickRAF() {
   if (!playing || paused) return;
+  // When mic is off (LOCKED), tickRAF owns tick scheduling
+  if (!BF.active) scheduleTicks(ctx.currentTime);
   requestAnimationFrame(tickRAF);
 }
 
@@ -182,89 +196,64 @@ function ensureStoppedUI() {
 }
 
 // =========================
-// Tick sound (metronome-ish)
+// Tick sound
 // =========================
 function playTick(atTime, accent=false) {
   if (muted) return;
-
   const osc = ctx.createOscillator();
-  const g = ctx.createGain();
-
+  const g   = ctx.createGain();
   osc.type = 'square';
   osc.frequency.setValueAtTime(accent ? 1320 : 990, atTime);
-
-  // short clicky envelope
   g.gain.setValueAtTime(0.0001, atTime);
   g.gain.exponentialRampToValueAtTime(accent ? 0.25 : 0.18, atTime + 0.0015);
   g.gain.exponentialRampToValueAtTime(0.0001, atTime + 0.030);
-
   osc.connect(g); g.connect(master);
   osc.start(atTime);
   osc.stop(atTime + 0.040);
 }
 
 // =========================
-// Beat follower
+// Beat follower state
 // =========================
 const BF = {
   active: false,
-  state: 'IDLE',            // IDLE | ACQUIRE | TRACK | LOCKED
-  stream: null,
-  src: null,
-  hp: null,
-  analyser: null,
-  buf: null,
+  state: 'IDLE',
+
+  stream: null, src: null, hp: null, analyser: null, buf: null,
 
   // detector
-  floor: 0.0,
-  e: 0.0,
-  threshMul: 6.0,
-  refractoryBase: 0.12,
-  lastTrig: -1e9,
+  floor: 0.0, e: 0.0,
+  threshMul: 6.0, refractoryBase: 0.12, lastTrig: -1e9,
 
   // acquisition
-  acquireStart: 0.0,
-  events: [],               // beat times
-  estPeriod: null,
-  estBpm: null,
+  acquireStart: 0.0, events: [], estPeriod: null, estBpm: null,
 
-  // clock
-  period: 60/110,
-  t0: 0.0,                  // phase origin for beat 0
-  nextTick: 0.0,
-  lookahead: 0.20,
+  // clock  (nextTick = -1 means "not yet set")
+  period: 60/110, t0: 0.0, nextTick: -1.0, lookahead: 0.20,
 
   // tracking
-  alpha: 0.14,              // phase correction gain
-  errAbsHist: [],
-  lockWindow: 12,
-  lockMedMs: 22.0,          // median abs error threshold for locking
-  unlockMedMs: 35.0,
+  alpha: 0.14, errAbsHist: [], lockWindow: 12, lockMedMs: 22.0,
+  trackBeatCount: 0,   // beats seen in TRACK; auto-lock after 8
 
-  // dropout
-  lastBeatSeen: -1e9,
-  maxAcquireSec: 20.0,
+  lastBeatSeen: -1e9, maxAcquireSec: 20.0,
 };
 
 function resetFollowerUI() {
-  el.errMs.textContent = '—';
+  el.errMs.textContent  = '—';
   el.floorV.textContent = '—';
-  el.eV.textContent = '—';
+  el.eV.textContent     = '—';
   setLamp('IDLE');
-  setStatus('Press L to listen.');
+  setStatus('A: acquire   R: track   SPACE: play');
   setBodyFlags();
 }
 
 function hardResetFollowerState() {
   BF.state = 'IDLE';
-  BF.events = [];
-  BF.estPeriod = null;
-  BF.estBpm = null;
-  BF.floor = 0.0;
-  BF.e = 0.0;
-  BF.lastTrig = -1e9;
-  BF.errAbsHist = [];
-  BF.lastBeatSeen = -1e9;
+  BF.events = []; BF.estPeriod = null; BF.estBpm = null;
+  BF.floor = 0.0; BF.e = 0.0; BF.lastTrig = -1e9;
+  BF.errAbsHist = []; BF.lastBeatSeen = -1e9;
+  BF.trackBeatCount = 0;
+  BF.nextTick = -1.0;
   resetFollowerUI();
 }
 
@@ -272,23 +261,30 @@ function median(arr) {
   const a = arr.slice().sort((x,y)=>x-y);
   const n = a.length;
   if (!n) return NaN;
-  return (n % 2) ? a[(n>>1)] : 0.5*(a[(n>>1)-1] + a[(n>>1)]);
+  return (n % 2) ? a[n>>1] : 0.5*(a[(n>>1)-1] + a[n>>1]);
 }
 function clamp(x, lo, hi) { return Math.max(lo, Math.min(hi, x)); }
 
-async function startMicAndAcquire() {
-  const constraints = {
-    audio: {
-      echoCancellation: false,
-      noiseSuppression: false,
-      autoGainControl: false
-    }
-  };
+// =========================
+// Mic management
+// =========================
+function stopMicHardware() {
+  if (BF.src)      { try { BF.src.disconnect();     } catch(_) {} }
+  if (BF.hp)       { try { BF.hp.disconnect();      } catch(_) {} }
+  if (BF.analyser) { try { BF.analyser.disconnect();} catch(_) {} }
+  BF.src = null; BF.hp = null; BF.analyser = null; BF.buf = null;
+  if (BF.stream) { for (const t of BF.stream.getTracks()) t.stop(); }
+  BF.stream = null;
+  BF.active = false;
+}
 
+async function openMic() {
+  const constraints = {
+    audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false }
+  };
   BF.stream = await navigator.mediaDevices.getUserMedia(constraints);
   BF.src = ctx.createMediaStreamSource(BF.stream);
 
-  // Mechanical metronome: remove rumble / thump, keep click edge
   BF.hp = ctx.createBiquadFilter();
   BF.hp.type = 'highpass';
   BF.hp.frequency.value = 600;
@@ -300,57 +296,34 @@ async function startMicAndAcquire() {
 
   BF.src.connect(BF.hp);
   BF.hp.connect(BF.analyser);
-
   BF.active = true;
-  BF.state = 'ACQUIRE';
-  BF.acquireStart = ctx.currentTime;
-  BF.events = [];
-  BF.estPeriod = null;
-  BF.estBpm = null;
-  BF.errAbsHist = [];
-  BF.lastBeatSeen = -1e9;
-
-  setLamp('LISTEN');
-  setStatus('Listening… click 4 times (metronome). Press L again to commit.');
-  setBodyFlags();
-
-  requestAnimationFrame(beatFollowerRAF);
 }
 
-function stopMic() {
-  if (BF.src) { try { BF.src.disconnect(); } catch(_) {} }
-  if (BF.hp)  { try { BF.hp.disconnect(); } catch(_) {} }
-  if (BF.analyser) { try { BF.analyser.disconnect(); } catch(_) {} }
-
-  BF.src = null;
-  BF.hp = null;
-  BF.analyser = null;
-  BF.buf = null;
-
-  if (BF.stream) {
-    for (const t of BF.stream.getTracks()) t.stop();
-  }
-  BF.stream = null;
-
-  BF.active = false;
-  hardResetFollowerState();
-}
-
-// One-stop stop: cancels locking + stops playing (SPACE should do this)
+// Full stop: mic off, state IDLE, stop playing
 function stopEverything() {
-  if (BF.active) stopMic();
-  ensureStoppedUI();
+  stopMicHardware();
   hardResetFollowerState();
+  ensureStoppedUI();
 }
 
 // =========================
-// Detector: mean(|dx|) with adaptive floor + refractory
+// Transition to LOCKED (mic off, ticks continue)
+// =========================
+function transitionToLocked() {
+  stopMicHardware();     // mic off; beatFollowerRAF exits next frame
+  BF.state = 'LOCKED';
+  setLamp('LOCKED');
+  setStatus(`Locked. ${fmtBpm(60/BF.period)} BPM. SPACE: stop   R: track   A: re-acquire`);
+  setBodyFlags();
+  ensurePlayingUI();     // tickRAF will schedule ticks (BF.active now false)
+}
+
+// =========================
+// Beat detector
 // =========================
 function currentRefractory() {
-  if (BF.state === 'TRACK' || BF.state === 'LOCKED') {
-    // prevent double-trigger within a beat; scale with tempo
+  if (BF.state === 'TRACK' || BF.state === 'LOCKED')
     return clamp(0.40 * BF.period, 0.08, 0.25);
-  }
   return BF.refractoryBase;
 }
 
@@ -358,9 +331,7 @@ function detectBeat(now) {
   if (!BF.analyser) return null;
 
   BF.analyser.getFloatTimeDomainData(BF.buf);
-
-  let sum = 0.0;
-  let prev = BF.buf[0];
+  let sum = 0.0, prev = BF.buf[0];
   for (let i = 1; i < BF.buf.length; i++) {
     const x = BF.buf[i];
     sum += Math.abs(x - prev);
@@ -369,93 +340,67 @@ function detectBeat(now) {
   const e = sum / (BF.buf.length - 1);
   BF.e = e;
 
-  // floor tracks typical energy slowly, but resists spikes
   if (BF.floor === 0.0) BF.floor = e;
   const capped = Math.min(e, BF.floor * 2.0);
   BF.floor = BF.floor * 0.99 + capped * 0.01;
 
   el.floorV.textContent = BF.floor.toFixed(4);
-  el.eV.textContent = BF.e.toFixed(4);
+  el.eV.textContent     = BF.e.toFixed(4);
 
-  const refractory = currentRefractory();
-  const enoughTime = (now - BF.lastTrig) > refractory;
-  const above = e > (BF.floor * BF.threshMul);
+  const enoughTime = (now - BF.lastTrig) > currentRefractory();
+  const above      = e > (BF.floor * BF.threshMul);
 
   if (enoughTime && above) {
-    BF.lastTrig = now;
-    BF.lastBeatSeen = now;
+    BF.lastTrig = now; BF.lastBeatSeen = now;
     return now;
   }
   return null;
 }
 
 // =========================
-// Acquire tempo from 4 beats total (3 intervals)
-// Show live estimate while acquiring.
+// ACQUIRE: collect beats → auto-promote to TRACK
 // =========================
 function updateAcquireEstimate() {
   if (BF.events.length < 2) return;
-
-  // use up to last 6 intervals for stability
-  const t = BF.events;
-  const n = t.length;
+  const t = BF.events, n = t.length;
   const dts = [];
-  for (let i = Math.max(1, n - 6); i < n; i++) dts.push(t[i] - t[i-1]);
-
+  for (let i = Math.max(1, n-6); i < n; i++) dts.push(t[i] - t[i-1]);
   const minT = 60/240, maxT = 60/40;
   const ok = dts.filter(dt => dt >= minT && dt <= maxT);
-  if (ok.length < 1) return;
-
+  if (!ok.length) return;
   const T = median(ok);
-  const estBpm = 60 / T;
-
-  BF.estPeriod = T;
-  BF.estBpm = estBpm;
-
-  // show estimate while acquiring
-  setBpmDisplay(estBpm);
+  BF.estPeriod = T; BF.estBpm = 60/T;
+  setBpmDisplay(BF.estBpm);
   setLamp('LISTEN');
-  setStatus(`Estimating… ~${fmtBpm(estBpm)} BPM (${BF.events.length} beats). Press L to commit.`);
+  setStatus(`Estimating… ~${fmtBpm(BF.estBpm)} BPM (${BF.events.length} beats). R to commit.`);
 }
 
 function tryPromoteToTrackFromAcquire() {
-  // Your spec: "after having listened for 4 beats" => 4 timestamps => 3 intervals
   if (BF.events.length < 4) return false;
-
-  // Use last 3 intervals for the actual acquire decision
-  const t = BF.events;
-  const n = t.length;
+  const t = BF.events, n = t.length;
   const dts = [t[n-1]-t[n-2], t[n-2]-t[n-3], t[n-3]-t[n-4]];
-
   const minT = 60/240, maxT = 60/40;
   if (dts.some(dt => dt < minT || dt > maxT)) return false;
-
   const T = median(dts);
-  const tol = 0.060; // 60ms tolerance for mechanical + room
-  if (Math.max(...dts.map(dt => Math.abs(dt - T))) > tol) return false;
+  if (Math.max(...dts.map(dt => Math.abs(dt-T))) > 0.060) return false;
 
   BF.period = T;
-  BF.t0 = t[n-1];            // align beat 0 at last observed beat
+  BF.t0 = t[n-1];
   BF.nextTick = BF.t0 + BF.period;
-
-  // Update BPM UI
+  BF.trackBeatCount = 0;
   setBpmDisplay(60 / BF.period);
 
   BF.state = 'TRACK';
   BF.errAbsHist = [];
-
   setLamp('TRACK');
-  setStatus(`Tracking… ${fmtBpm(60/BF.period)} BPM (phase adapting). Press L to freeze/lock.`);
+  setStatus(`Tracking… ${fmtBpm(60/BF.period)} BPM. Locks after 8 beats. R to lock now.`);
   setBodyFlags();
-
-  // Start playing UI if not already
   ensurePlayingUI();
   return true;
 }
 
 // =========================
-// Phase error using modulo (avoids beat-index snapping)
-// err in [-T/2, +T/2]
+// TRACK: phase correction → auto-lock after 8 beats or stable phase
 // =========================
 function phaseError(tBeat) {
   const T = BF.period;
@@ -465,142 +410,71 @@ function phaseError(tBeat) {
   return ph;
 }
 
-function updateLockFromErr(errSec) {
-  const errMs = Math.abs(errSec) * 1000.0;
-  BF.errAbsHist.push(errMs);
-  while (BF.errAbsHist.length > BF.lockWindow) BF.errAbsHist.shift();
-
-  if (BF.errAbsHist.length < BF.lockWindow) return;
-
-  const med = median(BF.errAbsHist);
-
-  if (BF.state === 'TRACK') {
-    if (med <= BF.lockMedMs) {
-      BF.state = 'LOCKED';
-      setLamp('LOCKED');
-      setStatus(`Locked. ${fmtBpm(60/BF.period)} BPM (frozen). Press SPACE to stop.`);
-      setBodyFlags();
-    }
-  } else if (BF.state === 'LOCKED') {
-    if (med >= BF.unlockMedMs) {
-      BF.state = 'TRACK';
-      setLamp('TRACK');
-      setStatus(`Drift detected. Tracking again… (press L to freeze).`);
-      setBodyFlags();
-    }
-  }
-}
-
 function onBeatDetected(tBeat) {
   if (BF.state === 'ACQUIRE') {
     BF.events.push(tBeat);
     if (BF.events.length > 16) BF.events.shift();
-
     updateAcquireEstimate();
-
-    // auto-promote once stable
-    if (tryPromoteToTrackFromAcquire()) return;
+    tryPromoteToTrackFromAcquire();
     return;
   }
 
-  if (BF.state === 'TRACK' || BF.state === 'LOCKED') {
+  if (BF.state === 'TRACK') {
     const err = phaseError(tBeat);
     el.errMs.textContent = (err * 1000).toFixed(1);
-    updateLockFromErr(err);
 
-    if (BF.state === 'TRACK') {
-      // adjust phase origin a bit toward observed beat
-      BF.t0 += BF.alpha * err;
-      // keep tick schedule from falling behind
-      const now = ctx.currentTime;
-      while (BF.nextTick < now + 0.01) BF.nextTick += BF.period;
+    BF.t0 += BF.alpha * err;
+    const now = ctx.currentTime;
+    while (BF.nextTick < now + 0.01) BF.nextTick += BF.period;
+
+    BF.trackBeatCount++;
+
+    const errMs = Math.abs(err) * 1000.0;
+    BF.errAbsHist.push(errMs);
+    while (BF.errAbsHist.length > BF.lockWindow) BF.errAbsHist.shift();
+
+    const phaseStable = BF.errAbsHist.length >= BF.lockWindow &&
+                        median(BF.errAbsHist) <= BF.lockMedMs;
+    const eightBeats  = BF.trackBeatCount >= 8;
+
+    if (phaseStable || eightBeats) {
+      transitionToLocked();
     }
   }
 }
 
 // =========================
-// Commit behavior on L
-// - If IDLE: start acquire (and start playing)
-// - If ACQUIRE: commit using current estimate (if any), start ticking
-// - If TRACK: freeze -> LOCKED
-// - If LOCKED: toggle off -> IDLE (optional)
+// Commit: R during ACQUIRE → LOCKED immediately
 // =========================
 function commitFromAcquire() {
   if (!BF.estPeriod || BF.events.length < 3) {
-    setStatus('Need a few clicks first (at least 3 beats).');
+    setStatus('Need at least 3 beats first.');
     return;
   }
   BF.period = BF.estPeriod;
-
-  // choose phase origin:
-  // if we have events, align to most recent beat; else align to now
-  const now = ctx.currentTime;
-  const last = BF.events.length ? BF.events[BF.events.length-1] : now;
+  const last = BF.events[BF.events.length-1];
   BF.t0 = last;
-  BF.nextTick = BF.t0 + BF.period;
-
+  BF.nextTick = last + BF.period;
   setBpmDisplay(60 / BF.period);
-
-  BF.state = 'LOCKED'; // commit = freeze immediately (your requirement #4)
-  BF.errAbsHist = [];
-
-  setLamp('LOCKED');
-  setStatus(`Committed. ${fmtBpm(60/BF.period)} BPM (frozen). Playing ticks.`);
-  setBodyFlags();
-
-  ensurePlayingUI();
-}
-
-async function actionListenOrCommit() {
-  await ctx.resume();
-
-  if (!BF.active) {
-    // starting locking process should transition to playing
-    ensurePlayingUI();
-    try {
-      await startMicAndAcquire();
-    } catch (err) {
-      console.error(err);
-      setLamp('ERROR');
-      setStatus('Mic failed (permission? HTTPS/localhost?). See console.');
-      setBodyFlags();
-    }
-    return;
-  }
-
-  // Already active:
-  if (BF.state === 'ACQUIRE') {
-    commitFromAcquire();
-    return;
-  }
-  if (BF.state === 'TRACK') {
-    BF.state = 'LOCKED';
-    setLamp('LOCKED');
-    setStatus(`Frozen. ${fmtBpm(60/BF.period)} BPM (no more adjustment).`);
-    setBodyFlags();
-    return;
-  }
-  if (BF.state === 'LOCKED') {
-    // toggle off
-    stopEverything();
-    return;
-  }
+  transitionToLocked();
 }
 
 // =========================
-// Tick scheduler + detector loop
+// Tick scheduler
 // =========================
 let beatCount = 0;
 
 function scheduleTicks(now) {
   if (paused) return;
-  if (!(BF.state === 'TRACK' || BF.state === 'LOCKED')) return;
+  if (BF.state !== 'TRACK' && BF.state !== 'LOCKED' &&
+      !(BF.state === 'ACQUIRE' && BF.nextTick >= 0)) return;
+  if (BF.nextTick < 0) return;  // not yet initialized
+  // skip stale cursor (e.g. long pause) without burst
+  if (BF.nextTick < now - BF.period) BF.nextTick = now;
 
   const horizon = now + BF.lookahead;
   while (BF.nextTick < horizon) {
-    // accent every 4 beats for sanity (purely local counter)
-    const accent = (beatCount % 4) === 0;
-    playTick(BF.nextTick, accent);
+    playTick(BF.nextTick, (beatCount % 4) === 0);
     beatCount++;
     BF.nextTick += BF.period;
   }
@@ -608,14 +482,13 @@ function scheduleTicks(now) {
 
 function beatFollowerRAF() {
   if (!BF.active) return;
-
   const now = ctx.currentTime;
 
-  // timeout during acquire
+  // ACQUIRE timeout → IDLE
   if (BF.state === 'ACQUIRE' && (now - BF.acquireStart) > BF.maxAcquireSec) {
-    setStatus('Gave up (20s). Press L to try again.');
-    stopMic();
-    // keep playing state? spec says go back to idle; also stop playing
+    setStatus('Gave up (20s). Press A to try again.');
+    stopMicHardware();
+    hardResetFollowerState();
     ensureStoppedUI();
     return;
   }
@@ -623,35 +496,113 @@ function beatFollowerRAF() {
   const trig = detectBeat(now);
   if (trig !== null) onBeatDetected(trig);
 
-  // optional dropout: if tracking/locked and no beats heard for a while, return to acquire
-  if ((BF.state === 'TRACK' || BF.state === 'LOCKED') && BF.lastBeatSeen > 0) {
-    const silence = now - BF.lastBeatSeen;
-    if (silence > Math.max(2.5 * BF.period, 1.2)) {
-      BF.state = 'ACQUIRE';
-      BF.acquireStart = now;
-      BF.events = [];
-      BF.estPeriod = null;
-      BF.estBpm = null;
-      BF.errAbsHist = [];
-      setLamp('LISTEN');
-      setStatus('Lost beats. Re-acquiring…');
-      setBodyFlags();
-      // keep playing UI, but stop scheduling ticks until we re-commit/promote
-    }
-  }
-
   scheduleTicks(now);
   requestAnimationFrame(beatFollowerRAF);
 }
 
 // =========================
-// UI actions (top-level)
+// Actions
 // =========================
-function actionPlay() {
-  if (playing) return;
-  ctx.resume();
-  ensurePlayingUI();
+async function actionAcquire() {
+  await ctx.resume();
+  if (BF.state === 'ACQUIRE' || BF.state === 'TRACK') return; // already listening
+
+  // Stop mic if somehow on (shouldn't happen in normal flow)
+  if (BF.active) stopMicHardware();
+
+  // Preserve period/nextTick so ticks continue if coming from LOCKED
+  BF.state       = 'ACQUIRE';
+  BF.acquireStart = ctx.currentTime;
+  BF.events      = []; BF.estPeriod = null; BF.estBpm = null;
+  BF.floor       = 0.0; BF.e = 0.0; BF.lastTrig = -1e9;
+  BF.errAbsHist  = []; BF.lastBeatSeen = -1e9; BF.trackBeatCount = 0;
+
+  try {
+    await openMic();
+  } catch (err) {
+    console.error(err);
+    BF.state = 'IDLE'; BF.active = false;
+    setLamp('ERROR');
+    setStatus('Mic failed (permission? HTTPS/localhost?).');
+    setBodyFlags();
+    return;
+  }
+
+  setLamp('LISTEN');
+  setStatus('Listening… wait for 4 beats. R to commit early.');
+  setBodyFlags();
+  requestAnimationFrame(beatFollowerRAF);
 }
+
+async function actionTrack() {
+  await ctx.resume();
+
+  if (BF.state === 'IDLE') {
+    // IDLE → TRACK: use current BPM, open mic
+    BF.period = 60 / bpm;
+    BF.t0 = ctx.currentTime;
+    BF.nextTick = BF.t0;
+    BF.errAbsHist = []; BF.trackBeatCount = 0;
+    BF.lastBeatSeen = -1e9; beatCount = 0;
+
+    try { await openMic(); } catch (err) {
+      console.error(err);
+      setLamp('ERROR');
+      setStatus('Mic failed (permission? HTTPS/localhost?).');
+      setBodyFlags();
+      return;
+    }
+
+    BF.state = 'TRACK';
+    setLamp('TRACK');
+    setStatus(`Tracking… ${fmtBpm(bpm)} BPM. Locks after 8 beats. R to lock now.`);
+    setBodyFlags();
+    ensurePlayingUI();
+    requestAnimationFrame(beatFollowerRAF);
+    return;
+  }
+
+  if (BF.state === 'ACQUIRE') { commitFromAcquire(); return; }
+
+  if (BF.state === 'TRACK') { transitionToLocked(); return; }
+
+  if (BF.state === 'LOCKED') {
+    // LOCKED → TRACK: re-open mic
+    BF.errAbsHist = []; BF.trackBeatCount = 0; BF.lastBeatSeen = -1e9;
+
+    try { await openMic(); } catch (err) {
+      console.error(err);
+      setLamp('ERROR');
+      setStatus('Mic failed (permission? HTTPS/localhost?).');
+      setBodyFlags();
+      return;
+    }
+
+    BF.state = 'TRACK';
+    setLamp('TRACK');
+    setStatus(`Tracking… ${fmtBpm(60/BF.period)} BPM. Locks after 8 beats. R to lock now.`);
+    setBodyFlags();
+    requestAnimationFrame(beatFollowerRAF);
+  }
+}
+
+async function actionPlay() {
+  // Direct LOCKED play at current BPM (SPACE from IDLE)
+  if (playing) return;
+  await ctx.resume();
+  BF.period  = 60 / bpm;
+  BF.t0      = ctx.currentTime;
+  BF.nextTick = BF.t0;
+  beatCount  = 0;
+  BF.state   = 'LOCKED';
+  setLamp('LOCKED');
+  setStatus(`Playing. ${fmtBpm(bpm)} BPM. SPACE: stop   R: track   A: acquire`);
+  setBodyFlags();
+  ensurePlayingUI();
+  scheduleTicks(ctx.currentTime);  // kick off immediately; don't wait for RAF
+}
+
+function actionStop() { stopEverything(); }
 
 function actionPause() {
   if (!playing && !BF.active) return;
@@ -669,11 +620,6 @@ function actionPause() {
   }
 }
 
-function actionStop() {
-  // stop cancels locking and goes back to stopped
-  stopEverything();
-}
-
 function actionMuteToggle() {
   muted = !muted;
   updateMuteButton();
@@ -682,57 +628,47 @@ function actionMuteToggle() {
 }
 
 function updateMuteButton() {
-  const active = muted && (playing || (BF.state === 'TRACK' || BF.state === 'LOCKED'));
+  const active = muted && (playing || BF.state === 'TRACK' || BF.state === 'LOCKED');
   el.btnMute.classList.toggle('active', active);
   el.btnMute.textContent = muted ? '🔇 Muted' : '🔊 Sound';
 }
 
-function actionTapSpace() {
+function actionTapTempo() {
   const now = performance.now();
   taps.push(now);
   while (taps.length > 6) taps.shift();
-
   if (taps.length >= 2) {
     const diffs = taps.slice(1).map((t,i) => t - taps[i]);
-    const avg = diffs.reduce((a,b) => a + b, 0) / diffs.length;
-    const newBpm = clamp(60000 / avg, 30, 300);
-    setBpmDisplay(newBpm);
-
+    const avg   = diffs.reduce((a,b) => a+b, 0) / diffs.length;
+    setBpmDisplay(clamp(60000 / avg, 30, 300));
     el.btnTap.classList.add('flash');
     setTimeout(() => el.btnTap.classList.remove('flash'), 150);
   }
 }
 
 function actionSetBPM(val) {
-  // accept float
   const x = parseFloat(val);
   if (!Number.isFinite(x)) { el.bpmDisplay.value = fmtBpm(bpm); return; }
   setBpmDisplay(clamp(x, 30, 300));
 }
 
 function actionKeyDown(e) {
-  // SPACE: if locking/tracking/locked, cancel everything; else toggle play
   if (e.code === 'Space') {
     e.preventDefault();
-    if (BF.active || playing) { actionStop(); }
+    if (BF.active || playing) actionStop();
     else actionPlay();
     return;
   }
-
-  if (e.code === 'KeyL') { e.preventDefault(); actionListenOrCommit(); return; }
-  if (e.code === 'KeyT') { e.preventDefault(); actionTapSpace(); return; }
-  if (e.code === 'KeyP') { e.preventDefault(); actionPause(); return; }
-  if (e.code === 'KeyM') { e.preventDefault(); actionMuteToggle(); return; }
-
+  if (e.code === 'KeyA') { e.preventDefault(); actionAcquire();   return; }
+  if (e.code === 'KeyR') { e.preventDefault(); actionTrack();     return; }
+  if (e.code === 'KeyT') { e.preventDefault(); actionTapTempo();  return; }
+  if (e.code === 'KeyP') { e.preventDefault(); actionPause();     return; }
+  if (e.code === 'KeyM') { e.preventDefault(); actionMuteToggle();return; }
   if (e.code === 'Minus' || e.code === 'NumpadSubtract') {
-    const rounded = Math.ceil(bpm / 5) * 5;
-    setBpmDisplay(clamp(rounded - 5, 30, 300));
-    return;
+    setBpmDisplay(clamp(Math.ceil(bpm/5)*5 - 5, 30, 300)); return;
   }
   if (e.code === 'Equal' || e.code === 'NumpadAdd') {
-    const rounded = Math.floor(bpm / 5) * 5;
-    setBpmDisplay(clamp(rounded + 5, 30, 300));
-    return;
+    setBpmDisplay(clamp(Math.floor(bpm/5)*5 + 5, 30, 300)); return;
   }
 }
 
@@ -746,41 +682,37 @@ function getButtonAndAddAction(name, action) {
 // Wiring
 // =========================
 function init() {
-  el.btnPlay   = getButtonAndAddAction('btnPlay', actionPlay);
-  el.btnPause  = getButtonAndAddAction('btnPause', actionPause);
-  el.btnStop   = getButtonAndAddAction('btnStop', actionStop);
-  el.btnMute   = getButtonAndAddAction('btnMute', actionMuteToggle);
-  el.btnTap    = getButtonAndAddAction('btnTap', actionTapSpace);
+  el.btnPlay    = getButtonAndAddAction('btnPlay',    actionPlay);
+  el.btnPause   = getButtonAndAddAction('btnPause',   actionPause);
+  el.btnStop    = getButtonAndAddAction('btnStop',    actionStop);
+  el.btnAcquire = getButtonAndAddAction('btnAcquire', actionAcquire);
+  el.btnTrack   = getButtonAndAddAction('btnTrack',   actionTrack);
+  el.btnMute    = getButtonAndAddAction('btnMute',    actionMuteToggle);
+  el.btnTap     = getButtonAndAddAction('btnTap',     actionTapTempo);
 
   el.bpmDisplay = document.getElementById('bpmDisplay');
   el.bpmDisplay.addEventListener('input', e => {
-    // allow digits + one dot, max 5 chars
-    let s = e.target.value;
-    s = s.replace(/[^0-9.]/g, '');
-    const firstDot = s.indexOf('.');
-    if (firstDot >= 0) {
-      s = s.slice(0, firstDot + 1) + s.slice(firstDot + 1).replace(/\./g, '');
-    }
-    s = s.slice(0, 5);
-    e.target.value = s;
+    let s = e.target.value.replace(/[^0-9.]/g, '');
+    const d = s.indexOf('.');
+    if (d >= 0) s = s.slice(0, d+1) + s.slice(d+1).replace(/\./g, '');
+    e.target.value = s.slice(0, 5);
   });
   el.bpmDisplay.addEventListener('change', e => {
     actionSetBPM(e.target.value);
     e.target.value = fmtBpm(bpm);
   });
 
-  el.lockLamp = document.getElementById('lockLamp');
+  el.lockLamp  = document.getElementById('lockLamp');
   el.statusText = document.getElementById('statusText');
-  el.errMs = document.getElementById('errMs');
-  el.floorV = document.getElementById('floorV');
-  el.eV = document.getElementById('eV');
+  el.errMs     = document.getElementById('errMs');
+  el.floorV    = document.getElementById('floorV');
+  el.eV        = document.getElementById('eV');
 
   document.body.addEventListener('keydown', actionKeyDown);
 
   setBpmDisplay(bpm);
   hardResetFollowerState();
   ensureStoppedUI();
-  setStatus('Press L to listen (starts playing). SPACE stops everything.');
 }
 
 // Boot
@@ -794,22 +726,37 @@ init();
 <div style="height: 120vh;"></div>
 
 <div id="helpSection" style="padding: 1vh 1vw; font-size: 2vh;">
+State machine:
+<ul>
+  <li><b>IDLE →A→ ACQUIRING</b>: mic opens, listens for beats to estimate BPM</li>
+  <li><b>IDLE →R→ TRACKING</b>: mic opens, starts playing at current BPM, phase-adjusts</li>
+  <li><b>IDLE →SPACE→ LOCKED</b>: plays at current BPM immediately (no mic)</li>
+  <li><b>ACQUIRING →auto→ TRACKING</b>: after 4 consistent beats</li>
+  <li><b>ACQUIRING →R→ LOCKED</b>: commit current estimate early</li>
+  <li><b>ACQUIRING →auto→ IDLE</b>: error after 20s timeout</li>
+  <li><b>TRACKING →auto→ LOCKED</b>: after phase stabilises or 8 beats</li>
+  <li><b>TRACKING →R→ LOCKED</b>: force lock now</li>
+  <li><b>LOCKED →R→ TRACKING</b>: re-open mic, phase-adjust</li>
+  <li><b>LOCKED →A→ ACQUIRING</b>: re-open mic, re-collect (ticks continue)</li>
+  <li><b>any →SPACE→ IDLE</b>: stop everything</li>
+</ul>
+
 Key bindings:
 <ul>
-  <li><b>L</b>: start listening / commit (freeze) / toggle off</li>
-  <li><b>SPACE</b>: stop everything (cancels locking)</li>
-  <li>P: pause</li>
+  <li><b>A</b>: Acquire</li>
+  <li><b>R</b>: Track / commit / lock</li>
+  <li><b>SPACE</b>: Play (from IDLE) or stop everything</li>
+  <li>P: pause/resume</li>
   <li>T: tap tempo</li>
   <li>M: mute</li>
-  <li>- / +: change tempo by 5</li>
+  <li>- / +: change tempo by 5 BPM</li>
 </ul>
 
 Notes:
 <ul>
   <li>Mic access requires HTTPS or localhost.</li>
-  <li>For a mechanical metronome, point the mic toward it and keep speaker volume moderate.</li>
-  <li>During acquire, BPM updates live. After 4 beats, it will auto-enter TRACK if stable. Press L any time to commit/freeze and start ticks.</li>
-  <li>If it can’t acquire within 20 seconds, it gives up and returns to idle.</li>
+  <li>For a mechanical metronome, aim the mic at it and keep speaker volume moderate.</li>
+  <li>When re-acquiring from LOCKED, existing ticks keep playing while new beats are collected.</li>
 </ul>
 </div>
 </body>
