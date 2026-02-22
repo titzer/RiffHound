@@ -86,6 +86,20 @@
   button.voiceRandom:hover { background: #f0f0f0; }
   /* inactive cell overlay */
   .cell.inactive::after { content: ''; position: absolute; top: 0; left: 0; right: 0; bottom: 0; background: rgba(200, 200, 200, 0.7); pointer-events: none; }
+  /* gap column between main pattern and fill */
+  .fillGap { pointer-events: none; }
+  /* right-facing triangle on end-column and fill-start cells */
+  .cell.endCol::after, .cell.fillStart::after {
+    content: '';
+    position: absolute;
+    top: 50%; left: 50%;
+    transform: translate(-50%, -50%);
+    width: 40%; aspect-ratio: 1;
+    clip-path: polygon(0% 0%, 100% 50%, 0% 100%);
+    background: #bbb;
+    pointer-events: none;
+  }
+  .cell.endCol.on::after, .cell.fillStart.on::after { background: #000; }
   /* ruler row */
   .rulerCell { height: 4vh; display: inline-flex; align-items: center; justify-content: center; box-sizing: border-box; overflow: hidden; border: 1px solid transparent; }
   .rulerCell.beatNum { font-size: 1.4vh; color: #888; }
@@ -468,34 +482,39 @@ function renderGrid() {
     name.textContent = v.name;
     name.addEventListener('click', () => actionToggleVoiceMute(vi));
 
-    // Steps grid (main pattern + fill)
+    // Steps grid (main pattern + fill, with 1-column gap between)
     const stepsWrap = document.createElement('div');
     stepsWrap.className = 'steps';
-    const totalCols = steps + getFillLength();
+    const totalCols = steps + 1 + getFillLength();
     stepsWrap.style.gridTemplateColumns = `repeat(${totalCols}, 1fr)`;
 
     // Main pattern cells
+    const bar = getBarSize();
+    const beatDiv = getBeatDiv();
+    const endColIdx = steps - getFillLength();
     for (let si = 0; si < steps; si++) {
       const cell = document.createElement('div');
       cell.className = 'cell';
       if (pattern[vi][si]) cell.classList.add('on');
-      // beat/bar marking adapts to 4/4 (8 per bar) vs 6/8 (6 per bar)
-      const bar = getBarSize();         // 8 for 4/4, 6 for 6/8
-      const beatDiv = getBeatDiv();     // 2 for 4/4, 3 for 6/8
       if ((si % beatDiv) === 0) cell.classList.add('beat');
       if ((si % bar) === 0)     cell.classList.add('barStart');
+      if (si === endColIdx)     cell.classList.add('endCol');
       cell.addEventListener('click', () => actionToggleStep(vi, si, false));
       stepsWrap.appendChild(cell);
     }
+
+    // Gap between main pattern and fill
+    const gap = document.createElement('div');
+    gap.className = 'fillGap';
+    stepsWrap.appendChild(gap);
 
     // Fill pattern cells
     for (let fi = 0; fi < getFillLength(); fi++) {
       const cell = document.createElement('div');
       cell.className = 'cell fill';
-      if (fillPattern[vi][fi]) cell.classList.add('on');
-      // Mark beats in fill as well
-      const beatDiv = getBeatDiv();
-      if ((fi % beatDiv) === 0) cell.classList.add('beat');
+      if (fi === 0)                    cell.classList.add('fillStart');
+      if (fillPattern[vi][fi])         cell.classList.add('on');
+      if ((fi % getBeatDiv()) === 0)   cell.classList.add('beat');
       cell.addEventListener('click', () => actionToggleStep(vi, fi, true));
       stepsWrap.appendChild(cell);
     }
@@ -511,7 +530,6 @@ function renderGrid() {
 function renderRuler() {
   const bar = getBarSize();
   const beatDiv = getBeatDiv();
-  const totalCols = steps + getFillLength();
 
   const row = document.createElement('div');
   row.className = 'row';
@@ -527,7 +545,7 @@ function renderRuler() {
 
   const stepsWrap = document.createElement('div');
   stepsWrap.className = 'steps';
-  stepsWrap.style.gridTemplateColumns = `repeat(${totalCols}, 1fr)`;
+  stepsWrap.style.gridTemplateColumns = `repeat(${steps + 1 + getFillLength()}, 1fr)`;
 
   const fillStart = steps - getFillLength();
   for (let si = 0; si < steps; si++) {
@@ -545,6 +563,11 @@ function renderRuler() {
     }
     stepsWrap.appendChild(cell);
   }
+
+  // Gap between main ruler and fill ruler
+  const rulerGap = document.createElement('div');
+  rulerGap.className = 'fillGap';
+  stepsWrap.appendChild(rulerGap);
 
   for (let fi = 0; fi < getFillLength(); fi++) {
     const cell = document.createElement('div');
@@ -575,7 +598,7 @@ function highlightColumn(stepIdx) {
   el.grid.querySelectorAll('.columnActive, .past').forEach(c => c.classList.remove('columnActive', 'past'));
   const rows = el.grid.querySelectorAll('.row');
   rows.forEach(row => {
-    const cells = row.querySelectorAll('.steps .cell, .steps .rulerCell');
+    const cells = row.querySelectorAll('.steps .cell, .steps .rulerCell, .steps .fillGap');
     cells.forEach((cell, idx) => {
       if (idx === stepIdx) cell.classList.add('columnActive');
       else if (idx < stepIdx) cell.classList.add('past');
@@ -662,7 +685,7 @@ function tickRAF() { // visuals & near-future scheduling
   if (inFillRegion) {
     // Playing fill: map to fill pattern index and display in fill columns
     scheduleIndex = stepInIteration - (steps - getFillLength());
-    displayStep = steps + scheduleIndex;
+    displayStep = steps + 1 + scheduleIndex; // +1 to skip the fillGap element
     useFill = true;
   } else {
     // Playing main pattern
@@ -1118,7 +1141,7 @@ init();
 Key bindings:
 <ul>
   <li>SPACE: play or stop</li>
-  <li>R: randomize selected elements</li>
+  <li>P: pause</li>
   <li>T: tap to tempo</li>
   <li>M: mute</li>
   <li>-: decrease tempo</li>
@@ -1128,12 +1151,13 @@ Key bindings:
 TODO:
 <ul>
     <li>Visualization of animated drum set (swinging arm)</li>
-    <li>Configurable loop length</li>
     <li>Store and retrieve named patterns</li>
-    <li>(S)implify and (C)omplexify buttons</li>
+    <li>(C)omplexify buttons</li>
     <li>Samples for voices</li>
+    <li>MIDI input - step sequencer</li>
+    <li>MIDI output - drum kit</li>
     <li>Extensible number of voices</li>
-    <li>Allow remote control from Music Coordinator Program (MCP)</li>
+    <li>Remote control from Music Coordinator Program (MCP)</li>
 </ul>
 </div>
 </body>
