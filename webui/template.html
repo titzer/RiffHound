@@ -3,12 +3,12 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>RiffHound Rhythm Buddy v0.1</title>
+<title>RiffHound Template</title>
 <style>
   /* Minimal, readable, big-click targets */
   body { font-family: sans-serif; background: #fff; color: #000; margin: 0; }
   #top { display: flex; flex-wrap: nowrap; gap: 1vh; padding: 1vh; background: #eee; align-items: stretch; }
-  #top button, #top select { flex: 1 1 0; font-size: 3.2vh; padding: 1.2vh 1vw; }
+  #top button { flex: 1 1 0; font-size: 3.2vh; padding: 1.2vh 1vw; }
   button { cursor: pointer; border: 1px solid #bbb; }
   /* Top row buttons: blue by default, green when playing */
   #top button { background: #8389ff; color: #fff; border: 1px solid #8389ff; }
@@ -30,86 +30,6 @@
   body.playing #top #btnTap, body.playing #top #btnPause { background: #f4f4f4; color: #000; border: 1px solid #bbb; }
   button.flash { background: #4CAF50; color: #fff; }
 
-  #repeatViz { padding: 1vh 1vw; display: flex; gap: 1rem; align-items: center; }
-  #repeatViz .label { font-weight: bold; }
-  #repeatBoxes { display: flex; gap: 0.4rem; }
-  .repeatBox { width: 48px; height: 48px; border: 2px solid #999; background: #f0f0f0; display: flex; align-items: center; justify-content: center; font-weight: bold; font-size: 16px; border-radius: 4px; }
-  .repeatBox.typeA { background: #d0d4ff; border-color: #8389ff; color: #8389ff; }
-  body.playing .repeatBox.typeA { background: #d0ffd0; border-color: #007700; color: #007700; }
-  .repeatBox.typeB { background: linear-gradient(to top left, #bb5500 35%, #d0d4ff 35%); border-color: #8389ff; color: #8389ff; }
-  body.playing .repeatBox.typeB { background: linear-gradient(to top left, #bb5500 35%, #d0ffd0 35%); border-color: #007700; color: #007700; }
-  .repeatBox.active { box-shadow: 0 0 0 4px #8389ff; outline: 3px solid #8389ff; }
-
-  #grid { padding: 1vh 1vw; display: grid; grid-template-columns: auto auto 1fr; column-gap: .4rem; row-gap: .2rem; }
-  .row { display: grid; grid-column: 1 / -1; grid-template-columns: subgrid; align-items: center; }
-  .row .name { min-width: 6ch; text-align: right; }
-  button.voiceMute { min-width: 6ch; text-align: center; font-size: 1.8vh; padding: 0.4vh 0.4vw; border-radius: 3px; background: #8389ff; color: #fff; border: 1px solid #8389ff; }
-  body.playing button.voiceMute { background: #007700; color: #fff; border-color: #007700; }
-  button.voiceMute.active { background: #ffcc00; color: #000; border-color: #ffcc00; }
-  body.playing button.voiceMute.active { background: #ffcc00; color: #000; border-color: #ffcc00; }
-  .steps { display: grid; gap: 2px; grid-auto-flow: column; width: 100%; }
-  .cell { height: 8vh; border: 1px solid #bbb; background: #fafafa; display: inline-flex; align-items: center; justify-content: center; font-size: 12px; user-select: none; box-sizing: border-box; position: relative; }
-
-  /* on cells: blue when stopped or future (not yet played) */
-  .cell.on { background: #8389ff; color: #fff; border-color: #8389ff; }
-  /* beat borders — always black */
-  .cell.beat { border: 2px solid #000; }
-  body.playing .cell.beat { border-color: #000; }
-  .cell.on.beat { border-color: #000; }
-  body.playing .cell.on.beat { border-color: #000; }
-  /* bar start: darker blue tint when stopped/future */
-  .cell.on.barStart { background-color: #6066cc; }
-  /* bar start circle: gray when off, black when on */
-  .cell.barStart::before { content: ''; position: absolute; width: 70%; aspect-ratio: 1; border-radius: 50%; background: #aaa; pointer-events: none; }
-  .cell.barStart.on::before { background: #000; }
-  /* current column: thick green border + green fill on active cells */
-  body.playing .cell.columnActive { border: 8px solid #007700 !important; }
-  body.playing .cell.on.columnActive { background: #007700; border-color: #007700; }
-  body.playing .cell.on.barStart.columnActive { background-color: #2f8f2f; }
-  body.playing .cell.on.fill.columnActive { background: #007700; border-color: #007700; }
-  /* past cells (already played): light green */
-  body.playing .cell.on.past { background: #99cc99; color: #333; border-color: #99cc99; }
-  body.playing .cell.on.past.beat { border-color: #000; }
-  body.playing .cell.on.barStart.past { background-color: #77aa77; }
-  /* fill pattern: orange when stopped; blue when playing+future; light green when playing+past */
-  .cell.fill { background-color: #ffe0e0; }
-  .cell.on.fill { background-color: #bb5500; border-color: #bb5500; }
-  body.playing .cell.on.fill { background: #8389ff; border-color: #8389ff; }
-  body.playing .cell.on.fill.past { background-color: #99cc99; border-color: #99cc99; }
-  body.playing .cell.on.fill.past.beat { border-color: #000; }
-  /* muted voice: enabled cells yellow regardless of state */
-  .voiceMuted .cell.on { background: #ffcc00 !important; border-color: #ccaa00 !important; }
-  .voiceMuted .cell.on.beat { border-color: #000 !important; }
-  .voiceMuted .cell.on.barStart { border-left-color: #000 !important; }
-  /* per-voice randomize button */
-  button.voiceRandom { background: none; border: none; padding: 1px 3px; font-size: 24px; cursor: pointer; line-height: 1; }
-  button.voiceRandom:hover { background: #f0f0f0; }
-  /* inactive cells: almost invisible — white wash, light gray borders, faded pseudo-elements */
-  .cell.inactive { box-shadow: inset 0 0 0 1000px rgba(255, 255, 255, 0.95); border-color: #ddd !important; }
-  .cell.inactive::before { background: #ddd !important; }
-  .cell.inactive::after  { background: #ddd !important; }
-  /* gap column between main pattern and fill */
-  .fillGap { pointer-events: none; }
-  /* right-facing triangle on end-column and fill-start cells */
-  .cell.endCol::after, .cell.fillStart::after {
-    content: '';
-    position: absolute;
-    top: 50%; left: 50%;
-    transform: translate(-50%, -50%);
-    width: 40%; aspect-ratio: 1;
-    clip-path: polygon(0% 0%, 100% 50%, 0% 100%);
-    background: #bbb;
-    pointer-events: none;
-  }
-  .cell.endCol.on::after, .cell.fillStart.on::after { background: #000; }
-  /* ruler row */
-  .rulerCell { height: 4vh; display: inline-flex; align-items: center; justify-content: center; box-sizing: border-box; overflow: hidden; border: 1px solid transparent; }
-  .rulerCell.beatNum { font-size: 1.4vh; color: #888; }
-  .rulerCell.barNum { font-size: 1.8vh; font-weight: bold; color: #333; }
-  .rulerCell.fillLabel { font-size: 1.8vh; font-weight: bold; color: #bb5500; }
-  .rulerCell.endLabel  { font-size: 1.8vh; font-weight: bold; color: #bb5500; }
-  body.playing .rulerCell.columnActive { border: 8px solid #007700 !important; }
-
   /* BPM display in top row */
   #bpmDisplay {
     font-size: 5.5vh;
@@ -122,8 +42,6 @@
     text-align: center;
     box-sizing: border-box;
   }
-  #bottom { padding: 1vh 1vw; font-size: 2.2vh; display: flex; flex-wrap: wrap; gap: .6em; align-items: center; }
-  input, select { font-size: 2.2vh; }
 </style>
 </head>
 <body>
