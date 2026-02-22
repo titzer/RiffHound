@@ -37,8 +37,8 @@
   body.playing .repeatBox.typeB { background: linear-gradient(to top left, #bb5500 35%, #d0ffd0 35%); border-color: #007700; color: #007700; }
   .repeatBox.active { box-shadow: 0 0 0 4px #8389ff; outline: 3px solid #8389ff; }
 
-  #grid { padding: 1vh 1vw; }
-  .row { display: grid; grid-template-columns: auto auto 1fr; align-items: center; gap: .4rem; margin: .2rem 0; }
+  #grid { padding: 1vh 1vw; display: grid; grid-template-columns: auto auto 1fr; column-gap: .4rem; row-gap: .2rem; }
+  .row { display: grid; grid-column: 1 / -1; grid-template-columns: subgrid; align-items: center; }
   .row .name { min-width: 6ch; text-align: right; }
   button.voiceMute { min-width: 6ch; text-align: center; font-size: 1.8vh; padding: 0.4vh 0.4vw; border-radius: 3px; background: #8389ff; color: #fff; border: 1px solid #8389ff; }
   body.playing button.voiceMute { background: #007700; color: #fff; border-color: #007700; }
@@ -50,27 +50,38 @@
   /* on cells: blue when not playing, green when playing */
   .cell.on { background: #8389ff; color: #fff; border-color: #8389ff; }
   body.playing .cell.on { background: #007700; color: #fff; border-color: #007700; }
-  /* bar start tint: light blue / light green */
-  .cell.barStart { background-color: #e0e4ff; }
-  body.playing .cell.barStart { background-color: #e0ffe0; }
-  .cell.on.barStart { background-color: #6066cc; border-color: #6066cc; }
-  body.playing .cell.on.barStart { background-color: #2f8f2f; border-color: #2f8f2f; }
-  .cell.beat { box-shadow: inset 0 0 0 2px #000; }
-  .cell.columnActive { outline: 3px solid #8389ff; }
+  /* beat left border (quarter notes) — always black */
+  .cell.beat { border: 2px solid #000; }
+  body.playing .cell.beat { border-color: #000; }
+  .cell.on.beat { border-color: #000; }
+  body.playing .cell.on.beat { border-color: #000; }
+  /* bar start: thick left border, no background tint */
+  .cell.on.barStart { background-color: #6066cc; }
+  body.playing .cell.on.barStart { background-color: #2f8f2f; }
+  /* bar start circle: gray when off, black when on */
+  .cell.barStart::before { content: ''; position: absolute; width: 70%; aspect-ratio: 1; border-radius: 50%; background: #aaa; pointer-events: none; }
+  .cell.barStart.on::before { background: #000; }
+  body.playing .cell.columnActive { border: 8px solid #007700 !important; }
   /* fill pattern styling: keep orange to distinguish from main pattern */
   .cell.fill { background-color: #ffe0e0; }
   .cell.on.fill { background-color: #bb5500; border-color: #bb5500; }
   body.playing .cell.on.fill { background-color: #bb5500; border-color: #bb5500; }
+  /* muted voice: enabled cells yellow regardless of state */
+  .voiceMuted .cell.on { background: #ffcc00 !important; border-color: #ccaa00 !important; }
+  .voiceMuted .cell.on.beat { border-color: #000 !important; }
+  .voiceMuted .cell.on.barStart { border-left-color: #000 !important; }
   /* per-voice randomize button */
   button.voiceRandom { background: none; border: 1px solid #ddd; border-radius: 3px; padding: 1px 3px; font-size: 13px; cursor: pointer; line-height: 1; }
   button.voiceRandom:hover { background: #f0f0f0; }
   /* inactive cell overlay */
   .cell.inactive::after { content: ''; position: absolute; top: 0; left: 0; right: 0; bottom: 0; background: rgba(200, 200, 200, 0.7); pointer-events: none; }
   /* ruler row */
-  .rulerCell { height: 2.5vh; display: inline-flex; align-items: center; justify-content: center; box-sizing: border-box; overflow: hidden; }
-  .rulerCell.beatNum { font-size: 9px; color: #888; }
-  .rulerCell.barNum { font-size: 12px; font-weight: bold; color: #333; }
-  .rulerCell.fillLabel { font-size: 12px; font-weight: bold; color: #bb5500; }
+  .rulerCell { height: 4vh; display: inline-flex; align-items: center; justify-content: center; box-sizing: border-box; overflow: hidden; border: 1px solid transparent; }
+  .rulerCell.beatNum { font-size: 1.4vh; color: #888; }
+  .rulerCell.barNum { font-size: 1.8vh; font-weight: bold; color: #333; }
+  .rulerCell.fillLabel { font-size: 1.8vh; font-weight: bold; color: #bb5500; }
+  .rulerCell.endLabel  { font-size: 1.8vh; font-weight: bold; color: #bb5500; }
+  body.playing .rulerCell.columnActive { border: 8px solid #007700 !important; }
 
   /* BPM display in top row */
   #bpmDisplay {
@@ -115,7 +126,9 @@
       <option value="24">24 steps (8th notes ×4 bars, 6/8)</option>
       <option value="32">32 steps (8th notes ×4 bars)</option>
     </select>
-    <button id="btnClear" style="font-size: 2vh; padding: 0.5vh 1.2vw;">🧹 Clear</button>
+    <button id="btnClear"    style="font-size: 2vh; padding: 0.5vh 1.2vw;">🧹 Clear</button>
+    <button id="btnSimplify" style="font-size: 2vh; padding: 0.5vh 1.2vw;">✂️ Simplify</button>
+    <button id="btnPermute"  style="font-size: 2vh; padding: 0.5vh 1.2vw;">🔀 Permute</button>
   </div>
 
   <div style="padding: 1vh 1vw;">
@@ -351,9 +364,10 @@ function renderRepeatBoxes() {
 
 function renderGrid() {
   el.grid.innerHTML = '';
+  renderRuler();
   VOICES.forEach((v, vi) => {
     const row = document.createElement('div');
-    row.className = 'row';
+    row.className = 'row' + (v.muted ? ' voiceMuted' : '');
 
     // Per-voice randomize button
     const cb = document.createElement('button');
@@ -406,7 +420,6 @@ function renderGrid() {
     el.grid.appendChild(row);
   });
   highlightColumn(currentStep);
-  renderRuler();
 }
 
 function renderRuler() {
@@ -430,10 +443,14 @@ function renderRuler() {
   stepsWrap.className = 'steps';
   stepsWrap.style.gridTemplateColumns = `repeat(${totalCols}, 1fr)`;
 
+  const fillStart = steps - getFillLength();
   for (let si = 0; si < steps; si++) {
     const cell = document.createElement('div');
     cell.className = 'rulerCell';
-    if (si % bar === 0) {
+    if (si === fillStart) {
+      cell.textContent = 'end';
+      cell.classList.add('endLabel');
+    } else if (si % bar === 0) {
       cell.textContent = si / bar + 1;
       cell.classList.add('barNum');
     } else if (si % beatDiv === 0) {
@@ -446,12 +463,11 @@ function renderRuler() {
   for (let fi = 0; fi < getFillLength(); fi++) {
     const cell = document.createElement('div');
     cell.className = 'rulerCell';
-    if (fi === 0) {
-      cell.textContent = 'fill';
-      cell.classList.add('fillLabel');
-    } else if (fi % beatDiv === 0) {
-      cell.textContent = fi / beatDiv + 1;
-      cell.classList.add('beatNum');
+    if (fi % beatDiv === 0) {
+      const fillLen = getFillLength();
+      const beatNum = (bar - fillLen + fi) / beatDiv + 1;
+      cell.textContent = fi === 0 ? 'fill' : beatNum;
+      cell.classList.add(fi === 0 ? 'fillLabel' : 'beatNum');
     }
     stepsWrap.appendChild(cell);
   }
@@ -470,10 +486,10 @@ function getBeatDiv() {                     // beats per bar marker spacing (in 
 }
 
 function highlightColumn(stepIdx) {
-  el.grid.querySelectorAll('.cell.columnActive').forEach(c => c.classList.remove('columnActive'));
+  el.grid.querySelectorAll('.columnActive').forEach(c => c.classList.remove('columnActive'));
   const rows = el.grid.querySelectorAll('.row');
   rows.forEach(row => {
-    const cells = row.querySelectorAll('.steps .cell');
+    const cells = row.querySelectorAll('.steps .cell, .steps .rulerCell');
     if (cells[stepIdx]) cells[stepIdx].classList.add('columnActive');
   });
 }
@@ -818,6 +834,43 @@ function actionClear() { // clear all steps
   updatePatternText();
 }
 
+function actionPermute() { // shuffle bars as units (fill untouched)
+  const bar = getBarSize();
+  const numBars = Math.floor(steps / bar);
+  if (numBars < 2) return;
+
+  // Fisher-Yates shuffle on bar indices
+  const indices = Array.from({ length: numBars }, (_, i) => i);
+  for (let i = numBars - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [indices[i], indices[j]] = [indices[j], indices[i]];
+  }
+
+  VOICES.forEach((_, vi) => {
+    const old = pattern[vi].slice();
+    for (let b = 0; b < numBars; b++) {
+      for (let s = 0; s < bar; s++) {
+        pattern[vi][b * bar + s] = old[indices[b] * bar + s];
+      }
+    }
+  });
+  renderGrid();
+  updatePatternText();
+}
+
+function actionSimplify() { // randomly remove ~30% of off-beat enabled steps
+  const beatDiv = getBeatDiv();
+  const fillLen = getFillLength();
+  VOICES.forEach((_, vi) => {
+    for (let si = 0; si < steps; si++) {
+      if (pattern[vi][si] && si % beatDiv !== 0 && Math.random() < 0.3)
+        pattern[vi][si] = false;
+    }
+  });
+  renderGrid();
+  updatePatternText();
+}
+
 function actionRandom() { // randomize all voices in dependency order
   VOICES.forEach((_, vi) => { pattern[vi].fill(false); fillPattern[vi].fill(false); });
   [0, 1, 2, 3, 4].forEach(vi => randomizeVoicePattern(vi)); // kick→snare→hat→tom→clap
@@ -853,7 +906,9 @@ function init() {
   el.btnStop   = document.getElementById('btnStop');
   el.btnMute   = document.getElementById('btnMute');
   el.btnTap    = document.getElementById('btnTap');
-  el.btnClear  = document.getElementById('btnClear');
+  el.btnClear    = document.getElementById('btnClear');
+  el.btnSimplify = document.getElementById('btnSimplify');
+  el.btnPermute  = document.getElementById('btnPermute');
   el.selSteps  = document.getElementById('selSteps');
   el.selRepeat = document.getElementById('selRepeat');
   el.grid      = document.getElementById('grid');
@@ -875,6 +930,8 @@ function init() {
   el.btnMute.addEventListener('click', actionMuteToggle);
   el.btnTap.addEventListener('click', actionTapSpace);
   el.btnClear.addEventListener('click', actionClear);
+  el.btnSimplify.addEventListener('click', actionSimplify);
+  el.btnPermute.addEventListener('click', actionPermute);
   el.selSteps.addEventListener('change', e => actionSetSteps(parseInt(e.target.value,10)));
   el.selRepeat.addEventListener('change', e => actionSetRepeat(parseInt(e.target.value,10)));
 
