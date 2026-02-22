@@ -151,9 +151,10 @@
   <div style="padding: 0.5vh 1vw; display: flex; gap: 0.5em; align-items: center; flex-wrap: wrap;">
     <select id="selPreset" style="font-size: 2vh; padding: 0.4vh 0.5vw;"></select>
     <select id="selSteps" style="font-size: 2vh; padding: 0.4vh 0.5vw;">
-      <option value="16" selected>16 steps (8th notes ×2 bars)</option>
-      <option value="24">24 steps (8th notes ×4 bars, 3/4)</option>
-      <option value="32">32 steps (8th notes ×4 bars)</option>
+      <option value="16"    selected>16 steps (4/4, 2 bars)</option>
+      <option value="24_34">24 steps (3/4, 4 bars)</option>
+      <option value="24_68">24 steps (6/8, 4 bars)</option>
+      <option value="32">32 steps (4/4, 4 bars)</option>
     </select>
     <button id="btnClear"    style="font-size: 2vh; padding: 0.5vh 1.2vw;">🧹 Clear</button>
     <button id="btnSimplify" style="font-size: 2vh; padding: 0.5vh 1.2vw;">✂️ Simplify</button>
@@ -174,6 +175,7 @@
 let bpm = 110;              // quarter-note BPM
 let playing = false;
 let paused = false;
+let timeSig = '4/4';   // '4/4', '3/4', or '6/8'
 let pausedElapsed = 0;   // ctx time elapsed at the moment of pause
 let muted = false;
 let steps = 16;             // 16 or 32 eighth-note steps
@@ -190,7 +192,7 @@ let deserializing = false;  // flag to prevent pattern text updates during deser
 // =========================
 const BUILT_IN_PATTERNS = [
   // ── 16 steps (4/4, 2 bars) ──
-  { name: 'Basic Rock',        steps: 16,
+  { name: 'Basic Rock',        steps: 16, timeSig: '4/4',
     drums: 'KH,H,SH,H,KH,H,SH,H,KH,H,SH,H,KH,H,SH,H',
     fill:  'S,S,ST,ST' },
   { name: 'Half Time',         steps: 16,
@@ -205,53 +207,53 @@ const BUILT_IN_PATTERNS = [
   { name: 'Boom Bap',          steps: 16,
     drums: 'KH,_,H,K,SH,_,H,_,KH,_,KH,_,SH,_,H,_',
     fill:  'S,S,T,T' },
-  { name: 'One Drop Reggae',   steps: 16,
+  { name: 'One Drop Reggae',   steps: 16, timeSig: '4/4',
     drums: '_,H,C,H,KS,H,C,H,_,H,C,H,KS,H,C,H',
     fill:  'K,S,T,KS' },
-  { name: 'March',             steps: 16,
+  { name: 'March',             steps: 16, timeSig: '4/4',
     drums: 'K,_,S,_,K,_,S,_,K,_,S,_,K,_,S,_',
     fill:  'S,S,S,KS' },
-  { name: 'Disco',             steps: 16,
+  { name: 'Disco',             steps: 16, timeSig: '4/4',
     drums: 'KC,H,KS,H,KC,H,KS,H,KC,H,KS,H,KC,H,KS,H',
     fill:  'K,KS,KC,KST' },
 
   // ── 24 steps (6/8, 4 bars) ──
-  { name: '6/8 Groove',        steps: 24,
+  { name: '6/8 Groove',        steps: 24, timeSig: '6/8',
     drums: 'KH,H,H,SH,H,H,KH,H,H,SH,H,H,KH,H,H,SH,H,H,KH,H,H,SH,H,H',
     fill:  'H,H,SH,H,ST,KST' },
-  { name: 'Compound March',    steps: 24,
+  { name: 'Compound March',    steps: 24, timeSig: '6/8',
     drums: 'K,T,_,S,T,_,K,T,_,S,T,_,K,T,_,S,T,_,K,T,_,S,T,_',
     fill:  'K,T,S,T,ST,KST' },
-  { name: 'Celtic Jig',        steps: 24,
+  { name: 'Celtic Jig',        steps: 24, timeSig: '6/8',
     drums: 'KH,_,H,KH,_,H,KH,_,H,KH,_,H,KH,_,H,KH,_,H,KH,_,H,KH,_,H',
     fill:  'H,H,KH,H,H,KSH' },
-  { name: 'Afro 6/8',          steps: 24,
+  { name: 'Afro 6/8',          steps: 24, timeSig: '6/8',
     drums: 'KH,H,KH,SH,H,H,H,H,KH,SH,H,H,KH,H,KH,SH,H,H,H,H,KH,SH,H,H',
     fill:  'K,H,S,H,ST,KST' },
-  { name: '6/8 Ballad',        steps: 24,
+  { name: '6/8 Ballad',        steps: 24, timeSig: '6/8',
     drums: 'K,_,_,S,_,_,K,_,_,S,_,_,K,_,_,S,_,_,K,_,_,S,_,_',
     fill:  'S,_,T,_,T,KS' },
 
   // ── 32 steps (4/4, 4 bars) ──
-  { name: 'Extended Rock',     steps: 32,
+  { name: 'Extended Rock',     steps: 32, timeSig: '4/4',
     drums: 'KH,H,SH,H,KH,H,SH,H,KH,H,SH,H,KH,H,SH,H,KH,H,SH,H,KH,H,SH,H,KH,H,SH,KH,KH,H,SH,H',
     fill:  'S,S,ST,ST' },
-  { name: 'Syncopated Funk',   steps: 32,
+  { name: 'Syncopated Funk',   steps: 32, timeSig: '4/4',
     drums: 'KH,H,SH,KH,H,H,SH,H,KH,_,SH,_,KH,H,SH,H,KH,H,SH,KH,H,KH,SH,H,KH,_,SH,_,KH,H,SH,H',
     fill:  'S,S,T,KST' },
-  { name: 'Samba',             steps: 32,
+  { name: 'Samba',             steps: 32, timeSig: '4/4',
     drums: 'KH,H,K,H,SH,H,K,H,KH,H,K,H,SH,H,K,H,KH,H,K,H,SH,H,K,H,KH,H,K,H,SH,H,K,H',
     fill:  'K,KS,T,KST' },
-  { name: 'Afrobeat',          steps: 32,
+  { name: 'Afrobeat',          steps: 32, timeSig: '4/4',
     drums: 'KH,_,H,SH,_,H,KH,H,_,H,SH,_,H,KH,_,H,KH,_,H,SH,_,H,KH,H,_,H,SH,_,H,KH,_,H',
     fill:  'S,ST,T,KST' },
-  { name: 'Trap Feel',         steps: 32,
+  { name: 'Trap Feel',         steps: 32, timeSig: '4/4',
     drums: 'K,H,H,H,SH,H,H,H,K,H,K,H,SH,H,H,H,K,H,H,H,SH,H,H,H,K,H,K,H,SH,H,H,H',
     fill:  'K,S,T,KST' },
-  { name: 'Dembow',            steps: 32,
+  { name: 'Dembow',            steps: 32, timeSig: '4/4',
     drums: 'KH,H,SH,KH,H,H,SH,H,KH,H,SH,KH,H,H,SH,H,KH,H,SH,KH,H,H,SH,H,KH,H,SH,KH,H,H,SH,H',
     fill:  'K,KS,T,KST' },
-  { name: 'Sparse Groove',     steps: 32,
+  { name: 'Sparse Groove',     steps: 32, timeSig: '4/4',
     drums: 'KH,_,_,SH,_,_,KH,_,KH,_,_,SH,_,_,KH,_,KH,_,_,SH,_,_,KH,_,KH,_,_,SH,_,_,K,_',
     fill:  'S,_,T,KST' },
 ];
@@ -592,8 +594,8 @@ function getBarSize() {
   if (steps === 24) return 6;               // 24 eighths = 4 bars of 6/8
   return (steps % 6 === 0 && steps % 8 !== 0) ? 6 : 8;
 }
-function getBeatDiv() {                     // beats per bar marker spacing (in eighths)
-  return 2;                                 // always quarter-note beats (every 2 eighths)
+function getBeatDiv() {                     // eighth-note steps per beat
+  return timeSig === '6/8' ? 3 : 2;        // 6/8: dotted-quarter beats; otherwise quarter-note beats
 }
 
 function highlightColumn(stepIdx) {
@@ -897,12 +899,15 @@ function randomizeVoicePattern(vi) { // update pattern data for one voice
         const pos = i % bar;
         const kick = pattern[K][i];
         if (bar === 8) {
-          if (pos === 2)        { pattern[vi][i] = Math.random() < 0.9; }
-          else if (pos === 6)   { pattern[vi][i] = Math.random() < 0.85; }
-          else if (!kick)       { pattern[vi][i] = Math.random() < 0.08; }
-        } else {
-          if (pos === 3)        { pattern[vi][i] = Math.random() < 0.9; }
-          else if (!kick)       { pattern[vi][i] = Math.random() < 0.08; }
+          if (pos === 2)              { pattern[vi][i] = Math.random() < 0.9; }
+          else if (pos === 6)         { pattern[vi][i] = Math.random() < 0.85; }
+          else if (!kick)             { pattern[vi][i] = Math.random() < 0.08; }
+        } else if (timeSig === '6/8') {
+          if (pos === 3)              { pattern[vi][i] = Math.random() < 0.9; }  // beat 2 (dotted quarter)
+          else if (!kick)             { pattern[vi][i] = Math.random() < 0.06; }
+        } else { // 3/4
+          if (pos === 2 || pos === 4) { pattern[vi][i] = Math.random() < 0.85; } // beats 2 and 3
+          else if (!kick)             { pattern[vi][i] = Math.random() < 0.06; }
         }
       }
       for (let fi = 0; fi < getFillLength(); fi++) fillPattern[vi][fi] = true;
@@ -929,11 +934,15 @@ function randomizeVoicePattern(vi) { // update pattern data for one voice
         const pos = i % bar;
         const snare = pattern[S][i];
         if (bar === 8) {
-          if (pos === 6)              { pattern[vi][i] = Math.random() < 0.7; }
-          else if (pos === 2 && !snare) { pattern[vi][i] = Math.random() < 0.25; }
-          else if (!snare)            { pattern[vi][i] = Math.random() < 0.05; }
-        } else {
-          if (pos === 3 && !snare)    { pattern[vi][i] = Math.random() < 0.4; }
+          if (pos === 6)                    { pattern[vi][i] = Math.random() < 0.7; }
+          else if (pos === 2 && !snare)     { pattern[vi][i] = Math.random() < 0.25; }
+          else if (!snare)                  { pattern[vi][i] = Math.random() < 0.05; }
+        } else if (timeSig === '6/8') {
+          if (pos === 3 && !snare)          { pattern[vi][i] = Math.random() < 0.4; }  // beat 2
+          else if (!snare)                  { pattern[vi][i] = Math.random() < 0.03; }
+        } else { // 3/4
+          if ((pos === 2 || pos === 4) && !snare) { pattern[vi][i] = Math.random() < 0.3; }
+          else if (!snare)                  { pattern[vi][i] = Math.random() < 0.03; }
         }
       }
       fillPattern[vi][getFillLength() - 1] = Math.random() < 0.7;
@@ -1030,10 +1039,17 @@ if (e.code === 'KeyT' && document.activeElement !== el.patternText) { e.preventD
   }
 }
 
+function stepsSelValue() {
+  if (steps === 24) return timeSig === '6/8' ? '24_68' : '24_34';
+  return String(steps);
+}
+
 function loadBuiltInPattern(p) {
-  if (p.steps !== steps) {
-    steps = p.steps;
-    el.selSteps.value = String(p.steps);
+  const newTimeSig = p.timeSig || '4/4';
+  if (p.steps !== steps || newTimeSig !== timeSig) {
+    timeSig = newTimeSig;
+    steps   = p.steps;
+    el.selSteps.value = stepsSelValue();
     pattern     = VOICES.map(() => new Array(steps).fill(false));
     fillPattern = VOICES.map(() => new Array(getFillLength()).fill(false));
   }
@@ -1083,6 +1099,8 @@ function init() {
 
   // Initialize from state
   repeatCount = parseInt(el.selRepeat.value, 10);
+  const initVal = el.selSteps.value;
+  timeSig = initVal === '24_68' ? '6/8' : initVal === '24_34' ? '3/4' : '4/4';
   actionSetBPM(bpm);
 
   // Initialize pattern
@@ -1098,7 +1116,11 @@ function init() {
   el.btnClear.addEventListener('click', actionClear);
   el.btnSimplify.addEventListener('click', actionSimplify);
   el.btnPermute.addEventListener('click', actionPermute);
-  el.selSteps.addEventListener('change', e => actionSetSteps(parseInt(e.target.value,10)));
+  el.selSteps.addEventListener('change', e => {
+    const val = e.target.value;
+    timeSig = val === '24_68' ? '6/8' : val === '24_34' ? '3/4' : '4/4';
+    actionSetSteps(val === '24_34' || val === '24_68' ? 24 : parseInt(val, 10));
+  });
   el.selPreset.addEventListener('change', e => {
     if (e.target.value === '') return;
     loadBuiltInPattern(BUILT_IN_PATTERNS[parseInt(e.target.value)]);
