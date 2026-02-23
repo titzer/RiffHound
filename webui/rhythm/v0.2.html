@@ -100,6 +100,27 @@
   #adjBox { display:flex; gap: 0.7vw; align-items:center; }
   #adjBox button { font-size: 2.0vh; padding: 0.3vh 0.7vw; background:#f4f4f4; color:#000; border:1px solid #bbb; }
   #adjBox button:active { transform: translateY(1px); }
+
+  /* Detector tuning panel */
+  #detectorPanel {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5vh 2vw;
+    padding: 0.5vh 1vw;
+    background: #e4e4e4;
+    border-top: 1px solid #ccc;
+    font-size: 1.6vh;
+    align-items: center;
+  }
+  #detectorPanel .dpLabel { color:#444; white-space:nowrap; }
+  #detectorPanel input[type=range] { width: 11vw; vertical-align: middle; }
+  #detectorPanel .dpVal {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    min-width: 6ch;
+    display: inline-block;
+    font-size: 1.5vh;
+    color: #000;
+  }
 </style>
 </head>
 <body>
@@ -129,6 +150,28 @@
       <span style="opacity:0.7">offset:</span>
       <span id="offsetMs">0</span><span style="opacity:0.7">ms</span>
     </span>
+  </div>
+
+  <div id="detectorPanel">
+    <span class="dpLabel">Threshold</span>
+    <input type="range" id="slThresh" min="1.5" max="20" step="0.5" value="3">
+    <span class="dpVal" id="lblThresh">3.0×</span>
+
+    <span class="dpLabel">Refractory</span>
+    <input type="range" id="slRefractory" min="50" max="600" step="10" value="120">
+    <span class="dpVal" id="lblRefractory">120ms</span>
+
+    <span class="dpLabel">HP cutoff</span>
+    <input type="range" id="slHPFreq" min="40" max="800" step="10" value="700">
+    <span class="dpVal" id="lblHPFreq">700Hz</span>
+
+    <span class="dpLabel">Floor fall</span>
+    <input type="range" id="slFloorFall" min="1" max="10" step="1" value="5">
+    <span class="dpVal" id="lblFloorFall">0.015</span>
+
+    <span class="dpLabel">Floor rise</span>
+    <input type="range" id="slFloorRise" min="1" max="10" step="1" value="3">
+    <span class="dpVal" id="lblFloorRise">0.002</span>
   </div>
 
   <canvas id="visCanvas"></canvas>
@@ -244,11 +287,16 @@ const BF = {
   active: false,
   state: 'IDLE',
 
-  stream: null, src: null, hp: null, analyser: null, buf: null,
+  stream: null, src: null, hp: null, analyser: null, buf: null, freqBuf: null,
 
-  // detector (energy-based transient detector)
-  floor: 0.0, e: 0.0, eFast: 0.0,
-  threshMul: 6.0, refractoryBase: 0.12, lastTrig: -1e9,
+  // detector (short/long energy ratio, Option B)
+  eShort: 0, eLong: 0, ePeak: 0, ePrev: 0,
+  threshMul: 3.0, refractoryBase: 0.12, lastTrig: -1e9,
+
+  // tunable detector params (wired to UI sliders)
+  hpFreq: 700,            // highpass cutoff Hz
+  floorFallAlpha: 0.015, // eLong fall rate (e < eLong)
+  floorRiseAlpha: 0.002, // eLong rise rate (e > eLong, capped)
 
   // acquisition
   acquireStart: 0.0, events: [], estPeriod: null, estBpm: null,
@@ -276,7 +324,7 @@ function resetFollowerUI() {
 function hardResetFollowerState() {
   BF.state = 'IDLE';
   BF.events = []; BF.estPeriod = null; BF.estBpm = null;
-  BF.floor = 0.0; BF.e = 0.0; BF.eFast = 0.0; BF.lastTrig = -1e9;
+  BF.eShort = 0; BF.eLong = 0; BF.ePeak = 0; BF.ePrev = 0; BF.lastTrig = -1e9;
   BF.errAbsHist = []; BF.lastBeatSeen = -1e9;
   BF.trackBeatCount = 0;
   BF.nextTick = -1.0;
@@ -316,12 +364,13 @@ async function openMic() {
 
   BF.hp = ctx.createBiquadFilter();
   BF.hp.type = 'highpass';
-  BF.hp.frequency.value = 600;
+  BF.hp.frequency.value = BF.hpFreq;
   BF.hp.Q.value = 0.707;
 
   BF.analyser = ctx.createAnalyser();
   BF.analyser.fftSize = 2048;
-  BF.buf = new Float32Array(BF.analyser.fftSize);
+  BF.buf     = new Float32Array(BF.analyser.fftSize);
+  BF.freqBuf = new Uint8Array(BF.analyser.frequencyBinCount);
 
   BF.src.connect(BF.hp);
   BF.hp.connect(BF.analyser);
@@ -349,7 +398,7 @@ function transitionToLocked() {
 }
 
 // =========================
-// Beat detector (reworked energy)
+// Beat detector — Option B: short/long energy ratio + onset gate
 // =========================
 function currentRefractory() {
   if (BF.state === 'TRACK' || BF.state === 'LOCKED')
@@ -357,26 +406,12 @@ function currentRefractory() {
   return BF.refractoryBase;
 }
 
-// Robust-ish transient energy: RMS of first difference
-function computeDiffRms(buf) {
-  let sumSq = 0.0;
-  let prev = buf[0];
-  for (let i = 1; i < buf.length; i++) {
-    const x = buf[i];
-    const d = x - prev;
-    sumSq += d * d;
-    prev = x;
-  }
-  return Math.sqrt(sumSq / (buf.length - 1));
-}
-
-// Asymmetric floor tracker: rise slowly, fall faster (avoids "stuck high" floor)
-function updateFloor(floor, e) {
-  if (floor <= 0) return e;
-  if (e < floor) return floor * 0.97 + e * 0.03;    // drop faster
-  // rise slowly, and cap growth to avoid "runaway" after a loud event
-  const capped = Math.min(e, floor * 1.8);
-  return floor * 0.995 + capped * 0.005;
+// Mean absolute value: frequency-flat amplitude measure.
+// Captures all content proportionally (unlike diff-RMS which over-emphasises HF).
+function computeMAV(buf) {
+  let sum = 0.0;
+  for (let i = 0; i < buf.length; i++) sum += Math.abs(buf[i]);
+  return sum / buf.length;
 }
 
 function detectBeat(now) {
@@ -384,18 +419,48 @@ function detectBeat(now) {
 
   BF.analyser.getFloatTimeDomainData(BF.buf);
 
-  const e = computeDiffRms(BF.buf);
-  BF.e = e;
-  BF.eFast = (BF.eFast > 0) ? (BF.eFast * 0.85 + e * 0.15) : e;
+  const e    = computeMAV(BF.buf);
+  const ePrev = BF.eShort;   // previous frame — used for onset gate
+  BF.eShort  = e;
 
-  BF.floor = updateFloor(BF.floor, e);
+  // Long-term EMA = noise floor (eLong).
+  // Rise slowly (capped at 1.5× to resist beat-induced drift).
+  // Fall faster so silence after a loud section restores sensitivity quickly.
+  if (BF.eLong <= 0) {
+    BF.eLong = e;
+    BF.ePeak = e;
+  } else {
+    if (e < BF.eLong) {
+      const fa = BF.floorFallAlpha;
+      BF.eLong = BF.eLong * (1 - fa) + e * fa;
+    } else {
+      const ra  = BF.floorRiseAlpha;
+      const cap = Math.min(e, BF.eLong * 1.5);
+      BF.eLong  = BF.eLong * (1 - ra) + cap * ra;
+    }
+    BF.ePeak = Math.max(BF.ePeak * 0.993, e);        // slow-decaying peak follower
+  }
 
-  VIS.energySamples.push({time: now, e, floor: BF.floor, eFast: BF.eFast});
+  VIS.energySamples.push({time: now, eShort: e, eLong: BF.eLong, ePeak: BF.ePeak});
+
+  // Spectrum snapshot — sample SPEC_BINS evenly across the full frequency range
+  if (BF.freqBuf) {
+    BF.analyser.getByteFrequencyData(BF.freqBuf);
+    const bins = new Uint8Array(SPEC_BINS);
+    const step = BF.analyser.frequencyBinCount / SPEC_BINS;
+    for (let i = 0; i < SPEC_BINS; i++)
+      bins[i] = BF.freqBuf[Math.floor(i * step)];
+    VIS.specSamples.push({time: now, bins});
+  }
 
   const enoughTime = (now - BF.lastTrig) > currentRefractory();
-  const above      = (BF.floor > 0) && (e > (BF.floor * BF.threshMul));
+  // Ratio trigger: energy well above the long-term background
+  const ratio  = BF.eLong > 0 ? e / BF.eLong : 0;
+  const above  = ratio > BF.threshMul;
+  // Onset gate: energy must be rising — prevents re-triggering on sustained high energy
+  const rising = e > ePrev;
 
-  if (enoughTime && above) {
+  if (enoughTime && above && rising) {
     BF.lastTrig = now; BF.lastBeatSeen = now;
     return now;
   }
@@ -414,9 +479,9 @@ function updateAcquireEstimate() {
   const ok = dts.filter(dt => dt >= minT && dt <= maxT);
   if (!ok.length) return;
   const T = median(ok);
-  BF.estPeriod = T; BF.estBpm = 60/T;
+  BF.estPeriod = T;
+  BF.estBpm = 60/T;
 
-  // TODO(ACQUIRE BPM): show crude estimate immediately (already does)
   setBpmDisplay(BF.estBpm);
 
   setLamp('ACQUIRE');
@@ -472,7 +537,6 @@ function onBeatDetected(tBeat) {
 
   if (BF.state === 'TRACK') {
     const err = phaseError(tBeat);
-    el.errMs.textContent = (err * 1000).toFixed(1);
     VIS.detectedBeats.push({time: tBeat, bpm: 60 / BF.period, errMs: err * 1000});
     VIS.bpmSamples.push({time: tBeat, bpm: 60 / BF.period, errMs: err * 1000});
 
@@ -580,7 +644,7 @@ function beatFollowerRAF() {
 // =========================
 async function actionAcquire() {
   await ctx.resume();
-  if (BF.state === 'ACQUIRE' || BF.state === 'TRACK') return; // already listening
+  if (BF.state === 'ACQUIRE') return; // already listening
 
   // Stop mic if somehow on (shouldn't happen in normal flow)
   if (BF.active) stopMicHardware();
@@ -599,7 +663,7 @@ async function actionAcquire() {
   VIS.onStateChange('ACQUIRE', ctx.currentTime);
   BF.acquireStart = ctx.currentTime;
   BF.events       = []; BF.estPeriod = null; BF.estBpm = null;
-  BF.floor        = 0.0; BF.e = 0.0; BF.eFast = 0.0; BF.lastTrig = -1e9;
+  BF.eShort = 0; BF.eLong = 0; BF.ePeak = 0; BF.ePrev = 0; BF.lastTrig = -1e9;
   BF.errAbsHist   = []; BF.lastBeatSeen = -1e9; BF.trackBeatCount = 0;
 
   try {
@@ -687,6 +751,7 @@ async function actionPlay() {
   BF.period  = 60 / bpm;
   BF.t0      = ctx.currentTime;
   BF.nextTick = BF.t0;
+  BF.estBpm = bpm;
   beatCount  = 0;
   BF.state   = 'LOCKED';
   VIS.stateSamples = [];
@@ -747,6 +812,7 @@ function actionSetBPM(val) {
   const x = parseFloat(val);
   if (!Number.isFinite(x)) { el.bpmDisplay.value = fmtBpm(bpm); return; }
   setBpmDisplay(clamp(x, 30, 300));
+  BF.estBpm = bpm;
 }
 
 function actionKeyDown(e) {
@@ -785,10 +851,13 @@ function getButtonAndAddAction(name, action) {
 // =========================
 const VIS = {
   detectedBeats: [],
-  energySamples: [],   // {time, e, floor, eFast}
+  energySamples: [],   // {time, eShort, eLong, ePeak}
   bpmSamples:    [],   // {time, bpm, errMs}
   markers:       [],   // {time, label}
   stateSamples:  [],   // [{t0, state}, ...] (segments)
+  specSamples:   [],   // {time, bins: Uint8Array(SPEC_BINS)} — spectrum snapshot
+  frameSamples:  [],   // {time, dtMs} — RAF inter-frame interval per draw call
+  lastFrameRafT: null, // previous RAF timestamp (ms) for delta computation
   windowSec: 6.0,
   nowFrac:   2/3,
   frozenNow: null,
@@ -799,6 +868,34 @@ const VIS = {
     this.stateSamples.push({t0: t, state});
   }
 };
+
+// =========================
+// Spectrum color LUT: 0=transparent, 50=blue, 150=red, 255=yellow
+// =========================
+const SPEC_BINS = 100;
+const BLUE_THRESH = 50;
+const RED_THRESH = 150;
+const SPEC_COLORS = (() => {
+  const lut = new Array(256);
+  for (let v = 0; v < 256; v++) {
+    if (v === 0) { lut[v] = null; continue; }
+    let r, g, b, a;
+    if (v < BLUE_THRESH) {
+      const t = v / BLUE_THRESH;
+      r = 0; g = 0; b = Math.round(255 * t); a = t;
+      lut[v] = `rgba(0,0,${b},${a.toFixed(2)})`;
+    } else if (v < RED_THRESH) {
+      const t = (v - BLUE_THRESH) / (RED_THRESH - BLUE_THRESH);
+      r = Math.round(255 * t); b = Math.round(255 * (1 - t));
+      lut[v] = `rgb(${r},0,${b})`;
+    } else {
+      const t = (v - RED_THRESH) / (255 - RED_THRESH);
+      g = Math.round(255 * t);
+      lut[v] = `rgb(255,${g},0)`;
+    }
+  }
+  return lut;
+})();
 
 function drawDiamond(cx, x, y, r, filled) {
   cx.beginPath();
@@ -818,8 +915,14 @@ function stateColor(state) {
   return '#888888'; // IDLE / unknown
 }
 
-function drawVis() {
+function drawVis(rafT) {
   requestAnimationFrame(drawVis);
+
+  // Record inter-frame interval using the RAF high-res timestamp
+  if (VIS.lastFrameRafT !== null && BF.state !== 'IDLE') {
+    VIS.frameSamples.push({time: ctx.currentTime, dtMs: rafT - VIS.lastFrameRafT});
+  }
+  VIS.lastFrameRafT = rafT;
 
   const canvas = document.getElementById('visCanvas');
   if (!canvas) return;
@@ -844,21 +947,23 @@ function drawVis() {
   const nowX     = W * VIS.nowFrac;
   function timeToX(t) { return nowX + (t - now) * pxPerSec; }
 
-  // Layout rows
-  const detectedY   = H * 0.11;
-  const predictedY  = H * 0.23;
+  // Layout rows — compressed to leave the bottom 35% for spectrum
+  const detectedY   = H * 0.07;
+  const predictedY  = H * 0.14;
 
-  // State band (just below predicted line)
-  const stateBandY  = H * 0.285;
-  const stateBandH  = 14;
+  // State band
+  const stateBandY  = H * 0.19;
+  const stateBandH  = 12;
 
-  const bpmTopY     = H * 0.34;
-  const bpmBotY     = H * 0.62;
+  const bpmTopY     = H * 0.23;
+  const bpmBotY     = H * 0.41;
   const bpmCenterY  = (bpmTopY + bpmBotY) / 2;
   const bpmH        = bpmBotY - bpmTopY;
 
-  const energyTopY  = H * 0.68;
-  const energyH     = H - energyTopY;
+  const energyTopY  = H * 0.45;
+  const specTopY    = H * 0.65;
+  const energyH     = specTopY - energyTopY;
+  const specH       = H - specTopY;
 
   // Time window edges
   const leftT  = now - VIS.windowSec * VIS.nowFrac;
@@ -871,6 +976,8 @@ function drawVis() {
   cx.fillRect(0, bpmTopY, W, bpmH);
   cx.fillStyle = '#efefef';
   cx.fillRect(0, energyTopY, W, energyH);
+  cx.fillStyle = '#111';
+  cx.fillRect(0, specTopY, W, specH);
 
   // --- 250ms vertical grid lines ---
   {
@@ -968,6 +1075,22 @@ function drawVis() {
     cx.textBaseline = 'middle';
     cx.fillStyle = stateColor(BF.state);
     cx.fillText(BF.state, nowX + 10, stateBandY);
+
+    // Frame-time dots: one dot per drawVis call, Y = inter-frame interval.
+    // Band maps 0 ms (bottom) → 50 ms (top). 60fps target ≈ 16.7ms ≈ 33% up.
+    const bandTop    = stateBandY - stateBandH / 2;
+    const bandBot    = stateBandY + stateBandH / 2;
+    const msRange    = 50;   // full band height = 50ms
+    cx.fillStyle = '#000';
+    for (const f of VIS.frameSamples) {
+      const x = timeToX(f.time);
+      if (x < 0 || x > W) continue;
+      const frac = Math.min(f.dtMs / msRange, 1.0);
+      const fy   = bandBot - frac * stateBandH;
+      cx.beginPath();
+      cx.arc(x, fy, 1.5, 0, Math.PI * 2);
+      cx.fill();
+    }
   }
 
   // --- Detected beats ---
@@ -1032,29 +1155,38 @@ function drawVis() {
 
   // --- BPM zone ---
   {
-    // Center reference: current displayed BPM
-    const nomBpm = bpm;
-    const halfRange = 15;
-    const bpmToY = b => bpmCenterY - Math.max(-1, Math.min(1, (b - nomBpm) / halfRange)) * (bpmH / 2);
+    // Fixed 60–240 BPM range so historical points never jump
+    const bpmMin = 60, bpmMax = 240;
+    const bpmToY = b => bpmBotY - Math.max(0, Math.min(1, (b - bpmMin) / (bpmMax - bpmMin))) * bpmH;
+    const ref100Y = bpmToY(100);
 
-    // Dashed center line at nominal BPM
+    // Edge labels: 60 at bottom, 240 at top
+    cx.fillStyle    = '#bbb';
+    cx.font         = '9px monospace';
+    cx.textAlign    = 'right';
+    cx.textBaseline = 'bottom';
+    cx.fillText('240', W - 4, bpmTopY + 10);
+    cx.textBaseline = 'top';
+    cx.fillText('60',  W - 4, bpmBotY - 10);
+
+    // Dashed reference line at 100 BPM
     cx.strokeStyle = '#ccc8dd';
     cx.lineWidth   = 1;
     cx.setLineDash([4, 4]);
     cx.beginPath();
-    cx.moveTo(0, bpmCenterY); cx.lineTo(W, bpmCenterY);
+    cx.moveTo(0, ref100Y); cx.lineTo(W, ref100Y);
     cx.stroke();
     cx.setLineDash([]);
 
-    // Nominal BPM label on right edge of center line
+    // 100 BPM label
     cx.fillStyle    = '#aaa';
     cx.font         = '10px monospace';
     cx.textAlign    = 'right';
     cx.textBaseline = 'middle';
-    cx.fillText(nomBpm.toFixed(1), W - 4, bpmCenterY);
+    cx.fillText('100', W - 4, ref100Y);
 
-    // During ACQUIRE, show current estimate (even if no points yet)
-    if (BF.state === 'ACQUIRE' && BF.estBpm != null) {
+    // Show current estimate (even if no points yet)
+    if (BF.estBpm != null) {
       cx.strokeStyle = '#ffcc00';
       cx.lineWidth = 2;
       cx.setLineDash([6, 4]);
@@ -1102,29 +1234,146 @@ function drawVis() {
           cx.strokeStyle = Math.abs(s.errMs) > 30 ? '#cc5544' : '#9988cc';
           cx.lineWidth   = 1.5;
           cx.beginPath();
-          cx.moveTo(x, bpmCenterY);
-          cx.lineTo(x, bpmCenterY - tickH);
+          cx.moveTo(x, ref100Y);
+          cx.lineTo(x, ref100Y - tickH);
           cx.stroke();
         }
       }
     }
   }
 
-  // --- Energy bar graph (cleaner normalization) ---
-  for (const s of VIS.energySamples) {
-    const x = timeToX(s.time);
-    if (x < 0 || x > W) continue;
+  // --- Energy zone: absolute log scale, 5 decades (1e-5 → 1.0) ---
+  {
+    const logMin = 1e-5, logMax = 1.0;
+    const logSpan = Math.log10(logMax / logMin);  // = 5
+    function eToY(val) {
+      if (val <= 0) return specTopY;
+      const frac = Math.max(0, Math.min(1,
+        (Math.log10(val) - Math.log10(logMin)) / logSpan));
+      return specTopY - frac * energyH;
+    }
 
-    const base = (s.floor > 0) ? s.floor : 1e-9;
-    const ratio = s.e / base; // 1.0 ~ at floor, threshMul ~ trigger
-    // map ratio in [1..threshMul*2] → [0..1] using log
-    const r = Math.max(1, Math.min(BF.threshMul * 2, ratio));
-    const normalized = Math.log(r) / Math.log(BF.threshMul * 2);
-    const barH = normalized * energyH;
+    // Decade grid lines + labels
+    cx.lineWidth = 1;
+    cx.setLineDash([]);
+    for (let exp = -5; exp <= 0; exp++) {
+      const y = eToY(Math.pow(10, exp));
+      cx.strokeStyle = 'rgba(0,0,0,0.12)';
+      cx.beginPath(); cx.moveTo(0, y); cx.lineTo(W, y); cx.stroke();
+      cx.fillStyle = 'rgba(0,0,0,0.35)';
+      cx.font = '9px monospace';
+      cx.textAlign = 'left';
+      cx.textBaseline = 'bottom';
+      cx.fillText(`1e${exp}`, 2, y - 1);
+    }
 
-    const threshold = s.floor * BF.threshMul;
-    cx.fillStyle = s.e > threshold ? '#dd4444' : '#44aa66';
-    cx.fillRect(x - 1.5, H - barH, 3, barH);
+    // eShort bars (green = below threshold, red = above)
+    for (const s of VIS.energySamples) {
+      const x = timeToX(s.time);
+      if (x < 0 || x > W) continue;
+      const y = eToY(s.eShort);
+      cx.fillStyle = s.eShort > s.eLong * BF.threshMul ? '#dd4444' : '#44aa66';
+      cx.fillRect(x - 1.5, y, 3, specTopY - y);
+    }
+
+    // eLong line (noise floor, blue)
+    {
+      cx.strokeStyle = '#2288ff';
+      cx.lineWidth = 1.5;
+      cx.setLineDash([]);
+      cx.beginPath();
+      let first = true;
+      for (const s of VIS.energySamples) {
+        const x = timeToX(s.time);
+        if (x < 0 || x > W) continue;
+        const y = eToY(s.eLong);
+        if (first) { cx.moveTo(x, y); first = false; } else cx.lineTo(x, y);
+      }
+      cx.stroke();
+    }
+
+    // Threshold line = eLong × threshMul (dashed red polyline)
+    {
+      cx.strokeStyle = 'rgba(200,60,60,0.8)';
+      cx.lineWidth = 1;
+      cx.setLineDash([5, 4]);
+      cx.beginPath();
+      let first = true;
+      for (const s of VIS.energySamples) {
+        const x = timeToX(s.time);
+        if (x < 0 || x > W) continue;
+        const y = eToY(s.eLong * BF.threshMul);
+        if (first) { cx.moveTo(x, y); first = false; } else cx.lineTo(x, y);
+      }
+      cx.stroke();
+      cx.setLineDash([]);
+      // right-edge label
+      if (BF.eLong > 0) {
+        const ty = eToY(BF.eLong * BF.threshMul);
+        cx.fillStyle = 'rgba(200,60,60,0.9)';
+        cx.font = '9px monospace';
+        cx.textAlign = 'right';
+        cx.textBaseline = 'bottom';
+        cx.fillText(`thresh ×${BF.threshMul.toFixed(1)}`, W - 4, ty - 1);
+      }
+    }
+
+    // ePeak line (dashed grey, horizontal at current peak)
+    if (BF.ePeak > 0) {
+      const py = eToY(BF.ePeak);
+      cx.strokeStyle = 'rgba(100,100,100,0.45)';
+      cx.lineWidth = 1;
+      cx.setLineDash([2, 6]);
+      cx.beginPath(); cx.moveTo(0, py); cx.lineTo(W, py); cx.stroke();
+      cx.setLineDash([]);
+      cx.fillStyle = 'rgba(100,100,100,0.7)';
+      cx.font = '9px monospace';
+      cx.textAlign = 'right';
+      cx.textBaseline = 'top';
+      cx.fillText('peak', W - 4, py + 1);
+    }
+
+    // Numeric readout bottom-right
+    cx.fillStyle = '#888';
+    cx.font = '9px monospace';
+    cx.textAlign = 'right';
+    cx.textBaseline = 'bottom';
+    cx.fillText(
+      `e=${BF.eShort.toExponential(2)}  fl=${BF.eLong.toExponential(2)}  thr=${(BF.eLong*BF.threshMul).toExponential(2)}`,
+      W - 4, specTopY - 2);
+  }
+
+  // --- Spectrum (spectrogram, dark background, heat-map color) ---
+  // Bin 0 = lowest freq at bottom (specTopY + specH), bin 99 = highest at top (specTopY).
+  {
+    const binH = specH / SPEC_BINS;
+    for (const s of VIS.specSamples) {
+      const x = timeToX(s.time);
+      if (x < 0 || x > W) continue;
+      for (let i = 0; i < SPEC_BINS; i++) {
+        const v = s.bins[i];
+        if (v === 0) continue;
+        const color = SPEC_COLORS[v];
+        if (!color) continue;
+        cx.fillStyle = color;
+        const y = specTopY + (SPEC_BINS - 1 - i) * binH;
+        cx.fillRect(x - 1.5, y, 3, binH + 0.5); // +0.5 to avoid gaps
+      }
+    }
+
+    // Y-axis frequency labels (approximate Hz, log-ish at Nyquist/SPEC_BINS scale)
+    cx.fillStyle = 'rgba(255,255,255,0.45)';
+    cx.font = '9px monospace';
+    cx.textAlign = 'left';
+    const sampleRate = ctx.sampleRate || 44100;
+    const hzPerBin  = (sampleRate / 2) / BF.analyser.frequencyBinCount;
+    const labelBins = [0, 10, 25, 50, 75, 99];
+    for (const bi of labelBins) {
+      const freqHz = Math.round(Math.floor(bi * BF.analyser.frequencyBinCount / SPEC_BINS) * hzPerBin);
+      const y = specTopY + (SPEC_BINS - 1 - bi) * binH;
+      cx.textBaseline = bi === 0 ? 'top' : 'bottom';
+      cx.fillText(freqHz >= 1000 ? `${(freqHz/1000).toFixed(1)}k` : `${freqHz}`, 2, y + (bi === 0 ? 1 : -1));
+    }
   }
 
   // Cull data older than the visible window
@@ -1137,8 +1386,16 @@ function drawVis() {
     VIS.bpmSamples = VIS.bpmSamples.filter(s => s.time >= cullBefore);
   if (VIS.markers.length && VIS.markers[0].time < cullBefore)
     VIS.markers = VIS.markers.filter(m => m.time >= cullBefore);
-  if (VIS.stateSamples.length && VIS.stateSamples[0].t0 < cullBefore - 2)
-    VIS.stateSamples = VIS.stateSamples.filter(s => s.t0 >= cullBefore - 2);
+  // Cull state segments by END time (= next segment's t0), not start time.
+  // A segment whose end time is before the visible window can be dropped,
+  // but keep the segment that started before cullBefore if it's still active.
+  if (VIS.stateSamples.length > 1)
+    VIS.stateSamples = VIS.stateSamples.filter((s, i, arr) =>
+      i === arr.length - 1 || arr[i + 1].t0 >= cullBefore);
+  if (VIS.frameSamples.length && VIS.frameSamples[0].time < cullBefore)
+    VIS.frameSamples = VIS.frameSamples.filter(f => f.time >= cullBefore);
+  if (VIS.specSamples.length && VIS.specSamples[0].time < cullBefore)
+    VIS.specSamples = VIS.specSamples.filter(s => s.time >= cullBefore);
 }
 
 // =========================
@@ -1171,6 +1428,49 @@ function init() {
   el.lockLamp   = document.getElementById('lockLamp');
   el.statusText = document.getElementById('statusText');
   el.offsetMs   = document.getElementById('offsetMs');
+
+  // Detector panel sliders
+  // Alpha lookup tables (slider value 1–10 → alpha)
+  const fallAlphas = [0.003, 0.005, 0.008, 0.012, 0.015, 0.022, 0.032, 0.045, 0.060, 0.080];
+  const riseAlphas = [0.0005, 0.001, 0.002, 0.003, 0.005, 0.007, 0.010, 0.015, 0.022, 0.030];
+
+  el.slThresh = document.getElementById('slThresh');
+  el.lblThresh = document.getElementById('lblThresh');
+  el.slThresh.addEventListener('input', () => {
+    BF.threshMul = parseFloat(el.slThresh.value);
+    el.lblThresh.textContent = BF.threshMul.toFixed(1) + '×';
+  });
+
+  el.slRefractory = document.getElementById('slRefractory');
+  el.lblRefractory = document.getElementById('lblRefractory');
+  el.slRefractory.addEventListener('input', () => {
+    BF.refractoryBase = parseInt(el.slRefractory.value) / 1000;
+    el.lblRefractory.textContent = el.slRefractory.value + 'ms';
+  });
+
+  el.slHPFreq = document.getElementById('slHPFreq');
+  el.lblHPFreq = document.getElementById('lblHPFreq');
+  el.slHPFreq.addEventListener('input', () => {
+    BF.hpFreq = parseInt(el.slHPFreq.value);
+    el.lblHPFreq.textContent = BF.hpFreq + 'Hz';
+    if (BF.hp) BF.hp.frequency.value = BF.hpFreq;
+  });
+
+  el.slFloorFall = document.getElementById('slFloorFall');
+  el.lblFloorFall = document.getElementById('lblFloorFall');
+  el.slFloorFall.addEventListener('input', () => {
+    const idx = parseInt(el.slFloorFall.value) - 1;
+    BF.floorFallAlpha = fallAlphas[idx];
+    el.lblFloorFall.textContent = BF.floorFallAlpha.toFixed(3);
+  });
+
+  el.slFloorRise = document.getElementById('slFloorRise');
+  el.lblFloorRise = document.getElementById('lblFloorRise');
+  el.slFloorRise.addEventListener('input', () => {
+    const idx = parseInt(el.slFloorRise.value) - 1;
+    BF.floorRiseAlpha = riseAlphas[idx];
+    el.lblFloorRise.textContent = BF.floorRiseAlpha.toFixed(4);
+  });
 
   document.body.addEventListener('keydown', actionKeyDown);
 
@@ -1226,6 +1526,7 @@ Canvas:
 
 TODO (next):
 <ul>
+  <li>Refactor to store a global BPM estimate. Always graph the estimate. If there is no estimate, it should come from the current BPM setting. ACQUIRE computes the estimate and overwrites the "current" when it succeeds and goes to tracking. Playing overwrites the global BPM estimate with current.</li>
   <li>Fix tone detection for tracking (single tone first; listen for the end).</li>
   <li>Then add multiple carrier frequencies / staggered schedule.</li>
 </ul>
