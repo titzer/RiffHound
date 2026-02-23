@@ -174,8 +174,8 @@
     <span class="dpVal" id="lblFloorRise">0.002</span>
 
     <span class="dpLabel">Tone gain</span>
-    <input type="range" id="slToneGain" min="0.01" max="0.50" step="0.01" value="0.15">
-    <span class="dpVal" id="lblToneGain">0.15</span>
+    <input type="range" id="slToneGain" min="0.002" max="0.30" step="0.002" value="0.10">
+    <span class="dpVal" id="lblToneGain">0.100</span>
 
     <span class="dpLabel">Tone thresh</span>
     <input type="range" id="slToneThresh" min="5" max="100" step="5" value="40">
@@ -285,30 +285,47 @@ function ensureStoppedUI() {
 function playTick(atTime, accent=false) {
   if (muted) return;
 
-  // In TRACK/LOCKED with mic open: play 3 sine tones instead of a click.
-  // Tones start period/8 after the beat and last period/3 each.
-  // The mic echo of these tones lets us estimate round-trip latency.
+  // In TRACK with mic open: play 3 sine tones staggered across the full period.
+  // Tone 0 covers [beat, beat+T/3], Tone 1 [beat+T/3, beat+2T/3], Tone 2 [beat+2T/3, beat+T].
+  // Equal-power (sin/cos) crossfades keep total energy constant at every transition:
+  //   fading-out tone: G*cos(α*π/2), fading-in tone: G*sin(α*π/2) → cos²+sin²=1. ✓
+  // Each tone starts F seconds early to overlap with the tail of the preceding tone.
+  // Each tone's fall marks a known phase point; detecting it in the mic gives latency.
   if (BF.active && BF.state === 'TRACK') {
-    const toneStart = atTime + BF.period / 8;
-    const toneDur   = BF.period / 3;
-    const toneEnd   = toneStart + toneDur;
-    const fadeIn    = 0.005;
-    const fadeOut   = 0.010;
-    for (const freq of BF.toneFreqs) {
+    const T  = BF.period;
+    const F  = 0.005; // crossfade half-duration (s)
+    const NC = 64;    // curve resolution for setValueCurveAtTime
+
+    for (let ti = 0; ti < 3; ti++) {
+      const segStart = atTime + ti * T / 3;
+      const segEnd   = atTime + (ti + 1) * T / 3;
+      const oscStart = segStart - F; // all tones start F early for equal-power crossfade
+      const G = BF.toneGain * BF.toneGainMul[ti]; // per-tone equalized gain
+
+      // Equal-power fade curves: sin (0→G) and cos (G→0)
+      const fadeIn  = new Float32Array(NC).map((_, i) => G * Math.sin((i / (NC - 1)) * Math.PI / 2));
+      const fadeOut = new Float32Array(NC).map((_, i) => G * Math.cos((i / (NC - 1)) * Math.PI / 2));
+
       const osc = ctx.createOscillator();
       const g   = ctx.createGain();
       osc.type = 'sine';
-      osc.frequency.value = freq;
-      g.gain.setValueAtTime(0, toneStart);
-      g.gain.linearRampToValueAtTime(BF.toneGain, toneStart + fadeIn);
-      g.gain.setValueAtTime(BF.toneGain, toneEnd - fadeOut);
-      g.gain.linearRampToValueAtTime(0, toneEnd);
+      osc.frequency.value = BF.toneFreqs[ti];
+      g.gain.setValueAtTime(0, oscStart);
+      g.gain.setValueCurveAtTime(fadeIn,  oscStart,    F); // sin ramp-in
+      g.gain.setValueAtTime(G, segEnd - F);                // hold (explicit, curve may drift)
+      g.gain.setValueCurveAtTime(fadeOut, segEnd - F,  F); // cos ramp-out
       osc.connect(g); g.connect(master);
-      osc.start(toneStart);
-      osc.stop(toneEnd + 0.002);
+      osc.start(oscStart);
+      osc.stop(segEnd + 0.002);
+
+      // Queue this segment's end time so detectBeat can match the mic-detected fall
+      BF.toneTransitionQ.push({scheduledTime: segEnd, toneIdx: ti});
     }
-    // Record when this tone batch ends so detectBeat can compute latency
-    BF.toneScheduledEnd = toneEnd;
+
+    // Cull queue entries more than 3 s old
+    const oldCull = ctx.currentTime - 3.0;
+    while (BF.toneTransitionQ.length && BF.toneTransitionQ[0].scheduledTime < oldCull)
+      BF.toneTransitionQ.shift();
     return;
   }
 
@@ -361,12 +378,15 @@ const BF = {
   lastBeatSeen: -1e9, maxAcquireSec: 20.0,
 
   // Tone-based tracking (TRACK/LOCKED with mic active)
-  toneFreqs: [1723, 2111, 2797],         // Hz — all prime, not harmonically related
-  toneGain: 0.15,                        // output gain slider
+  toneFreqs: [3001, 4001, 5003],         // Hz — all prime, well above musical content
+  toneGain: 0.10,                        // output gain slider
   toneThreshold: 40,                     // FFT bin byte threshold for "tone present"
   toneBins: null,                        // [i0,i1,i2] analyser bin index per tone
   toneSpecBins: null,                    // [i0,i1,i2] spectrogram bin index per tone
-  toneScheduledEnd: -1,                  // AudioContext time last tone batch ends
+  toneGainMul: [1.0, 1.0, 1.0],          // per-tone gain multipliers (auto-equalized)
+  toneMagEma: [null, null, null],        // per-tone FFT byte-magnitude EMA
+  toneMagAlpha: 0.10,                    // EMA alpha for magnitude tracking
+  toneTransitionQ: [],                   // [{scheduledTime, toneIdx}] — upcoming tone fall times
   tonePrevPresent: [false, false, false], // presence flags from previous frame
   latencyEst: 0.050,                     // EMA round-trip latency (s)
   latencyEstValid: false,                // true after first measurement
@@ -391,7 +411,9 @@ function hardResetFollowerState() {
   BF.nextTick = -1.0;
   BF.t0 = 0.0;
   BF.manualOffsetSec = 0.0;
-  BF.toneScheduledEnd = -1;
+  BF.toneGainMul = [1.0, 1.0, 1.0];
+  BF.toneMagEma = [null, null, null];
+  BF.toneTransitionQ = [];
   BF.tonePrevPresent = [false, false, false];
   BF.latencyEstValid = false;
   BF.trackPhaseErrors = [];
@@ -441,7 +463,9 @@ async function openMic() {
   const binWidth = ctx.sampleRate / BF.analyser.fftSize;
   BF.toneBins     = BF.toneFreqs.map(f => Math.round(f / binWidth));
   BF.toneSpecBins = BF.toneBins.map(b => Math.floor(b * SPEC_BINS / BF.analyser.frequencyBinCount));
-  BF.toneScheduledEnd = -1;
+  BF.toneGainMul     = [1.0, 1.0, 1.0];
+  BF.toneMagEma      = [null, null, null];
+  BF.toneTransitionQ  = [];
   BF.tonePrevPresent  = [false, false, false];
   BF.latencyEstValid  = false;
 
@@ -462,17 +486,24 @@ function stopEverything() {
 // Transition to LOCKED
 // =========================
 function transitionToLocked() {
-  // Apply one-shot phase nudge: median of L-corrected phase errors from TRACK.
-  // This aligns the tick precisely with the detected beat before freezing the clock.
+  // One-shot sync: apply the median of all tone-aware phase errors accumulated
+  // during TRACK. This is the only place t0/nextTick are corrected, so tone
+  // playback stays perfectly stable throughout TRACK and the correction happens
+  // at a clean boundary (right before tones stop and the click resumes).
   if (BF.trackPhaseErrors.length >= 3) {
     const sorted = BF.trackPhaseErrors.slice().sort((a, b) => a - b);
     const nudge  = sorted[Math.floor(sorted.length / 2)];
     BF.t0       += nudge;
     BF.nextTick += nudge;
+    // Ensure nextTick is still in the near future after potentially large nudge
+    const nowLock = ctx.currentTime;
+    while (BF.nextTick < nowLock + 0.01) BF.nextTick += BF.period;
     const nudgeMs = Math.round(nudge * 1000);
-    VIS.markers.push({time: ctx.currentTime, label: `sync${nudgeMs > 0 ? '+' : ''}${nudgeMs}ms`});
+    VIS.markers.push({time: nowLock, label: `sync${nudgeMs > 0 ? '+' : ''}${nudgeMs}ms`});
   }
   BF.trackPhaseErrors = [];
+  BF.manualOffsetSec = 0;
+  el.offsetMs.textContent = '0';
 
   BF.state = 'LOCKED';
   VIS.onStateChange('LOCKED', ctx.currentTime);
@@ -536,26 +567,63 @@ function detectBeat(now) {
       bins[i] = BF.freqBuf[Math.floor(i * step)];
     VIS.specSamples.push({time: now, bins});
 
-    // Tone presence + falling-edge detection (TRACK only)
+    // Staggered tone presence + per-tone transition detection (TRACK only)
     if (BF.toneBins && BF.state === 'TRACK') {
       const present = BF.toneBins.map(idx =>
         Math.max(BF.freqBuf[idx - 1] || 0, BF.freqBuf[idx], BF.freqBuf[idx + 1] || 0)
         > BF.toneThreshold);
       VIS.tonePresenceSamples.push({time: now, present});
 
-      if (BF.toneScheduledEnd > 0) {
-        let falls = 0;
-        for (let i = 0; i < 3; i++)
-          if (BF.tonePrevPresent[i] && !present[i]) falls++;
-        if (falls >= 2 && now > BF.toneScheduledEnd) {
-          const L = now - BF.toneScheduledEnd;
-          if (L > 0.005 && L < 0.5) { // 5–500ms sanity band
-            BF.latencyEst = BF.latencyEstValid
-              ? BF.latencyEst * 0.85 + L * 0.15
-              : L;
-            BF.latencyEstValid = true;
-            VIS.toneFallSamples.push({time: now, latMs: L * 1000});
+      // Auto-equalize per-tone gains using measured FFT byte magnitudes.
+      // getByteFrequencyData output is linear in dB, so correct gain adjustments
+      // must be computed in dB space:
+      //   byte_delta = target_byte - measured_byte
+      //   dB_delta   = byte_delta * (maxDecibels - minDecibels) / 255
+      //   gainCorr   = 10 ^ (dB_delta / 20)
+      // One-shot: once all three EMAs have settled, apply the full correction and
+      // reset EMAs so the result is re-measured with the new gains.
+      for (let ti = 0; ti < 3; ti++) {
+        if (!present[ti]) continue;
+        const idx = BF.toneBins[ti];
+        const mag = Math.max(BF.freqBuf[idx - 1] || 0, BF.freqBuf[idx], BF.freqBuf[idx + 1] || 0);
+        if (mag < 10) continue; // ignore near-silence frames
+        BF.toneMagEma[ti] = BF.toneMagEma[ti] === null
+          ? mag : BF.toneMagEma[ti] * (1 - BF.toneMagAlpha) + mag * BF.toneMagAlpha;
+      }
+      if (BF.toneMagEma.every(m => m !== null)) {
+        const dbRange = BF.analyser.maxDecibels - BF.analyser.minDecibels; // typically 70 dB
+        const target  = (BF.toneMagEma[0] + BF.toneMagEma[1] + BF.toneMagEma[2]) / 3;
+        // Only correct if any tone deviates more than ~0.5 dB from the mean
+        const threshByte = 255 * 0.5 / dbRange;
+        if (BF.toneMagEma.some(m => Math.abs(m - target) > threshByte)) {
+          for (let ti = 0; ti < 3; ti++) {
+            const dbDiff   = (target - BF.toneMagEma[ti]) * dbRange / 255;
+            const gainCorr = Math.pow(10, dbDiff / 20);
+            BF.toneGainMul[ti] = Math.max(0.1, Math.min(10.0, BF.toneGainMul[ti] * gainCorr));
           }
+          BF.toneMagEma = [null, null, null]; // reset — re-measure with corrected gains
+        }
+      }
+
+      // For each tone that just fell, find the nearest matching queued transition.
+      // diff = now - scheduledTime ≈ round-trip latency.
+      for (let ti = 0; ti < 3; ti++) {
+        if (!BF.tonePrevPresent[ti] || present[ti]) continue; // no fall this frame
+        let best = null, bestDiff = Infinity;
+        for (const entry of BF.toneTransitionQ) {
+          if (entry.toneIdx !== ti) continue;
+          const diff = now - entry.scheduledTime;
+          if (diff > 0.005 && diff < 0.500 && diff < bestDiff) {
+            bestDiff = diff; best = entry;
+          }
+        }
+        if (best !== null) {
+          BF.latencyEst = BF.latencyEstValid
+            ? BF.latencyEst * 0.85 + bestDiff * 0.15
+            : bestDiff;
+          BF.latencyEstValid = true;
+          VIS.toneFallSamples.push({time: now, latMs: bestDiff * 1000, toneIdx: ti});
+          BF.toneTransitionQ = BF.toneTransitionQ.filter(e => e !== best);
         }
       }
       BF.tonePrevPresent = present;
@@ -643,7 +711,11 @@ function tryPromoteToTrackFromAcquire() {
 
   BF.period = T;
   BF.t0 = t[n-1];
-  BF.nextTick = BF.t0 + BF.period;
+  // Extrapolate from the last detected beat to the nearest tick that is still
+  // in the future (with at least 50 ms of lookahead so playTick can schedule it).
+  const nowAcq = ctx.currentTime;
+  const stepsNeeded = Math.max(1, Math.ceil((nowAcq + 0.050 - t[n-1]) / T));
+  BF.nextTick = t[n-1] + stepsNeeded * T;
   BF.trackBeatCount = 0;
   setBpmDisplay(60 / BF.period);
 
@@ -680,34 +752,50 @@ function onBeatDetected(tBeat) {
   }
 
   if (BF.state === 'TRACK' || BF.state === 'LOCKED') {
-    // Correct for measured acoustic round-trip latency so phase error
-    // is relative to the true beat time rather than the mic-arrival time.
-    const L   = BF.latencyEstValid ? BF.latencyEst : 0;
-    const err = phaseError(tBeat - L);
-    // Gray = MAV-detected beat (displayed for debug, not the primary clock signal)
-    VIS.detectedBeats.push({time: tBeat, bpm: 60 / BF.period, errMs: err * 1000, gray: true});
-    VIS.bpmSamples.push({time: tBeat, bpm: 60 / BF.period, errMs: err * 1000});
-
-    const now = ctx.currentTime;
-    while (BF.nextTick < now + 0.01) BF.nextTick += BF.period;
+    const L = BF.latencyEstValid ? BF.latencyEst : 0;
+    const T = BF.period;
 
     if (BF.state === 'TRACK') {
-      BF.t0 += BF.alpha * err;
-      BF.trackBeatCount++;
+      // Tone-aware phase estimation:
+      // phaseError() returns [-T/2, +T/2] but can be ambiguous near ±T/2.
+      // The staggered tones tell us which third of the period the beat falls in,
+      // so we pick the candidate (err, err+T, err-T) closest to the tone's expected
+      // phase center, resolving the ambiguity across the full ±T/2 range.
+      let err = phaseError(tBeat - L);
+      const activeTone = BF.tonePrevPresent.findIndex(p => p); // 0, 1, 2, or -1
+      if (activeTone >= 0) {
+        // Expected center of this tone's phase window, wrapped to [-T/2, T/2]:
+        //   Tone 0 → T/6,   Tone 1 → T/2 (≡ -T/2),   Tone 2 → 5T/6 → -T/6
+        const rawCenter  = (activeTone + 0.5) * T / 3;
+        const toneCenter = rawCenter > T / 2 ? rawCenter - T : rawCenter;
+        for (const delta of [T, -T]) {
+          if (Math.abs(err + delta - toneCenter) < Math.abs(err - toneCenter))
+            err = err + delta;
+        }
+        err = Math.max(-T / 2, Math.min(T / 2, err));
+      }
 
-      // Accumulate L-corrected errors for final nudge at lock time
+      VIS.detectedBeats.push({time: tBeat, bpm: 60/T, errMs: err*1000, gray: true});
+      VIS.bpmSamples.push({time: tBeat, bpm: 60/T, errMs: err*1000});
+
+      // Do NOT modify t0/nextTick here. Applying corrections mid-tracking shifts
+      // the tone schedule, causing overlapping tone bursts and confusing the beat
+      // detector. Accumulate estimates; the full correction is applied as a single
+      // one-shot nudge at transitionToLocked().
       if (BF.latencyEstValid) BF.trackPhaseErrors.push(err);
 
-      const errMs = Math.abs(err) * 1000.0;
-      BF.errAbsHist.push(errMs);
+      BF.errAbsHist.push(Math.abs(err) * 1000.0);
       while (BF.errAbsHist.length > BF.lockWindow) BF.errAbsHist.shift();
 
-      const phaseStable = BF.errAbsHist.length >= BF.lockWindow &&
-                          median(BF.errAbsHist) <= BF.lockMedMs;
-      const eightBeats  = BF.trackBeatCount >= 8;
-      if (phaseStable || eightBeats) transitionToLocked();
+      BF.trackBeatCount++;
+      if (BF.trackBeatCount >= 8) transitionToLocked();
 
-    } else { // LOCKED: gentle phase maintenance
+    } else { // LOCKED: gentle phase maintenance only
+      const err = phaseError(tBeat - L);
+      VIS.detectedBeats.push({time: tBeat, bpm: 60/T, errMs: err*1000, gray: true});
+      VIS.bpmSamples.push({time: tBeat, bpm: 60/T, errMs: err*1000});
+      const now = ctx.currentTime;
+      while (BF.nextTick < now + 0.01) BF.nextTick += T;
       BF.t0 += (BF.alpha * 0.3) * err;
     }
   }
@@ -817,7 +905,7 @@ async function actionAcquire() {
   BF.events       = []; BF.estPeriod = null; BF.estBpm = null;
   BF.eShort = 0; BF.eLong = 0; BF.ePeak = 0; BF.lastTrig = -1e9;
   BF.aboveThresh = false; BF.peakRatio = 0; BF.peakEnergy = 0; BF.peakTime = -1; BF.armTime = -1;
-  BF.beatEnergyEma = null;
+  BF.beatEnergyEma = null; BF.toneTransitionQ = [];
   BF.errAbsHist   = []; BF.lastBeatSeen = -1e9; BF.trackBeatCount = 0;
 
   try {
@@ -879,7 +967,7 @@ async function actionTrack() {
   if (BF.state === 'LOCKED') {
     BF.errAbsHist = []; BF.trackBeatCount = 0; BF.lastBeatSeen = -1e9;
     BF.aboveThresh = false; BF.peakRatio = 0; BF.peakEnergy = 0; BF.peakTime = -1; BF.armTime = -1;
-    BF.beatEnergyEma = null;
+    BF.beatEnergyEma = null; BF.toneTransitionQ = [];
     const wasActive = BF.active;
 
     if (!wasActive) {
@@ -1282,27 +1370,37 @@ function drawVis(rafT) {
   }
 
   // Three tone presence lanes — one dot-row per tone, just below detected beats
+  // Three tone presence lanes below the detected beats row.
+  // With staggered tones only one lane is lit at a time, making the phase of
+  // the beat clock visible as a color: orange=first-third, green=mid, blue=last-third.
   {
     const laneColors = ['#ff8800', '#44cc44', '#44aaff'];
-    const laneY      = [detectedY + 12, detectedY + 17, detectedY + 22];
+    const laneH      = 4;
+    const laneY0     = detectedY + 11; // top of first lane
     for (const s of VIS.tonePresenceSamples) {
       const x = timeToX(s.time);
       if (x < 0 || x > W) continue;
       for (let ti = 0; ti < 3; ti++) {
         if (!s.present[ti]) continue;
         cx.fillStyle = laneColors[ti];
-        cx.fillRect(x - 1, laneY[ti] - 1, 2, 3);
+        cx.fillRect(x - 1, laneY0 + ti * (laneH + 1), 2, laneH);
       }
     }
   }
 
   // --- Predicted beats ---
+  // Predicted beats are scheduled at AudioContext output time (beatT = BF.t0 + n*period).
+  // All other events (energy, tone presence, detected beats) are captured at ctx.currentTime
+  // when the mic buffer is read, which is ~L seconds later than the scheduled output time.
+  // Shift predicted beat display forward by L so they land in the same mic-time reference,
+  // making the visual gap between predicted and detected equal to errMs/1000 seconds.
   if ((BF.state === 'TRACK' || BF.state === 'LOCKED') && BF.t0 > 0 && BF.period > 0) {
+    const dispL = BF.latencyEstValid ? BF.latencyEst : 0;
     let beatT = BF.t0 + Math.ceil((leftT - BF.t0) / BF.period) * BF.period;
     while (beatT <= rightT) {
-      const x = timeToX(beatT);
+      const x = timeToX(beatT + dispL);
       if (x >= -10 && x <= W + 10) {
-        cx.strokeStyle = beatT > now ? '#ee8800' : '#ccc';
+        cx.strokeStyle = (beatT + dispL) > now ? '#ee8800' : '#ccc';
         cx.lineWidth   = 1.5;
         drawDiamond(cx, x, predictedY, 10, false);
       }
@@ -1693,7 +1791,7 @@ function init() {
   el.lblToneGain = document.getElementById('lblToneGain');
   el.slToneGain.addEventListener('input', () => {
     BF.toneGain = parseFloat(el.slToneGain.value);
-    el.lblToneGain.textContent = BF.toneGain.toFixed(2);
+    el.lblToneGain.textContent = BF.toneGain.toFixed(3);
   });
 
   el.slToneThresh = document.getElementById('slToneThresh');
