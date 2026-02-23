@@ -373,7 +373,7 @@ function serializePattern() {
     fillSteps.push(stepStr || '_'); // Use '_' for rest
   }
 
-  return `tempo: ${bpm}; drums: ${drumsSteps.join(',')}; fill: ${fillSteps.join(',')}`;
+  return `tempo=${bpm}; drums=${drumsSteps.join(',')}; fill=${fillSteps.join(',')}`;
 }
 
 function deserializePattern(text) {
@@ -383,13 +383,13 @@ function deserializePattern(text) {
     const parts = text.split(';').map(p => p.trim());
 
     // Parse tempo
-    const tempoMatch = parts[0].match(/tempo:\s*(\d+)/);
+    const tempoMatch = parts[0].match(/tempo=\s*(\d+)/);
     if (tempoMatch) {
       actionSetBPM(parseInt(tempoMatch[1], 10));
     }
 
     // Parse drums
-    const drumsMatch = parts[1].match(/drums:\s*(.+)/);
+    const drumsMatch = parts[1].match(/drums=\s*(.+)/);
     if (drumsMatch) {
       const drumSteps = drumsMatch[1].split(',').map(s => s.trim());
       const voiceMap = { 'K': 0, 'S': 1, 'H': 2, 'T': 3, 'C': 4 };
@@ -412,7 +412,7 @@ function deserializePattern(text) {
     }
 
     // Parse fill
-    const fillMatch = parts[2].match(/fill:\s*(.+)/);
+    const fillMatch = parts[2].match(/fill=\s*(.+)/);
     if (fillMatch) {
       const fillSteps = fillMatch[1].split(',').map(s => s.trim());
       const voiceMap = { 'K': 0, 'S': 1, 'H': 2, 'T': 3, 'C': 4 };
