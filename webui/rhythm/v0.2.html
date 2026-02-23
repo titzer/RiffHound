@@ -154,8 +154,8 @@
 
   <div id="detectorPanel">
     <span class="dpLabel">Threshold</span>
-    <input type="range" id="slThresh" min="1.5" max="20" step="0.5" value="3">
-    <span class="dpVal" id="lblThresh">3.0×</span>
+    <input type="range" id="slThresh" min="1.5" max="20" step="0.5" value="2">
+    <span class="dpVal" id="lblThresh">2.0×</span>
 
     <span class="dpLabel">Refractory</span>
     <input type="range" id="slRefractory" min="50" max="600" step="10" value="120">
@@ -172,6 +172,22 @@
     <span class="dpLabel">Floor rise</span>
     <input type="range" id="slFloorRise" min="1" max="10" step="1" value="3">
     <span class="dpVal" id="lblFloorRise">0.002</span>
+
+    <span class="dpLabel">Tone gain</span>
+    <input type="range" id="slToneGain" min="0.01" max="0.50" step="0.01" value="0.15">
+    <span class="dpVal" id="lblToneGain">0.15</span>
+
+    <span class="dpLabel">Tone thresh</span>
+    <input type="range" id="slToneThresh" min="5" max="100" step="5" value="40">
+    <span class="dpVal" id="lblToneThresh">40</span>
+
+    <span class="dpLabel">Hysteresis</span>
+    <input type="range" id="slHysteresis" min="0.30" max="0.95" step="0.05" value="0.70">
+    <span class="dpVal" id="lblHysteresis">0.70</span>
+
+    <span class="dpLabel">Beat gate</span>
+    <input type="range" id="slBeatGate" min="0.01" max="0.50" step="0.01" value="0.10">
+    <span class="dpVal" id="lblBeatGate">0.10</span>
   </div>
 
   <canvas id="visCanvas"></canvas>
@@ -268,6 +284,35 @@ function ensureStoppedUI() {
 // =========================
 function playTick(atTime, accent=false) {
   if (muted) return;
+
+  // In TRACK/LOCKED with mic open: play 3 sine tones instead of a click.
+  // Tones start period/8 after the beat and last period/3 each.
+  // The mic echo of these tones lets us estimate round-trip latency.
+  if (BF.active && BF.state === 'TRACK') {
+    const toneStart = atTime + BF.period / 8;
+    const toneDur   = BF.period / 3;
+    const toneEnd   = toneStart + toneDur;
+    const fadeIn    = 0.005;
+    const fadeOut   = 0.010;
+    for (const freq of BF.toneFreqs) {
+      const osc = ctx.createOscillator();
+      const g   = ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.value = freq;
+      g.gain.setValueAtTime(0, toneStart);
+      g.gain.linearRampToValueAtTime(BF.toneGain, toneStart + fadeIn);
+      g.gain.setValueAtTime(BF.toneGain, toneEnd - fadeOut);
+      g.gain.linearRampToValueAtTime(0, toneEnd);
+      osc.connect(g); g.connect(master);
+      osc.start(toneStart);
+      osc.stop(toneEnd + 0.002);
+    }
+    // Record when this tone batch ends so detectBeat can compute latency
+    BF.toneScheduledEnd = toneEnd;
+    return;
+  }
+
+  // Original click tick (ACQUIRE / free-running LOCKED / no mic)
   const osc = ctx.createOscillator();
   const g   = ctx.createGain();
   osc.type = 'square';
@@ -289,9 +334,11 @@ const BF = {
 
   stream: null, src: null, hp: null, analyser: null, buf: null, freqBuf: null,
 
-  // detector (short/long energy ratio, Option B)
-  eShort: 0, eLong: 0, ePeak: 0, ePrev: 0,
-  threshMul: 3.0, refractoryBase: 0.12, lastTrig: -1e9,
+  // detector (short/long energy ratio, peak-hold hysteresis)
+  eShort: 0, eLong: 0, ePeak: 0,
+  threshMul: 2.0, refractoryBase: 0.12, lastTrig: -1e9,
+  aboveThresh: false, peakRatio: 0, peakEnergy: 0, peakTime: -1, armTime: -1, hysteresis: 0.7,
+  beatEnergyEma: null, beatEnergyAlpha: 0.3, beatGateRatio: 0.10,
 
   // tunable detector params (wired to UI sliders)
   hpFreq: 700,            // highpass cutoff Hz
@@ -312,6 +359,18 @@ const BF = {
   manualOffsetSec: 0.0,
 
   lastBeatSeen: -1e9, maxAcquireSec: 20.0,
+
+  // Tone-based tracking (TRACK/LOCKED with mic active)
+  toneFreqs: [1723, 2111, 2797],         // Hz — all prime, not harmonically related
+  toneGain: 0.15,                        // output gain slider
+  toneThreshold: 40,                     // FFT bin byte threshold for "tone present"
+  toneBins: null,                        // [i0,i1,i2] analyser bin index per tone
+  toneSpecBins: null,                    // [i0,i1,i2] spectrogram bin index per tone
+  toneScheduledEnd: -1,                  // AudioContext time last tone batch ends
+  tonePrevPresent: [false, false, false], // presence flags from previous frame
+  latencyEst: 0.050,                     // EMA round-trip latency (s)
+  latencyEstValid: false,                // true after first measurement
+  trackPhaseErrors: [],                  // L-corrected phase errors collected during TRACK
 };
 
 function resetFollowerUI() {
@@ -324,12 +383,18 @@ function resetFollowerUI() {
 function hardResetFollowerState() {
   BF.state = 'IDLE';
   BF.events = []; BF.estPeriod = null; BF.estBpm = null;
-  BF.eShort = 0; BF.eLong = 0; BF.ePeak = 0; BF.ePrev = 0; BF.lastTrig = -1e9;
+  BF.eShort = 0; BF.eLong = 0; BF.ePeak = 0; BF.lastTrig = -1e9;
+  BF.aboveThresh = false; BF.peakRatio = 0; BF.peakEnergy = 0; BF.peakTime = -1; BF.armTime = -1;
+  BF.beatEnergyEma = null;
   BF.errAbsHist = []; BF.lastBeatSeen = -1e9;
   BF.trackBeatCount = 0;
   BF.nextTick = -1.0;
   BF.t0 = 0.0;
   BF.manualOffsetSec = 0.0;
+  BF.toneScheduledEnd = -1;
+  BF.tonePrevPresent = [false, false, false];
+  BF.latencyEstValid = false;
+  BF.trackPhaseErrors = [];
   VIS.onStateChange('IDLE', ctx.currentTime);
   resetFollowerUI();
 }
@@ -372,6 +437,14 @@ async function openMic() {
   BF.buf     = new Float32Array(BF.analyser.fftSize);
   BF.freqBuf = new Uint8Array(BF.analyser.frequencyBinCount);
 
+  // Compute FFT bin index and spectrogram bin index for each tone frequency
+  const binWidth = ctx.sampleRate / BF.analyser.fftSize;
+  BF.toneBins     = BF.toneFreqs.map(f => Math.round(f / binWidth));
+  BF.toneSpecBins = BF.toneBins.map(b => Math.floor(b * SPEC_BINS / BF.analyser.frequencyBinCount));
+  BF.toneScheduledEnd = -1;
+  BF.tonePrevPresent  = [false, false, false];
+  BF.latencyEstValid  = false;
+
   BF.src.connect(BF.hp);
   BF.hp.connect(BF.analyser);
   BF.active = true;
@@ -389,6 +462,18 @@ function stopEverything() {
 // Transition to LOCKED
 // =========================
 function transitionToLocked() {
+  // Apply one-shot phase nudge: median of L-corrected phase errors from TRACK.
+  // This aligns the tick precisely with the detected beat before freezing the clock.
+  if (BF.trackPhaseErrors.length >= 3) {
+    const sorted = BF.trackPhaseErrors.slice().sort((a, b) => a - b);
+    const nudge  = sorted[Math.floor(sorted.length / 2)];
+    BF.t0       += nudge;
+    BF.nextTick += nudge;
+    const nudgeMs = Math.round(nudge * 1000);
+    VIS.markers.push({time: ctx.currentTime, label: `sync${nudgeMs > 0 ? '+' : ''}${nudgeMs}ms`});
+  }
+  BF.trackPhaseErrors = [];
+
   BF.state = 'LOCKED';
   VIS.onStateChange('LOCKED', ctx.currentTime);
   setLamp('LOCKED');
@@ -420,7 +505,6 @@ function detectBeat(now) {
   BF.analyser.getFloatTimeDomainData(BF.buf);
 
   const e    = computeMAV(BF.buf);
-  const ePrev = BF.eShort;   // previous frame — used for onset gate
   BF.eShort  = e;
 
   // Long-term EMA = noise floor (eLong).
@@ -451,18 +535,78 @@ function detectBeat(now) {
     for (let i = 0; i < SPEC_BINS; i++)
       bins[i] = BF.freqBuf[Math.floor(i * step)];
     VIS.specSamples.push({time: now, bins});
+
+    // Tone presence + falling-edge detection (TRACK only)
+    if (BF.toneBins && BF.state === 'TRACK') {
+      const present = BF.toneBins.map(idx =>
+        Math.max(BF.freqBuf[idx - 1] || 0, BF.freqBuf[idx], BF.freqBuf[idx + 1] || 0)
+        > BF.toneThreshold);
+      VIS.tonePresenceSamples.push({time: now, present});
+
+      if (BF.toneScheduledEnd > 0) {
+        let falls = 0;
+        for (let i = 0; i < 3; i++)
+          if (BF.tonePrevPresent[i] && !present[i]) falls++;
+        if (falls >= 2 && now > BF.toneScheduledEnd) {
+          const L = now - BF.toneScheduledEnd;
+          if (L > 0.005 && L < 0.5) { // 5–500ms sanity band
+            BF.latencyEst = BF.latencyEstValid
+              ? BF.latencyEst * 0.85 + L * 0.15
+              : L;
+            BF.latencyEstValid = true;
+            VIS.toneFallSamples.push({time: now, latMs: L * 1000});
+          }
+        }
+      }
+      BF.tonePrevPresent = present;
+    }
   }
 
-  const enoughTime = (now - BF.lastTrig) > currentRefractory();
-  // Ratio trigger: energy well above the long-term background
-  const ratio  = BF.eLong > 0 ? e / BF.eLong : 0;
-  const above  = ratio > BF.threshMul;
-  // Onset gate: energy must be rising — prevents re-triggering on sustained high energy
-  const rising = e > ePrev;
+  // Peak-hold hysteresis detector:
+  // Arm when ratio crosses threshMul (with refractory guard).
+  // Track the peak while above. Fire ONE beat (at peak time) when either:
+  //   (a) ratio falls to peakRatio × hysteresis  (peak-relative drop), or
+  //   (b) 200ms have passed since arming without a new peak (stuck-armed timeout).
+  // This gives one clean trigger per "shark fin" with no ghost beats.
+  const ratio = BF.eLong > 0 ? e / BF.eLong : 0;
 
-  if (enoughTime && above && rising) {
-    BF.lastTrig = now; BF.lastBeatSeen = now;
-    return now;
+  if (!BF.aboveThresh) {
+    if (ratio > BF.threshMul && (now - BF.lastTrig) > currentRefractory()) {
+      BF.aboveThresh = true;
+      BF.peakRatio   = ratio;
+      BF.peakEnergy  = e;
+      BF.peakTime    = now;
+      BF.armTime     = now;
+    }
+  } else {
+    if (ratio > BF.peakRatio) {
+      BF.peakRatio  = ratio;
+      BF.peakEnergy = e;
+      BF.peakTime   = now;
+    }
+    // Fire when ratio drops below threshMul × hysteresis (always < arm threshold → no re-arm),
+    // or after 200ms stuck-armed timeout.
+    const dropped  = ratio < BF.threshMul * BF.hysteresis;
+    const timedOut = (now - BF.armTime) > 0.200;
+    if (dropped || timedOut) {
+      BF.aboveThresh = false;
+      BF.lastTrig    = now;   // refractory from NOW, not from past peakTime
+
+      // Beat energy gate: reject if this peak is much weaker than recent confirmed beats.
+      // This filters noise events that pass the ratio threshold only because the floor
+      // happened to be temporarily very low (e.g., between loud beats).
+      if (BF.beatEnergyEma !== null && BF.peakEnergy < BF.beatEnergyEma * BF.beatGateRatio) {
+        return null;  // too weak — not a real beat
+      }
+
+      // Update beat energy EMA with this confirmed peak
+      BF.beatEnergyEma = BF.beatEnergyEma === null
+        ? BF.peakEnergy
+        : BF.beatEnergyEma * (1 - BF.beatEnergyAlpha) + BF.peakEnergy * BF.beatEnergyAlpha;
+
+      BF.lastBeatSeen = BF.peakTime;
+      return BF.peakTime;
+    }
   }
   return null;
 }
@@ -505,7 +649,7 @@ function tryPromoteToTrackFromAcquire() {
 
   BF.state = 'TRACK';
   VIS.onStateChange('TRACK', ctx.currentTime);
-  BF.errAbsHist = [];
+  BF.errAbsHist = []; BF.trackPhaseErrors = [];
   setLamp('TRACK');
   setStatus(`Tracking… ${fmtBpm(60/BF.period)} BPM.`);
   setBodyFlags();
@@ -535,28 +679,36 @@ function onBeatDetected(tBeat) {
     return;
   }
 
-  if (BF.state === 'TRACK') {
-    const err = phaseError(tBeat);
-    VIS.detectedBeats.push({time: tBeat, bpm: 60 / BF.period, errMs: err * 1000});
+  if (BF.state === 'TRACK' || BF.state === 'LOCKED') {
+    // Correct for measured acoustic round-trip latency so phase error
+    // is relative to the true beat time rather than the mic-arrival time.
+    const L   = BF.latencyEstValid ? BF.latencyEst : 0;
+    const err = phaseError(tBeat - L);
+    // Gray = MAV-detected beat (displayed for debug, not the primary clock signal)
+    VIS.detectedBeats.push({time: tBeat, bpm: 60 / BF.period, errMs: err * 1000, gray: true});
     VIS.bpmSamples.push({time: tBeat, bpm: 60 / BF.period, errMs: err * 1000});
-
-    BF.t0 += BF.alpha * err;
 
     const now = ctx.currentTime;
     while (BF.nextTick < now + 0.01) BF.nextTick += BF.period;
 
-    BF.trackBeatCount++;
+    if (BF.state === 'TRACK') {
+      BF.t0 += BF.alpha * err;
+      BF.trackBeatCount++;
 
-    const errMs = Math.abs(err) * 1000.0;
-    BF.errAbsHist.push(errMs);
-    while (BF.errAbsHist.length > BF.lockWindow) BF.errAbsHist.shift();
+      // Accumulate L-corrected errors for final nudge at lock time
+      if (BF.latencyEstValid) BF.trackPhaseErrors.push(err);
 
-    const phaseStable = BF.errAbsHist.length >= BF.lockWindow &&
-                        median(BF.errAbsHist) <= BF.lockMedMs;
-    const eightBeats  = BF.trackBeatCount >= 8;
+      const errMs = Math.abs(err) * 1000.0;
+      BF.errAbsHist.push(errMs);
+      while (BF.errAbsHist.length > BF.lockWindow) BF.errAbsHist.shift();
 
-    if (phaseStable || eightBeats) {
-      transitionToLocked();
+      const phaseStable = BF.errAbsHist.length >= BF.lockWindow &&
+                          median(BF.errAbsHist) <= BF.lockMedMs;
+      const eightBeats  = BF.trackBeatCount >= 8;
+      if (phaseStable || eightBeats) transitionToLocked();
+
+    } else { // LOCKED: gentle phase maintenance
+      BF.t0 += (BF.alpha * 0.3) * err;
     }
   }
 }
@@ -651,7 +803,7 @@ async function actionAcquire() {
 
   // Fresh start from IDLE: clear visualization and stale phase
   if (BF.state === 'IDLE') {
-    VIS.detectedBeats = []; VIS.energySamples = []; VIS.bpmSamples = [];
+    VIS.detectedBeats = []; VIS.energySamples = []; VIS.bpmSamples = []; VIS.toneFallSamples = []; VIS.tonePresenceSamples = [];
     VIS.markers = [];
     BF.t0 = 0;
     VIS.stateSamples = [];
@@ -663,7 +815,9 @@ async function actionAcquire() {
   VIS.onStateChange('ACQUIRE', ctx.currentTime);
   BF.acquireStart = ctx.currentTime;
   BF.events       = []; BF.estPeriod = null; BF.estBpm = null;
-  BF.eShort = 0; BF.eLong = 0; BF.ePeak = 0; BF.ePrev = 0; BF.lastTrig = -1e9;
+  BF.eShort = 0; BF.eLong = 0; BF.ePeak = 0; BF.lastTrig = -1e9;
+  BF.aboveThresh = false; BF.peakRatio = 0; BF.peakEnergy = 0; BF.peakTime = -1; BF.armTime = -1;
+  BF.beatEnergyEma = null;
   BF.errAbsHist   = []; BF.lastBeatSeen = -1e9; BF.trackBeatCount = 0;
 
   try {
@@ -688,7 +842,7 @@ async function actionTrack() {
 
   if (BF.state === 'IDLE') {
     // IDLE → TRACK: use current BPM, open mic
-    VIS.detectedBeats = []; VIS.energySamples = []; VIS.bpmSamples = [];
+    VIS.detectedBeats = []; VIS.energySamples = []; VIS.bpmSamples = []; VIS.toneFallSamples = []; VIS.tonePresenceSamples = [];
     VIS.markers = [];
     VIS.stateSamples = [];
     VIS.onStateChange('IDLE', ctx.currentTime);
@@ -709,6 +863,7 @@ async function actionTrack() {
 
     BF.state = 'TRACK';
     VIS.onStateChange('TRACK', ctx.currentTime);
+    BF.errAbsHist = []; BF.trackPhaseErrors = [];
     setLamp('TRACK');
     setStatus(`Tracking… ${fmtBpm(bpm)} BPM.`);
     setBodyFlags();
@@ -723,6 +878,8 @@ async function actionTrack() {
 
   if (BF.state === 'LOCKED') {
     BF.errAbsHist = []; BF.trackBeatCount = 0; BF.lastBeatSeen = -1e9;
+    BF.aboveThresh = false; BF.peakRatio = 0; BF.peakEnergy = 0; BF.peakTime = -1; BF.armTime = -1;
+    BF.beatEnergyEma = null;
     const wasActive = BF.active;
 
     if (!wasActive) {
@@ -737,6 +894,7 @@ async function actionTrack() {
 
     BF.state = 'TRACK';
     VIS.onStateChange('TRACK', ctx.currentTime);
+    BF.errAbsHist = []; BF.trackPhaseErrors = [];
     setLamp('TRACK');
     setStatus(`Tracking… ${fmtBpm(60/BF.period)} BPM.`);
     setBodyFlags();
@@ -855,8 +1013,10 @@ const VIS = {
   bpmSamples:    [],   // {time, bpm, errMs}
   markers:       [],   // {time, label}
   stateSamples:  [],   // [{t0, state}, ...] (segments)
-  specSamples:   [],   // {time, bins: Uint8Array(SPEC_BINS)} — spectrum snapshot
-  frameSamples:  [],   // {time, dtMs} — RAF inter-frame interval per draw call
+  specSamples:     [],   // {time, bins: Uint8Array(SPEC_BINS)} — spectrum snapshot
+  tonePresenceSamples: [], // {time, present:[b0,b1,b2]} — per-frame tone detection
+  toneFallSamples: [],     // {time, latMs} — tone falling-edge events
+  frameSamples:    [],   // {time, dtMs} — RAF inter-frame interval per draw call
   lastFrameRafT: null, // previous RAF timestamp (ms) for delta computation
   windowSec: 6.0,
   nowFrac:   2/3,
@@ -1099,12 +1259,13 @@ function drawVis(rafT) {
     const x = timeToX(b.time);
     if (x < -30 || x > W + 30) continue;
 
-    cx.fillStyle   = '#2266ee';
-    cx.strokeStyle = '#2266ee';
+    const beatColor = b.gray ? '#999' : '#2266ee';
+    cx.fillStyle   = beatColor;
+    cx.strokeStyle = beatColor;
     cx.lineWidth   = 1.5;
-    drawDiamond(cx, x, detectedY, 10, true);
+    drawDiamond(cx, x, detectedY, b.gray ? 7 : 10, true);
 
-    if (b.bpm != null) {
+    if (b.bpm != null && !b.gray) {
       cx.fillStyle    = '#2266ee';
       cx.font         = 'bold 12px monospace';
       cx.textBaseline = 'bottom';
@@ -1113,10 +1274,25 @@ function drawVis(rafT) {
 
     if (b.errMs != null) {
       const sign = b.errMs >= 0 ? '+' : '';
-      cx.fillStyle    = '#888';
+      cx.fillStyle    = b.gray ? '#bbb' : '#888';
       cx.font         = '11px monospace';
       cx.textBaseline = 'top';
       cx.fillText(`${sign}${b.errMs.toFixed(0)}ms`, x, detectedY + 11);
+    }
+  }
+
+  // Three tone presence lanes — one dot-row per tone, just below detected beats
+  {
+    const laneColors = ['#ff8800', '#44cc44', '#44aaff'];
+    const laneY      = [detectedY + 12, detectedY + 17, detectedY + 22];
+    for (const s of VIS.tonePresenceSamples) {
+      const x = timeToX(s.time);
+      if (x < 0 || x > W) continue;
+      for (let ti = 0; ti < 3; ti++) {
+        if (!s.present[ti]) continue;
+        cx.fillStyle = laneColors[ti];
+        cx.fillRect(x - 1, laneY[ti] - 1, 2, 3);
+      }
     }
   }
 
@@ -1267,7 +1443,7 @@ function drawVis(rafT) {
       cx.fillText(`1e${exp}`, 2, y - 1);
     }
 
-    // eShort bars (green = below threshold, red = above)
+    // eShort bars: green = below threshold, red = above threshold
     for (const s of VIS.energySamples) {
       const x = timeToX(s.time);
       if (x < 0 || x > W) continue;
@@ -1318,6 +1494,27 @@ function drawVis(rafT) {
       }
     }
 
+    // Beat energy EMA reference line (orange dashed) + gate threshold below it (faint)
+    if (BF.beatEnergyEma !== null) {
+      const ey  = eToY(BF.beatEnergyEma);
+      const gey = eToY(BF.beatEnergyEma * BF.beatGateRatio);
+      cx.strokeStyle = 'rgba(255,140,0,0.7)';
+      cx.lineWidth = 1;
+      cx.setLineDash([6, 3]);
+      cx.beginPath(); cx.moveTo(0, ey); cx.lineTo(W, ey); cx.stroke();
+      cx.strokeStyle = 'rgba(255,140,0,0.3)';
+      cx.lineWidth = 1;
+      cx.beginPath(); cx.moveTo(0, gey); cx.lineTo(W, gey); cx.stroke();
+      cx.setLineDash([]);
+      cx.fillStyle = 'rgba(255,140,0,0.8)';
+      cx.font = '9px monospace';
+      cx.textAlign = 'left';
+      cx.textBaseline = 'bottom';
+      cx.fillText('beat avg', 2, ey - 1);
+      cx.fillStyle = 'rgba(255,140,0,0.5)';
+      cx.fillText(`gate ×${BF.beatGateRatio.toFixed(2)}`, 2, gey - 1);
+    }
+
     // ePeak line (dashed grey, horizontal at current peak)
     if (BF.ePeak > 0) {
       const py = eToY(BF.ePeak);
@@ -1334,12 +1531,16 @@ function drawVis(rafT) {
     }
 
     // Numeric readout bottom-right
-    cx.fillStyle = '#888';
     cx.font = '9px monospace';
     cx.textAlign = 'right';
     cx.textBaseline = 'bottom';
+    const ratio     = BF.eLong > 0 ? BF.eShort / BF.eLong : 0;
+    const armedStr  = BF.aboveThresh ? `  [ARMED pk=${BF.peakRatio.toFixed(1)}]` : '';
+    const emaStr    = BF.beatEnergyEma !== null ? `  avg=${BF.beatEnergyEma.toExponential(1)}` : '';
+    const latStr    = BF.latencyEstValid ? `  L=${(BF.latencyEst*1000).toFixed(0)}ms` : '';
+    cx.fillStyle = BF.aboveThresh ? '#ff8800' : '#888';
     cx.fillText(
-      `e=${BF.eShort.toExponential(2)}  fl=${BF.eLong.toExponential(2)}  thr=${(BF.eLong*BF.threshMul).toExponential(2)}`,
+      `e=${BF.eShort.toExponential(2)}  fl=${BF.eLong.toExponential(2)}  r=${ratio.toFixed(2)}  thr=${BF.threshMul.toFixed(1)}${armedStr}${emaStr}${latStr}`,
       W - 4, specTopY - 2);
   }
 
@@ -1358,6 +1559,18 @@ function drawVis(rafT) {
         cx.fillStyle = color;
         const y = specTopY + (SPEC_BINS - 1 - i) * binH;
         cx.fillRect(x - 1.5, y, 3, binH + 0.5); // +0.5 to avoid gaps
+      }
+
+      // White dot at each tone frequency bin when detected above threshold
+      if (BF.toneSpecBins) {
+        for (let ti = 0; ti < 3; ti++) {
+          const sb = BF.toneSpecBins[ti];
+          if (s.bins[sb] > BF.toneThreshold) {
+            const ty = specTopY + (SPEC_BINS - 1 - sb) * binH + binH * 0.5;
+            cx.fillStyle = '#fff';
+            cx.beginPath(); cx.arc(x, ty, 1.5, 0, Math.PI * 2); cx.fill();
+          }
+        }
       }
     }
 
@@ -1396,6 +1609,10 @@ function drawVis(rafT) {
     VIS.frameSamples = VIS.frameSamples.filter(f => f.time >= cullBefore);
   if (VIS.specSamples.length && VIS.specSamples[0].time < cullBefore)
     VIS.specSamples = VIS.specSamples.filter(s => s.time >= cullBefore);
+  if (VIS.toneFallSamples.length && VIS.toneFallSamples[0].time < cullBefore)
+    VIS.toneFallSamples = VIS.toneFallSamples.filter(s => s.time >= cullBefore);
+  if (VIS.tonePresenceSamples.length && VIS.tonePresenceSamples[0].time < cullBefore)
+    VIS.tonePresenceSamples = VIS.tonePresenceSamples.filter(s => s.time >= cullBefore);
 }
 
 // =========================
@@ -1470,6 +1687,34 @@ function init() {
     const idx = parseInt(el.slFloorRise.value) - 1;
     BF.floorRiseAlpha = riseAlphas[idx];
     el.lblFloorRise.textContent = BF.floorRiseAlpha.toFixed(4);
+  });
+
+  el.slToneGain = document.getElementById('slToneGain');
+  el.lblToneGain = document.getElementById('lblToneGain');
+  el.slToneGain.addEventListener('input', () => {
+    BF.toneGain = parseFloat(el.slToneGain.value);
+    el.lblToneGain.textContent = BF.toneGain.toFixed(2);
+  });
+
+  el.slToneThresh = document.getElementById('slToneThresh');
+  el.lblToneThresh = document.getElementById('lblToneThresh');
+  el.slToneThresh.addEventListener('input', () => {
+    BF.toneThreshold = parseInt(el.slToneThresh.value);
+    el.lblToneThresh.textContent = BF.toneThreshold;
+  });
+
+  el.slHysteresis = document.getElementById('slHysteresis');
+  el.lblHysteresis = document.getElementById('lblHysteresis');
+  el.slHysteresis.addEventListener('input', () => {
+    BF.hysteresis = parseFloat(el.slHysteresis.value);
+    el.lblHysteresis.textContent = BF.hysteresis.toFixed(2);
+  });
+
+  el.slBeatGate = document.getElementById('slBeatGate');
+  el.lblBeatGate = document.getElementById('lblBeatGate');
+  el.slBeatGate.addEventListener('input', () => {
+    BF.beatGateRatio = parseFloat(el.slBeatGate.value);
+    el.lblBeatGate.textContent = BF.beatGateRatio.toFixed(2);
   });
 
   document.body.addEventListener('keydown', actionKeyDown);
