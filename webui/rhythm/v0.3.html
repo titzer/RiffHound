@@ -1403,6 +1403,14 @@ function drawVis(rafT) {
         cx.strokeStyle = (beatT + dispL) > now ? '#ee8800' : '#ccc';
         cx.lineWidth   = 1.5;
         drawDiamond(cx, x, predictedY, 10, false);
+
+        // Predicted beat vertical guidelines
+        cx.lineWidth   = 2;
+        cx.beginPath();
+        cx.moveTo(x, 0);
+        cx.lineTo(x, specTopY);
+        cx.stroke();
+        
       }
       beatT += BF.period;
     }
@@ -1869,6 +1877,8 @@ Canvas:
 
 TODO (next):
 <ul>
+  <li>Spectrograph needs configurable gain</li>
+  <li>Add milliseconds display for mouse over</li>
   <li>Allow skipping SYNC step.</a>
   <li>Make SYNC step less annoying: first three beats, play one tone for half the beat; quiet beat, next three beats, play three tones (triplet) for three beats, quiet beat.</li>
   <li>Fix tone detection for syncing (single tone first; listen for the end).</li>
