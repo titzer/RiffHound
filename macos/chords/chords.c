@@ -6,7 +6,7 @@
 
 #import <Cocoa/Cocoa.h>
 
-@interface AppDelegate : NSObject <NSApplicationDelegate, NSTextFieldDelegate>
+@interface AppDelegate : NSObject <NSApplicationDelegate, NSTextFieldDelegate, NSWindowDelegate>
 @property (strong) NSWindow *window;
 @property (strong) NSTextField *label;         // general status / click feedback
 @property (strong) NSTextField *statusLabel;   // Playing / Stopped
@@ -16,6 +16,7 @@
 @property (strong) NSButton *soundButton;
 @property (strong) NSButton *drumsButton;
 @property (strong) NSButton *chordsButton;
+@property (strong) NSButton *fullscreenButton;
 @property (assign) BOOL isPlaying;
 @property (assign) BOOL soundEnabled;
 @property (assign) BOOL drumsEnabled;
@@ -100,6 +101,26 @@
     [self setStatus:[NSString stringWithFormat:@"Chords: %@", self.chordsEnabled ? @"On" : @"Off"]];
 }
 
+- (void)toggleFullscreen {
+    [self.window toggleFullScreen:nil];
+}
+
+- (void)fullscreenClicked:(id)sender {
+    (void)sender;
+    [self toggleFullscreen];
+}
+
+// NSWindowDelegate — keep the button label in sync with fullscreen state.
+- (void)windowDidEnterFullScreen:(NSNotification *)notification {
+    (void)notification;
+    [self.fullscreenButton setTitle:@"Exit Full"];
+}
+
+- (void)windowDidExitFullScreen:(NSNotification *)notification {
+    (void)notification;
+    [self.fullscreenButton setTitle:@"Full"];
+}
+
 - (void)buttonClicked:(id)sender {
     NSString *title = [sender title];
     [self setStatus:[NSString stringWithFormat:@"Clicked: %@", title]];
@@ -167,6 +188,14 @@ static void AddMenuItem(NSMenu *menu, NSString *title, id target, SEL action, NS
     NSMenu *fileMenu = [[NSMenu alloc] initWithTitle:@"File"];
     [fileMenuItem setSubmenu:fileMenu];
     AddMenuItem(fileMenu, @"Say Hello", self, @selector(menuSayHello:), @"H"); // Shift-H
+
+    // View menu — nil target lets the responder chain find NSWindow's toggleFullScreen:.
+    // macOS automatically flips the title between "Enter Full Screen" and "Exit Full Screen".
+    NSMenuItem *viewMenuItem = [[NSMenuItem alloc] initWithTitle:@"View" action:nil keyEquivalent:@""];
+    [menubar addItem:viewMenuItem];
+    NSMenu *viewMenu = [[NSMenu alloc] initWithTitle:@"View"];
+    [viewMenuItem setSubmenu:viewMenu];
+    AddMenuItem(viewMenu, @"Enter Full Screen", nil, @selector(toggleFullScreen:), @"f"); // Cmd+F
 }
 
 static NSButton *MakeButton(NSView *content, NSString *title,
@@ -196,8 +225,8 @@ static NSButton *MakeToggle(NSView *content, NSString *title,
 }
 
 - (void)buildWindowAndUI {
-    // Window is 640 pt wide to fit 7 buttons + 3-char tempo display + gaps.
-    NSRect frame = NSMakeRect(0, 0, 640, 300);
+    // Window is 720 pt wide to fit 8 buttons + 3-char tempo display + gaps.
+    NSRect frame = NSMakeRect(0, 0, 720, 300);
     self.window = [[NSWindow alloc] initWithContentRect:frame
                                               styleMask:(NSWindowStyleMaskTitled |
                                                          NSWindowStyleMaskClosable |
@@ -205,15 +234,18 @@ static NSButton *MakeToggle(NSView *content, NSString *title,
                                                          NSWindowStyleMaskResizable)
                                                 backing:NSBackingStoreBuffered
                                                   defer:NO];
+    // Opt the window into native macOS fullscreen support.
+    [self.window setCollectionBehavior:NSWindowCollectionBehaviorFullScreenPrimary];
+    [self.window setDelegate:self];
     [self.window center];
     [self.window setTitle:@"HelloWorld"];
 
     NSView *content = [self.window contentView];
 
     // ── Top row ──────────────────────────────────────────────────────────
-    //   Play  Stop  Again  Sound  Tap  [120]  Drums  Chords
-    //   7 × 70 pt buttons + 44 pt tempo display + 7 × 8 pt gaps = 590 pt
-    //   Centred in 640 pt window → 25 pt margins on each side.
+    //   Play  Stop  Again  Sound  Tap  [120]  Drums  Chords  Full
+    //   8 × 70 pt buttons + 44 pt tempo display + 8 × 8 pt gaps = 668 pt
+    //   Centred in 720 pt window → 26 pt margins on each side.
     CGFloat bw = 70, bh = 36, gap = 8;
     CGFloat dw = 44;  // tempo display width (≈ 3 monospaced digits + insets)
     CGFloat sx = 25;
@@ -255,9 +287,14 @@ static NSButton *MakeToggle(NSView *content, NSString *title,
     self.chordsButton = MakeToggle(content, @"Chords", drumsX+bw+gap, topY, bw, bh,
                                    YES, self, @selector(chordsClicked:));
     [self.chordsButton setAutoresizingMask:NSViewMinYMargin];
+    // Full — momentary, enters/exits native macOS fullscreen
+    CGFloat fullX = drumsX + (bw+gap)*2;
+    self.fullscreenButton = MakeButton(content, @"Full", fullX, topY, bw, bh,
+                                       self, @selector(fullscreenClicked:));
+    [self.fullscreenButton setAutoresizingMask:NSViewMinYMargin];
 
     // ── Status line (middle of window) ───────────────────────────────────
-    self.statusLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(0, 196, 640, 36)];
+    self.statusLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(0, 196, 720, 36)];
     [self.statusLabel setEditable:NO];
     [self.statusLabel setBezeled:NO];
     [self.statusLabel setDrawsBackground:NO];
@@ -266,7 +303,7 @@ static NSButton *MakeToggle(NSView *content, NSString *title,
     [content addSubview:self.statusLabel];
 
     // ── General click / event feedback label ─────────────────────────────
-    self.label = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 158, 600, 24)];
+    self.label = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 158, 680, 24)];
     [self.label setEditable:NO];
     [self.label setBezeled:NO];
     [self.label setDrawsBackground:NO];
@@ -275,7 +312,7 @@ static NSButton *MakeToggle(NSView *content, NSString *title,
     [content addSubview:self.label];
 
     // ── Text field — NSViewMaxYMargin+NSViewWidthSizable pins it to the bottom ──
-    self.textField = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 12, 600, 28)];
+    self.textField = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 12, 680, 28)];
     [self.textField setPlaceholderString:@"Type here… press Enter to accept"];
     [self.textField setDelegate:self];
     [self.textField setTarget:self];

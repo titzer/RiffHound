@@ -79,6 +79,11 @@
     color:#000;
     border-color:#ccaa00;
   }
+  #lampListening.active{
+    background:#29b6f6;
+    color:#000;
+    border-color:#0288d1;
+  }
   #lampChirping.active{
     background:#ffa500;
     color:#fff;
@@ -135,6 +140,7 @@
     <button id="btnPause">⏸ Pause</button>
     <button id="btnStop"   class="danger stopped">⏹ Stop</button>
     <button id="btnAcquire">⚡Acquire</button>
+    <button id="btnListen">👂 Listen</button>
     <button id="btnChirp">🎵 Chirp</button>
     <button id="btnMute"   class="mute">🔊 Sound</button>
     <button id="btnTap">🕒 Tap Tempo</button>
@@ -146,7 +152,7 @@
       <button id="btnHelp" onclick="document.getElementById('helpSection').scrollIntoView({behavior:'smooth'})">Help ↓</button>
     </div>
 
-    <span class="stateLamp active" id="lampIdle">IDLE</span><span class="stateLamp" id="lampAcquiring">ACQUIRING</span><span class="stateLamp" id="lampChirping">CHIRPING</span><span class="stateLamp" id="lampLocked">LOCKED</span>
+    <span class="stateLamp active" id="lampIdle">IDLE</span><span class="stateLamp" id="lampAcquiring">ACQUIRING</span><span class="stateLamp" id="lampListening">LISTENING</span><span class="stateLamp" id="lampChirping">CHIRPING</span><span class="stateLamp" id="lampLocked">LOCKED</span>
     <span id="statusText"></span>
 
     <span id="adjBox">
@@ -201,18 +207,22 @@
 <script>
 // =========================
 // Rhythm Buddy v0.2
-// State machine: IDLE | ACQUIRE | CHIRP | LOCKED
+// State machine: IDLE | ACQUIRE | LISTEN | CHIRP | LOCKED
 //
-// IDLE      --A--> ACQUIRE   (start mic, collect beats)
-// IDLE      --C--> CHIRP     (use current BPM, start mic, play)
+// IDLE      --A--> ACQUIRE   (start mic, collect beats, estimate BPM)
+// IDLE      --L--> LISTEN    (use current BPM, open mic, start ticks, phase-lock on 4 beats)
+// IDLE      --C--> CHIRP     (use current BPM, start mic, play tones)
 // IDLE   --SPACE-> LOCKED    (use current BPM, no mic, play)
 // ACQUIRE   --auto-> LOCKED  (4 good beats collected; mic closes)
 // ACQUIRE   --auto-> IDLE    (20s timeout, error)
 // ACQUIRE   --C--> LOCKED    (commit estimate early)
+// LISTEN    --auto-> LOCKED  (4 beats heard; mic closes, phase corrected)
 // CHIRP     --auto-> LOCKED  (phase stable OR 8 beats seen)
 // CHIRP     --C--> LOCKED    (force lock now)
-// LOCKED    --C--> CHIRP     (re-open mic, phase-adjust)
+// LOCKED    --L--> LISTEN    (re-open mic, quick phase re-lock)
+// LOCKED    --C--> CHIRP     (re-open mic, tone phase-adjust)
 // LOCKED    --A--> ACQUIRE   (re-open mic, re-collect)
+// any --L/C/A--> * from any state replaces current mic activity
 // any playing --SPACE-> IDLE (stop everything)
 // =========================
 
@@ -241,10 +251,10 @@ function setBpmDisplay(x) {
   bpm = Math.max(30, Math.min(300, x));
   el.bpmDisplay.value = fmtBpm(bpm);
   // Propagate immediately when free-running (no mic adjusting the period)
-  if (BF.state === 'LOCKED') BF.period = 60 / bpm;
+  if (BF.state === 'LOCKED' || BF.state === 'LISTEN') BF.period = 60 / bpm;
 }
 function setLamp(text) {
-  const map = { 'IDLE': 'lampIdle', 'ACQUIRE': 'lampAcquiring', 'CHIRP': 'lampChirping', 'LOCKED': 'lampLocked' };
+  const map = { 'IDLE': 'lampIdle', 'ACQUIRE': 'lampAcquiring', 'LISTEN': 'lampListening', 'CHIRP': 'lampChirping', 'LOCKED': 'lampLocked' };
   document.querySelectorAll('.stateLamp').forEach(s => s.classList.remove('active'));
   const id = map[text];
   if (id) document.getElementById(id).classList.add('active');
@@ -253,7 +263,8 @@ function setStatus(msg) { el.statusText.textContent = msg; }
 
 function setBodyFlags() {
   document.body.classList.toggle('playing',  playing);
-  document.body.classList.toggle('listening', BF.active && BF.state === 'ACQUIRE');
+  document.body.classList.toggle('acquiring', BF.active && BF.state === 'ACQUIRE');
+  document.body.classList.toggle('listening', BF.active && BF.state === 'LISTEN');
   document.body.classList.toggle('chirping',  BF.active && BF.state === 'CHIRP');
   document.body.classList.toggle('locked',    BF.state === 'LOCKED');  // mic may be off
 }
@@ -420,7 +431,6 @@ function hardResetFollowerState() {
   BF.errAbsHist = []; BF.lastBeatSeen = -1e9;
   BF.trackBeatCount = 0;
   BF.nextTick = -1.0;
-  BF.t0 = 0.0;
   BF.manualOffsetSec = 0.0;
   BF.toneGainMul = [1.0, 1.0, 1.0];
   BF.toneMagEma = [null, null, null];
@@ -528,7 +538,7 @@ function transitionToLocked() {
 // Beat detector — Option B: short/long energy ratio + onset gate
 // =========================
 function currentRefractory() {
-  if (BF.state === 'CHIRP' || BF.state === 'LOCKED')
+  if (BF.state === 'CHIRP' || BF.state === 'LOCKED' || BF.state === 'LISTEN')
     return clamp(0.40 * BF.period, 0.08, 0.25);
   return BF.refractoryBase;
 }
@@ -758,6 +768,21 @@ function onBeatDetected(tBeat) {
     return;
   }
 
+  if (BF.state === 'LISTEN') {
+    // Accumulate phase error relative to current tick clock.
+    const err = phaseError(tBeat);
+    BF.trackPhaseErrors.push(err);
+    const n = BF.trackPhaseErrors.length;
+    const errMs = Math.round(err * 1000);
+    VIS.detectedBeats.push({time: tBeat, bpm: 60/BF.period, errMs: err*1000, gray: true});
+    VIS.bpmSamples.push({time: tBeat, bpm: 60/BF.period, errMs: err*1000});
+    setStatus(`Listening… ${n}/4 beats (${errMs >= 0 ? '+' : ''}${errMs}ms)`);
+    if (n >= 4) {
+      transitionToLocked();
+    }
+    return;
+  }
+
   if (BF.state === 'CHIRP' || BF.state === 'LOCKED') {
     const L = BF.latencyEstValid ? BF.latencyEst : 0;
     const T = BF.period;
@@ -811,6 +836,62 @@ function onBeatDetected(tBeat) {
 // =========================
 // Commit: R during ACQUIRE → LOCKED immediately
 // =========================
+// LISTEN: passive phase-lock at known BPM — no tones, just mic + beat detection
+// =========================
+async function actionListen() {
+  await ctx.resume();
+
+  // Close any active mic (works from any state including ACQUIRE, CHIRP, LISTEN)
+  if (BF.active) stopMicHardware();
+
+  // From IDLE: clear stale visualization
+  if (BF.state === 'IDLE') {
+    VIS.detectedBeats = []; VIS.energySamples = []; VIS.bpmSamples = [];
+    VIS.toneFallSamples = []; VIS.tonePresenceSamples = [];
+    VIS.markers = [];
+    VIS.stateSamples = [];
+    VIS.onStateChange('IDLE', ctx.currentTime);
+  }
+
+  // Always use the current BPM display value
+  BF.period = 60 / bpm;
+
+  // Preserve a valid existing tick clock (e.g. coming from LOCKED/CHIRP) so ticks
+  // don't jump; otherwise start a fresh clock aligned to now.
+  const nowL = ctx.currentTime;
+  if (!playing || BF.nextTick < 0) {
+    BF.t0      = nowL;
+    BF.nextTick = nowL;
+    beatCount  = 0;
+  }
+
+  // Reset beat detector and phase accumulator
+  BF.trackPhaseErrors = [];
+  BF.trackBeatCount   = 0;
+  BF.eShort = 0; BF.eLong = 0; BF.ePeak = 0; BF.lastTrig = -1e9;
+  BF.aboveThresh = false; BF.peakRatio = 0; BF.peakEnergy = 0;
+  BF.peakTime = -1; BF.armTime = -1; BF.beatEnergyEma = null;
+  BF.lastBeatSeen = -1e9;
+
+  try {
+    await openMic();
+  } catch (err) {
+    console.error(err);
+    setLamp('ERROR');
+    setStatus('Mic failed (permission?).');
+    setBodyFlags();
+    return;
+  }
+
+  BF.state = 'LISTEN';
+  VIS.onStateChange('LISTEN', ctx.currentTime);
+  setLamp('LISTEN');
+  setStatus(`Listening… ${fmtBpm(bpm)} BPM.`);
+  setBodyFlags();
+  requestAnimationFrame(beatFollowerRAF);
+}
+
+// =========================
 function commitFromAcquire() {
   if (!BF.estPeriod || BF.events.length < 3) {
     setStatus('Need 3 beats.');
@@ -835,7 +916,7 @@ function commitFromAcquire() {
 function nudgeTicks(deltaMs) {
   const ds = deltaMs / 1000.0;
   // Only meaningful when we have a clock
-  if (!(BF.state === 'CHIRP' || BF.state === 'LOCKED')) return;
+  if (!(BF.state === 'CHIRP' || BF.state === 'LOCKED' || BF.state === 'LISTEN')) return;
 
   // Shift the phase reference and tick cursor together.
   BF.t0 += ds;
@@ -1048,7 +1129,7 @@ function actionMuteToggle() {
 }
 
 function updateMuteButton() {
-  const active = muted && (playing || BF.state === 'CHIRP' || BF.state === 'LOCKED');
+  const active = muted && (playing || BF.state === 'CHIRP' || BF.state === 'LOCKED' || BF.state === 'LISTEN');
   el.btnMute.classList.toggle('active', active);
   el.btnMute.textContent = muted ? '🔇 Muted' : '🔊 Sound';
 }
@@ -1081,6 +1162,7 @@ function actionKeyDown(e) {
     return;
   }
   if (e.code === 'KeyA') { e.preventDefault(); actionAcquire();   return; }
+  if (e.code === 'KeyL') { e.preventDefault(); actionListen();    return; }
   if (e.code === 'KeyC') { e.preventDefault(); actionChirp();     return; }
   if (e.code === 'KeyT') { e.preventDefault(); actionTapTempo();  return; }
   if (e.code === 'KeyP') { e.preventDefault(); actionPause();     return; }
@@ -1170,6 +1252,7 @@ function drawDiamond(cx, x, y, r, filled) {
 
 function stateColor(state) {
   if (state === 'ACQUIRE') return '#ffcc00';
+  if (state === 'LISTEN')  return '#29b6f6';
   if (state === 'CHIRP')   return '#ffa500';
   if (state === 'LOCKED')  return '#00aa00';
   return '#888888'; // IDLE / unknown
@@ -1406,7 +1489,7 @@ function drawVis(rafT) {
   // when the mic buffer is read, which is ~L seconds later than the scheduled output time.
   // Shift predicted beat display forward by L so they land in the same mic-time reference,
   // making the visual gap between predicted and detected equal to errMs/1000 seconds.
-  if ((BF.state === 'CHIRP' || BF.state === 'LOCKED') && BF.t0 > 0 && BF.period > 0) {
+  if (BF.t0 > 0 && BF.period > 0) {
     const dispL = BF.latencyEstValid ? BF.latencyEst : 0;
     let beatT = BF.t0 + Math.ceil((leftT - BF.t0) / BF.period) * BF.period;
     while (beatT <= rightT) {
@@ -1741,6 +1824,7 @@ function init() {
   el.btnPause   = getButtonAndAddAction('btnPause',   actionPause);
   el.btnStop    = getButtonAndAddAction('btnStop',    actionStop);
   el.btnAcquire = getButtonAndAddAction('btnAcquire', actionAcquire);
+  el.btnListen  = getButtonAndAddAction('btnListen',  actionListen);
   el.btnChirp   = getButtonAndAddAction('btnChirp',   actionChirp);
   el.btnMute    = getButtonAndAddAction('btnMute',    actionMuteToggle);
   el.btnTap     = getButtonAndAddAction('btnTap',     actionTapTempo);
@@ -1856,8 +1940,9 @@ Buttons &amp; keys:
 <tr><td>▶️ Play</td><td><b>SPACE</b></td><td>From IDLE: start playing ticks at current BPM (no mic)</td></tr>
 <tr><td>⏸ Pause</td><td><b>P</b></td><td>Pause / resume</td></tr>
 <tr><td>⏹ Stop</td><td><b>SPACE</b></td><td>Stop everything and return to IDLE</td></tr>
-<tr><td>⚡ Acquire</td><td><b>A</b></td><td>Open mic, listen for beats to estimate BPM; from LOCKED, re-acquires while ticks continue</td></tr>
-<tr><td>🎵 Chirp</td><td><b>C</b></td><td>Open mic and phase-sync at current BPM (from IDLE or LOCKED); commit estimate and lock (from ACQUIRE); force lock now (from CHIRP)</td></tr>
+<tr><td>⚡ Acquire</td><td><b>A</b></td><td>Open mic, listen for beats to estimate BPM; auto-locks after 4 consistent beats</td></tr>
+<tr><td>👂 Listen</td><td><b>L</b></td><td>Open mic, start ticking at current BPM, phase-lock on the next 4 heard beats; works from any state</td></tr>
+<tr><td>🎵 Chirp</td><td><b>C</b></td><td>Open mic and phase-sync using tones (from IDLE or LOCKED); commit estimate and lock (from ACQUIRE); force lock now (from CHIRP)</td></tr>
 <tr><td>🔊 Sound</td><td><b>M</b></td><td>Mute / unmute tick output</td></tr>
 <tr><td>🕒 Tap Tempo</td><td><b>T</b></td><td>Tap to set BPM; takes effect immediately if playing</td></tr>
 <tr><td>nudge ±10ms</td><td><b>[ / ]</b></td><td>Shift tick schedule earlier/later by 10ms (CHIRP/LOCKED)</td></tr>
@@ -1866,24 +1951,28 @@ Buttons &amp; keys:
 
 State machine:
 <ul>
-  <li><b>IDLE →A→ ACQUIRE</b>: mic opens, collects beats to estimate BPM</li>
-  <li><b>IDLE →C→ CHIRP</b>: mic opens, plays at current BPM, phase-adjusts to mic</li>
+  <li><b>IDLE →A→ ACQUIRE</b>: mic opens, collects beats to estimate BPM; auto-locks after 4 consistent beats</li>
+  <li><b>IDLE →L→ LISTEN</b>: ticks start at current BPM, mic opens; phase-corrects to median of 4 heard beats, then locks</li>
+  <li><b>IDLE →C→ CHIRP</b>: mic opens, plays tones at current BPM, phase-adjusts via round-trip latency</li>
   <li><b>IDLE →SPACE→ LOCKED</b>: plays at current BPM immediately (no mic)</li>
-  <li><b>ACQUIRE →auto→ LOCKED</b>: after 4 consistent beats detected; mic closes, ticks start</li>
+  <li><b>ACQUIRE →auto→ LOCKED</b>: after 4 consistent beats; mic closes, ticks start</li>
   <li><b>ACQUIRE →C→ LOCKED</b>: commit current estimate early</li>
   <li><b>ACQUIRE →auto→ IDLE</b>: timeout after 20 s</li>
+  <li><b>LISTEN →auto→ LOCKED</b>: after 4 beats; mic closes, phase corrected to median beat error</li>
   <li><b>CHIRP →auto→ LOCKED</b>: after phase stabilises or 8 beats seen</li>
   <li><b>CHIRP →C→ LOCKED</b>: force lock now</li>
-  <li><b>LOCKED →C→ CHIRP</b>: re-open mic, resume phase-adjustment</li>
-  <li><b>LOCKED →A→ ACQUIRE</b>: re-open mic, re-collect (ticks keep playing)</li>
-  <li><b>{ACQUIRE,CHIRP,LOCKED} →SPACE→ IDLE</b>: stop everything</li>
+  <li><b>LOCKED →L→ LISTEN</b>: re-open mic, quick phase re-lock on 4 beats</li>
+  <li><b>LOCKED →C→ CHIRP</b>: re-open mic, tone-based phase adjustment</li>
+  <li><b>LOCKED →A→ ACQUIRE</b>: re-open mic, re-collect BPM</li>
+  <li><b>{any active} →SPACE→ IDLE</b>: stop everything</li>
+  <li><b>L / C / A from any state</b>: replaces current mic activity</li>
 </ul>
 
 Canvas:
 <ul>
   <li>Filled blue diamonds = detected beats; BPM estimate above, phase error below (when chirping).</li>
   <li>Empty orange diamonds = predicted future beats; grey = predicted past.</li>
-  <li>State band: gray IDLE, yellow ACQUIRE, red CHIRP, green LOCKED; state name is shown to the right of the “now” line.</li>
+  <li>State band: gray IDLE, yellow ACQUIRE, blue LISTEN, orange CHIRP, green LOCKED; state name shown to the right of the "now" line.</li>
   <li>Bar graph = energy ratio (relative to floor); yellow bar = within window for detecting a beat, red bar = detected/computed peak (beat).</li>
 </ul>
 
