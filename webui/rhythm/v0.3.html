@@ -60,28 +60,34 @@
     flex-wrap: wrap;
     align-items: baseline;
   }
-  #lockLamp{
+  .stateLamp{
     display:inline-block;
     padding: 0.3vh 0.9vw;
     border:1px solid #bbb;
     border-radius: 999px;
-    background:#eee;
+    background:#ccc;
+    color:#999;
     font-weight:700;
   }
-  body.listening #lockLamp{
+  #lampIdle.active{
+    background:#8389ff;
+    color:#fff;
+    border-color:#6369dd;
+  }
+  #lampAcquiring.active{
     background:#ffcc00;
     color:#000;
     border-color:#ccaa00;
   }
-  body.syncing #lockLamp{
+  #lampSyncing.active{
     background:#ff3333;
     color:#fff;
-    border-color:#ff3333;
+    border-color:#cc0000;
   }
-  body.locked #lockLamp{
+  #lampLocked.active{
     background:#0a0;
     color:#fff;
-    border-color:#0a0;
+    border-color:#080;
   }
 
   #mono{
@@ -140,7 +146,7 @@
       <button id="btnHelp" onclick="document.getElementById('helpSection').scrollIntoView({behavior:'smooth'})">Help ↓</button>
     </div>
 
-    <span id="lockLamp">IDLE</span>
+    <span class="stateLamp active" id="lampIdle">IDLE</span><span class="stateLamp" id="lampAcquiring">ACQUIRING</span><span class="stateLamp" id="lampSyncing">SYNCING</span><span class="stateLamp" id="lampLocked">LOCKED</span>
     <span id="statusText"></span>
 
     <span id="adjBox">
@@ -237,7 +243,12 @@ function setBpmDisplay(x) {
   // Propagate immediately when free-running (no mic adjusting the period)
   if (BF.state === 'LOCKED') BF.period = 60 / bpm;
 }
-function setLamp(text) { el.lockLamp.textContent = text; }
+function setLamp(text) {
+  const map = { 'IDLE': 'lampIdle', 'ACQUIRE': 'lampAcquiring', 'SYNC': 'lampSyncing', 'LOCKED': 'lampLocked' };
+  document.querySelectorAll('.stateLamp').forEach(s => s.classList.remove('active'));
+  const id = map[text];
+  if (id) document.getElementById(id).classList.add('active');
+}
 function setStatus(msg) { el.statusText.textContent = msg; }
 
 function setBodyFlags() {
@@ -1748,7 +1759,7 @@ function init() {
     e.target.value = fmtBpm(bpm);
   });
 
-  el.lockLamp   = document.getElementById('lockLamp');
+  // state lamps are managed by setLamp()
   el.statusText = document.getElementById('statusText');
   el.offsetMs   = document.getElementById('offsetMs');
 
