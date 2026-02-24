@@ -79,8 +79,8 @@
     color:#000;
     border-color:#ccaa00;
   }
-  #lampSyncing.active{
-    background:#ff3333;
+  #lampChirping.active{
+    background:#ffa500;
     color:#fff;
     border-color:#cc0000;
   }
@@ -135,7 +135,7 @@
     <button id="btnPause">⏸ Pause</button>
     <button id="btnStop"   class="danger stopped">⏹ Stop</button>
     <button id="btnAcquire">⚡Acquire</button>
-    <button id="btnSync">🎯 Sync</button>
+    <button id="btnChirp">🎵 Chirp</button>
     <button id="btnMute"   class="mute">🔊 Sound</button>
     <button id="btnTap">🕒 Tap Tempo</button>
     <input id="bpmDisplay" type="text" value="110.0" maxlength="5">
@@ -146,7 +146,7 @@
       <button id="btnHelp" onclick="document.getElementById('helpSection').scrollIntoView({behavior:'smooth'})">Help ↓</button>
     </div>
 
-    <span class="stateLamp active" id="lampIdle">IDLE</span><span class="stateLamp" id="lampAcquiring">ACQUIRING</span><span class="stateLamp" id="lampSyncing">SYNCING</span><span class="stateLamp" id="lampLocked">LOCKED</span>
+    <span class="stateLamp active" id="lampIdle">IDLE</span><span class="stateLamp" id="lampAcquiring">ACQUIRING</span><span class="stateLamp" id="lampChirping">CHIRPING</span><span class="stateLamp" id="lampLocked">LOCKED</span>
     <span id="statusText"></span>
 
     <span id="adjBox">
@@ -201,17 +201,17 @@
 <script>
 // =========================
 // Rhythm Buddy v0.2
-// State machine: IDLE | ACQUIRE | SYNC | LOCKED
+// State machine: IDLE | ACQUIRE | CHIRP | LOCKED
 //
 // IDLE      --A--> ACQUIRE   (start mic, collect beats)
-// IDLE      --R--> SYNC     (use current BPM, start mic, play)
+// IDLE      --R--> CHIRP     (use current BPM, start mic, play)
 // IDLE   --SPACE-> LOCKED    (use current BPM, no mic, play)
-// ACQUIRE   --auto-> SYNC   (4 good beats collected)
+// ACQUIRE   --auto-> CHIRP   (4 good beats collected)
 // ACQUIRE   --auto-> IDLE    (20s timeout, error)
 // ACQUIRE   --R--> LOCKED    (commit estimate early)
-// SYNC     --auto-> LOCKED  (phase stable OR 8 beats seen)
-// SYNC     --R--> LOCKED    (force lock now)
-// LOCKED    --R--> SYNC     (re-open mic, phase-adjust)
+// CHIRP     --auto-> LOCKED  (phase stable OR 8 beats seen)
+// CHIRP     --R--> LOCKED    (force lock now)
+// LOCKED    --R--> CHIRP     (re-open mic, phase-adjust)
 // LOCKED    --A--> ACQUIRE   (re-open mic, re-collect)
 // any playing --SPACE-> IDLE (stop everything)
 // =========================
@@ -244,7 +244,7 @@ function setBpmDisplay(x) {
   if (BF.state === 'LOCKED') BF.period = 60 / bpm;
 }
 function setLamp(text) {
-  const map = { 'IDLE': 'lampIdle', 'ACQUIRE': 'lampAcquiring', 'SYNC': 'lampSyncing', 'LOCKED': 'lampLocked' };
+  const map = { 'IDLE': 'lampIdle', 'ACQUIRE': 'lampAcquiring', 'CHIRP': 'lampChirping', 'LOCKED': 'lampLocked' };
   document.querySelectorAll('.stateLamp').forEach(s => s.classList.remove('active'));
   const id = map[text];
   if (id) document.getElementById(id).classList.add('active');
@@ -254,7 +254,7 @@ function setStatus(msg) { el.statusText.textContent = msg; }
 function setBodyFlags() {
   document.body.classList.toggle('playing',  playing);
   document.body.classList.toggle('listening', BF.active && BF.state === 'ACQUIRE');
-  document.body.classList.toggle('syncing',  BF.active && BF.state === 'SYNC');
+  document.body.classList.toggle('chirping',  BF.active && BF.state === 'CHIRP');
   document.body.classList.toggle('locked',    BF.state === 'LOCKED');  // mic may be off
 }
 
@@ -296,13 +296,13 @@ function ensureStoppedUI() {
 function playTick(atTime, accent=false) {
   if (muted) return;
 
-  // In SYNC with mic open: play 3 sine tones staggered across the full period.
+  // In CHIRP with mic open: play 3 sine tones staggered across the full period.
   // Tone 0 covers [beat, beat+T/3], Tone 1 [beat+T/3, beat+2T/3], Tone 2 [beat+2T/3, beat+T].
   // Equal-power (sin/cos) crossfades keep total energy constant at every transition:
   //   fading-out tone: G*cos(α*π/2), fading-in tone: G*sin(α*π/2) → cos²+sin²=1. ✓
   // Each tone starts F seconds early to overlap with the tail of the preceding tone.
   // Each tone's fall marks a known phase point; detecting it in the mic gives latency.
-  if (BF.active && BF.state === 'SYNC') {
+  if (BF.active && BF.state === 'CHIRP') {
     const T  = BF.period;
     const F  = 0.005; // crossfade half-duration (s)
     const NC = 64;    // curve resolution for setValueCurveAtTime
@@ -379,7 +379,7 @@ const BF = {
   // clock  (nextTick = -1 means "not yet set")
   period: 60/110, t0: 0.0, nextTick: -1.0, lookahead: 0.20,
 
-  // syncing
+  // chirping
   alpha: 0.14, errAbsHist: [], lockWindow: 12, lockMedMs: 22.0,
   trackBeatCount: 0,
 
@@ -388,7 +388,7 @@ const BF = {
 
   lastBeatSeen: -1e9, maxAcquireSec: 20.0,
 
-  // Tone-based syncing (SYNC/LOCKED with mic active)
+  // Tone-based chirping (CHIRP/LOCKED with mic active)
   toneFreqs: [3001, 4001, 5003],         // Hz — all prime, well above musical content
   toneGain: 0.10,                        // output gain slider
   toneThreshold: 40,                     // FFT bin byte threshold for "tone present"
@@ -401,7 +401,7 @@ const BF = {
   tonePrevPresent: [false, false, false], // presence flags from previous frame
   latencyEst: 0.050,                     // EMA round-trip latency (s)
   latencyEstValid: false,                // true after first measurement
-  trackPhaseErrors: [],                  // L-corrected phase errors collected during SYNC
+  trackPhaseErrors: [],                  // L-corrected phase errors collected during CHIRP
 };
 
 function resetFollowerUI() {
@@ -498,8 +498,8 @@ function stopEverything() {
 // =========================
 function transitionToLocked() {
   // One-shot sync: apply the median of all tone-aware phase errors accumulated
-  // during SYNC. This is the only place t0/nextTick are corrected, so tone
-  // playback stays perfectly stable throughout SYNC and the correction happens
+  // during CHIRP. This is the only place t0/nextTick are corrected, so tone
+  // playback stays perfectly stable throughout CHIRP and the correction happens
   // at a clean boundary (right before tones stop and the click resumes).
   if (BF.trackPhaseErrors.length >= 3) {
     const sorted = BF.trackPhaseErrors.slice().sort((a, b) => a - b);
@@ -528,7 +528,7 @@ function transitionToLocked() {
 // Beat detector — Option B: short/long energy ratio + onset gate
 // =========================
 function currentRefractory() {
-  if (BF.state === 'SYNC' || BF.state === 'LOCKED')
+  if (BF.state === 'CHIRP' || BF.state === 'LOCKED')
     return clamp(0.40 * BF.period, 0.08, 0.25);
   return BF.refractoryBase;
 }
@@ -578,8 +578,8 @@ function detectBeat(now) {
       bins[i] = BF.freqBuf[Math.floor(i * step)];
     VIS.specSamples.push({time: now, bins});
 
-    // Staggered tone presence + per-tone transition detection (SYNC only)
-    if (BF.toneBins && BF.state === 'SYNC') {
+    // Staggered tone presence + per-tone transition detection (CHIRP only)
+    if (BF.toneBins && BF.state === 'CHIRP') {
       const present = BF.toneBins.map(idx =>
         Math.max(BF.freqBuf[idx - 1] || 0, BF.freqBuf[idx], BF.freqBuf[idx + 1] || 0)
         > BF.toneThreshold);
@@ -691,7 +691,7 @@ function detectBeat(now) {
 }
 
 // =========================
-// ACQUIRE: collect beats → auto-promote to SYNC
+// ACQUIRE: collect beats → auto-promote to CHIRP
 // =========================
 function updateAcquireEstimate() {
   if (BF.events.length < 2) return;
@@ -711,7 +711,7 @@ function updateAcquireEstimate() {
   setStatus(`Estimating… ~${fmtBpm(BF.estBpm)} BPM (${BF.events.length} beats).`);
 }
 
-function tryPromoteToSyncFromAcquire() {
+function tryPromoteToChirpFromAcquire() {
   if (BF.events.length < 4) return false;
   const t = BF.events, n = t.length;
   const dts = [t[n-1]-t[n-2], t[n-2]-t[n-3], t[n-3]-t[n-4]];
@@ -730,18 +730,18 @@ function tryPromoteToSyncFromAcquire() {
   BF.trackBeatCount = 0;
   setBpmDisplay(60 / BF.period);
 
-  BF.state = 'SYNC';
-  VIS.onStateChange('SYNC', ctx.currentTime);
+  BF.state = 'CHIRP';
+  VIS.onStateChange('CHIRP', ctx.currentTime);
   BF.errAbsHist = []; BF.trackPhaseErrors = [];
-  setLamp('SYNC');
-  setStatus(`Syncing… ${fmtBpm(60/BF.period)} BPM.`);
+  setLamp('CHIRP');
+  setStatus(`Chirping… ${fmtBpm(60/BF.period)} BPM.`);
   setBodyFlags();
   ensurePlayingUI();
   return true;
 }
 
 // =========================
-// SYNC: phase correction → auto-lock after 8 beats or stable phase
+// CHIRP: phase correction → auto-lock after 8 beats or stable phase
 // =========================
 function phaseError(tBeat) {
   const T = BF.period;
@@ -758,15 +758,15 @@ function onBeatDetected(tBeat) {
     updateAcquireEstimate();
     VIS.detectedBeats.push({time: tBeat, bpm: BF.estBpm, errMs: null});
     if (BF.estBpm != null) VIS.bpmSamples.push({time: tBeat, bpm: BF.estBpm, errMs: null});
-    tryPromoteToSyncFromAcquire();
+    tryPromoteToChirpFromAcquire();
     return;
   }
 
-  if (BF.state === 'SYNC' || BF.state === 'LOCKED') {
+  if (BF.state === 'CHIRP' || BF.state === 'LOCKED') {
     const L = BF.latencyEstValid ? BF.latencyEst : 0;
     const T = BF.period;
 
-    if (BF.state === 'SYNC') {
+    if (BF.state === 'CHIRP') {
       // Tone-aware phase estimation:
       // phaseError() returns [-T/2, +T/2] but can be ambiguous near ±T/2.
       // The staggered tones tell us which third of the period the beat falls in,
@@ -789,7 +789,7 @@ function onBeatDetected(tBeat) {
       VIS.detectedBeats.push({time: tBeat, bpm: 60/T, errMs: err*1000, gray: true});
       VIS.bpmSamples.push({time: tBeat, bpm: 60/T, errMs: err*1000});
 
-      // Do NOT modify t0/nextTick here. Applying corrections mid-syncing shifts
+      // Do NOT modify t0/nextTick here. Applying corrections mid-chirping shifts
       // the tone schedule, causing overlapping tone bursts and confusing the beat
       // detector. Accumulate estimates; the full correction is applied as a single
       // one-shot nudge at transitionToLocked().
@@ -834,7 +834,7 @@ function commitFromAcquire() {
 function nudgeTicks(deltaMs) {
   const ds = deltaMs / 1000.0;
   // Only meaningful when we have a clock
-  if (!(BF.state === 'SYNC' || BF.state === 'LOCKED')) return;
+  if (!(BF.state === 'CHIRP' || BF.state === 'LOCKED')) return;
 
   // Shift the phase reference and tick cursor together.
   BF.t0 += ds;
@@ -855,7 +855,7 @@ let beatCount = 0;
 
 function scheduleTicks(now) {
   if (paused) return;
-  if (BF.state !== 'SYNC' && BF.state !== 'LOCKED') return;
+  if (BF.state !== 'CHIRP' && BF.state !== 'LOCKED') return;
   if (BF.nextTick < 0) return;  // not yet initialized
 
   // skip stale cursor (e.g. long pause) without burst
@@ -936,11 +936,11 @@ async function actionAcquire() {
   requestAnimationFrame(beatFollowerRAF);
 }
 
-async function actionSync() {
+async function actionChirp() {
   await ctx.resume();
 
   if (BF.state === 'IDLE') {
-    // IDLE → SYNC: use current BPM, open mic
+    // IDLE → CHIRP: use current BPM, open mic
     VIS.detectedBeats = []; VIS.energySamples = []; VIS.bpmSamples = []; VIS.toneFallSamples = []; VIS.tonePresenceSamples = [];
     VIS.markers = [];
     VIS.stateSamples = [];
@@ -960,11 +960,11 @@ async function actionSync() {
       return;
     }
 
-    BF.state = 'SYNC';
-    VIS.onStateChange('SYNC', ctx.currentTime);
+    BF.state = 'CHIRP';
+    VIS.onStateChange('CHIRP', ctx.currentTime);
     BF.errAbsHist = []; BF.trackPhaseErrors = [];
-    setLamp('SYNC');
-    setStatus(`Syncing… ${fmtBpm(bpm)} BPM.`);
+    setLamp('CHIRP');
+    setStatus(`Chirping… ${fmtBpm(bpm)} BPM.`);
     setBodyFlags();
     ensurePlayingUI();
     requestAnimationFrame(beatFollowerRAF);
@@ -973,7 +973,7 @@ async function actionSync() {
 
   if (BF.state === 'ACQUIRE') { commitFromAcquire(); return; }
 
-  if (BF.state === 'SYNC') { transitionToLocked(); return; }
+  if (BF.state === 'CHIRP') { transitionToLocked(); return; }
 
   if (BF.state === 'LOCKED') {
     BF.errAbsHist = []; BF.trackBeatCount = 0; BF.lastBeatSeen = -1e9;
@@ -991,11 +991,11 @@ async function actionSync() {
       }
     }
 
-    BF.state = 'SYNC';
-    VIS.onStateChange('SYNC', ctx.currentTime);
+    BF.state = 'CHIRP';
+    VIS.onStateChange('CHIRP', ctx.currentTime);
     BF.errAbsHist = []; BF.trackPhaseErrors = [];
-    setLamp('SYNC');
-    setStatus(`Syncing… ${fmtBpm(60/BF.period)} BPM.`);
+    setLamp('CHIRP');
+    setStatus(`Chirping… ${fmtBpm(60/BF.period)} BPM.`);
     setBodyFlags();
     if (!wasActive) requestAnimationFrame(beatFollowerRAF);
   }
@@ -1047,7 +1047,7 @@ function actionMuteToggle() {
 }
 
 function updateMuteButton() {
-  const active = muted && (playing || BF.state === 'SYNC' || BF.state === 'LOCKED');
+  const active = muted && (playing || BF.state === 'CHIRP' || BF.state === 'LOCKED');
   el.btnMute.classList.toggle('active', active);
   el.btnMute.textContent = muted ? '🔇 Muted' : '🔊 Sound';
 }
@@ -1080,7 +1080,7 @@ function actionKeyDown(e) {
     return;
   }
   if (e.code === 'KeyA') { e.preventDefault(); actionAcquire();   return; }
-  if (e.code === 'KeyS') { e.preventDefault(); actionSync();     return; }
+  if (e.code === 'KeyC') { e.preventDefault(); actionChirp();     return; }
   if (e.code === 'KeyT') { e.preventDefault(); actionTapTempo();  return; }
   if (e.code === 'KeyP') { e.preventDefault(); actionPause();     return; }
   if (e.code === 'KeyM') { e.preventDefault(); actionMuteToggle();return; }
@@ -1169,7 +1169,7 @@ function drawDiamond(cx, x, y, r, filled) {
 
 function stateColor(state) {
   if (state === 'ACQUIRE') return '#ffcc00';
-  if (state === 'SYNC')   return '#ff3333';
+  if (state === 'CHIRP')   return '#ffa500';
   if (state === 'LOCKED')  return '#00aa00';
   return '#888888'; // IDLE / unknown
 }
@@ -1255,7 +1255,7 @@ function drawVis(rafT) {
     cx.stroke();
   }
 
-  // Sync guide lines
+  // Chirp guide lines
   cx.strokeStyle = '#d0d0d0';
   cx.lineWidth   = 1;
   cx.setLineDash([]);
@@ -1266,7 +1266,7 @@ function drawVis(rafT) {
   cx.moveTo(0, energyTopY);  cx.lineTo(W, energyTopY);
   cx.stroke();
 
-  // Sync labels
+  // Chirp labels
   cx.fillStyle    = '#bbb';
   cx.font         = '10px sans-serif';
   cx.textAlign    = 'left';
@@ -1405,7 +1405,7 @@ function drawVis(rafT) {
   // when the mic buffer is read, which is ~L seconds later than the scheduled output time.
   // Shift predicted beat display forward by L so they land in the same mic-time reference,
   // making the visual gap between predicted and detected equal to errMs/1000 seconds.
-  if ((BF.state === 'SYNC' || BF.state === 'LOCKED') && BF.t0 > 0 && BF.period > 0) {
+  if ((BF.state === 'CHIRP' || BF.state === 'LOCKED') && BF.t0 > 0 && BF.period > 0) {
     const dispL = BF.latencyEstValid ? BF.latencyEst : 0;
     let beatT = BF.t0 + Math.ceil((leftT - BF.t0) / BF.period) * BF.period;
     while (beatT <= rightT) {
@@ -1740,7 +1740,7 @@ function init() {
   el.btnPause   = getButtonAndAddAction('btnPause',   actionPause);
   el.btnStop    = getButtonAndAddAction('btnStop',    actionStop);
   el.btnAcquire = getButtonAndAddAction('btnAcquire', actionAcquire);
-  el.btnSync    = getButtonAndAddAction('btnSync',   actionSync);
+  el.btnChirp   = getButtonAndAddAction('btnChirp',   actionChirp);
   el.btnMute    = getButtonAndAddAction('btnMute',    actionMuteToggle);
   el.btnTap     = getButtonAndAddAction('btnTap',     actionTapTempo);
 
@@ -1856,33 +1856,33 @@ Buttons &amp; keys:
 <tr><td>⏸ Pause</td><td><b>P</b></td><td>Pause / resume</td></tr>
 <tr><td>⏹ Stop</td><td><b>SPACE</b></td><td>Stop everything and return to IDLE</td></tr>
 <tr><td>⚡ Acquire</td><td><b>A</b></td><td>Open mic, listen for beats to estimate BPM; from LOCKED, re-acquires while ticks continue</td></tr>
-<tr><td>🎯 Sync</td><td><b>R</b></td><td>Open mic and phase-sync at current BPM (from IDLE); commit estimate (from ACQUIRE); force lock (from SYNC); re-open mic (from LOCKED)</td></tr>
+<tr><td>🎵 Chirp</td><td><b>R</b></td><td>Open mic and phase-sync at current BPM (from IDLE); commit estimate (from ACQUIRE); force lock (from CHIRP); re-open mic (from LOCKED)</td></tr>
 <tr><td>🔊 Sound</td><td><b>M</b></td><td>Mute / unmute tick output</td></tr>
 <tr><td>🕒 Tap Tempo</td><td><b>T</b></td><td>Tap to set BPM; takes effect immediately if playing</td></tr>
-<tr><td>nudge ±10ms</td><td><b>[ / ]</b></td><td>Shift tick schedule earlier/later by 10ms (SYNC/LOCKED)</td></tr>
+<tr><td>nudge ±10ms</td><td><b>[ / ]</b></td><td>Shift tick schedule earlier/later by 10ms (CHIRP/LOCKED)</td></tr>
 <tr><td>BPM display</td><td><b>- / +</b></td><td>Edit BPM directly or step by 5; takes effect immediately if playing</td></tr>
 </table>
 
 State machine:
 <ul>
   <li><b>IDLE →A→ ACQUIRE</b>: mic opens, collects beats to estimate BPM</li>
-  <li><b>IDLE →R→ SYNC</b>: mic opens, plays at current BPM, phase-adjusts to mic</li>
+  <li><b>IDLE →R→ CHIRP</b>: mic opens, plays at current BPM, phase-adjusts to mic</li>
   <li><b>IDLE →SPACE→ LOCKED</b>: plays at current BPM immediately (no mic)</li>
-  <li><b>ACQUIRE →auto→ SYNC</b>: after 4 consistent beats detected</li>
+  <li><b>ACQUIRE →auto→ CHIRP</b>: after 4 consistent beats detected</li>
   <li><b>ACQUIRE →R→ LOCKED</b>: commit current estimate early</li>
   <li><b>ACQUIRE →auto→ IDLE</b>: timeout after 20 s</li>
-  <li><b>SYNC →auto→ LOCKED</b>: after phase stabilises or 8 beats seen</li>
-  <li><b>SYNC →R→ LOCKED</b>: force lock now</li>
-  <li><b>LOCKED →R→ SYNC</b>: re-open mic, resume phase-adjustment</li>
+  <li><b>CHIRP →auto→ LOCKED</b>: after phase stabilises or 8 beats seen</li>
+  <li><b>CHIRP →R→ LOCKED</b>: force lock now</li>
+  <li><b>LOCKED →R→ CHIRP</b>: re-open mic, resume phase-adjustment</li>
   <li><b>LOCKED →A→ ACQUIRE</b>: re-open mic, re-collect (ticks keep playing)</li>
-  <li><b>{ACQUIRE,SYNC,LOCKED} →SPACE→ IDLE</b>: stop everything</li>
+  <li><b>{ACQUIRE,CHIRP,LOCKED} →SPACE→ IDLE</b>: stop everything</li>
 </ul>
 
 Canvas:
 <ul>
-  <li>Filled blue diamonds = detected beats; BPM estimate above, phase error below (when syncing).</li>
+  <li>Filled blue diamonds = detected beats; BPM estimate above, phase error below (when chirping).</li>
   <li>Empty orange diamonds = predicted future beats; grey = predicted past.</li>
-  <li>State band: gray IDLE, yellow ACQUIRE, red SYNC, green LOCKED; state name is shown to the right of the “now” line.</li>
+  <li>State band: gray IDLE, yellow ACQUIRE, red CHIRP, green LOCKED; state name is shown to the right of the “now” line.</li>
   <li>Bar graph = energy ratio (relative to floor); yellow bar = within window for detecting a beat, red bar = detected/computed peak (beat).</li>
 </ul>
 
@@ -1890,9 +1890,9 @@ TODO (next):
 <ul>
   <li>Spectrograph needs configurable gain</li>
   <li>Add milliseconds display for mouse over</li>
-  <li>Allow skipping SYNC step.</a>
-  <li>Make SYNC step less annoying: first three beats, play one tone for half the beat; quiet beat, next three beats, play three tones (triplet) for three beats, quiet beat.</li>
-  <li>Fix tone detection for syncing (single tone first; listen for the end).</li>
+  <li>Allow skipping CHIRP step.</a>
+  <li>Make CHIRP step less annoying: first three beats, play one tone for half the beat; quiet beat, next three beats, play three tones (triplet) for three beats, quiet beat.</li>
+  <li>Fix tone detection for chirping (single tone first; listen for the end).</li>
   <li>Then add multiple carrier frequencies / staggered schedule.</li>
   <li>Auto-correlation or diff multiple beats for pattern detection.</li>
   <li>Spectral fingerprint/identification of different voices.</li>
