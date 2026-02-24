@@ -1053,7 +1053,7 @@ function loadBuiltInPattern(p) {
     pattern     = VOICES.map(() => new Array(steps).fill(false));
     fillPattern = VOICES.map(() => new Array(getFillLength()).fill(false));
   }
-  deserializePattern(`tempo: ${bpm}; drums: ${p.drums}; fill: ${p.fill}`);
+  deserializePattern(`tempo=${bpm}; drums=${p.drums}; fill=${p.fill}`);
   updatePatternText();
 }
 
