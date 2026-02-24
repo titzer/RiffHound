@@ -1,0 +1,541 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>RiffHound Metronome v0.1</title>
+<style>
+  /* Minimal, readable, big-click targets */
+  body { font-family: sans-serif; background: #fff; color: #000; margin: 0; }
+  #top { display: flex; flex-wrap: nowrap; gap: 1vh; padding: 1vh; background: #eee; align-items: stretch; }
+  #top button { flex: 1 1 0; font-size: 3.2vh; padding: 1.2vh 1vw; }
+  button { cursor: pointer; border: 1px solid #bbb; }
+  /* Top row buttons: blue by default, green when playing */
+  #top button { background: #8389ff; color: #fff; border: 1px solid #8389ff; }
+  body.playing #top button { background: #007700; color: #fff; border: 1px solid #007700; }
+  /* Play: green when not playing, neutral when playing */
+  #top #btnPlay { background: #007700; color: #fff; border: 1px solid #007700; }
+  body.playing #top #btnPlay { background: #f4f4f4; color: #000; border: 1px solid #bbb; }
+  /* Stop: neutral when stopped, red when playing */
+  #top #btnStop { background: #f4f4f4; color: #000; border: 1px solid #bbb; }
+  body.playing #top #btnStop { background: #770000; color: #fff; border: 1px solid #770000; }
+  /* Pause: yellow when paused (overrides the green playing color) */
+  #top #btnPause.paused { background: #ffcc00; color: #000; border: 1px solid #ccaa00; }
+  body.playing #top #btnPause.paused { background: #ffcc00; color: #000; border: 1px solid #ccaa00; }
+  /* Mute button active: yellow (persists even while playing) */
+  #top button.mute.active { background: #ffcc00; color: #000; border: 1px solid #ffcc00; }
+  body.playing #top button.mute.active { background: #ffcc00; color: #000; border: 1px solid #ffcc00; }
+  /* Neutral buttons: no color state */
+  #top #btnTap, #top #btnPause { background: #f4f4f4; color: #000; border: 1px solid #bbb; }
+  body.playing #top #btnTap, body.playing #top #btnPause { background: #f4f4f4; color: #000; border: 1px solid #bbb; }
+  button.flash { background: #4CAF50; color: #fff; }
+
+  /* BPM display in top row */
+  #bpmDisplay {
+    font-size: 5.5vh;
+    font-weight: bold;
+    padding: 0.5vh 0.3vw;
+    background: #f4f4f4;
+    border: 1px solid #bbb;
+    border-radius: 4px;
+    width: 3.2ch;
+    text-align: center;
+    box-sizing: border-box;
+  }
+  /* Cue strip */
+  #cueStrip {
+    display: block;
+    width: 100%;
+    height: 8vh;
+    border-bottom: 1px solid #ddd;
+    background: #f4f4f8;
+  }
+  
+</style>
+</head>
+<body>
+  <div id="top">
+    <button id="btnPlay"   class="primary">▶️ Play</button>
+    <button id="btnPause">⏸ Pause</button>
+    <button id="btnStop"   class="danger stopped">⏹ Stop</button>
+    <button id="btnMute"   class="mute">🔊 Sound</button>
+    <button id="btnTap">🕒 Tap Tempo</button>
+    <input id="bpmDisplay" type="text" value="110" maxlength="3">
+  </div>
+
+  <canvas id="cueStrip"></canvas>
+
+  <div id="strip"></div>
+<script>
+// =========================
+// RiffHound Metronome v0.1 — scrolling cue strip + scheduled audio clicks
+// =========================
+
+// --- Global state ---
+let bpm = 110;              // quarter-note BPM
+let playing = false;
+let paused = false;
+let pausedElapsed = 0;      // ctx time elapsed at the moment of pause
+let muted = false;
+let startTime = 0;          // audio time for transport start
+const taps = [];
+
+// Meter / grid
+const beatsPerBar = 4;
+const subDiv = 2;           // 2 = 8th notes (beat/2). Change to 4 for 16ths, etc.
+
+// Scheduling
+const SCHEDULE_AHEAD = 0.12;   // seconds of audio to schedule ahead
+const LOOKAHEAD_MS   = 25;     // scheduler tick interval
+let nextEventTime = 0;         // ctx time of next scheduled subdivision
+let nextEventIndex = 0;        // subdivision index since start (0..)
+let schedTimer = null;
+
+// Cue strip rendering time base
+let cueNow = 0;                // "now" time in transport seconds (not ctx time)
+const cueLookAheadBeats = 8;   // right side shows this many beats into the future
+
+// --- DOM refs ---
+const el = {};
+
+// --- Audio setup ---
+const AudioContext_ = window.AudioContext || window.webkitAudioContext;
+const ctx = new AudioContext_();
+const master = ctx.createGain();
+master.gain.value = 0.9;
+master.connect(ctx.destination);
+
+// =========================
+// Time helpers
+// =========================
+function beatDur() { return 60 / bpm; }
+function subDur()  { return beatDur() / subDiv; }
+
+function transportTimeAtCtxTime(tCtx) {
+  // Transport time in seconds since start, aligned with startTime.
+  return tCtx - startTime;
+}
+
+// =========================
+// Click synthesis
+// =========================
+function scheduleClick(t, isDownbeat, isBeat) {
+  if (muted) return;
+
+  // Simple "blip": sine with a very fast envelope
+  const osc = ctx.createOscillator();
+  const g = ctx.createGain();
+
+  // Accent scheme
+  const freq =
+    isDownbeat ? 1600 :
+    isBeat     ? 1200 :
+                 900;
+
+  const amp =
+    isDownbeat ? 0.65 :
+    isBeat     ? 0.45 :
+                 0.25;
+
+  osc.type = 'sine';
+  osc.frequency.setValueAtTime(freq, t);
+
+  // Envelope
+  g.gain.setValueAtTime(0.0001, t);
+  g.gain.exponentialRampToValueAtTime(amp, t + 0.001);
+  g.gain.exponentialRampToValueAtTime(0.0001, t + 0.04);
+
+  osc.connect(g);
+  g.connect(master);
+
+  osc.start(t);
+  osc.stop(t + 0.06);
+}
+
+// =========================
+// Scheduler (audio-accurate)
+// =========================
+function resetSchedulerToNow() {
+  const now = ctx.currentTime;
+  const t0 = startTime;
+  const d = subDur();
+
+  // Find the next subdivision boundary at/after 'now'
+  const elapsed = Math.max(0, now - t0);
+  const idx = Math.ceil(elapsed / d);
+
+  nextEventIndex = idx;
+  nextEventTime = t0 + idx * d;
+}
+
+function schedulerTick() {
+  if (!playing || paused) return;
+
+  const now = ctx.currentTime;
+  const ahead = now + SCHEDULE_AHEAD;
+  const d = subDur();
+
+  while (nextEventTime <= ahead) {
+    const subIndex = nextEventIndex;
+
+    const subInBeat = subIndex % subDiv;                    // 0..subDiv-1
+    const beatIndex = Math.floor(subIndex / subDiv) % beatsPerBar; // 0..3
+    const isBeat = (subInBeat === 0);
+    const isDownbeat = (isBeat && beatIndex === 0);
+
+    scheduleClick(nextEventTime, isDownbeat, isBeat);
+
+    nextEventIndex++;
+    nextEventTime += d;
+  }
+}
+
+// =========================
+// Cue strip rendering
+// =========================
+function resizeCueStrip() {
+  const canvas = el.cueStrip;
+  if (!canvas) return;
+  const dpr = window.devicePixelRatio || 1;
+  const rect = canvas.getBoundingClientRect();
+  canvas.width = Math.max(1, Math.round(rect.width * dpr));
+  canvas.height = Math.max(1, Math.round(rect.height * dpr));
+}
+
+function drawCueStrip() {
+  const canvas = el.cueStrip;
+  if (!canvas) return;
+
+  if (canvas.width === 0 || canvas.height === 0) resizeCueStrip();
+
+  const dpr = window.devicePixelRatio || 1;
+  const Wl = canvas.width / dpr;
+  const Hl = canvas.height / dpr;
+
+  const ctx2d = canvas.getContext('2d');
+  ctx2d.save();
+  ctx2d.scale(dpr, dpr);
+
+  // Background
+  ctx2d.fillStyle = '#f4f4f8';
+  ctx2d.fillRect(0, 0, Wl, Hl);
+
+  const nowX = Wl * 0.25; // fixed "now" marker
+  const nowT = cueNow;    // transport time in seconds
+
+  const bDur = beatDur();
+  const sDur = subDur();
+  const barDur = bDur * beatsPerBar;
+
+  // Horizontal time scale:
+  // right edge = now + cueLookAheadBeats beats
+  const scale = (Wl - nowX) / (cueLookAheadBeats * bDur);
+  const timeToX = t => nowX + (t - nowT) * scale;
+
+  const windowStart = nowT - nowX / scale;
+  const windowEnd   = nowT + (Wl - nowX) / scale;
+
+  // Dim the past region
+  ctx2d.fillStyle = 'rgba(0,0,0,0.04)';
+  ctx2d.fillRect(0, 0, nowX, Hl);
+
+  // Compute bar alignment: bar starts at transport time 0
+  const bar0 = 0;
+  const firstBar = bar0 + Math.floor((windowStart - bar0) / barDur) * barDur;
+
+  // Tick marks (subdivisions + stronger on beats/bars)
+  for (let bt = firstBar; bt <= windowEnd + barDur; bt += barDur) {
+    for (let b = 0; b < beatsPerBar; b++) {
+      const beatT = bt + b * bDur;
+
+      // Beat tick
+      {
+        const x = timeToX(beatT);
+        if (x >= 0 && x <= Wl) {
+          const isBar = (b === 0);
+          const tickH = isBar ? Hl * 0.45 : Hl * 0.28;
+          ctx2d.strokeStyle = isBar ? 'rgba(131,137,255,0.45)' : 'rgba(0,0,0,0.18)';
+          ctx2d.lineWidth = isBar ? 2 : 1.25;
+          ctx2d.beginPath();
+          ctx2d.moveTo(x, Hl - tickH);
+          ctx2d.lineTo(x, Hl);
+          ctx2d.stroke();
+        }
+      }
+
+      // Subdivision ticks inside the beat
+      for (let s = 1; s < subDiv; s++) {
+        const t = beatT + s * sDur;
+        const x = timeToX(t);
+        if (x < 0 || x > Wl) continue;
+        const tickH = Hl * 0.16;
+        ctx2d.strokeStyle = 'rgba(0,0,0,0.08)';
+        ctx2d.lineWidth = 1;
+        ctx2d.beginPath();
+        ctx2d.moveTo(x, Hl - tickH);
+        ctx2d.lineTo(x, Hl);
+        ctx2d.stroke();
+      }
+    }
+  }
+
+  // Optional: draw a little "cue string" of beat numbers on future beats
+  ctx2d.fillStyle = 'rgba(0,0,0,0.55)';
+  ctx2d.font = `${Math.floor(Hl * 0.35)}px sans-serif`;
+  ctx2d.textAlign = 'center';
+  ctx2d.textBaseline = 'middle';
+
+  // --- Beat number labels (stable, correct for negative times) ---
+  function posMod(n, m) { return ((n % m) + m) % m; }
+
+  // Snap to the nearest beat boundary at/after windowStart (beats are aligned to transport time 0).
+  const eps = 1e-9;
+  const firstBeatIndex = Math.ceil((windowStart - eps) / bDur);
+  const lastBeatIndex  = Math.floor((windowEnd + eps) / bDur);
+
+  for (let i = firstBeatIndex; i <= lastBeatIndex; i++) {
+    const t = i * bDur;
+    const x = timeToX(t);
+    if (x < nowX + 10 || x > Wl - 10) continue; // label only in the future region
+
+    const beatNum = posMod(i, beatsPerBar) + 1; // 1..beatsPerBar, correct even if i < 0
+    ctx2d.fillText(String(beatNum), x, Hl * 0.40);
+}
+
+                                                                                         // "Now" playhead line
+  ctx2d.strokeStyle = 'rgba(131,137,255,0.75)';
+  ctx2d.lineWidth = 2;
+  ctx2d.beginPath();
+  ctx2d.moveTo(nowX, 0);
+  ctx2d.lineTo(nowX, Hl);
+  ctx2d.stroke();
+
+  // Playhead triangle at top
+  const triW = Hl * 0.17;
+  ctx2d.fillStyle = 'rgba(131,137,255,0.9)';
+  ctx2d.beginPath();
+  ctx2d.moveTo(nowX, Hl * 0.18);
+  ctx2d.lineTo(nowX - triW, 0);
+  ctx2d.lineTo(nowX + triW, 0);
+  ctx2d.closePath();
+  ctx2d.fill();
+
+  ctx2d.restore();
+}
+
+// =========================
+// Animation loop: tie visuals to audio clock
+// =========================
+function tickRAF() {
+  if (!playing || paused) return;
+
+  // Visual "now" is derived from audio clock so the cue strip matches click timing.
+  const tTrans = transportTimeAtCtxTime(ctx.currentTime);
+  cueNow = Math.max(0, tTrans);
+
+  drawCueStrip();
+  requestAnimationFrame(tickRAF);
+}
+
+// =========================
+// UI actions (top-level)
+// =========================
+function actionPlay() {
+  if (playing) return;
+  ctx.resume();
+
+  playing = true;
+  paused = false;
+  pausedElapsed = 0;
+
+  // Small latency buffer before first click so resume + schedule is safe
+  startTime = ctx.currentTime + 0.03;
+
+  // Reset scheduler indices to align with startTime
+  nextEventIndex = 0;
+  nextEventTime = startTime;
+
+  // Start scheduler interval
+  if (schedTimer) clearInterval(schedTimer);
+  schedTimer = setInterval(schedulerTick, LOOKAHEAD_MS);
+
+  requestAnimationFrame(tickRAF);
+
+  el.btnPlay.classList.add('playing');
+  el.btnStop.classList.remove('stopped');
+  document.body.classList.add('playing');
+  updateMuteButton();
+}
+
+function actionPause() {
+  if (!playing) return;
+
+  if (!paused) {
+    paused = true;
+    pausedElapsed = ctx.currentTime - startTime;
+    el.btnPause.classList.add('paused');
+  } else {
+    paused = false;
+    startTime = ctx.currentTime - pausedElapsed;
+    el.btnPause.classList.remove('paused');
+
+    // Re-anchor scheduler to new startTime so it doesn't double-fire
+    resetSchedulerToNow();
+
+    requestAnimationFrame(tickRAF);
+  }
+}
+
+function actionStop() {
+  if (!playing) return;
+
+  playing = false;
+  paused = false;
+  pausedElapsed = 0;
+
+  if (schedTimer) { clearInterval(schedTimer); schedTimer = null; }
+
+  el.btnPause.classList.remove('paused');
+  el.btnPlay.classList.remove('playing');
+  el.btnStop.classList.add('stopped');
+  document.body.classList.remove('playing');
+  updateMuteButton();
+
+  // Clear cue strip to idle state
+  cueNow = 0;
+  drawCueStrip();
+}
+
+function actionMuteToggle() {
+  muted = !muted;
+  updateMuteButton();
+
+  el.btnMute.classList.add('flash');
+  setTimeout(() => el.btnMute.classList.remove('flash'), 150);
+}
+
+function updateMuteButton() {
+  if (muted && playing) el.btnMute.classList.add('active');
+  else el.btnMute.classList.remove('active');
+  el.btnMute.textContent = muted ? '🔇 Muted' : '🔊 Sound';
+}
+
+function actionTapSpace() {
+  const now = performance.now();
+  taps.push(now);
+  while (taps.length > 6) taps.shift();
+
+  if (taps.length >= 2) {
+    const diffs = taps.slice(1).map((t, i) => t - taps[i]);
+    const avg = diffs.reduce((a, b) => a + b, 0) / diffs.length;
+    const newBpm = Math.max(30, Math.min(300, Math.round(60000 / avg)));
+    actionSetBPM(newBpm);
+
+    el.btnTap.classList.add('flash');
+    setTimeout(() => el.btnTap.classList.remove('flash'), 150);
+  }
+}
+
+function actionSetBPM(val) {
+  const oldBpm = bpm;
+  bpm = Math.max(30, Math.min(300, parseInt(val, 10) || bpm));
+  el.bpmDisplay.value = bpm;
+
+  if (playing && bpm !== oldBpm) {
+    // Preserve transport position when changing tempo.
+    // We keep current transport time constant and recompute startTime.
+    const tNow = ctx.currentTime;
+    const tTrans = tNow - startTime;
+    startTime = tNow - tTrans;
+
+    // Re-anchor scheduler (important so clicks stay aligned)
+    resetSchedulerToNow();
+  }
+}
+
+function actionKeyDown(e) {
+  if (e.code === 'Space') {
+    e.preventDefault();
+    if (playing) actionStop(); else actionPlay();
+    return;
+  }
+  if (e.code === 'KeyT') { e.preventDefault(); actionTapSpace(); return; }
+  if (e.code === 'KeyP') { e.preventDefault(); actionPause(); return; }
+  if (e.code === 'KeyM') { e.preventDefault(); actionMuteToggle(); return; }
+
+  if (e.code === 'Minus' || e.code === 'NumpadSubtract') {
+    const rounded = Math.ceil(bpm / 5) * 5;
+    actionSetBPM(Math.max(30, rounded - 5));
+    return;
+  }
+  if (e.code === 'Equal' || e.code === 'NumpadAdd') {
+    const rounded = Math.floor(bpm / 5) * 5;
+    actionSetBPM(Math.min(300, rounded + 5));
+    return;
+  }
+}
+
+function getButtonAndAddAction(name, action) {
+  const btn = document.getElementById(name);
+  btn.addEventListener('click', action);
+  return btn;
+}
+
+// =========================
+// Wiring (once)
+// =========================
+function init() {
+  el.btnPlay   = getButtonAndAddAction('btnPlay', actionPlay);
+  el.btnPause  = getButtonAndAddAction('btnPause', actionPause);
+  el.btnStop   = getButtonAndAddAction('btnStop', actionStop);
+  el.btnMute   = getButtonAndAddAction('btnMute', actionMuteToggle);
+  el.btnTap    = getButtonAndAddAction('btnTap', actionTapSpace);
+
+  el.bpmDisplay = document.getElementById('bpmDisplay');
+  el.cueStrip = document.getElementById('cueStrip');
+
+  el.bpmDisplay.addEventListener('input', e => {
+    e.target.value = e.target.value.replace(/[^0-9]/g, '').slice(0, 3);
+  });
+  el.bpmDisplay.addEventListener('change', e => {
+    const val = parseInt(e.target.value, 10);
+    if (val >= 30 && val <= 300) actionSetBPM(val);
+    else e.target.value = Math.round(bpm).toString();
+  });
+
+  window.addEventListener('resize', () => { resizeCueStrip(); drawCueStrip(); });
+  document.body.addEventListener('keydown', actionKeyDown);
+
+  // Initial draw
+  resizeCueStrip();
+  drawCueStrip();
+}
+
+// Boot
+init();
+</script>
+
+<div style="padding: 1vh 1vw;">
+    <button id="btnHelp" onclick="document.getElementById('helpSection').scrollIntoView({behavior:'smooth'})">Help ↓</button>
+</div>
+
+<div style="height: 120vh;"></div>
+
+<div id="helpSection" style="padding: 1vh 1vw; font-size: 2vh;">
+Key bindings:
+<ul>
+  <li>SPACE: play or stop</li>
+  <li>P: pause</li>
+  <li>T: tap to tempo</li>
+  <li>M: mute</li>
+  <li>-: decrease tempo</li>
+  <li>+: increase tempo</li>
+</ul>
+
+TODO:
+<ul>
+    <li>The application.</li>
+</ul>
+</div>
+</body>
+</html>
