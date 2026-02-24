@@ -42,6 +42,33 @@
     text-align: center;
     box-sizing: border-box;
   }
+
+  /* Pattern controls row */
+  #controls {
+    display: flex;
+    align-items: center;
+    gap: 1vw;
+    padding: 0.7vh 1vw;
+    background: #f4f4f8;
+    border-bottom: 1px solid #ddd;
+  }
+  #controls label {
+    font-size: 2.2vh;
+    white-space: nowrap;
+    font-weight: bold;
+    color: #444;
+  }
+  #patternSelect {
+    font-size: 2.2vh;
+    padding: 0.5vh 0.8vw;
+    border: 1px solid #bbb;
+    border-radius: 4px;
+    background: #fff;
+    flex: 1;
+    max-width: 42ch;
+    cursor: pointer;
+  }
+
   /* Cue strip */
   #cueStrip {
     display: block;
@@ -50,26 +77,74 @@
     border-bottom: 1px solid #ddd;
     background: #f4f4f8;
   }
-  
+
 </style>
 </head>
 <body>
   <div id="top">
-    <button id="btnPlay"   class="primary">▶️ Play</button>
-    <button id="btnPause">⏸ Pause</button>
-    <button id="btnStop"   class="danger stopped">⏹ Stop</button>
-    <button id="btnMute"   class="mute">🔊 Sound</button>
-    <button id="btnTap">🕒 Tap Tempo</button>
+    <button id="btnPlay"   class="primary">&#x25B6;&#xFE0F; Play</button>
+    <button id="btnPause">&#x23F8; Pause</button>
+    <button id="btnStop"   class="danger stopped">&#x23F9; Stop</button>
+    <button id="btnMute"   class="mute">&#x1F50A; Sound</button>
+    <button id="btnTap">&#x1F552; Tap Tempo</button>
     <input id="bpmDisplay" type="text" value="110" maxlength="3">
   </div>
 
   <canvas id="cueStrip"></canvas>
+
+  <div id="controls">
+    <label for="patternSelect">Pattern:</label>
+    <select id="patternSelect"></select>
+  </div>
 
   <div id="strip"></div>
 <script>
 // =========================
 // RiffHound Metronome v0.1 — scrolling cue strip + scheduled audio clicks
 // =========================
+
+// =========================
+// Pattern definitions
+// =========================
+// beatNoteMult: how many quarter-note durations one "beat" spans.
+//   1   = quarter note beat  (normal 4/4, 3/4, 2/4, 5/4, 7/4)
+//   1.5 = dotted-quarter beat (compound: 6/8, 9/8, 12/8)
+//   0.5 = eighth-note beat   (7/8, 5/8)
+// BPM always refers to quarter-note BPM regardless of beatNoteMult.
+const PATTERNS = [
+  // ── Simple duple – 4/4 ──────────────────────────────────────────────
+  { name: "Quarter notes (4/4)",        beatsPerBar: 4, subDiv: 1, beatNoteMult: 1   },
+  { name: "Eighth notes (4/4)",         beatsPerBar: 4, subDiv: 2, beatNoteMult: 1   },
+  { name: "Sixteenth notes (4/4)",      beatsPerBar: 4, subDiv: 4, beatNoteMult: 1   },
+  { name: "32nd notes (4/4)",           beatsPerBar: 4, subDiv: 8, beatNoteMult: 1   },
+  { name: "Eighth triplets (4/4)",      beatsPerBar: 4, subDiv: 3, beatNoteMult: 1   },
+  { name: "Sixteenth triplets (4/4)",   beatsPerBar: 4, subDiv: 6, beatNoteMult: 1   },
+  // ── Simple triple – 3/4 ─────────────────────────────────────────────
+  { name: "Quarter notes (3/4)",        beatsPerBar: 3, subDiv: 1, beatNoteMult: 1   },
+  { name: "Eighth notes (3/4)",         beatsPerBar: 3, subDiv: 2, beatNoteMult: 1   },
+  { name: "Sixteenth notes (3/4)",      beatsPerBar: 3, subDiv: 4, beatNoteMult: 1   },
+  { name: "Eighth triplets (3/4)",      beatsPerBar: 3, subDiv: 3, beatNoteMult: 1   },
+  // ── Simple duple – 2/4 ──────────────────────────────────────────────
+  { name: "Quarter notes (2/4)",        beatsPerBar: 2, subDiv: 1, beatNoteMult: 1   },
+  { name: "Eighth notes (2/4)",         beatsPerBar: 2, subDiv: 2, beatNoteMult: 1   },
+  // ── Compound duple – 6/8 (beat = dotted ♩) ──────────────────────────
+  { name: "6/8  — dotted-quarter beat", beatsPerBar: 2, subDiv: 3, beatNoteMult: 1.5 },
+  // ── Compound triple – 9/8 ───────────────────────────────────────────
+  { name: "9/8  — dotted-quarter beat", beatsPerBar: 3, subDiv: 3, beatNoteMult: 1.5 },
+  // ── Compound quadruple – 12/8 ───────────────────────────────────────
+  { name: "12/8 — dotted-quarter beat", beatsPerBar: 4, subDiv: 3, beatNoteMult: 1.5 },
+  // ── Odd simple – 5/4 ────────────────────────────────────────────────
+  { name: "5/4  — quarter notes",       beatsPerBar: 5, subDiv: 1, beatNoteMult: 1   },
+  { name: "5/4  — eighth notes",        beatsPerBar: 5, subDiv: 2, beatNoteMult: 1   },
+  // ── Odd simple – 7/4 ────────────────────────────────────────────────
+  { name: "7/4  — quarter notes",       beatsPerBar: 7, subDiv: 1, beatNoteMult: 1   },
+  { name: "7/4  — eighth notes",        beatsPerBar: 7, subDiv: 2, beatNoteMult: 1   },
+  // ── Odd compound – eighth-note beat (BPM = quarter, beat = ♪) ───────
+  { name: "7/8  — eighth-note beat",    beatsPerBar: 7, subDiv: 1, beatNoteMult: 0.5 },
+  { name: "5/8  — eighth-note beat",    beatsPerBar: 5, subDiv: 1, beatNoteMult: 0.5 },
+];
+
+const DEFAULT_PATTERN_INDEX = 0; // "Eighth notes (4/4)"
 
 // --- Global state ---
 let bpm = 110;              // quarter-note BPM
@@ -80,9 +155,9 @@ let muted = false;
 let startTime = 0;          // audio time for transport start
 const taps = [];
 
-// Meter / grid
-const beatsPerBar = 4;
-const subDiv = 2;           // 2 = 8th notes (beat/2). Change to 4 for 16ths, etc.
+// Current pattern
+let currentPatternIndex = DEFAULT_PATTERN_INDEX;
+function pat() { return PATTERNS[currentPatternIndex]; }
 
 // Scheduling
 const SCHEDULE_AHEAD = 0.12;   // seconds of audio to schedule ahead
@@ -108,11 +183,12 @@ master.connect(ctx.destination);
 // =========================
 // Time helpers
 // =========================
-function beatDur() { return 60 / bpm; }
-function subDur()  { return beatDur() / subDiv; }
+// beatDur: duration of one "beat" (group), scaled by the pattern's note multiplier.
+// BPM is always quarter-note BPM; beatNoteMult accounts for compound / odd meters.
+function beatDur() { return (60 / bpm) * pat().beatNoteMult; }
+function subDur()  { return beatDur() / pat().subDiv; }
 
 function transportTimeAtCtxTime(tCtx) {
-  // Transport time in seconds since start, aligned with startTime.
   return tCtx - startTime;
 }
 
@@ -122,11 +198,9 @@ function transportTimeAtCtxTime(tCtx) {
 function scheduleClick(t, isDownbeat, isBeat) {
   if (muted) return;
 
-  // Simple "blip": sine with a very fast envelope
   const osc = ctx.createOscillator();
   const g = ctx.createGain();
 
-  // Accent scheme
   const freq =
     isDownbeat ? 1600 :
     isBeat     ? 1200 :
@@ -140,7 +214,6 @@ function scheduleClick(t, isDownbeat, isBeat) {
   osc.type = 'sine';
   osc.frequency.setValueAtTime(freq, t);
 
-  // Envelope
   g.gain.setValueAtTime(0.0001, t);
   g.gain.exponentialRampToValueAtTime(amp, t + 0.001);
   g.gain.exponentialRampToValueAtTime(0.0001, t + 0.04);
@@ -160,7 +233,6 @@ function resetSchedulerToNow() {
   const t0 = startTime;
   const d = subDur();
 
-  // Find the next subdivision boundary at/after 'now'
   const elapsed = Math.max(0, now - t0);
   const idx = Math.ceil(elapsed / d);
 
@@ -174,12 +246,14 @@ function schedulerTick() {
   const now = ctx.currentTime;
   const ahead = now + SCHEDULE_AHEAD;
   const d = subDur();
+  const sd = pat().subDiv;
+  const bpb = pat().beatsPerBar;
 
   while (nextEventTime <= ahead) {
     const subIndex = nextEventIndex;
 
-    const subInBeat = subIndex % subDiv;                    // 0..subDiv-1
-    const beatIndex = Math.floor(subIndex / subDiv) % beatsPerBar; // 0..3
+    const subInBeat = subIndex % sd;
+    const beatIndex = Math.floor(subIndex / sd) % bpb;
     const isBeat = (subInBeat === 0);
     const isDownbeat = (isBeat && beatIndex === 0);
 
@@ -216,39 +290,34 @@ function drawCueStrip() {
   ctx2d.save();
   ctx2d.scale(dpr, dpr);
 
-  // Background
   ctx2d.fillStyle = '#f4f4f8';
   ctx2d.fillRect(0, 0, Wl, Hl);
 
-  const nowX = Wl * 0.25; // fixed "now" marker
-  const nowT = cueNow;    // transport time in seconds
+  const nowX = Wl * 0.25;
+  const nowT = cueNow;
 
   const bDur = beatDur();
   const sDur = subDur();
-  const barDur = bDur * beatsPerBar;
+  const sd   = pat().subDiv;
+  const bpb  = pat().beatsPerBar;
+  const barDur = bDur * bpb;
 
-  // Horizontal time scale:
-  // right edge = now + cueLookAheadBeats beats
   const scale = (Wl - nowX) / (cueLookAheadBeats * bDur);
   const timeToX = t => nowX + (t - nowT) * scale;
 
   const windowStart = nowT - nowX / scale;
   const windowEnd   = nowT + (Wl - nowX) / scale;
 
-  // Dim the past region
   ctx2d.fillStyle = 'rgba(0,0,0,0.04)';
   ctx2d.fillRect(0, 0, nowX, Hl);
 
-  // Compute bar alignment: bar starts at transport time 0
   const bar0 = 0;
   const firstBar = bar0 + Math.floor((windowStart - bar0) / barDur) * barDur;
 
-  // Tick marks (subdivisions + stronger on beats/bars)
   for (let bt = firstBar; bt <= windowEnd + barDur; bt += barDur) {
-    for (let b = 0; b < beatsPerBar; b++) {
+    for (let b = 0; b < bpb; b++) {
       const beatT = bt + b * bDur;
 
-      // Beat tick
       {
         const x = timeToX(beatT);
         if (x >= 0 && x <= Wl) {
@@ -263,8 +332,7 @@ function drawCueStrip() {
         }
       }
 
-      // Subdivision ticks inside the beat
-      for (let s = 1; s < subDiv; s++) {
+      for (let s = 1; s < sd; s++) {
         const t = beatT + s * sDur;
         const x = timeToX(t);
         if (x < 0 || x > Wl) continue;
@@ -279,16 +347,13 @@ function drawCueStrip() {
     }
   }
 
-  // Optional: draw a little "cue string" of beat numbers on future beats
   ctx2d.fillStyle = 'rgba(0,0,0,0.55)';
   ctx2d.font = `${Math.floor(Hl * 0.35)}px sans-serif`;
   ctx2d.textAlign = 'center';
   ctx2d.textBaseline = 'middle';
 
-  // --- Beat number labels (stable, correct for negative times) ---
   function posMod(n, m) { return ((n % m) + m) % m; }
 
-  // Snap to the nearest beat boundary at/after windowStart (beats are aligned to transport time 0).
   const eps = 1e-9;
   const firstBeatIndex = Math.ceil((windowStart - eps) / bDur);
   const lastBeatIndex  = Math.floor((windowEnd + eps) / bDur);
@@ -296,13 +361,13 @@ function drawCueStrip() {
   for (let i = firstBeatIndex; i <= lastBeatIndex; i++) {
     const t = i * bDur;
     const x = timeToX(t);
-    if (x < nowX + 10 || x > Wl - 10) continue; // label only in the future region
+    if (x < nowX + 10 || x > Wl - 10) continue;
 
-    const beatNum = posMod(i, beatsPerBar) + 1; // 1..beatsPerBar, correct even if i < 0
+    const beatNum = posMod(i, bpb) + 1;
     ctx2d.fillText(String(beatNum), x, Hl * 0.40);
-}
+  }
 
-                                                                                         // "Now" playhead line
+  // "Now" playhead line
   ctx2d.strokeStyle = 'rgba(131,137,255,0.75)';
   ctx2d.lineWidth = 2;
   ctx2d.beginPath();
@@ -329,7 +394,6 @@ function drawCueStrip() {
 function tickRAF() {
   if (!playing || paused) return;
 
-  // Visual "now" is derived from audio clock so the cue strip matches click timing.
   const tTrans = transportTimeAtCtxTime(ctx.currentTime);
   cueNow = Math.max(0, tTrans);
 
@@ -348,14 +412,11 @@ function actionPlay() {
   paused = false;
   pausedElapsed = 0;
 
-  // Small latency buffer before first click so resume + schedule is safe
   startTime = ctx.currentTime + 0.03;
 
-  // Reset scheduler indices to align with startTime
   nextEventIndex = 0;
   nextEventTime = startTime;
 
-  // Start scheduler interval
   if (schedTimer) clearInterval(schedTimer);
   schedTimer = setInterval(schedulerTick, LOOKAHEAD_MS);
 
@@ -379,7 +440,6 @@ function actionPause() {
     startTime = ctx.currentTime - pausedElapsed;
     el.btnPause.classList.remove('paused');
 
-    // Re-anchor scheduler to new startTime so it doesn't double-fire
     resetSchedulerToNow();
 
     requestAnimationFrame(tickRAF);
@@ -401,7 +461,6 @@ function actionStop() {
   document.body.classList.remove('playing');
   updateMuteButton();
 
-  // Clear cue strip to idle state
   cueNow = 0;
   drawCueStrip();
 }
@@ -417,7 +476,7 @@ function actionMuteToggle() {
 function updateMuteButton() {
   if (muted && playing) el.btnMute.classList.add('active');
   else el.btnMute.classList.remove('active');
-  el.btnMute.textContent = muted ? '🔇 Muted' : '🔊 Sound';
+  el.btnMute.textContent = muted ? '\uD83D\uDD07 Muted' : '\uD83D\uDD0A Sound';
 }
 
 function actionTapSpace() {
@@ -442,15 +501,22 @@ function actionSetBPM(val) {
   el.bpmDisplay.value = bpm;
 
   if (playing && bpm !== oldBpm) {
-    // Preserve transport position when changing tempo.
-    // We keep current transport time constant and recompute startTime.
     const tNow = ctx.currentTime;
     const tTrans = tNow - startTime;
     startTime = tNow - tTrans;
 
-    // Re-anchor scheduler (important so clicks stay aligned)
     resetSchedulerToNow();
   }
+}
+
+function actionSetPattern(index) {
+  if (index < 0 || index >= PATTERNS.length) return;
+  currentPatternIndex = index;
+
+  if (playing) {
+    resetSchedulerToNow();
+  }
+  drawCueStrip();
 }
 
 function actionKeyDown(e) {
@@ -503,12 +569,26 @@ function init() {
     else e.target.value = Math.round(bpm).toString();
   });
 
+  // Build pattern dropdown
+  el.patternSelect = document.getElementById('patternSelect');
+  PATTERNS.forEach((p, i) => {
+    const opt = document.createElement('option');
+    opt.value = i;
+    opt.textContent = p.name;
+    if (i === DEFAULT_PATTERN_INDEX) opt.selected = true;
+    el.patternSelect.appendChild(opt);
+  });
+  el.patternSelect.addEventListener('change', e => {
+    actionSetPattern(parseInt(e.target.value, 10));
+  });
+
   window.addEventListener('resize', () => { resizeCueStrip(); drawCueStrip(); });
   document.body.addEventListener('keydown', actionKeyDown);
 
-  // Initial draw
   resizeCueStrip();
   drawCueStrip();
+
+  el.btnPlay.focus();
 }
 
 // Boot
@@ -516,7 +596,7 @@ init();
 </script>
 
 <div style="padding: 1vh 1vw;">
-    <button id="btnHelp" onclick="document.getElementById('helpSection').scrollIntoView({behavior:'smooth'})">Help ↓</button>
+    <button id="btnHelp" onclick="document.getElementById('helpSection').scrollIntoView({behavior:'smooth'})">Help &#x2193;</button>
 </div>
 
 <div style="height: 120vh;"></div>
@@ -530,6 +610,13 @@ Key bindings:
   <li>M: mute</li>
   <li>-: decrease tempo</li>
   <li>+: increase tempo</li>
+</ul>
+
+Notes on patterns:
+<ul>
+  <li>BPM always refers to the quarter-note tempo.</li>
+  <li>Compound meters (6/8, 9/8, 12/8): the beat is a dotted quarter (1.5 × quarter). At 120 BPM, the dotted-quarter pulse runs at 80.</li>
+  <li>7/8 and 5/8: the beat is an eighth note (0.5 × quarter). At 120 BPM, each eighth-note pulse is at 240.</li>
 </ul>
 
 TODO:
