@@ -162,8 +162,8 @@
     <span class="dpVal" id="lblRefractory">120ms</span>
 
     <span class="dpLabel">HP cutoff</span>
-    <input type="range" id="slHPFreq" min="40" max="800" step="10" value="700">
-    <span class="dpVal" id="lblHPFreq">700Hz</span>
+    <input type="range" id="slHPFreq" min="40" max="12000" step="20" value="3000">
+    <span class="dpVal" id="lblHPFreq">3000Hz</span>
 
     <span class="dpLabel">Floor fall</span>
     <input type="range" id="slFloorFall" min="1" max="10" step="1" value="5">
@@ -358,7 +358,7 @@ const BF = {
   beatEnergyEma: null, beatEnergyAlpha: 0.3, beatGateRatio: 0.10,
 
   // tunable detector params (wired to UI sliders)
-  hpFreq: 700,            // highpass cutoff Hz
+  hpFreq: 3000,          // highpass cutoff Hz
   floorFallAlpha: 0.015, // eLong fall rate (e < eLong)
   floorRiseAlpha: 0.002, // eLong rise rate (e > eLong, capped)
 
