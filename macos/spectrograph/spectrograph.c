@@ -391,6 +391,7 @@ static const CGFloat kFreqInterval = 1000.0;  // Hz between horizontal grid line
 @property (strong) NSTextField     *secsField;       // horizontal axis duration
 @property (strong) NSTextField     *maxHzField;      // vertical axis max frequency
 @property (strong) AVAudioEngine   *audioEngine;
+@property (strong) id               audioConfigObserver; // AVAudioEngineConfigurationChangeNotification
 @property (assign) BOOL             isRunning;
 @property (assign) NSInteger        displaySeconds;  // 2–99
 @property (assign) CGFloat          maxFrequency;    // 1000–20000 Hz
@@ -457,6 +458,10 @@ static const CGFloat kFreqInterval = 1000.0;  // Hz between horizontal grid line
 }
 
 - (void)buildAudioEngine {
+    // Remove any previous config-change observer before releasing the old engine.
+    if (self.audioConfigObserver)
+        [[NSNotificationCenter defaultCenter] removeObserver:self.audioConfigObserver];
+
     self.audioEngine = [[AVAudioEngine alloc] init];
     AVAudioInputNode *inputNode = [self.audioEngine inputNode];
 
@@ -554,6 +559,25 @@ static const CGFloat kFreqInterval = 1000.0;  // Hz between horizontal grid line
           tapFmt.sampleRate, (unsigned)tapFmt.channelCount, (int)tapFmt.isInterleaved);
     [self setStatus:[NSString stringWithFormat:@"Audio ready (%.0f Hz, %u ch).",
                     tapFmt.sampleRate, (unsigned)tapFmt.channelCount]];
+
+    // Rebuild the engine automatically if the audio hardware configuration changes
+    // (e.g. another app takes the mic at a different sample rate, a device is
+    // plugged/unplugged).  macOS stops AVAudioEngine and posts this notification;
+    // without handling it the tap silently stops delivering buffers.
+    // The observer is keyed to this specific engine instance and is removed at
+    // the top of the next buildAudioEngine call, so observers don't accumulate.
+    __weak AppDelegate *weakSelf = self;
+    self.audioConfigObserver = [[NSNotificationCenter defaultCenter]
+        addObserverForName:AVAudioEngineConfigurationChangeNotification
+                    object:self.audioEngine
+                     queue:[NSOperationQueue mainQueue]
+                usingBlock:^(NSNotification *note) {
+        (void)note;
+        AppDelegate *s = weakSelf;
+        if (!s) return;
+        NSLog(@"[Spectrograph] audio config changed; rebuilding engine");
+        [s buildAudioEngine];
+    }];
 
     // Auto-start if the user pressed Start while we were waiting for permission.
     if (self.isRunning) {
