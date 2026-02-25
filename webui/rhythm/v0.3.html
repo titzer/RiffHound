@@ -103,7 +103,7 @@
   #visCanvas {
     display: block;
     width: 100%;
-    height: 75vh;
+    height: 65vh;
     border-top: 1px solid #ddd;
   }
 
@@ -200,6 +200,10 @@
     <span class="dpLabel">Beat gate</span>
     <input type="range" id="slBeatGate" min="0.01" max="0.50" step="0.01" value="0.10">
     <span class="dpVal" id="lblBeatGate">0.10</span>
+
+    <span class="dpLabel">Spec gain</span>
+    <input type="range" id="slSpecGain" min="0.5" max="4.0" step="0.25" value="1.5">
+    <span class="dpVal" id="lblSpecGain">1.50×</span>
   </div>
 
   <canvas id="visCanvas"></canvas>
@@ -213,10 +217,11 @@
 // IDLE      --L--> LISTEN    (use current BPM, open mic, start ticks, phase-lock on 4 beats)
 // IDLE      --C--> CHIRP     (use current BPM, start mic, play tones)
 // IDLE   --SPACE-> LOCKED    (use current BPM, no mic, play)
-// ACQUIRE   --auto-> LOCKED  (4 good beats collected; mic closes)
+// ACQUIRE   --auto-> LOCKED  (4 good beats collected; mic stays on for phase maintenance)
 // ACQUIRE   --auto-> IDLE    (20s timeout, error)
-// ACQUIRE   --C--> LOCKED    (commit estimate early)
-// LISTEN    --auto-> LOCKED  (4 beats heard; mic closes, phase corrected)
+// ACQUIRE   --C--> LOCKED    (commit estimate early; mic stays on)
+// LISTEN    --auto-> LOCKED  (≥4 IBI-confirmed beats, phase std-dev < 25ms; mic stays on)
+// LISTEN    --timeout-> prevState  (15s without lock; reverts to ACQUIRE/LOCKED/CHIRP/IDLE)
 // CHIRP     --auto-> LOCKED  (phase stable OR 8 beats seen)
 // CHIRP     --C--> LOCKED    (force lock now)
 // LOCKED    --L--> LISTEN    (re-open mic, quick phase re-lock)
@@ -372,6 +377,7 @@ const BF = {
   state: 'IDLE',
 
   stream: null, src: null, hp: null, analyser: null, buf: null, freqBuf: null,
+  maxSpecBin: 512,  // FFT bin ceiling for display (set in openMic; default ≈ 12kHz @ 48kHz)
 
   // detector (short/long energy ratio, peak-hold hysteresis)
   eShort: 0, eLong: 0, ePeak: 0,
@@ -398,6 +404,13 @@ const BF = {
   manualOffsetSec: 0.0,
 
   lastBeatSeen: -1e9, maxAcquireSec: 20.0,
+
+  // LISTEN state tracking
+  prevState: 'IDLE',         // state to revert to on listen timeout
+  confirmedBeats: [],        // [{time, phaseErr}] — IBI-validated beats
+  rawListenBeats: [],        // all raw detections (for pairwise IBI check)
+  listenStart: 0,
+  maxListenSec: 15.0,
 
   // Tone-based chirping (CHIRP/LOCKED with mic active)
   toneFreqs: [3001, 4001, 5003],         // Hz — all prime, well above musical content
@@ -438,6 +451,9 @@ function hardResetFollowerState() {
   BF.tonePrevPresent = [false, false, false];
   BF.latencyEstValid = false;
   BF.trackPhaseErrors = [];
+  BF.prevState = 'IDLE';
+  BF.confirmedBeats = []; BF.rawListenBeats = [];
+  BF.listenStart = 0;
   VIS.onStateChange('IDLE', ctx.currentTime);
   resetFollowerUI();
 }
@@ -449,6 +465,61 @@ function median(arr) {
   return (n % 2) ? a[n>>1] : 0.5*(a[(n>>1)-1] + a[n>>1]);
 }
 function clamp(x, lo, hi) { return Math.max(lo, Math.min(hi, x)); }
+
+// Returns true if tNew is approximately k*T away from any beat in priorList.
+function listenIBICheck(tNew, priorList) {
+  const T   = BF.period;
+  const tol = Math.min(0.035, T / 8);
+  for (const t of priorList) {
+    const dt = tNew - t;
+    if (dt < T * 0.3) continue;
+    const k = Math.round(dt / T);
+    if (k < 1 || k > 5) continue;
+    if (Math.abs(dt - k * T) < tol) return true;
+  }
+  return false;
+}
+
+// Revert from a failed LISTEN back to BF.prevState.
+// The mic is still open; for non-IDLE targets we just change state and
+// let the already-running beatFollowerRAF loop continue.
+function revertFromListen() {
+  const prev = BF.prevState;
+  if (prev === 'LOCKED') {
+    BF.state = 'LOCKED';
+    VIS.onStateChange('LOCKED', ctx.currentTime);
+    setLamp('LOCKED');
+    setStatus(`Listen timed out — still locked. ${fmtBpm(60/BF.period)} BPM.`);
+    setBodyFlags();
+    requestAnimationFrame(beatFollowerRAF);
+  } else if (prev === 'ACQUIRE') {
+    BF.state = 'ACQUIRE';
+    VIS.onStateChange('ACQUIRE', ctx.currentTime);
+    BF.acquireStart = ctx.currentTime;
+    BF.events = []; BF.estPeriod = null; BF.estBpm = null;
+    BF.eShort = 0; BF.eLong = 0; BF.ePeak = 0; BF.lastTrig = -1e9;
+    BF.aboveThresh = false; BF.peakRatio = 0; BF.peakEnergy = 0;
+    BF.peakTime = -1; BF.armTime = -1; BF.beatEnergyEma = null;
+    BF.lastBeatSeen = -1e9; BF.trackBeatCount = 0;
+    setLamp('ACQUIRE');
+    setStatus('Listen timed out — back to acquiring.');
+    setBodyFlags();
+    requestAnimationFrame(beatFollowerRAF);
+  } else if (prev === 'CHIRP') {
+    BF.state = 'CHIRP';
+    VIS.onStateChange('CHIRP', ctx.currentTime);
+    BF.errAbsHist = []; BF.trackPhaseErrors = []; BF.trackBeatCount = 0;
+    setLamp('CHIRP');
+    setStatus(`Listen timed out — back to chirping.`);
+    setBodyFlags();
+    requestAnimationFrame(beatFollowerRAF);
+  } else {
+    // IDLE or unknown: full stop
+    stopMicHardware();
+    hardResetFollowerState();
+    ensureStoppedUI();
+  }
+}
 
 // =========================
 // Mic management
@@ -480,10 +551,13 @@ async function openMic() {
   BF.buf     = new Float32Array(BF.analyser.fftSize);
   BF.freqBuf = new Uint8Array(BF.analyser.frequencyBinCount);
 
-  // Compute FFT bin index and spectrogram bin index for each tone frequency
+  // Compute FFT bin index and spectrogram bin index for each tone frequency.
+  // maxSpecBin is the FFT bin corresponding to SPEC_MAX_HZ; the display only
+  // covers 0–SPEC_MAX_HZ so toneSpecBins are scaled relative to that range.
   const binWidth = ctx.sampleRate / BF.analyser.fftSize;
+  BF.maxSpecBin   = Math.min(Math.round(SPEC_MAX_HZ / binWidth), BF.analyser.frequencyBinCount - 1);
   BF.toneBins     = BF.toneFreqs.map(f => Math.round(f / binWidth));
-  BF.toneSpecBins = BF.toneBins.map(b => Math.floor(b * SPEC_BINS / BF.analyser.frequencyBinCount));
+  BF.toneSpecBins = BF.toneBins.map(b => Math.floor(b * SPEC_BINS / BF.maxSpecBin));
   BF.toneGainMul     = [1.0, 1.0, 1.0];
   BF.toneMagEma      = [null, null, null];
   BF.toneTransitionQ  = [];
@@ -579,11 +653,11 @@ function detectBeat(now) {
 
   VIS.energySamples.push({time: now, eShort: e, eLong: BF.eLong, ePeak: BF.ePeak});
 
-  // Spectrum snapshot — sample SPEC_BINS evenly across the full frequency range
+  // Spectrum snapshot — sample SPEC_BINS evenly from 0 to SPEC_MAX_HZ
   if (BF.freqBuf) {
     BF.analyser.getByteFrequencyData(BF.freqBuf);
     const bins = new Uint8Array(SPEC_BINS);
-    const step = BF.analyser.frequencyBinCount / SPEC_BINS;
+    const step = BF.maxSpecBin / SPEC_BINS;
     for (let i = 0; i < SPEC_BINS; i++)
       bins[i] = BF.freqBuf[Math.floor(i * step)];
     VIS.specSamples.push({time: now, bins});
@@ -741,7 +815,6 @@ function tryPromoteToLockedFromAcquire() {
   setBpmDisplay(60 / BF.period);
 
   BF.trackPhaseErrors = [];
-  stopMicHardware();
   transitionToLocked();
   return true;
 }
@@ -769,15 +842,41 @@ function onBeatDetected(tBeat) {
   }
 
   if (BF.state === 'LISTEN') {
-    // Accumulate phase error relative to current tick clock.
     const err = phaseError(tBeat);
-    BF.trackPhaseErrors.push(err);
-    const n = BF.trackPhaseErrors.length;
-    const errMs = Math.round(err * 1000);
-    VIS.detectedBeats.push({time: tBeat, bpm: 60/BF.period, errMs: err*1000, gray: true});
+
+    // IBI consistency gate: a beat is "confirmed" if it forms a valid inter-beat
+    // interval (k×T ± tolerance) with any previously seen raw beat.  The first
+    // detection is always accepted as a seed; after that only tempo-consistent
+    // detections count.  Ghost beats (random timing) won't satisfy the IBI check
+    // against real beats and are discarded.
+    const consistent = BF.rawListenBeats.length === 0 ||
+                       listenIBICheck(tBeat, BF.rawListenBeats);
+
+    BF.rawListenBeats.push(tBeat);
+    if (BF.rawListenBeats.length > 12) BF.rawListenBeats.shift();
+
+    VIS.detectedBeats.push({time: tBeat, bpm: 60/BF.period, errMs: err*1000, gray: !consistent});
     VIS.bpmSamples.push({time: tBeat, bpm: 60/BF.period, errMs: err*1000});
-    setStatus(`Listening… ${n}/4 beats (${errMs >= 0 ? '+' : ''}${errMs}ms)`);
-    if (n >= 4) {
+
+    if (!consistent) {
+      setStatus(`Listening… ${BF.confirmedBeats.length} confirmed (ghost discarded)`);
+      return;
+    }
+
+    BF.confirmedBeats.push({time: tBeat, phaseErr: err});
+    const n = BF.confirmedBeats.length;
+
+    // Compute std-dev of confirmed phase errors to gauge convergence.
+    const errs = BF.confirmedBeats.map(b => b.phaseErr);
+    const mean = errs.reduce((a, b) => a + b, 0) / n;
+    const stdDevMs = Math.sqrt(errs.reduce((a, e) => a + (e - mean) ** 2, 0) / n) * 1000;
+
+    const errMs = Math.round(err * 1000);
+    setStatus(`Listening… ${n} confirmed (±${Math.round(stdDevMs)}ms)`);
+
+    // Lock when: ≥4 confirmed beats with phase std-dev < 25ms, OR ≥6 confirmed regardless.
+    if (n >= 4 && (stdDevMs < 25 || n >= 6)) {
+      BF.trackPhaseErrors = errs;
       transitionToLocked();
     }
     return;
@@ -841,6 +940,9 @@ function onBeatDetected(tBeat) {
 async function actionListen() {
   await ctx.resume();
 
+  // Remember where we came from so timeout can revert correctly.
+  BF.prevState = BF.state;
+
   // Close any active mic (works from any state including ACQUIRE, CHIRP, LISTEN)
   if (BF.active) stopMicHardware();
 
@@ -865,9 +967,12 @@ async function actionListen() {
     beatCount  = 0;
   }
 
-  // Reset beat detector and phase accumulator
+  // Reset beat detector, phase accumulator, and LISTEN-specific state
   BF.trackPhaseErrors = [];
   BF.trackBeatCount   = 0;
+  BF.confirmedBeats   = [];
+  BF.rawListenBeats   = [];
+  BF.listenStart      = ctx.currentTime;
   BF.eShort = 0; BF.eLong = 0; BF.ePeak = 0; BF.lastTrig = -1e9;
   BF.aboveThresh = false; BF.peakRatio = 0; BF.peakEnergy = 0;
   BF.peakTime = -1; BF.armTime = -1; BF.beatEnergyEma = null;
@@ -906,7 +1011,6 @@ function commitFromAcquire() {
   BF.nextTick = last + stepsNeeded * BF.period;
   setBpmDisplay(60 / BF.period);
   BF.trackPhaseErrors = [];
-  stopMicHardware();
   transitionToLocked();
 }
 
@@ -962,6 +1066,13 @@ function beatFollowerRAF() {
     stopMicHardware();
     hardResetFollowerState();
     ensureStoppedUI();
+    return;
+  }
+
+  // LISTEN timeout → revert to previous state
+  if (BF.state === 'LISTEN' && (now - BF.listenStart) > BF.maxListenSec) {
+    VIS.frozenNow = now;
+    revertFromListen();
     return;
   }
 
@@ -1215,6 +1326,8 @@ const VIS = {
 // Spectrum color LUT: 0=transparent, 50=blue, 150=red, 255=yellow
 // =========================
 const SPEC_BINS = 100;
+const SPEC_MAX_HZ = 12000; // frequency ceiling for the spectrogram display
+let specGain = 1.5;        // display-time brightness multiplier for spectrogram
 const BLUE_THRESH = 50;
 const RED_THRESH = 150;
 const SPEC_COLORS = (() => {
@@ -1753,7 +1866,7 @@ function drawVis(rafT) {
       const x = timeToX(s.time);
       if (x < 0 || x > W) continue;
       for (let i = 0; i < SPEC_BINS; i++) {
-        const v = s.bins[i];
+        const v = Math.min(255, Math.round(s.bins[i] * specGain));
         if (v === 0) continue;
         const color = SPEC_COLORS[v];
         if (!color) continue;
@@ -1775,18 +1888,25 @@ function drawVis(rafT) {
       }
     }
 
-    // Y-axis frequency labels (approximate Hz, log-ish at Nyquist/SPEC_BINS scale)
-    cx.fillStyle = 'rgba(255,255,255,0.45)';
-    cx.font = '9px monospace';
-    cx.textAlign = 'left';
-    const sampleRate = ctx.sampleRate || 44100;
-    const hzPerBin  = (sampleRate / 2) / BF.analyser.frequencyBinCount;
-    const labelBins = [0, 10, 25, 50, 75, 99];
-    for (const bi of labelBins) {
-      const freqHz = Math.round(Math.floor(bi * BF.analyser.frequencyBinCount / SPEC_BINS) * hzPerBin);
-      const y = specTopY + (SPEC_BINS - 1 - bi) * binH;
-      cx.textBaseline = bi === 0 ? 'top' : 'bottom';
-      cx.fillText(freqHz >= 1000 ? `${(freqHz/1000).toFixed(1)}k` : `${freqHz}`, 2, y + (bi === 0 ? 1 : -1));
+    // Y-axis frequency labels.
+    // Guard: BF.analyser may be null if mic is closed while specSamples still has data.
+    if (BF.analyser) {
+      cx.fillStyle = 'rgba(255,255,255,0.45)';
+      cx.font = '9px monospace';
+      cx.textAlign = 'left';
+      const sampleRate = ctx.sampleRate || 44100;
+      const hzPerBin  = (sampleRate / 2) / BF.analyser.frequencyBinCount;
+      const labelBins = [0, 10, 25, 50, 75, 99];
+      for (const bi of labelBins) {
+        const freqHz = Math.round(Math.floor(bi * BF.maxSpecBin / SPEC_BINS) * hzPerBin);
+        const y = specTopY + (SPEC_BINS - 1 - bi) * binH;
+        // Bottom bin (bi=0) and top bin (bi=99) use 'top' so the label sits
+        // inside the spectrogram region.  Middle bins use 'bottom' (label above
+        // the marked line) which is the conventional spectrogram style.
+        const atEdge = (bi === 0 || bi === SPEC_BINS - 1);
+        cx.textBaseline = atEdge ? 'top' : 'bottom';
+        cx.fillText(freqHz >= 1000 ? `${(freqHz/1000).toFixed(1)}k` : `${freqHz}`, 2, y + (atEdge ? 1 : -1));
+      }
     }
   }
 
@@ -1919,6 +2039,13 @@ function init() {
     el.lblBeatGate.textContent = BF.beatGateRatio.toFixed(2);
   });
 
+  el.slSpecGain = document.getElementById('slSpecGain');
+  el.lblSpecGain = document.getElementById('lblSpecGain');
+  el.slSpecGain.addEventListener('input', () => {
+    specGain = parseFloat(el.slSpecGain.value);
+    el.lblSpecGain.textContent = specGain.toFixed(2) + '×';
+  });
+
   document.body.addEventListener('keydown', actionKeyDown);
 
   setBpmDisplay(bpm);
@@ -1952,16 +2079,18 @@ Buttons &amp; keys:
 State machine:
 <ul>
   <li><b>IDLE →A→ ACQUIRE</b>: mic opens, collects beats to estimate BPM; auto-locks after 4 consistent beats</li>
-  <li><b>IDLE →L→ LISTEN</b>: ticks start at current BPM, mic opens; phase-corrects to median of 4 heard beats, then locks</li>
+  <li><b>IDLE →L→ LISTEN</b>: ticks start at current BPM, mic opens; ghost beats filtered by IBI; locks after ≥4 confirmed, consistent beats</li>
   <li><b>IDLE →C→ CHIRP</b>: mic opens, plays tones at current BPM, phase-adjusts via round-trip latency</li>
   <li><b>IDLE →SPACE→ LOCKED</b>: plays at current BPM immediately (no mic)</li>
   <li><b>ACQUIRE →auto→ LOCKED</b>: after 4 consistent beats; mic closes, ticks start</li>
   <li><b>ACQUIRE →C→ LOCKED</b>: commit current estimate early</li>
   <li><b>ACQUIRE →auto→ IDLE</b>: timeout after 20 s</li>
-  <li><b>LISTEN →auto→ LOCKED</b>: after 4 beats; mic closes, phase corrected to median beat error</li>
+  <li><b>LISTEN →auto→ LOCKED</b>: ≥4 IBI-confirmed beats with std-dev &lt;25ms (or ≥6 confirmed); mic stays on</li>
+  <li><b>LISTEN →timeout→ prev state</b>: after 15 s, reverts to ACQUIRE/LOCKED/CHIRP/IDLE</li>
+  <li><b>LOCKED →L→ LISTEN</b>: re-open mic, quick phase re-lock</li>
   <li><b>CHIRP →auto→ LOCKED</b>: after phase stabilises or 8 beats seen</li>
   <li><b>CHIRP →C→ LOCKED</b>: force lock now</li>
-  <li><b>LOCKED →L→ LISTEN</b>: re-open mic, quick phase re-lock on 4 beats</li>
+  <li><b>LOCKED →L→ LISTEN</b>: re-open mic, quick phase re-lock (reverts to LOCKED on timeout)</li>
   <li><b>LOCKED →C→ CHIRP</b>: re-open mic, tone-based phase adjustment</li>
   <li><b>LOCKED →A→ ACQUIRE</b>: re-open mic, re-collect BPM</li>
   <li><b>{any active} →SPACE→ IDLE</b>: stop everything</li>
