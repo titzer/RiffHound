@@ -6,6 +6,11 @@
 #include <math.h>
 #include <string.h>
 
+#define DEFAULT_DISPLAY_SECS 5
+#define DEFAULT_DISPLAY_SECS_STR "5"
+#define DEFAULT_MAX_FREQ 8000
+#define DEFAULT_MAX_FREQ_STR "8000"
+
 // ── Monotonic clock ──────────────────────────────────────────────────────────
 // Used for diagnostic timestamps written from the audio thread.
 static double monotonic_now(void) {
@@ -58,7 +63,7 @@ static void sgram_heatmap(float t, uint8_t *r, uint8_t *g, uint8_t *b) {
 // ════════════════════════════════════════════════════════════════════════════
 
 @interface SpectrogramView : NSView
-@property (assign) NSInteger displaySeconds;   // 2–99,          default 10
+@property (assign) NSInteger displaySeconds;   // 2–99,          default 5
 @property (assign) CGFloat   maxFrequency;     // 1000–20000 Hz, default 8000
 @end
 
@@ -70,8 +75,8 @@ static const CGFloat kFreqInterval = 1000.0;  // Hz between horizontal grid line
 - (instancetype)initWithFrame:(NSRect)frame {
     self = [super initWithFrame:frame];
     if (self) {
-        _displaySeconds = 10;
-        _maxFrequency   = 8000.0;
+        _displaySeconds = DEFAULT_DISPLAY_SECS;
+        _maxFrequency   = DEFAULT_MAX_FREQ;
     }
     return self;
 }
@@ -629,12 +634,12 @@ static NSTextField *MakeInputField(NSView *content, NSString *text,
 
     MakeRowLabel(content, @"Secs:", x, tfY, 38, tfH);
     x += 38 + 4;
-    self.secsField = MakeInputField(content, @"10", x, tfY, 36, tfH, self);
+    self.secsField = MakeInputField(content, @DEFAULT_DISPLAY_SECS_STR, x, tfY, 36, tfH, self);
     x += 36 + gap;
 
     MakeRowLabel(content, @"Max Hz:", x, tfY, 52, tfH);
     x += 52 + 4;
-    self.maxHzField = MakeInputField(content, @"8000", x, tfY, 56, tfH, self);
+    self.maxHzField = MakeInputField(content, @DEFAULT_MAX_FREQ_STR, x, tfY, 56, tfH, self);
     x += 56 + gap;
 
     CGFloat stateW = 80;
