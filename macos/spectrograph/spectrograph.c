@@ -384,20 +384,22 @@ static NSTextField *MakeInputField(NSView *content, NSString *text,
         AppDelegate *s = weakSelf;
         if (!s) return event;
 
-        // Let the field editor handle its own keystrokes.
-        if ([[s.window firstResponder] isKindOfClass:[NSTextView class]])
-            return event;
-
         // Preserve Cmd / Ctrl / Option shortcuts.
         NSEventModifierFlags held = [event modifierFlags] &
             (NSEventModifierFlagCommand | NSEventModifierFlagControl | NSEventModifierFlagOption);
         if (held) return event;
 
         NSString *ch = [event characters];
+
+        // Space toggles play/stop globally, even while editing a text field.
         if ([ch isEqualToString:@" "]) {
             if (s.isRunning) [s stop]; else [s play];
             return nil;
         }
+
+        // All other hotkeys pass through when a text field is being edited.
+        if ([[s.window firstResponder] isKindOfClass:[NSTextView class]])
+            return event;
         if ([ch isEqualToString:@"-"]) {
             [s applyDisplaySeconds:s.displaySeconds - 1];
             return nil;
