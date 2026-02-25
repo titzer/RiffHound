@@ -11,6 +11,9 @@
 #define DEFAULT_MAX_FREQ 8000
 #define DEFAULT_MAX_FREQ_STR "8000"
 
+// TODO: increase temporal resolution of FFT display and redraw speed
+#define DEFAULT_FPS 30
+
 // ── Monotonic clock ──────────────────────────────────────────────────────────
 // Used for diagnostic timestamps written from the audio thread.
 static double monotonic_now(void) {
@@ -223,7 +226,7 @@ static const CGFloat kFreqInterval = 1000.0;  // Hz between horizontal grid line
     // ── 5. Diagnostic markers ─────────────────────────────────────────────
 
 
-    // Animated red dot — bounces left↔right at 30 fps (proves timer + drawRect work).
+    // Animated red dot — bounces left↔right at redraw fps (proves timer + drawRect work).
     if (diagnose) {
         uint64_t step = s_draw_count % 120;
         CGFloat  frac = (step < 60) ? (CGFloat)step / 59.0 : (CGFloat)(120 - step) / 59.0;
@@ -672,11 +675,11 @@ static NSTextField *MakeInputField(NSView *content, NSString *text,
     self.isRunning = NO;
     [self updatePlaybackUI];
 
-    // ── 30 fps redraw timer ────────────────────────────────────────────────
+    // ── Redraw timer (once per frame) ────────────────────────────────────────────────
     // The spectrogram view has no external data source that pushes updates, so
-    // we poll at 30 fps.  The timer runs on the main run loop.
-    NSLog(@"[Spectrograph] starting 30fps redraw timer");
-    [NSTimer scheduledTimerWithTimeInterval:1.0 / 30.0
+    // we poll at redraw fps.  The timer runs on the main run loop.
+    NSLog(@"[Spectrograph] starting redraw timer");
+    [NSTimer scheduledTimerWithTimeInterval:1.0 / (DEFAULT_FPS)
                                     repeats:YES
                                       block:^(NSTimer *t) {
         (void)t;
