@@ -1,9 +1,22 @@
-.PHONY: clean all
+.PHONY: clean all run
 
-all: spectrograph
+BUNDLE  = Spectrograph.app
+BINARY  = $(BUNDLE)/Contents/MacOS/spectrograph
+SOURCES = spectrograph.c fft.c
+
+all: $(BUNDLE)
+
+$(BUNDLE): $(SOURCES) fft.h Info.plist
+	mkdir -p $(BUNDLE)/Contents/MacOS
+	cp Info.plist $(BUNDLE)/Contents/
+	clang -x objective-c -fobjc-arc $(SOURCES) \
+	    -framework Cocoa \
+	    -framework AVFoundation \
+	    -framework Accelerate \
+	    -o $(BINARY)
+
+run: $(BUNDLE)
+	open $(BUNDLE)
 
 clean:
-	rm -f spectrograph Spectrograph
-
-spectrograph: spectrograph.c
-	clang -x objective-c -fobjc-arc spectrograph.c -framework Cocoa -o spectrograph
+	rm -rf $(BUNDLE)
