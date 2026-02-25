@@ -11,7 +11,10 @@
 #define DEFAULT_MAX_FREQ 8000
 #define DEFAULT_MAX_FREQ_STR "8000"
 
-// TODO: increase temporal resolution of FFT display and redraw speed
+// TODO: go to running state immediately upon app launch
+// TODO: increase temporal resolution of FFT display; do one FFT per pixel of horizontal resolution?
+// TODO: freeze displayed FFT data upon stop and redraw speed
+// TODO: make use of DEFAULT_FPS appropriately everywhere, make sure it works with 60fps
 #define DEFAULT_FPS 30
 
 // ── Monotonic clock ──────────────────────────────────────────────────────────
