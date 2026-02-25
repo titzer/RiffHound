@@ -11,11 +11,7 @@
 #define DEFAULT_MAX_FREQ 8000
 #define DEFAULT_MAX_FREQ_STR "8000"
 
-// TODO: go to running state immediately upon app launch
-// TODO: increase temporal resolution of FFT display; do one FFT per pixel of horizontal resolution?
-// TODO: freeze displayed FFT data upon stop and redraw speed
-// TODO: make use of DEFAULT_FPS appropriately everywhere, make sure it works with 60fps
-#define DEFAULT_FPS 30
+#define DEFAULT_FPS 60
 
 // ── Monotonic clock ──────────────────────────────────────────────────────────
 // Used for diagnostic timestamps written from the audio thread.
@@ -41,7 +37,7 @@ static _Atomic uint32_t  diag_fft_idx;             // monotonic write count
 // ── Spectrogram frame ring buffer ────────────────────────────────────────────
 // Written from the audio tap thread; read from the main/draw thread.
 // Same SPSC protocol as the diag buffers above.
-#define SGRAM_MAX_FRAMES 4096u   // ~95 s at 43 frames/s — covers the 99-s max window
+#define SGRAM_MAX_FRAMES 4096u   // ~47 s at 86 FFT/s (hop=512, sr=44100); enough for default 5-s window
 #define SGRAM_MAX_BINS   2049    // fft_size/2+1 for default fft_size=4096
 
 static float            s_sgram_buf[SGRAM_MAX_FRAMES][SGRAM_MAX_BINS];
@@ -50,6 +46,22 @@ static _Atomic uint32_t s_sgram_write;   // monotonic write count
 
 // Diagnostic flag; flipped with SHIFT + D
 static volatile int diagnose = 1;
+
+// Freeze time for the spectrogram display.
+// 0.0 = live (use monotonic_now()); nonzero = frozen at this timestamp (set on stop).
+static double s_freeze_time = 0.0;
+
+// ── Display configuration (hookable to UI controls later) ────────────────────
+// dB floor: audio level that maps to the darkest (black) color.
+// dB range: span above the floor that maps to full brightness.
+// Tradeoff: wider range shows quieter sounds but compresses loud ones.
+// Blending: each pixel column always shows the newest FFT frame that falls in
+//   that time slot ("newest wins").  Temporal blending (averaging overlapping
+//   frames into the same column) would smooth noise but blur transients; given
+//   the Hann window already smears ~93 ms of audio per frame, extra blending
+//   adds little benefit and hurts temporal sharpness — so we don't do it.
+static float s_db_floor = -80.0f;   // dB level → black  (raise to hide quiet noise)
+static float s_db_range =  80.0f;   // dB span  → white  (lower for more contrast)
 
 // Six-stop thermal heatmap: black → purple → blue → cyan → green → yellow → red
 static void sgram_heatmap(float t, uint8_t *r, uint8_t *g, uint8_t *b) {
@@ -100,7 +112,7 @@ static const CGFloat kFreqInterval = 1000.0;  // Hz between horizontal grid line
     CGFloat gW = b.size.width  - gX;
     CGFloat gH = b.size.height;
 
-    double  now    = monotonic_now();
+    double  now    = (s_freeze_time > 0.0) ? s_freeze_time : monotonic_now();
     double  winDur = (double)self.displaySeconds;
     CGFloat maxFreq = self.maxFrequency;
 
@@ -141,18 +153,27 @@ static const CGFloat kFreqInterval = 1000.0;  // Hz between horizontal grid line
             if (maxBin > SGRAM_MAX_BINS  - 1) maxBin = SGRAM_MAX_BINS - 1;
             if (maxBin < 1) maxBin = 1;
 
+            // Iterate from newest frame to oldest, filling contiguous pixel-column
+            // ranges so that no columns are left black due to sparse FFT timing.
+            int xFilled = pixW; // rightmost unfilled column index + 1
             for (uint32_t j = 0; j < n; j++) {
                 uint32_t slot = (head - 1 - j) & (SGRAM_MAX_FRAMES - 1);
                 double age = now - s_sgram_ts[slot];
-                if (age < 0.0 || age > winDur) break;
+                if (age < 0.0) continue;   // future timestamp: skip, don't abort loop
+                if (age > winDur) break;   // too old: all further frames are older too
 
                 int xPix = (int)((1.0 - age / winDur) * (double)(pixW - 1) + 0.5);
-                if (xPix < 0 || xPix >= pixW) continue;
+                if (xPix >= xFilled) continue;  // already covered by a newer frame
+                if (xPix < 0) xPix = 0;
+
+                // Fill columns [xPix, xFilled-1] with this frame's data.
+                int xRight = xFilled - 1;
+                if (xRight >= pixW) xRight = pixW - 1;
 
                 for (int bin = 1; bin <= maxBin; bin++) {
                     float mag = s_sgram_buf[slot][bin];
                     float dB  = 20.0f * log10f(mag + 1e-9f);
-                    float t   = (dB + 80.0f) / 80.0f;
+                    float t   = (dB - s_db_floor) / s_db_range;
                     if (t <= 0.0f) continue;
                     if (t  > 1.0f) t = 1.0f;
 
@@ -164,9 +185,15 @@ static const CGFloat kFreqInterval = 1000.0;  // Hz between horizontal grid line
                     uint8_t r, g, bv;
                     sgram_heatmap(t, &r, &g, &bv);
 
-                    unsigned char *px = data + (size_t)row * (size_t)bpr + (size_t)xPix * 3;
-                    px[0] = r; px[1] = g; px[2] = bv;
+                    unsigned char *rowBase = data + (size_t)row * (size_t)bpr;
+                    for (int xCol = xPix; xCol <= xRight; xCol++) {
+                        unsigned char *px = rowBase + (size_t)xCol * 3;
+                        px[0] = r; px[1] = g; px[2] = bv;
+                    }
                 }
+
+                xFilled = xPix;
+                if (xFilled <= 0) break;
             }
 
             [[NSGraphicsContext currentContext]
@@ -230,9 +257,13 @@ static const CGFloat kFreqInterval = 1000.0;  // Hz between horizontal grid line
 
 
     // Animated red dot — bounces left↔right at redraw fps (proves timer + drawRect work).
+    // Period = DEFAULT_FPS * 4 frames (2 s each way), so speed is FPS-independent.
     if (diagnose) {
-        uint64_t step = s_draw_count % 120;
-        CGFloat  frac = (step < 60) ? (CGFloat)step / 59.0 : (CGFloat)(120 - step) / 59.0;
+        uint64_t period = (uint64_t)(DEFAULT_FPS * 4);
+        uint64_t half   = (uint64_t)(DEFAULT_FPS * 2);
+        uint64_t step   = s_draw_count % period;
+        CGFloat  frac   = (step < half) ? (CGFloat)step / (CGFloat)(half - 1)
+                                        : (CGFloat)(period - step) / (CGFloat)(half - 1);
         CGFloat dotX = gX + 8.0 + frac * (gW - 16.0);
         CGFloat dotY = gY + gH - 16.0;
         [[NSColor systemRedColor] setFill];
@@ -248,7 +279,8 @@ static const CGFloat kFreqInterval = 1000.0;  // Hz between horizontal grid line
         for (uint32_t j = 0; j < n; j++) {
             uint32_t slot = (head - 1 - j) & (DIAG_BUF - 1);
             double age = now - diag_fft_ts[slot];
-            if (age < 0.0 || age > winDur) break;
+            if (age < 0.0) continue;
+            if (age > winDur) break;
             CGFloat xp = gX + gW - (CGFloat)(age / winDur) * gW;
             CGFloat yp = gY + gH - 32.0;
             NSBezierPath *d = [NSBezierPath bezierPath];
@@ -268,7 +300,8 @@ static const CGFloat kFreqInterval = 1000.0;  // Hz between horizontal grid line
         for (uint32_t j = 0; j < n; j++) {
             uint32_t slot = (head - 1 - j) & (DIAG_BUF - 1);
             double age = now - diag_audio_ts[slot];
-            if (age < 0.0 || age > winDur) break;
+            if (age < 0.0) continue;
+            if (age > winDur) break;
             CGFloat xp = gX + gW - (CGFloat)(age / winDur) * gW;
             CGFloat yp = gY + gH - 44.0;
             [[NSBezierPath bezierPathWithOvalInRect:
@@ -351,6 +384,7 @@ static const CGFloat kFreqInterval = 1000.0;  // Hz between horizontal grid line
 
 - (void)play {
     if (self.isRunning) return;
+    s_freeze_time = 0.0;   // unfreeze display
     self.isRunning = YES;
     [self updatePlaybackUI];
     if (self.audioEngine && !self.audioEngine.isRunning) {
@@ -367,6 +401,7 @@ static const CGFloat kFreqInterval = 1000.0;  // Hz between horizontal grid line
 
 - (void)stop {
     if (!self.isRunning) return;
+    s_freeze_time = monotonic_now();   // freeze display at this moment
     self.isRunning = NO;
     [self updatePlaybackUI];
     if (self.audioEngine.isRunning)
@@ -434,22 +469,46 @@ static const CGFloat kFreqInterval = 1000.0;  // Hz between horizontal grid line
 
         if (!buf.floatChannelData) return;  // format mismatch — count still recorded above
 
-        // Push samples into FFT pipeline; on each new frame, store the magnitudes.
-        const float *mags = fft_push(buf.floatChannelData[0], (int)buf.frameLength);
-        if (mags) {
-            // Copy magnitudes into the spectrogram ring buffer.
-            uint32_t sfslot = atomic_load_explicit(&s_sgram_write, memory_order_relaxed)
-                              & (SGRAM_MAX_FRAMES - 1);
-            int nBins = (fft_bin_count < SGRAM_MAX_BINS) ? fft_bin_count : SGRAM_MAX_BINS;
-            memcpy(s_sgram_buf[sfslot], mags, (size_t)nBins * sizeof(float));
-            s_sgram_ts[sfslot] = now;
-            atomic_fetch_add_explicit(&s_sgram_write, 1, memory_order_release);
+        // Drive fft_push() in hop-sized chunks so EVERY FFT frame is captured.
+        // fft_push() returns only the last frame computed per call, so passing the
+        // entire buffer at once silently drops all but the final frame (e.g. an
+        // 4096-sample buffer at hop=512 would produce 8 FFTs but only 1 would be
+        // stored).  Chunking at hop_size guarantees at most one frame per call.
+        // Each frame gets a timestamp proportional to its position in the buffer
+        // so that consecutive frames spread across distinct pixel columns.
+        const float *pcm  = buf.floatChannelData[0];
+        int total    = (int)buf.frameLength;
+        int consumed = 0;
+        int nBins    = (fft_bin_count < SGRAM_MAX_BINS) ? fft_bin_count : SGRAM_MAX_BINS;
 
-            // Diagnostic FFT frame counter.
-            uint32_t fslot = atomic_load_explicit(&diag_fft_idx, memory_order_relaxed)
-                             & (DIAG_BUF - 1);
-            diag_fft_ts[fslot] = now;
-            atomic_fetch_add_explicit(&diag_fft_idx, 1, memory_order_release);
+        while (consumed < total) {
+            int chunk = total - consumed;
+            if (chunk > fft_hop_size) chunk = fft_hop_size;
+
+            const float *mags = fft_push(pcm + consumed, chunk);
+            consumed += chunk;
+
+            if (mags) {
+                // Timestamp: when this frame's audio was captured.
+                // `now` is the callback entry time; the buffer holds `total` samples
+                // already captured before the callback fired.  Sample `consumed-1`
+                // (the most recent sample in this FFT frame) was captured at:
+                //   now - (total - consumed) / sr
+                // Using `now + consumed/sr` would place frames in the future,
+                // making age negative in drawRect and causing the display to flash.
+                double frame_ts = now - (double)(total - consumed) / fft_sample_rate;
+
+                uint32_t sfslot = atomic_load_explicit(&s_sgram_write, memory_order_relaxed)
+                                  & (SGRAM_MAX_FRAMES - 1);
+                memcpy(s_sgram_buf[sfslot], mags, (size_t)nBins * sizeof(float));
+                s_sgram_ts[sfslot] = frame_ts;
+                atomic_fetch_add_explicit(&s_sgram_write, 1, memory_order_release);
+
+                uint32_t fslot = atomic_load_explicit(&diag_fft_idx, memory_order_relaxed)
+                                 & (DIAG_BUF - 1);
+                diag_fft_ts[fslot] = frame_ts;
+                atomic_fetch_add_explicit(&diag_fft_idx, 1, memory_order_release);
+            }
         }
     }];
 
@@ -740,6 +799,7 @@ static NSTextField *MakeInputField(NSView *content, NSString *text,
     [self buildWindowAndUI];
     [NSApp activateIgnoringOtherApps:YES];
     fft_init();        // initialise with defaults; fft_reinit() updates sr after audio starts
+    [self play];       // enter running state immediately; buildAudioEngine will auto-start
     [self setupAudio]; // request mic permission → buildAudioEngine on main thread
 }
 

@@ -21,7 +21,7 @@
 
 /* ── Global parameters ───────────────────────────────────────────────────── */
 int           fft_size        = 4096;           /* ~93 ms at 44100 Hz */
-int           fft_hop_size    = 1024;           /* 75 % overlap       */
+int           fft_hop_size    = 512;            /* 87.5 % overlap — ~86 FFT/s at 44100 Hz */
 FftWindowType fft_window_type = FFT_WINDOW_HANN;
 double        fft_sample_rate = 44100.0;
 
