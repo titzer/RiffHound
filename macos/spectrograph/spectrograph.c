@@ -37,6 +37,9 @@ static float            s_sgram_buf[SGRAM_MAX_FRAMES][SGRAM_MAX_BINS];
 static double           s_sgram_ts[SGRAM_MAX_FRAMES];
 static _Atomic uint32_t s_sgram_write;   // monotonic write count
 
+// Diagnostic flag; flipped with SHIFT + D
+static volatile int diagnose = 1;
+
 // Six-stop thermal heatmap: black → purple → blue → cyan → green → yellow → red
 static void sgram_heatmap(float t, uint8_t *r, uint8_t *g, uint8_t *b) {
     if (t <= 0.0f) { *r = 0;   *g = 0;   *b = 0;   return; }
@@ -214,8 +217,9 @@ static const CGFloat kFreqInterval = 1000.0;  // Hz between horizontal grid line
 
     // ── 5. Diagnostic markers ─────────────────────────────────────────────
 
+
     // Animated red dot — bounces left↔right at 30 fps (proves timer + drawRect work).
-    {
+    if (diagnose) {
         uint64_t step = s_draw_count % 120;
         CGFloat  frac = (step < 60) ? (CGFloat)step / 59.0 : (CGFloat)(120 - step) / 59.0;
         CGFloat dotX = gX + 8.0 + frac * (gW - 16.0);
@@ -226,7 +230,7 @@ static const CGFloat kFreqInterval = 1000.0;  // Hz between horizontal grid line
     }
 
     // FFT frame markers: green diamonds, row just below the red dot.
-    {
+    if (diagnose) {
         uint32_t head = atomic_load_explicit(&diag_fft_idx, memory_order_acquire);
         uint32_t n    = (head < DIAG_BUF) ? head : DIAG_BUF;
         [[NSColor colorWithRed:0.2 green:1.0 blue:0.35 alpha:0.9] setFill];
@@ -246,7 +250,7 @@ static const CGFloat kFreqInterval = 1000.0;  // Hz between horizontal grid line
     }
 
     // Audio callback markers: cyan dots, below the FFT diamonds.
-    {
+    if (diagnose) {
         uint32_t head = atomic_load_explicit(&diag_audio_idx, memory_order_acquire);
         uint32_t n    = (head < DIAG_BUF) ? head : DIAG_BUF;
         [[NSColor colorWithRed:0.3 green:0.9 blue:1.0 alpha:0.7] setFill];
@@ -262,7 +266,7 @@ static const CGFloat kFreqInterval = 1000.0;  // Hz between horizontal grid line
     }
 
     // ── 6. Diagnostic text (centred, semi-transparent backing) ────────────
-    {
+    if (diagnose) {
         NSDictionary *diagAttrs = @{
             NSFontAttributeName:
                 [NSFont monospacedSystemFontOfSize:13 weight:NSFontWeightMedium],
@@ -275,8 +279,10 @@ static const CGFloat kFreqInterval = 1000.0;  // Hz between horizontal grid line
             s_draw_count, fCnt, aCnt,
             fft_sample_rate, fft_size, fft_hop_size, fft_bin_count, fft_freq_resolution];
         NSSize  ts = [diagLine sizeWithAttributes:diagAttrs];
-        CGFloat tx = gX + (gW - ts.width)  * 0.5;
-        CGFloat ty = gY + (gH - ts.height) * 0.5;
+        //        CGFloat tx = gX + (gW - ts.width)  * 0.5;
+        //        CGFloat ty = gY + (gH - ts.height) * 0.5;
+        CGFloat tx = gX + 5;
+        CGFloat ty = gY + gH - ts.height;
         [[NSColor colorWithWhite:0.0 alpha:0.6] setFill];
         NSRectFillUsingOperation(
             NSInsetRect(NSMakeRect(tx - 6, ty - 4, ts.width + 12, ts.height + 8), -1, -1),
@@ -688,6 +694,12 @@ static NSTextField *MakeInputField(NSView *content, NSString *text,
         // Space: toggle play/stop globally, even while editing a text field.
         if ([ch isEqualToString:@" "]) {
             if (s.isRunning) [s stop]; else [s play];
+            return nil;
+        }
+
+        // D: toggle diagnostics
+        if ([ch isEqualToString:@"D"]) {
+            diagnose = diagnose ^ 1;
             return nil;
         }
 
