@@ -4,9 +4,9 @@ BUNDLE  = Spectrograph.app
 BINARY  = $(BUNDLE)/Contents/MacOS/spectrograph
 SOURCES = spectrograph.c fft.c
 
-all: $(BUNDLE)
+all: $(BINARY)
 
-$(BUNDLE): $(SOURCES) fft.h Info.plist
+$(BINARY): $(SOURCES) fft.h Info.plist
 	mkdir -p $(BUNDLE)/Contents/MacOS
 	cp Info.plist $(BUNDLE)/Contents/
 	clang -x objective-c -fobjc-arc $(SOURCES) \
@@ -15,7 +15,7 @@ $(BUNDLE): $(SOURCES) fft.h Info.plist
 	    -framework Accelerate \
 	    -o $(BINARY)
 
-run: $(BUNDLE)
+run: $(BINARY)
 	open $(BUNDLE)
 
 clean:

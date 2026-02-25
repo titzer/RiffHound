@@ -10,8 +10,35 @@
 #define DEFAULT_DISPLAY_SECS_STR "5"
 #define DEFAULT_MAX_FREQ 8000
 #define DEFAULT_MAX_FREQ_STR "8000"
+#define MAX_SECS 30
 
 #define DEFAULT_FPS 60
+
+/* TODO:
+Features:
+  - mouse-over shows time in ms, frequency in HZ
+  - when stopped, click + drag can measure time between two points (and show BPM)
+  - config key (also menu drop down) toggles a left bar with configuration options, e.g. sliders for FFT, changes apply in realtime, can scrub
+  - display scales: linear, log, mel, piano roll 
+  - Piano roll:
+    - log scale, notes A0 to C8 
+    - display < 27.5 Hz as "low" and above 4,186 Hz as "high" buckets
+    - adds piano graphic on left
+    - mouse-over also includes note name and octave, plus a small square outline of the frequency range for the note
+  - Guitar roll:
+    - like piano roll, but with (bass) guitar range of E1 to E5
+  - Factor color scheme into header file
+  - Tweak color scheme: getting blown out at the high end
+
+Stretch Ideas:
+  - multiple channels: multiple color schemes, or use transparency with layers
+  - 3D into/out of screen display
+  - Allow other tools to plug in, or package nicely to allow plugging into other tools
+    - Overlap MIDI input notes on display
+    - Beat follower
+  - UI Skins like it's the 2000s (MacOS 8/9 look)
+  
+ */
 
 // ── Monotonic clock ──────────────────────────────────────────────────────────
 // Used for diagnostic timestamps written from the audio thread.
@@ -26,7 +53,7 @@ static double monotonic_now(void) {
 // Power-of-2 size allows masking instead of modulo.
 // Protocol: producer writes data, then increments index with release ordering.
 //           consumer reads index with acquire ordering, then reads data.
-#define DIAG_BUF 8192u   // 8192 entries ≈ 190 s at 43 FFT frames/s (>max 99 s window)
+#define DIAG_BUF 8192u   // 8192 entries ≈ 190 s at 43 FFT frames/s (>max s window)
 
 static volatile double   diag_audio_ts[DIAG_BUF]; // tap callback timestamps
 static _Atomic uint32_t  diag_audio_idx;           // monotonic write count
@@ -45,7 +72,7 @@ static double           s_sgram_ts[SGRAM_MAX_FRAMES];
 static _Atomic uint32_t s_sgram_write;   // monotonic write count
 
 // Diagnostic flag; flipped with SHIFT + D
-static volatile int diagnose = 1;
+static volatile int diagnose = 0;
 
 // ── Display clock ─────────────────────────────────────────────────────────────
 // Frame timestamps are raw monotonic_now() values.  To keep historical data
@@ -96,7 +123,7 @@ static void sgram_heatmap(float t, uint8_t *r, uint8_t *g, uint8_t *b) {
 // ════════════════════════════════════════════════════════════════════════════
 
 @interface SpectrogramView : NSView
-@property (assign) NSInteger displaySeconds;   // 2–99,          default 5
+@property (assign) NSInteger displaySeconds;   // 2– MAX_SECS,          default 5
 @property (assign) CGFloat   maxFrequency;     // 1000–20000 Hz, default 8000
 @end
 
@@ -112,6 +139,14 @@ static const CGFloat kFreqInterval = 1000.0;  // Hz between horizontal grid line
         _maxFrequency   = DEFAULT_MAX_FREQ;
     }
     return self;
+}
+
+- (BOOL)acceptsFirstResponder { return YES; }
+
+// Clicking the spectrogram resigns any focused text field.
+- (void)mouseDown:(NSEvent *)event {
+    [self.window makeFirstResponder:self];
+    [super mouseDown:event];
 }
 
 - (void)drawRect:(NSRect)dirtyRect {
@@ -181,7 +216,10 @@ static const CGFloat kFreqInterval = 1000.0;  // Hz between horizontal grid line
                 if (age0 >= 0.0 && age0 <= winDur) {
                     int x0 = (int)((1.0 - age0 / winDur) * (double)(pixW - 1) + 0.5);
                     if (x0 < 0) x0 = 0;
-                    xFilled = x0 + 1;
+                    // When live, extend to the right edge so timing jitter never
+                    // leaves a flickering black strip on the right side.
+                    // When frozen (stopped), preserve the gap by using x0+1.
+                    xFilled = (s_freeze_time <= 0.0) ? pixW : x0 + 1;
                     if (xFilled > pixW) xFilled = pixW;
                 }
             }
@@ -393,7 +431,7 @@ static const CGFloat kFreqInterval = 1000.0;  // Hz between horizontal grid line
 @property (strong) AVAudioEngine   *audioEngine;
 @property (strong) id               audioConfigObserver; // AVAudioEngineConfigurationChangeNotification
 @property (assign) BOOL             isRunning;
-@property (assign) NSInteger        displaySeconds;  // 2–99
+@property (assign) NSInteger        displaySeconds;  // 2–MAX_SECS
 @property (assign) CGFloat          maxFrequency;    // 1000–20000 Hz
 @end
 
@@ -661,7 +699,7 @@ static void AddMenuItem(NSMenu *menu, NSString *title,
 // ── Axis control helpers ───────────────────────────────────────────────────
 
 - (void)applyDisplaySeconds:(NSInteger)v {
-    v = MAX(2, MIN(99, v));
+    v = MAX(2, MIN(MAX_SECS, v));
     self.displaySeconds                 = v;
     self.spectrogramView.displaySeconds = v;
     [self.secsField setStringValue:[NSString stringWithFormat:@"%ld", (long)v]];
@@ -682,6 +720,7 @@ static void AddMenuItem(NSMenu *menu, NSString *title,
     NSTextField *field = [obj object];
     if      (field == self.secsField)  [self applyDisplaySeconds:[[field stringValue] integerValue]];
     else if (field == self.maxHzField) [self applyMaxFrequency:(CGFloat)[[field stringValue] integerValue]];
+    [self.window makeFirstResponder:self.startButton];
 }
 
 // ── Widget factory helpers ─────────────────────────────────────────────────
@@ -835,9 +874,7 @@ static NSTextField *MakeInputField(NSView *content, NSString *text,
             return nil;
         }
 
-        if ([[s.window firstResponder] isKindOfClass:[NSTextView class]])
-            return event;
-
+        // -/+/= always adjust the time window, even while a text field has focus.
         if ([ch isEqualToString:@"-"]) {
             [s applyDisplaySeconds:s.displaySeconds - 1];
             return nil;
@@ -846,6 +883,10 @@ static NSTextField *MakeInputField(NSView *content, NSString *text,
             [s applyDisplaySeconds:s.displaySeconds + 1];
             return nil;
         }
+
+        if ([[s.window firstResponder] isKindOfClass:[NSTextView class]])
+            return event;
+
         return event;
     }];
 
