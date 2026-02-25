@@ -181,43 +181,44 @@ static NSButton *MakeToggle(NSView *content, NSString *title,
 
     NSView *content = [self.window contentView];
 
-    // ── Top row ──────────────────────────────────────────────────────────
-    //   Start  Stop  Full
-    //   8 × 70 pt buttons + 44 pt tempo display + 8 × 8 pt gaps = 668 pt
-    //   Centred in 720 pt window → 26 pt margins on each side.
+    // ── Single bottom row: Buttons | State | Status line ─────────────────
+    //   All elements share the same Y and height, pinned to the bottom edge.
     CGFloat bw = 70, bh = 36, gap = 8;
-    CGFloat dw = 44;  // tempo display width (≈ 3 monospaced digits + insets)
-    CGFloat sx = 25;
-    CGFloat topY = 250;
+    CGFloat rowY = 8;   // 8 pt margin from the bottom of the window
+    CGFloat x = 8;
 
-    // Momentary push buttons — NSViewMinYMargin keeps them pinned to the top
-    self.startButton = MakeButton(content, @"Start",  sx+(bw+gap)*0, topY, bw, bh, self, @selector(playClicked:));
-    [self.startButton setAutoresizingMask:NSViewMinYMargin];
-    self.stopButton = MakeButton(content, @"Stop",  sx+(bw+gap)*1, topY, bw, bh, self, @selector(stopClicked:));
-    [self.stopButton setAutoresizingMask:NSViewMinYMargin];
-
-    // Full — momentary, enters/exits native macOS fullscreen
-    CGFloat fullX = sx+(bw+gap)*2;
-    self.fullscreenButton = MakeButton(content, @"Full", fullX, topY, bw, bh,
+    // Buttons
+    self.startButton = MakeButton(content, @"Start", x, rowY, bw, bh, self, @selector(playClicked:));
+    [self.startButton setAutoresizingMask:NSViewMaxYMargin];
+    x += bw + gap;
+    self.stopButton = MakeButton(content, @"Stop", x, rowY, bw, bh, self, @selector(stopClicked:));
+    [self.stopButton setAutoresizingMask:NSViewMaxYMargin];
+    x += bw + gap;
+    self.fullscreenButton = MakeButton(content, @"Full", x, rowY, bw, bh,
                                        self, @selector(fullscreenClicked:));
-    [self.fullscreenButton setAutoresizingMask:NSViewMinYMargin];
+    [self.fullscreenButton setAutoresizingMask:NSViewMaxYMargin];
+    x += bw + gap;
 
-    // ── Status line (middle of window) ───────────────────────────────────
-    self.statusLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(0, 196, 720, 36)];
+    // State display — fixed width, right of buttons
+    CGFloat stateW = 80;
+    self.statusLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(x, rowY - 10, stateW, bh)];
     [self.statusLabel setEditable:NO];
     [self.statusLabel setBezeled:NO];
     [self.statusLabel setDrawsBackground:NO];
-    [self.statusLabel setFont:[NSFont systemFontOfSize:20 weight:NSFontWeightSemibold]];
-    [self.statusLabel setAlignment:NSTextAlignmentCenter];
+    [self.statusLabel setFont:[NSFont systemFontOfSize:16 weight:NSFontWeightSemibold]];
+    [self.statusLabel setAlignment:NSTextAlignmentLeft];
+    [self.statusLabel setAutoresizingMask:NSViewMaxYMargin];
     [content addSubview:self.statusLabel];
+    x += stateW + gap;
 
-    // ── General click / event feedback label ─────────────────────────────
-    self.label = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 158, 680, 24)];
+    // Status / event feedback — fills the rest of the row
+    self.label = [[NSTextField alloc] initWithFrame:NSMakeRect(x, rowY - 6, 720 - x - 8, bh - 6)];
     [self.label setEditable:NO];
     [self.label setBezeled:NO];
     [self.label setDrawsBackground:NO];
     [self.label setFont:[NSFont systemFontOfSize:13]];
     [self.label setStringValue:@""];
+    [self.label setAutoresizingMask:NSViewMaxYMargin | NSViewWidthSizable];
     [content addSubview:self.label];
 
     // ── Initialise state and sync UI ──────────────────────────────────────
