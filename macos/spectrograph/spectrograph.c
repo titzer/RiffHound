@@ -740,7 +740,7 @@ static NSTextField *MakeInputField(NSView *content, NSString *text,
 
     NSView *content = [self.window contentView];
 
-    CGFloat bw = 70, bh = 36, gap = 8;
+    CGFloat bw = 70, bh = 30, gap = 3;
     CGFloat rowY = 8;
     CGFloat x    = 8;
     CGFloat tfH  = 22;
@@ -759,18 +759,18 @@ static NSTextField *MakeInputField(NSView *content, NSString *text,
     [self.fullscreenButton setAutoresizingMask:NSViewMaxYMargin];
     x += bw + gap;
 
-    MakeRowLabel(content, @"Secs:", x, tfY, 38, tfH);
+    MakeRowLabel(content, @"Secs:", x, tfY - 4, 38, tfH);
     x += 38 + 4;
     self.secsField = MakeInputField(content, @DEFAULT_DISPLAY_SECS_STR, x, tfY, 36, tfH, self);
     x += 36 + gap;
 
-    MakeRowLabel(content, @"Max Hz:", x, tfY, 52, tfH);
+    MakeRowLabel(content, @"Max Hz:", x, tfY - 4, 52, tfH);
     x += 52 + 4;
     self.maxHzField = MakeInputField(content, @DEFAULT_MAX_FREQ_STR, x, tfY, 56, tfH, self);
     x += 56 + gap;
 
     CGFloat stateW = 80;
-    self.statusLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(x, rowY - 10, stateW, bh)];
+    self.statusLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(x, rowY - 5, stateW, bh)];
     [self.statusLabel setEditable:NO]; [self.statusLabel setBezeled:NO];
     [self.statusLabel setDrawsBackground:NO];
     [self.statusLabel setFont:[NSFont systemFontOfSize:16 weight:NSFontWeightSemibold]];
@@ -780,7 +780,7 @@ static NSTextField *MakeInputField(NSView *content, NSString *text,
     x += stateW + gap;
 
     self.label = [[NSTextField alloc] initWithFrame:
-        NSMakeRect(x, rowY - 6, frame.size.width - x - 8, bh - 6)];
+        NSMakeRect(x, rowY - 1, frame.size.width - x - 8, bh - 6)];
     [self.label setEditable:NO]; [self.label setBezeled:NO]; [self.label setDrawsBackground:NO];
     [self.label setFont:[NSFont systemFontOfSize:13]];
     [self.label setStringValue:@""];
