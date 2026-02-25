@@ -47,9 +47,24 @@ static _Atomic uint32_t s_sgram_write;   // monotonic write count
 // Diagnostic flag; flipped with SHIFT + D
 static volatile int diagnose = 1;
 
-// Freeze time for the spectrogram display.
-// 0.0 = live (use monotonic_now()); nonzero = frozen at this timestamp (set on stop).
-static double s_freeze_time = 0.0;
+// ── Display clock ─────────────────────────────────────────────────────────────
+// Frame timestamps are raw monotonic_now() values.  To keep historical data
+// stationary across stop/start cycles we maintain a display clock that only
+// advances while playing:
+//
+//   display_now  =  monotonic_now() - s_pause_offset   (while playing)
+//   display_now  =  s_freeze_time                       (while stopped)
+//
+// On stop:  s_freeze_time = monotonic_now() - s_pause_offset
+//           s_stop_real   = monotonic_now()
+// On play:  s_pause_offset += monotonic_now() - s_stop_real
+//           s_freeze_time  = 0.0
+//
+// Because s_pause_offset grows by exactly the pause duration each time,
+// display_now continues smoothly from the freeze point on resume.
+static double s_pause_offset  = 0.0;  // total accumulated pause time (seconds)
+static double s_stop_real     = 0.0;  // monotonic_now() value at most recent stop
+static double s_freeze_time   = 0.0;  // display clock value when stopped (0 = live)
 
 // ── Display configuration (hookable to UI controls later) ────────────────────
 // dB floor: audio level that maps to the darkest (black) color.
@@ -112,7 +127,8 @@ static const CGFloat kFreqInterval = 1000.0;  // Hz between horizontal grid line
     CGFloat gW = b.size.width  - gX;
     CGFloat gH = b.size.height;
 
-    double  now    = (s_freeze_time > 0.0) ? s_freeze_time : monotonic_now();
+    double  now    = (s_freeze_time > 0.0) ? s_freeze_time
+                                           : (monotonic_now() - s_pause_offset);
     double  winDur = (double)self.displaySeconds;
     CGFloat maxFreq = self.maxFrequency;
 
@@ -153,9 +169,25 @@ static const CGFloat kFreqInterval = 1000.0;  // Hz between horizontal grid line
             if (maxBin > SGRAM_MAX_BINS  - 1) maxBin = SGRAM_MAX_BINS - 1;
             if (maxBin < 1) maxBin = 1;
 
+            // Seed xFilled from the newest in-window frame, not from pixW.
+            // This prevents smearing stale data rightward into silent periods
+            // (e.g. after stop/start: the newest pre-pause frame would otherwise
+            // be painted all the way to the right edge, covering the pause gap).
+            // Between consecutive live frames the fill still closes timing jitter.
+            int xFilled = 0;
+            if (n > 0) {
+                uint32_t slot0 = (head - 1) & (SGRAM_MAX_FRAMES - 1);
+                double age0 = now - s_sgram_ts[slot0];
+                if (age0 >= 0.0 && age0 <= winDur) {
+                    int x0 = (int)((1.0 - age0 / winDur) * (double)(pixW - 1) + 0.5);
+                    if (x0 < 0) x0 = 0;
+                    xFilled = x0 + 1;
+                    if (xFilled > pixW) xFilled = pixW;
+                }
+            }
+
             // Iterate from newest frame to oldest, filling contiguous pixel-column
             // ranges so that no columns are left black due to sparse FFT timing.
-            int xFilled = pixW; // rightmost unfilled column index + 1
             for (uint32_t j = 0; j < n; j++) {
                 uint32_t slot = (head - 1 - j) & (SGRAM_MAX_FRAMES - 1);
                 double age = now - s_sgram_ts[slot];
@@ -384,7 +416,10 @@ static const CGFloat kFreqInterval = 1000.0;  // Hz between horizontal grid line
 
 - (void)play {
     if (self.isRunning) return;
-    s_freeze_time = 0.0;   // unfreeze display
+    if (s_stop_real > 0.0)
+        s_pause_offset += monotonic_now() - s_stop_real;  // skip over pause duration
+    s_stop_real   = 0.0;
+    s_freeze_time = 0.0;   // resume display clock: monotonic_now() - s_pause_offset
     self.isRunning = YES;
     [self updatePlaybackUI];
     if (self.audioEngine && !self.audioEngine.isRunning) {
@@ -401,7 +436,8 @@ static const CGFloat kFreqInterval = 1000.0;  // Hz between horizontal grid line
 
 - (void)stop {
     if (!self.isRunning) return;
-    s_freeze_time = monotonic_now();   // freeze display at this moment
+    s_stop_real   = monotonic_now();
+    s_freeze_time = s_stop_real - s_pause_offset;  // freeze display clock here
     self.isRunning = NO;
     [self updatePlaybackUI];
     if (self.audioEngine.isRunning)
@@ -489,14 +525,16 @@ static const CGFloat kFreqInterval = 1000.0;  // Hz between horizontal grid line
             consumed += chunk;
 
             if (mags) {
-                // Timestamp: when this frame's audio was captured.
-                // `now` is the callback entry time; the buffer holds `total` samples
-                // already captured before the callback fired.  Sample `consumed-1`
-                // (the most recent sample in this FFT frame) was captured at:
-                //   now - (total - consumed) / sr
-                // Using `now + consumed/sr` would place frames in the future,
-                // making age negative in drawRect and causing the display to flash.
-                double frame_ts = now - (double)(total - consumed) / fft_sample_rate;
+                // Timestamp in display-clock time.
+                // `now` (raw monotonic) minus the intra-buffer offset gives the
+                // raw capture time of this frame's most recent sample.
+                // Subtracting s_pause_offset converts it to display-clock time so
+                // that ages (display_now - frame_ts) are correct after stop/start
+                // cycles.  s_pause_offset is always updated before the engine
+                // starts, so it is stable for the lifetime of this tap callback.
+                double frame_ts = now
+                                  - (double)(total - consumed) / fft_sample_rate
+                                  - s_pause_offset;
 
                 uint32_t sfslot = atomic_load_explicit(&s_sgram_write, memory_order_relaxed)
                                   & (SGRAM_MAX_FRAMES - 1);
