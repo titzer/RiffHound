@@ -11,6 +11,7 @@
 #define DEFAULT_MAX_FREQ 8000
 #define DEFAULT_MAX_FREQ_STR "8000"
 #define MAX_SECS 30
+#define MAX_MAX_FREQ 48000
 
 #define DEFAULT_FPS 60
 
@@ -124,7 +125,7 @@ static void sgram_heatmap(float t, uint8_t *r, uint8_t *g, uint8_t *b) {
 
 @interface SpectrogramView : NSView
 @property (assign) NSInteger displaySeconds;   // 2– MAX_SECS,          default 5
-@property (assign) CGFloat   maxFrequency;     // 1000–20000 Hz, default 8000
+@property (assign) CGFloat   maxFrequency;     // 1000– MAX_MAX_FREQ Hz, default 8000
 @end
 
 @implementation SpectrogramView
@@ -432,7 +433,7 @@ static const CGFloat kFreqInterval = 1000.0;  // Hz between horizontal grid line
 @property (strong) id               audioConfigObserver; // AVAudioEngineConfigurationChangeNotification
 @property (assign) BOOL             isRunning;
 @property (assign) NSInteger        displaySeconds;  // 2–MAX_SECS
-@property (assign) CGFloat          maxFrequency;    // 1000–20000 Hz
+@property (assign) CGFloat          maxFrequency;    // 1000– MAX_MAX_FREQ Hz
 @end
 
 @implementation AppDelegate
@@ -707,7 +708,7 @@ static void AddMenuItem(NSMenu *menu, NSString *title,
 }
 
 - (void)applyMaxFrequency:(CGFloat)v {
-    v = MAX(1000.0, MIN(20000.0, v));
+    v = MAX(1000.0, MIN(MAX_MAX_FREQ, v));
     self.maxFrequency                 = v;
     self.spectrogramView.maxFrequency = v;
     [self.maxHzField setStringValue:[NSString stringWithFormat:@"%.0f", v]];

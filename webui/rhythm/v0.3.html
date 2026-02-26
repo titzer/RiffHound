@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>RiffHound Rhythm Buddy v0.2</title>
+<title>RiffHound Rhythm Buddy v0.3</title>
 <style>
   body { font-family: sans-serif; background: #fff; color: #000; margin: 0; }
   #top { display: flex; flex-wrap: nowrap; gap: 1vh; padding: 1vh; background: #eee; align-items: stretch; }
@@ -524,21 +524,43 @@ function revertFromListen() {
 // =========================
 // Mic management
 // =========================
-function stopMicHardware() {
+
+// Disconnect the Web Audio graph but keep the MediaStream track alive.
+// Used when transitioning between states so the browser doesn't re-prompt.
+function disconnectMicGraph() {
   if (BF.src)      { try { BF.src.disconnect();     } catch(_) {} }
   if (BF.hp)       { try { BF.hp.disconnect();      } catch(_) {} }
   if (BF.analyser) { try { BF.analyser.disconnect();} catch(_) {} }
   BF.src = null; BF.hp = null; BF.analyser = null; BF.buf = null;
+  BF.active = false;
+}
+
+// Full hardware stop: disconnect graph AND release the stream tracks.
+// Only call this on a true stop (not state transitions).
+function stopMicHardware() {
+  disconnectMicGraph();
   if (BF.stream) { for (const t of BF.stream.getTracks()) t.stop(); }
   BF.stream = null;
-  BF.active = false;
 }
 
 async function openMic() {
   const constraints = {
     audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false }
   };
-  BF.stream = await navigator.mediaDevices.getUserMedia(constraints);
+  const hasLiveStream = BF.stream && BF.stream.getTracks().every(t => t.readyState === 'live');
+  if (!hasLiveStream) {
+    // No live stream — must call getUserMedia. Safari requires getUserMedia()
+    // and ctx.resume() to be initiated synchronously within a user gesture,
+    // so start both before any await.
+    const [stream] = await Promise.all([
+      navigator.mediaDevices.getUserMedia(constraints),
+      ctx.resume()
+    ]);
+    BF.stream = stream;
+  } else {
+    // Reuse the existing stream — no permission prompt needed.
+    await ctx.resume();
+  }
   BF.src = ctx.createMediaStreamSource(BF.stream);
 
   BF.hp = ctx.createBiquadFilter();
@@ -767,8 +789,12 @@ function detectBeat(now) {
         ? BF.peakEnergy
         : BF.beatEnergyEma * (1 - BF.beatEnergyAlpha) + BF.peakEnergy * BF.beatEnergyAlpha;
 
-      BF.lastBeatSeen = BF.peakTime;
-      return BF.peakTime;
+      // Use armTime (onset) not peakTime (peak) for timing.
+      // The peak lags the onset by 10–50 ms depending on dynamics; the onset
+      // (threshold crossing) is a more consistent and earlier estimate of the
+      // actual beat position.  peakEnergy is still tracked for the gate above.
+      BF.lastBeatSeen = BF.armTime;
+      return BF.armTime;
     }
   }
   return null;
@@ -842,7 +868,9 @@ function onBeatDetected(tBeat) {
   }
 
   if (BF.state === 'LISTEN') {
-    const err = phaseError(tBeat);
+    // Apply latency correction when available (carries over from a prior CHIRP session).
+    const L = BF.latencyEstValid ? BF.latencyEst : 0;
+    const err = phaseError(tBeat - L);
 
     // IBI consistency gate: a beat is "confirmed" if it forms a valid inter-beat
     // interval (k×T ± tolerance) with any previously seen raw beat.  The first
@@ -938,13 +966,12 @@ function onBeatDetected(tBeat) {
 // LISTEN: passive phase-lock at known BPM — no tones, just mic + beat detection
 // =========================
 async function actionListen() {
-  await ctx.resume();
-
   // Remember where we came from so timeout can revert correctly.
   BF.prevState = BF.state;
 
-  // Close any active mic (works from any state including ACQUIRE, CHIRP, LISTEN)
-  if (BF.active) stopMicHardware();
+  // Close any active mic (works from any state including ACQUIRE, CHIRP, LISTEN).
+  // Keep stream alive to avoid re-prompting for permission.
+  if (BF.active) disconnectMicGraph();
 
   // From IDLE: clear stale visualization
   if (BF.state === 'IDLE') {
@@ -1087,11 +1114,11 @@ function beatFollowerRAF() {
 // Actions
 // =========================
 async function actionAcquire() {
-  await ctx.resume();
   if (BF.state === 'ACQUIRE') return; // already listening
 
-  // Stop mic if somehow on (shouldn't happen in normal flow)
-  if (BF.active) stopMicHardware();
+  // Stop mic if somehow on (shouldn't happen in normal flow).
+  // Keep stream alive to avoid re-prompting for permission.
+  if (BF.active) disconnectMicGraph();
 
   // Fresh start from IDLE: clear visualization and stale phase
   if (BF.state === 'IDLE') {
@@ -1130,8 +1157,6 @@ async function actionAcquire() {
 }
 
 async function actionChirp() {
-  await ctx.resume();
-
   if (BF.state === 'IDLE') {
     // IDLE → CHIRP: use current BPM, open mic
     VIS.detectedBeats = []; VIS.energySamples = []; VIS.bpmSamples = []; VIS.toneFallSamples = []; VIS.tonePresenceSamples = [];
