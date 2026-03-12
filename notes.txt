@@ -1,3 +1,25 @@
+- Spectrograph
+  - Linux port
+  - Piano / Guitar / mel scale
+  - Overlay midi inputs
+  - Modular timing windows
+  - Improve flickering
+  - shared memory buffer for drawing?
+  - Wasm extension
+
+- Idea: lean into dictation mode
+  - "Load whole Lotta love"
+  - "Select Sweet home Alabama"
+  - "find House of the rising Sun"
+  - "tempo 123"
+  - "drums on"
+  - "transpose to D sharp"
+  - "loop it"
+  - "chords CFG"
+  - "chord CFGB flat"
+  - "no CFGB flat B flat"
+- Idea: foot pedal to start dictation
+
 - Trying to get pipeline for beatmap generation
   - want: `beatextract song.mp3 > song.beats.txt` which dumps beats as textual labels (1.8723487)
   - want: `beatcompine song.mp3 song.beats.txt` which adds beatmap as IDv4 tag to mp3
@@ -26,3 +48,40 @@ https://github.com/Steppschuh/Micro-Beat-Detection
 
 - Rhythm Buddy features
   - mash together with metronome
+
+- Tried to install BeatNet
+ https://github.com/mjhydri/BeatNet?tab=readme-ov-file
+ - pip3 install BeatNet
+ - brew install cython
+ - getting stuck on cython build step
+
+Collecting madmom (from BeatNet)
+  Using cached madmom-0.16.1.tar.gz (20.0 MB)
+  Installing build dependencies ... done
+  Getting requirements to build wheel ... error
+  error: subprocess-exited-with-error
+  
+  × Getting requirements to build wheel did not run successfully.
+  │ exit code: 1
+  ╰─> [17 lines of output]
+      Traceback (most recent call last):
+        File "/Users/titzer/Library/Python/3.9/lib/python/site-packages/pip/_vendor/pyproject_hooks/_in_process/_in_process.py", line 389, in <module>
+          main()
+        File "/Users/titzer/Library/Python/3.9/lib/python/site-packages/pip/_vendor/pyproject_hooks/_in_process/_in_process.py", line 373, in main
+          json_out["return_val"] = hook(**hook_input["kwargs"])
+        File "/Users/titzer/Library/Python/3.9/lib/python/site-packages/pip/_vendor/pyproject_hooks/_in_process/_in_process.py", line 143, in get_requires_for_build_wheel
+          return hook(config_settings)
+        File "/private/var/folders/5y/jy_tzv797xx1z6_gz29h8t1c0000gn/T/pip-build-env-cz2md99z/overlay/lib/python3.9/site-packages/setuptools/build_meta.py", line 333, in get_requires_for_build_wheel
+          return self._get_build_requires(config_settings, requirements=[])
+        File "/private/var/folders/5y/jy_tzv797xx1z6_gz29h8t1c0000gn/T/pip-build-env-cz2md99z/overlay/lib/python3.9/site-packages/setuptools/build_meta.py", line 301, in _get_build_requires
+          self.run_setup()
+        File "/private/var/folders/5y/jy_tzv797xx1z6_gz29h8t1c0000gn/T/pip-build-env-cz2md99z/overlay/lib/python3.9/site-packages/setuptools/build_meta.py", line 520, in run_setup
+          super().run_setup(setup_script=setup_script)
+        File "/private/var/folders/5y/jy_tzv797xx1z6_gz29h8t1c0000gn/T/pip-build-env-cz2md99z/overlay/lib/python3.9/site-packages/setuptools/build_meta.py", line 317, in run_setup
+          exec(code, locals())
+        File "<string>", line 12, in <module>
+      ModuleNotFoundError: No module named 'Cython'
+      [end of output]
+  
+  note: This error originates from a subprocess, and is likely not a problem with pip.
+ERROR: Failed to build 'madmom' when getting requirements to build wheel
