@@ -1,5 +1,6 @@
 #include "ui_toolbar.h"
 #include "imgui.h"
+#include "platform.h"
 #include <string.h>
 #include <stdio.h>
 
@@ -88,15 +89,20 @@ void ui_toolbar_render(EditorState* editor, AudioState* audio) {
     }
     if (ImGui::BeginPopupModal("Open Audio File", nullptr,
                                ImGuiWindowFlags_AlwaysAutoResize)) {
+        if (ImGui::IsKeyPressed(ImGuiKey_Escape)) ImGui::CloseCurrentPopup();
         ImGui::Text("Enter path to .mp3 or .wav:");
-        ImGui::SetNextItemWidth(400);
+        ImGui::SetNextItemWidth(360);
         ImGui::InputText("##path", s_file_buf, sizeof(s_file_buf));
+        ImGui::SameLine();
+        if (ImGui::Button("Browse...")) {
+            char picked[512] = {};
+            if (platform_open_file_dialog(picked, sizeof(picked)))
+                strncpy(s_file_buf, picked, sizeof(s_file_buf) - 1);
+        }
         ImGui::Spacing();
         if (ImGui::Button("Load", ImVec2(80, 0))) {
-            if (s_file_buf[0] != '\0') {
+            if (s_file_buf[0] != '\0')
                 audio_load(audio, s_file_buf);
-                // Sync editor duration
-            }
             ImGui::CloseCurrentPopup();
         }
         ImGui::SameLine();

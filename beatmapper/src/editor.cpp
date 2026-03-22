@@ -11,29 +11,23 @@ void editor_init(EditorState* e) {
 }
 
 void editor_clamp_view(EditorState* e) {
-    double span = e->view_end - e->view_start;
-    if (span < MIN_VIEW_WIDTH) {
-        double mid = (e->view_start + e->view_end) * 0.5;
-        e->view_start = mid - MIN_VIEW_WIDTH * 0.5;
-        e->view_end   = mid + MIN_VIEW_WIDTH * 0.5;
-    }
     double max_end = (e->duration > 0.0) ? e->duration : 9999.0;
-    if (e->view_end > max_end) {
-        e->view_start -= e->view_end - max_end;
-        e->view_end    = max_end;
-    }
-    if (e->view_start < 0.0) {
-        e->view_end  -= e->view_start;
-        e->view_start = 0.0;
-    }
-    // Re-clamp end after start correction
-    if (e->view_end > max_end) e->view_end = max_end;
+    double span    = e->view_end - e->view_start;
+
+    // Clamp span without moving the window
+    if (span < MIN_VIEW_WIDTH) span = MIN_VIEW_WIDTH;
+    if (span > max_end)        span = max_end;
+
+    // Shift window to stay within [0, max_end], preserving span
+    if (e->view_start < 0.0)               e->view_start = 0.0;
+    if (e->view_start + span > max_end)    e->view_start = max_end - span;
+    e->view_end = e->view_start + span;
 }
 
 void editor_zoom(EditorState* e, float pixel_frac, float delta) {
     // delta > 0: zoom in (shrink view); delta < 0: zoom out
     double span   = e->view_end - e->view_start;
-    double factor = pow(1.15, delta);
+    double factor = pow(1.15, -delta);  // negative: scroll up shrinks view
     double pivot  = e->view_start + span * pixel_frac;
     e->view_start = pivot - (pivot - e->view_start) * factor;
     e->view_end   = pivot + (e->view_end   - pivot) * factor;

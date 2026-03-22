@@ -28,22 +28,25 @@ INCLUDES := \
     -I$(IMGUI_DIR)/backends \
     -I$(VENDOR_DIR)/miniaudio
 
-OBJECTS := $(SOURCES:.cpp=.o)
-
 ifeq ($(UNAME), Darwin)
     CXX      := clang++
     CXXFLAGS := -std=c++17 -O2 -Wall -DGL_SILENCE_DEPRECATION
     # GLFW installed via homebrew
     GLFW_INC := -I/opt/homebrew/include
     GLFW_LIB := -L/opt/homebrew/lib -lglfw
-    LDFLAGS  := $(GLFW_LIB) -framework OpenGL -framework Cocoa -framework IOKit -framework CoreVideo
+    LDFLAGS  := $(GLFW_LIB) -framework OpenGL -framework Cocoa -framework IOKit -framework CoreVideo -framework UniformTypeIdentifiers
     INCLUDES += $(GLFW_INC)
+    # macOS platform file (Objective-C++)
+    PLATFORM_OBJ := $(SRC_DIR)/platform_macos.o
 else
     CXX      := g++
     CXXFLAGS := -std=c++17 -O2 -Wall
     GLFW_FLAGS := $(shell pkg-config --cflags --libs glfw3 2>/dev/null || echo "-lglfw")
     LDFLAGS  := $(GLFW_FLAGS) -lGL -ldl -lpthread
+    PLATFORM_OBJ := $(SRC_DIR)/platform_linux.o
 endif
+
+OBJECTS := $(SOURCES:.cpp=.o) $(PLATFORM_OBJ)
 
 all: $(TARGET)
 
@@ -52,6 +55,10 @@ $(TARGET): $(OBJECTS)
 
 %.o: %.cpp
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
+
+# Objective-C++ rule for macOS platform file
+$(SRC_DIR)/platform_macos.o: $(SRC_DIR)/platform_macos.mm
+	$(CXX) $(CXXFLAGS) $(INCLUDES) -x objective-c++ -c $< -o $@
 
 clean:
 	rm -f $(TARGET) $(OBJECTS)

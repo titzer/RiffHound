@@ -173,10 +173,10 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
             editor_zoom(editor, pixel_frac, io.MouseWheel);
         }
 
-        // Scroll wheel without Ctrl → pan
-        if (!io.KeyCtrl && io.MouseWheel != 0.0f) {
+        // Two-finger horizontal swipe → pan (swipe right = later in track)
+        if (io.MouseWheelH != 0.0f) {
             double span = editor->view_end - editor->view_start;
-            editor_pan(editor, -io.MouseWheel * span * 0.1);
+            editor_pan(editor, io.MouseWheelH * span * 0.02);
         }
 
         // Left drag → pan
