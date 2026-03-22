@@ -196,23 +196,26 @@ detector (Nudge can be stubbed out initially and enabled once `beatdetect` is re
 
 ---
 
-## Section Panel
+## Track and section Minimap
 
-A vertical list panel docked to the right:
-- One row per section: `[color swatch] [type dropdown] [start beat] – [end beat] [delete]`
-- Click a row to select it and scroll the timeline to that section
-- "Add section" button appends a new section at the current playhead position
+A zoomed-out view of the track extending from left to right, above main spectrogram view, but not as tall (maybe 80 pixels)
+- For portions of the track with beats, is shaded slightly lighter
+- Sections are individually selectable within the view
+- Show sections as color-coded such as verse, chorus, etc
+- Click a section to select it and scroll the timeline to that section
+- Selected section has draggable start and end that snap to beats
+- section information in another panel
 - Start/end beats are editable numeric fields
 - Section type is a dropdown of the keywords from format-spec
-- Saved to `<trackname>.sections.txt` on demand
+- Saved to `<trackname>.sections.txt` when beatmap is saved
 
 ---
 
 ## Playback Controls (toolbar strip below timeline)
 
 - **Play/Pause** (Space)
-- **Stop** (return to start)
-- **Loop toggle** — loops the current visible window
+- **Stop** (Space)
+- **Loop toggle** — (Loop) loops the current visible window
 - **Current position**: `mm:ss.sss` and `B<N>` (beat number from beatmap)
 - **Local BPM**: computed from the two beats surrounding the playhead
 - **Speed**: 0.5×, 0.75×, 1×, 1.25×, 1.5× via miniaudio resampler
@@ -224,12 +227,11 @@ A vertical list panel docked to the right:
 - **Open track**: OS file dialog for `.mp3` or `.wav`; looks for sidecar files
   (`<name>.beatmap.txt`, `<name>.sections.txt`) in the same directory and loads them
   if present
-- **Save beatmap**: writes `<name>.beatmap.txt` (sorted, with `BxN` compression)
-- **Save section map**: writes `<name>.sections.txt`
-- **Autosave**: writes `<name>.beatmap.autosave.txt` every 60 seconds and on any
+- **Save**: writes `<name>.beatmap.txt` (sorted, with `BxN` compression) and `<name>.sections.txt`
+- **Autosave**: writes `<name>.*map.autosave.txt` every 60 seconds and on any
   destructive operation (before the operation is applied, so it's a safety backup)
-- All sidecar files are in the timeseries format from `format-spec.md` with times in
-  seconds (not beats), for maximum portability
+- Beatmap files are in the timeseries format from `format-spec.md` with times in
+  seconds, and sections are stored by beat number
 
 ---
 
@@ -283,12 +285,17 @@ Consistent with the project's line-oriented text-file philosophy. Fields can be
 
 ## Implementation Phases
 
-### Phase 1 — Foundation
+### Phase 0 — Foundation
 - Makefile: platform detection, `clang++`/`g++`, ImGui + GLFW + OpenGL3 + miniaudio
 - Window opens, ImGui demo visible
-- `audio`: load MP3/WAV, play/pause/seek, expose PCM buffer
+- `audio`: load MP3/WAV, play/pause buttons stubbed out
+- `spectrogram`: scrollable window is stubbed out
+- `timeline`: time ruler, scrolling, zoom (CTRL + mouse wheel) work
+
+### Phase 1 — Spectrograph hookup
+- `audio`: play/pause implemented with audio APIs, expose PCM buffer to FFT
 - `spectrogram`: STFT via pffft, render as GPU texture in a scrollable window
-- `timeline`: time ruler, scrolling, zoom (mouse wheel), playhead synced to playback
+- `timeline`: time ruler, scrolling, zoom all work with displayed spectrogram
 
 ### Phase 2 — Beat Editing
 - `timeseries`: parser and serializer for the format
@@ -322,3 +329,4 @@ Consistent with the project's line-oriented text-file philosophy. Fields can be
 - Time signature display and measure grid
 - WASM build of `beatdetect`
 - Windows support (miniaudio and ImGui both support it; just needs Makefile target)
+- Lyrics view
