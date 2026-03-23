@@ -1,17 +1,21 @@
 #include "editor.h"
 #include <math.h>
 
-static const double MIN_VIEW_WIDTH = 1.0;  // seconds
+static const double MIN_VIEW_WIDTH   = 1.0;    // seconds
+static const double DEFAULT_DURATION = 180.0;  // 3:00 – used when no file is loaded
 
 void editor_init(EditorState* e) {
-    e->view_start = 0.0;
-    e->view_end   = 30.0;
-    e->duration   = 180.0;
-    e->tool_mode  = ToolMode::Select;
+    e->view_start   = 0.0;
+    e->view_end     = 30.0;
+    e->duration     = DEFAULT_DURATION;
+    e->tool_mode    = ToolMode::Select;
+    e->has_region   = false;
+    e->region_start = 0.0;
+    e->region_end   = 0.0;
 }
 
 void editor_clamp_view(EditorState* e) {
-    double max_end = (e->duration > 0.0) ? e->duration : 9999.0;
+    double max_end = (e->duration > 0.0) ? e->duration : DEFAULT_DURATION;
     double span    = e->view_end - e->view_start;
 
     // Clamp span without moving the window

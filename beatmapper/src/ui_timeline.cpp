@@ -154,13 +154,54 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
     float tw = rw;
     float th = SPECTRO_H;
 
-    // --- Input: zoom (Ctrl + mouse wheel) ---
-    // Use an invisible button to capture input over the whole area
+    // --- Input ---
+    // Invisible button captures mouse input over the whole timeline area.
     ImGui::SetCursorScreenPos(ImVec2(rx, ry));
     ImGui::InvisibleButton("##timeline_input", ImVec2(rw, total_h),
                            ImGuiButtonFlags_MouseButtonLeft |
                            ImGuiButtonFlags_MouseButtonMiddle);
     bool hovered = ImGui::IsItemHovered();
+
+    // Track where the left-button drag started so we can decide what it does.
+    // drag_in_spectro = drag started inside the spectrogram strip (→ region select)
+    // drag_in_ruler   = drag started inside the ruler strip (→ pan)
+    static bool s_drag_in_spectro = false;
+    static bool s_drag_in_ruler   = false;
+    static double s_anchor        = 0.0;
+
+    if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+        float click_y = io.MousePos.y;
+        s_drag_in_spectro = (click_y >= ty && click_y < ty + th);
+        s_drag_in_ruler   = (click_y >= ry && click_y < ty);   // ruler strip
+        if (s_drag_in_spectro) {
+            // Record anchor time and reset region
+            double span = editor->view_end - editor->view_start;
+            s_anchor = (tw > 0 && span > 0)
+                ? editor->view_start + (io.MousePos.x - tx) / tw * span
+                : editor->view_start;
+            if (s_anchor < 0.0)              s_anchor = 0.0;
+            if (s_anchor > editor->duration) s_anchor = editor->duration;
+            editor->has_region = false;
+        }
+    }
+    if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+        s_drag_in_spectro = false;
+        s_drag_in_ruler   = false;
+    }
+
+    // Region drag: update while left button is held and drag originated in spectrogram
+    if (s_drag_in_spectro && ImGui::IsMouseDragging(ImGuiMouseButton_Left)) {
+        double span = editor->view_end - editor->view_start;
+        double t_now = (tw > 0 && span > 0)
+            ? editor->view_start + (io.MousePos.x - tx) / tw * span
+            : editor->view_start;
+        if (t_now < 0.0)              t_now = 0.0;
+        if (t_now > editor->duration) t_now = editor->duration;
+
+        editor->region_start = (s_anchor < t_now) ? s_anchor : t_now;
+        editor->region_end   = (s_anchor < t_now) ? t_now    : s_anchor;
+        editor->has_region   = (editor->region_end - editor->region_start) > 1e-6;
+    }
 
     if (hovered) {
         float mouse_x    = io.MousePos.x;
@@ -173,29 +214,26 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
             editor_zoom(editor, pixel_frac, io.MouseWheel);
         }
 
-        // Two-finger horizontal swipe → pan (swipe right = later in track)
+        // Two-finger horizontal swipe → pan
         if (io.MouseWheelH != 0.0f) {
             double span = editor->view_end - editor->view_start;
             editor_pan(editor, io.MouseWheelH * span * 0.02);
         }
 
-        // Left drag → pan
-        if (ImGui::IsItemActive() && ImGui::IsMouseDragging(ImGuiMouseButton_Left)) {
+        // Ruler drag → pan
+        if (s_drag_in_ruler && ImGui::IsMouseDragging(ImGuiMouseButton_Left)) {
             float dx = io.MouseDelta.x;
             double span = editor->view_end - editor->view_start;
-            if (rw > 0)
-                editor_pan(editor, -dx / rw * span);
+            if (rw > 0) editor_pan(editor, -dx / rw * span);
         }
 
-        // Click in spectrogram area (not ruler) → seek
-        if (ImGui::IsItemClicked(ImGuiMouseButton_Left)) {
-            float my = io.MousePos.y;
-            if (my > ty && my < ty + th) {
-                double t = editor->view_start +
-                           (mouse_x - tx) / tw *
-                           (editor->view_end - editor->view_start);
-                if (audio->loaded) audio_seek(audio, t);
-            }
+        // Click in spectrogram (no drag) → seek
+        if (ImGui::IsMouseReleased(ImGuiMouseButton_Left) && s_drag_in_spectro
+                && !ImGui::IsMouseDragging(ImGuiMouseButton_Left)) {
+            double t = editor->view_start +
+                       (mouse_x - tx) / tw *
+                       (editor->view_end - editor->view_start);
+            if (audio->loaded) audio_seek(audio, t);
         }
     }
 
@@ -206,6 +244,26 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
     // --- Draw spectrogram stub ---
     spectrogram_render(spectro, dl, tx, ty, tw, th,
                        editor->view_start, editor->view_end);
+
+    // --- Draw region selection highlight ---
+    if (editor->has_region) {
+        float rx1 = time_to_x(editor->region_start, editor->view_start, editor->view_end, tx, tw);
+        float rx2 = time_to_x(editor->region_end,   editor->view_start, editor->view_end, tx, tw);
+        // Clip to the spectrogram bounds before filling
+        float cx1 = rx1 < tx      ? tx      : rx1;
+        float cx2 = rx2 > tx + tw ? tx + tw : rx2;
+        if (cx2 > cx1) {
+            dl->AddRectFilled(ImVec2(cx1, ty), ImVec2(cx2, ty + th),
+                              IM_COL32(100, 180, 255, 55));
+        }
+        // Edge lines – only draw each if it falls within the visible range
+        if (rx1 >= tx && rx1 <= tx + tw)
+            dl->AddLine(ImVec2(rx1, ty), ImVec2(rx1, ty + th),
+                        IM_COL32(130, 200, 255, 230), 1.5f);
+        if (rx2 >= tx && rx2 <= tx + tw)
+            dl->AddLine(ImVec2(rx2, ty), ImVec2(rx2, ty + th),
+                        IM_COL32(130, 200, 255, 230), 1.5f);
+    }
 
     // --- Draw playhead ---
     if (audio->loaded) {

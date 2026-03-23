@@ -115,10 +115,13 @@ int main(int argc, char** argv) {
 
         // Full-screen dockable main window
         {
-            int fb_w, fb_h;
-            glfwGetFramebufferSize(window, &fb_w, &fb_h);
+            // Use logical window size (not framebuffer size) – ImGui works in
+            // logical pixels; on Retina the framebuffer is 2× and would make
+            // the window double the screen width.
+            int win_w, win_h;
+            glfwGetWindowSize(window, &win_w, &win_h);
             ImGui::SetNextWindowPos(ImVec2(0, 0));
-            ImGui::SetNextWindowSize(ImVec2((float)fb_w, (float)fb_h));
+            ImGui::SetNextWindowSize(ImVec2((float)win_w, (float)win_h));
             ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(4, 4));
             ImGui::Begin("BeatmapEditor", nullptr,
                          ImGuiWindowFlags_NoTitleBar |

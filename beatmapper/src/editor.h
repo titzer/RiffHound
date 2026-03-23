@@ -15,6 +15,11 @@ struct EditorState {
     double view_end;     // seconds – right edge of visible window
     double duration;     // total track duration (seconds)
     ToolMode tool_mode;
+
+    // Region selection – time range to feed to the beat analyzer.
+    bool   has_region;
+    double region_start;  // seconds
+    double region_end;    // seconds
 };
 
 void editor_init(EditorState* e);
