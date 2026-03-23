@@ -116,10 +116,62 @@ static void draw_playhead(ImDrawList* dl, float tx, float ty, float tw, float th
         IM_COL32(255, 220, 50, 220));
 }
 
+// --- minimap drawing ----------------------------------------------------
+
+static void draw_minimap(ImDrawList* dl,
+                         float mx, float my, float mw, float mh,
+                         double duration,
+                         double view_start, double view_end,
+                         bool has_region, double region_start, double region_end,
+                         bool has_playhead, double playhead_pos)
+{
+    if (mw <= 0.0f || duration <= 0.0) return;
+
+    // Background
+    dl->AddRectFilled(ImVec2(mx, my), ImVec2(mx + mw, my + mh),
+                      IM_COL32(18, 18, 28, 255));
+
+    // Region selection band
+    if (has_region) {
+        float r1 = mx + (float)(region_start / duration) * mw;
+        float r2 = mx + (float)(region_end   / duration) * mw;
+        r1 = r1 < mx ? mx : r1;
+        r2 = r2 > mx + mw ? mx + mw : r2;
+        if (r2 > r1)
+            dl->AddRectFilled(ImVec2(r1, my), ImVec2(r2, my + mh),
+                              IM_COL32(80, 140, 200, 70));
+    }
+
+    // Viewport window – shows which part of the track is currently visible
+    float vx1 = mx + (float)(view_start / duration) * mw;
+    float vx2 = mx + (float)(view_end   / duration) * mw;
+    vx1 = vx1 < mx ? mx : vx1;
+    vx2 = vx2 > mx + mw ? mx + mw : vx2;
+    if (vx2 > vx1) {
+        dl->AddRectFilled(ImVec2(vx1, my), ImVec2(vx2, my + mh),
+                          IM_COL32(80, 100, 140, 90));
+        dl->AddRect(ImVec2(vx1, my), ImVec2(vx2, my + mh),
+                    IM_COL32(140, 170, 220, 200), 0.0f, 0, 1.0f);
+    }
+
+    // Playhead line
+    if (has_playhead) {
+        float px = mx + (float)(playhead_pos / duration) * mw;
+        if (px >= mx && px <= mx + mw)
+            dl->AddLine(ImVec2(px, my), ImVec2(px, my + mh),
+                        IM_COL32(255, 220, 50, 230), 1.5f);
+    }
+
+    // Border
+    dl->AddRect(ImVec2(mx, my), ImVec2(mx + mw, my + mh),
+                IM_COL32(55, 55, 75, 255));
+}
+
 // --- main widget --------------------------------------------------------
 
 static const float RULER_H      = 24.0f;
 static const float SPECTRO_H    = 200.0f;
+static const float MINIMAP_H    = 40.0f;
 
 void ui_timeline_render(EditorState* editor, AudioState* audio,
                         SpectrogramState* spectro)
@@ -127,8 +179,9 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
     ImGuiIO& io = ImGui::GetIO();
 
     // Full-width child window
+    // Layout (top to bottom): minimap | ruler | spectrogram
     ImVec2 avail = ImGui::GetContentRegionAvail();
-    float total_h = RULER_H + SPECTRO_H + 4.0f;
+    float total_h = MINIMAP_H + 2.0f + RULER_H + 2.0f + SPECTRO_H;
     if (avail.y < total_h) total_h = avail.y;
 
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
@@ -149,30 +202,39 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
     float ry = canvas_pos.y;
     float rw = canvas_w;
 
+    // Minimap is at the top
+    float mm_x    = rx;
+    float mm_y    = ry;
+    float mm_w    = rw;
+    float mm_h    = MINIMAP_H;
+
+    // Ruler sits below the minimap
+    float ruler_y = mm_y + mm_h + 2.0f;
+
+    // Spectrogram sits below the ruler
     float tx = rx;
-    float ty = ry + RULER_H + 2.0f;
+    float ty = ruler_y + RULER_H + 2.0f;
     float tw = rw;
     float th = SPECTRO_H;
 
-    // --- Input ---
-    // Invisible button captures mouse input over the whole timeline area.
+    // One invisible button covers the full area; clicks are dispatched by y-position.
     ImGui::SetCursorScreenPos(ImVec2(rx, ry));
     ImGui::InvisibleButton("##timeline_input", ImVec2(rw, total_h),
                            ImGuiButtonFlags_MouseButtonLeft |
                            ImGuiButtonFlags_MouseButtonMiddle);
     bool hovered = ImGui::IsItemHovered();
 
-    // Track where the left-button drag started so we can decide what it does.
-    // drag_in_spectro = drag started inside the spectrogram strip (→ region select)
-    // drag_in_ruler   = drag started inside the ruler strip (→ pan)
-    static bool s_drag_in_spectro = false;
-    static bool s_drag_in_ruler   = false;
-    static double s_anchor        = 0.0;
+    // Track where the left-button drag started to dispatch per-strip behaviour.
+    static bool   s_drag_in_spectro = false;
+    static bool   s_drag_in_ruler   = false;
+    static bool   s_mm_seeking      = false;
+    static double s_anchor          = 0.0;
 
     if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
         float click_y = io.MousePos.y;
-        s_drag_in_spectro = (click_y >= ty && click_y < ty + th);
-        s_drag_in_ruler   = (click_y >= ry && click_y < ty);   // ruler strip
+        s_drag_in_spectro = (click_y >= ty       && click_y < ty + th);
+        s_drag_in_ruler   = (click_y >= ruler_y  && click_y < ty);       // ruler only
+        s_mm_seeking      = (click_y >= mm_y     && click_y < ruler_y);  // minimap
         if (s_drag_in_spectro) {
             // Record anchor time and reset region
             double span = editor->view_end - editor->view_start;
@@ -187,6 +249,15 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
     if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
         s_drag_in_spectro = false;
         s_drag_in_ruler   = false;
+        s_mm_seeking      = false;
+    }
+
+    // Minimap seek/scrub (runs regardless of hover so dragging outside still works)
+    if (s_mm_seeking && mm_w > 0.0f && editor->duration > 0.0) {
+        double t = (double)(io.MousePos.x - mm_x) / mm_w * editor->duration;
+        if (t < 0.0)              t = 0.0;
+        if (t > editor->duration) t = editor->duration;
+        audio_seek(audio, t);
     }
 
     // Region drag: update while left button is held and drag originated in spectrogram
@@ -226,19 +297,19 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
             double span = editor->view_end - editor->view_start;
             if (rw > 0) editor_pan(editor, -dx / rw * span);
         }
-
-        // Click in spectrogram (no drag) → seek
-        if (ImGui::IsMouseReleased(ImGuiMouseButton_Left) && s_drag_in_spectro
-                && !ImGui::IsMouseDragging(ImGuiMouseButton_Left)) {
-            double t = editor->view_start +
-                       (mouse_x - tx) / tw *
-                       (editor->view_end - editor->view_start);
-            if (audio->loaded) audio_seek(audio, t);
-        }
+        // Note: clicking in the spectrogram no longer seeks – use the minimap.
     }
 
+
+    // --- Draw minimap ---
+    draw_minimap(dl, mm_x, mm_y, mm_w, mm_h,
+                 editor->duration,
+                 editor->view_start, editor->view_end,
+                 editor->has_region, editor->region_start, editor->region_end,
+                 audio->loaded, audio_get_position(audio));
+
     // --- Draw ruler ---
-    draw_ruler(dl, rx, ry, rw, RULER_H,
+    draw_ruler(dl, rx, ruler_y, rw, RULER_H,
                editor->view_start, editor->view_end);
 
     // --- Draw spectrogram stub ---
@@ -276,9 +347,10 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
     if (hovered) {
         float mx = io.MousePos.x;
         if (mx >= rx && mx <= rx + rw) {
-            dl->AddLine(ImVec2(mx, ry), ImVec2(mx, ty + th),
+            // Hint line spans ruler + spectrogram only (not the minimap)
+            dl->AddLine(ImVec2(mx, ruler_y), ImVec2(mx, ty + th),
                         IM_COL32(255, 255, 255, 40), 1.0f);
-            // Time tooltip
+            // Time tooltip anchored to the ruler strip
             double hover_t = editor->view_start +
                              (mx - rx) / rw *
                              (editor->view_end - editor->view_start);
@@ -286,7 +358,7 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
             double hs = hover_t - hm * 60.0;
             char tip[32];
             snprintf(tip, sizeof(tip), "%d:%06.3f", hm, hs);
-            dl->AddText(ImVec2(mx + 4, ry + 4),
+            dl->AddText(ImVec2(mx + 4, ruler_y + 4),
                         IM_COL32(255, 255, 255, 180), tip);
         }
     }
