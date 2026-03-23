@@ -82,6 +82,20 @@ void ui_toolbar_render(EditorState* editor, AudioState* audio) {
         ImGui::TextDisabled("%s", name);
     }
 
+    // Right-aligned ±5s seek buttons
+    {
+        float btn_w   = 48.0f;
+        float spacing = ImGui::GetStyle().ItemSpacing.x;
+        float padding = ImGui::GetStyle().WindowPadding.x;
+        float right_x = ImGui::GetWindowWidth() - padding - btn_w * 2 - spacing;
+        ImGui::SameLine(right_x);
+        if (ImGui::Button("-5s", ImVec2(btn_w, 0)))
+            audio_seek(audio, audio_get_position(audio) - 5.0);
+        ImGui::SameLine();
+        if (ImGui::Button("+5s", ImVec2(btn_w, 0)))
+            audio_seek(audio, audio_get_position(audio) + 5.0);
+    }
+
     // Simple path input modal
     if (s_show_open_dialog) {
         ImGui::OpenPopup("Open Audio File");

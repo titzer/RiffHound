@@ -84,20 +84,8 @@ int main(int argc, char** argv) {
     while (!glfwWindowShouldClose(window)) {
         glfwPollEvents();
 
-        // Space = play/pause
-        if (ImGui::IsKeyPressed(ImGuiKey_Space) && !io.WantCaptureKeyboard) {
-            if (audio.playing) audio_pause(&audio);
-            else               audio_play(&audio);
-        }
-
-        // Advance stub playback position (Phase 0: no real audio thread)
-        if (audio.playing) {
-            audio.position += io.DeltaTime;
-            if (audio.position > audio.duration) {
-                audio.position = audio.duration;
-                audio.playing  = false;
-            }
-        }
+        // Sync position and playing state from the audio thread.
+        audio_update(&audio);
 
         // Sync spectrogram duration when audio is loaded
         if (audio.loaded) {
@@ -112,6 +100,18 @@ int main(int argc, char** argv) {
         ImGui_ImplOpenGL3_NewFrame();
         ImGui_ImplGlfw_NewFrame();
         ImGui::NewFrame();
+
+        // Space = play / stop (stop rewinds to 0).
+        // Checked after NewFrame so key state is fresh.
+        // Only blocked when a text input widget is active.
+        if (ImGui::IsKeyPressed(ImGuiKey_Space) && !ImGui::IsAnyItemActive()) {
+            if (audio.playing) {
+                audio_pause(&audio);
+                audio_seek(&audio, 0.0);
+            } else {
+                audio_play(&audio);
+            }
+        }
 
         // Full-screen dockable main window
         {

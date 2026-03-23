@@ -34,7 +34,7 @@ ifeq ($(UNAME), Darwin)
     # GLFW installed via homebrew
     GLFW_INC := -I/opt/homebrew/include
     GLFW_LIB := -L/opt/homebrew/lib -lglfw
-    LDFLAGS  := $(GLFW_LIB) -framework OpenGL -framework Cocoa -framework IOKit -framework CoreVideo -framework UniformTypeIdentifiers
+    LDFLAGS  := $(GLFW_LIB) -framework OpenGL -framework Cocoa -framework IOKit -framework CoreVideo -framework UniformTypeIdentifiers -framework CoreAudio -framework AudioToolbox
     INCLUDES += $(GLFW_INC)
     # macOS platform file (Objective-C++)
     PLATFORM_OBJ := $(SRC_DIR)/platform_macos.o
