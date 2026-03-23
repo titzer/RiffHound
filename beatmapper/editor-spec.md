@@ -48,6 +48,7 @@ Mouseover adds subtle highlights to measures / beats to emphasize the underlying
 The editor optimizes the in-memory representation of the beatmap to use repeated beats in order to compress the stored representation.
 A quantize tool allows selecting a range of beats and then re-interpolating their positions based on the average BPM between the start and end, which allows a user to quickly mark all the beats (based on visualization of the spectrogram), select them, and have them quantized.
 A nudge tool allows selecting a range of beats and using the beat finder tool to adjust the beats to more exactly match detected beats.
+A cue tool allows creating count-ins for tricky sections and complex rhythm parts
 
 TODO: think of additional tools, like quantization, rulers, etc, and form implementation-plan.md
 
