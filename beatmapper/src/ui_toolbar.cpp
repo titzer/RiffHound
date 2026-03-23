@@ -34,18 +34,22 @@ void ui_toolbar_render(EditorState* editor, AudioState* audio) {
     ImGui::TextDisabled("|");
     ImGui::SameLine();
 
-    // Playback controls (stubbed)
-    if (!audio->playing) {
-        if (ImGui::Button("Play")) audio_play(audio);
-    } else {
-        if (ImGui::Button("Pause")) audio_pause(audio);
-    }
+    // Playback controls
+    bool can_play = audio->loaded && !audio->playing;
+    bool can_stop = audio->loaded &&  audio->playing;
+
+    if (!can_play) ImGui::BeginDisabled();
+    if (ImGui::Button("Play")) audio_play(audio);
+    if (!can_play) ImGui::EndDisabled();
 
     ImGui::SameLine();
+
+    if (!can_stop) ImGui::BeginDisabled();
     if (ImGui::Button("Stop")) {
         audio_pause(audio);
         audio_seek(audio, 0.0);
     }
+    if (!can_stop) ImGui::EndDisabled();
 
     ImGui::SameLine();
     ImGui::TextDisabled("|");

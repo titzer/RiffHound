@@ -44,8 +44,8 @@ int main(int argc, char** argv) {
     // ImGui setup
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
-    ImGuiIO& io = ImGui::GetIO();
-    io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+    // NavEnableKeyboard is intentionally not set: it would make Space activate
+    // the focused button, conflicting with our global play/stop shortcut.
 
     ImGui::StyleColorsDark();
 
@@ -101,16 +101,20 @@ int main(int argc, char** argv) {
         ImGui_ImplGlfw_NewFrame();
         ImGui::NewFrame();
 
-        // Space = play / stop (stop rewinds to 0).
-        // Checked after NewFrame so key state is fresh.
-        // Only blocked when a text input widget is active.
-        if (ImGui::IsKeyPressed(ImGuiKey_Space) && !ImGui::IsAnyItemActive()) {
-            if (audio.playing) {
-                audio_pause(&audio);
-                audio_seek(&audio, 0.0);
-            } else {
-                audio_play(&audio);
+        // Global shortcuts — checked after NewFrame, blocked only when a text input is active.
+        if (!ImGui::IsAnyItemActive()) {
+            if (ImGui::IsKeyPressed(ImGuiKey_Space)) {
+                if (audio.playing) {
+                    audio_pause(&audio);
+                    audio_seek(&audio, 0.0);
+                } else {
+                    audio_play(&audio);
+                }
             }
+            if (ImGui::IsKeyPressed(ImGuiKey_LeftArrow, true))
+                audio_seek(&audio, audio_get_position(&audio) - 5.0);
+            if (ImGui::IsKeyPressed(ImGuiKey_RightArrow, true))
+                audio_seek(&audio, audio_get_position(&audio) + 5.0);
         }
 
         // Full-screen dockable main window
