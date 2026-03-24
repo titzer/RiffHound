@@ -1,5 +1,7 @@
 #pragma once
 
+#include <stdint.h>
+
 // Audio module: miniaudio wrapper
 
 struct AudioState {
@@ -21,3 +23,9 @@ double audio_get_position(AudioState* a);
 void   audio_update(AudioState* a);
 
 void   audio_shutdown(AudioState* a);
+
+// Decode the file to mono f32 PCM for offline processing (e.g. spectrogram).
+// Returns true on success; caller must free *out_samples with audio_free_pcm().
+bool   audio_decode_pcm(const char* path, float** out_samples,
+                        uint64_t* out_frame_count, uint32_t* out_sample_rate);
+void   audio_free_pcm(float* samples);

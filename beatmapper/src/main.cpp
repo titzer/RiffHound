@@ -60,23 +60,18 @@ int main(int argc, char** argv) {
     ImGui_ImplOpenGL3_Init("#version 330");
 
     // Application state
-    AudioState      audio;
+    AudioState       audio;
     SpectrogramState spectro;
-    EditorState     editor;
+    EditorState      editor;
 
     audio_init(&audio);
     spectrogram_init(&spectro);
     editor_init(&editor);
 
-    // If a file was passed on the command line, load it
-    if (argc >= 2) {
+    // If a file was passed on the command line, load it.
+    // Spectrogram will be computed on the first iteration of the main loop.
+    if (argc >= 2)
         audio_load(&audio, argv[1]);
-        spectrogram_set_duration(&spectro, audio.duration);
-        spectro.computed = true;  // stub: mark as "computed"
-        editor.duration  = audio.duration;
-        editor.view_end  = (audio.duration < 30.0) ? audio.duration : 30.0;
-        editor_clamp_view(&editor);
-    }
 
     static bool show_demo = false;
 
@@ -87,14 +82,22 @@ int main(int argc, char** argv) {
         // Sync position and playing state from the audio thread.
         audio_update(&audio);
 
-        // Sync spectrogram duration when audio is loaded
-        if (audio.loaded) {
-            spectrogram_set_duration(&spectro, audio.duration);
-            spectro.computed = true;
-            if (editor.duration != audio.duration) {
-                editor.duration = audio.duration;
-                editor_clamp_view(&editor);
+        // Recompute spectrogram whenever a new file is loaded.
+        // Detected by comparing the duration the spectrogram was last built for
+        // against the current audio duration.
+        if (audio.loaded && spectro.duration != audio.duration) {
+            float*   pcm     = nullptr;
+            uint64_t nframes = 0;
+            uint32_t sr      = 0;
+            if (audio_decode_pcm(audio.filename, &pcm, &nframes, &sr)) {
+                spectrogram_compute(&spectro, pcm, nframes, sr);
+                audio_free_pcm(pcm);
             }
+            // Always update these so we don't retry endlessly on decode failure.
+            spectro.duration = audio.duration;
+            editor.duration  = audio.duration;
+            editor.view_end  = (audio.duration < 30.0) ? audio.duration : 30.0;
+            editor_clamp_view(&editor);
         }
 
         ImGui_ImplOpenGL3_NewFrame();

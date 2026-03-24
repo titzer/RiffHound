@@ -94,6 +94,49 @@ void audio_update(AudioState* a) {
         a->position = (double)cursor_sec;
 }
 
+bool audio_decode_pcm(const char* path, float** out_samples,
+                      uint64_t* out_frame_count, uint32_t* out_sample_rate)
+{
+    // Decode entire file as mono f32 at the file's native sample rate.
+    ma_decoder_config cfg = ma_decoder_config_init(ma_format_f32, 1, 0);
+    ma_decoder decoder;
+    if (ma_decoder_init_file(path, &cfg, &decoder) != MA_SUCCESS)
+        return false;
+
+    const ma_uint64 CHUNK = 65536;
+    float*  buf      = NULL;
+    size_t  total    = 0;
+    size_t  capacity = 0;
+
+    for (;;) {
+        if (total + CHUNK > capacity) {
+            size_t new_cap = (capacity == 0) ? CHUNK * 16 : capacity * 2;
+            float* tmp = (float*)realloc(buf, new_cap * sizeof(float));
+            if (!tmp) { free(buf); ma_decoder_uninit(&decoder); return false; }
+            buf = tmp;
+            capacity = new_cap;
+        }
+        ma_uint64 read = 0;
+        ma_result res = ma_decoder_read_pcm_frames(&decoder, buf + total, CHUNK, &read);
+        total += (size_t)read;
+        if (res == MA_AT_END || read == 0) break;
+    }
+
+    uint32_t sr = decoder.outputSampleRate;
+    ma_decoder_uninit(&decoder);
+
+    if (total == 0) { free(buf); return false; }
+
+    *out_samples     = buf;
+    *out_frame_count = (uint64_t)total;
+    *out_sample_rate = sr;
+    return true;
+}
+
+void audio_free_pcm(float* samples) {
+    free(samples);
+}
+
 void audio_shutdown(AudioState* a) {
     if (s_sound_ok) {
         ma_sound_uninit(&s_sound);
