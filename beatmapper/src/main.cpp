@@ -7,11 +7,26 @@
 #include "audio.h"
 #include "spectrogram.h"
 #include "editor.h"
+#include "beatmap.h"
 #include "ui_timeline.h"
 #include "ui_toolbar.h"
+#include "platform.h"
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
+
+// Derive a suggested beatmap filename from an audio filepath.
+// e.g. "/path/to/track.mp3" → "track.txt"
+static void beatmap_suggested_name(const char* audio_path, char* out, int out_size) {
+    const char* name = strrchr(audio_path, '/');
+    name = name ? name + 1 : audio_path;
+    const char* dot = strrchr(name, '.');
+    int stem = dot ? (int)(dot - name) : (int)strlen(name);
+    if (stem > out_size - 5) stem = out_size - 5;
+    strncpy(out, name, stem);
+    strcpy(out + stem, ".txt");
+}
 
 static void glfw_error_callback(int error, const char* description) {
     fprintf(stderr, "GLFW error %d: %s\n", error, description);
@@ -63,10 +78,12 @@ int main(int argc, char** argv) {
     AudioState       audio;
     SpectrogramState spectro;
     EditorState      editor;
+    BeatMap          beatmap;
 
     audio_init(&audio);
     spectrogram_init(&spectro);
     editor_init(&editor);
+    beatmap_init(&beatmap);
 
     // If a file was passed on the command line, load it.
     // Spectrogram will be computed on the first iteration of the main loop.
@@ -118,6 +135,16 @@ int main(int argc, char** argv) {
                 audio_seek(&audio, audio_get_position(&audio) - 5.0);
             if (ImGui::IsKeyPressed(ImGuiKey_RightArrow, true))
                 audio_seek(&audio, audio_get_position(&audio) + 5.0);
+
+            // Ctrl+S → Save Beatmap
+            if (ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_S)) {
+                char suggested[256] = "beatmap.txt";
+                if (audio.loaded)
+                    beatmap_suggested_name(audio.filename, suggested, sizeof(suggested));
+                char save_path[512] = {};
+                if (platform_save_beatmap_dialog(save_path, sizeof(save_path), suggested))
+                    beatmap_save(&beatmap, save_path);
+            }
         }
 
         // Full-screen dockable main window
@@ -141,7 +168,21 @@ int main(int argc, char** argv) {
             // Menu bar
             if (ImGui::BeginMenuBar()) {
                 if (ImGui::BeginMenu("File")) {
-                    if (ImGui::MenuItem("Open...")) { /* handled in toolbar */ }
+                    if (ImGui::MenuItem("Open Audio...")) { /* handled in toolbar */ }
+                    ImGui::Separator();
+                    if (ImGui::MenuItem("Save Beatmap...", "Ctrl+S")) {
+                        char suggested[256] = "beatmap.txt";
+                        if (audio.loaded)
+                            beatmap_suggested_name(audio.filename, suggested, sizeof(suggested));
+                        char save_path[512] = {};
+                        if (platform_save_beatmap_dialog(save_path, sizeof(save_path), suggested))
+                            beatmap_save(&beatmap, save_path);
+                    }
+                    if (ImGui::MenuItem("Load Beatmap...")) {
+                        char load_path[512] = {};
+                        if (platform_open_beatmap_dialog(load_path, sizeof(load_path)))
+                            beatmap_load(&beatmap, load_path);
+                    }
                     ImGui::Separator();
                     if (ImGui::MenuItem("Quit")) glfwSetWindowShouldClose(window, 1);
                     ImGui::EndMenu();
@@ -158,7 +199,7 @@ int main(int argc, char** argv) {
             ImGui::Separator();
 
             // Timeline
-            ui_timeline_render(&editor, &audio, &spectro);
+            ui_timeline_render(&editor, &audio, &spectro, &beatmap);
 
             ImGui::End();
         }
@@ -178,6 +219,7 @@ int main(int argc, char** argv) {
     }
 
     // Cleanup
+    beatmap_shutdown(&beatmap);
     audio_shutdown(&audio);
     spectrogram_shutdown(&spectro);
 

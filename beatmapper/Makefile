@@ -12,6 +12,7 @@ SOURCES := \
     $(SRC_DIR)/audio.cpp \
     $(SRC_DIR)/spectrogram.cpp \
     $(SRC_DIR)/editor.cpp \
+    $(SRC_DIR)/beatmap.cpp \
     $(SRC_DIR)/ui_timeline.cpp \
     $(SRC_DIR)/ui_toolbar.cpp \
     $(IMGUI_DIR)/imgui.cpp \
