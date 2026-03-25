@@ -8,6 +8,7 @@ enum class ToolMode {
     Select,
     Place,
     RegionSelect,
+    Interpolate,
 };
 
 struct EditorState {
@@ -20,6 +21,9 @@ struct EditorState {
     bool   has_region;
     double region_start;  // seconds
     double region_end;    // seconds
+
+    // Current tempo used by the Interpolate tool.
+    double bpm;
 };
 
 void editor_init(EditorState* e);

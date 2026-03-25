@@ -12,6 +12,7 @@ void editor_init(EditorState* e) {
     e->has_region   = false;
     e->region_start = 0.0;
     e->region_end   = 0.0;
+    e->bpm          = 120.0;
 }
 
 void editor_clamp_view(EditorState* e) {

@@ -1,40 +1,95 @@
 #include "ui_toolbar.h"
+#include "undo.h"
 #include "imgui.h"
 #include "platform.h"
 #include <string.h>
 #include <stdio.h>
 
-// Simple file-path input dialog state
 static char s_file_buf[512] = "";
 static bool s_show_open_dialog = false;
 
-void ui_toolbar_render(EditorState* editor, AudioState* audio) {
-    // Tool mode buttons
+static ImVec4 kActiveColor = { 0.3f, 0.5f, 0.8f, 1.0f };
+
+static void tool_button(const char* label, ToolMode mode, EditorState* editor) {
+    bool active = (editor->tool_mode == mode);
+    if (active) ImGui::PushStyleColor(ImGuiCol_Button, kActiveColor);
+    if (ImGui::Button(label)) editor->tool_mode = mode;
+    if (active) ImGui::PopStyleColor();
+}
+
+void ui_toolbar_render(EditorState* editor, AudioState* audio, BeatMap* beatmap,
+                       UndoStack* undo) {
+    // --- Tool mode buttons ---
     ImGui::Text("Tool:");
     ImGui::SameLine();
-    bool sel  = (editor->tool_mode == ToolMode::Select);
-    bool plc  = (editor->tool_mode == ToolMode::Place);
-    bool rgn  = (editor->tool_mode == ToolMode::RegionSelect);
-
-    if (sel) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.3f, 0.5f, 0.8f, 1.0f));
-    if (ImGui::Button("Select")) editor->tool_mode = ToolMode::Select;
-    if (sel) ImGui::PopStyleColor();
-
+    tool_button("Select",      ToolMode::Select,      editor);
     ImGui::SameLine();
-    if (plc) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.3f, 0.5f, 0.8f, 1.0f));
-    if (ImGui::Button("Place")) editor->tool_mode = ToolMode::Place;
-    if (plc) ImGui::PopStyleColor();
-
+    tool_button("Place",       ToolMode::Place,       editor);
     ImGui::SameLine();
-    if (rgn) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.3f, 0.5f, 0.8f, 1.0f));
-    if (ImGui::Button("Region")) editor->tool_mode = ToolMode::RegionSelect;
-    if (rgn) ImGui::PopStyleColor();
+    tool_button("Region",      ToolMode::RegionSelect, editor);
+    ImGui::SameLine();
+    tool_button("Interpolate", ToolMode::Interpolate, editor);
+
+    // --- Interpolate panel (only when active) ---
+    if (editor->tool_mode == ToolMode::Interpolate) {
+        ImGui::SameLine();
+        ImGui::TextDisabled("|");
+        ImGui::SameLine();
+
+        // BPM input – wide enough for "0000.0" plus the two step-arrow buttons
+        ImGui::Text("BPM:");
+        ImGui::SameLine();
+        float bpm_f = (float)editor->bpm;
+        float bpm_w = ImGui::CalcTextSize("0000.0").x
+                    + ImGui::GetStyle().FramePadding.x   * 2.0f
+                    + ImGui::GetStyle().ItemInnerSpacing.x * 2.0f
+                    + ImGui::GetFrameHeight()             * 2.0f;
+        ImGui::SetNextItemWidth(bpm_w);
+        if (ImGui::InputFloat("##bpm", &bpm_f, 0.5f, 5.0f, "%.1f"))
+            editor->bpm = (bpm_f < 1.0f) ? 1.0 : (double)bpm_f;
+        ImGui::SameLine();
+
+        // Show computed BPM when 3+ beats are selected
+        int    n_sel    = beatmap_selected_count(beatmap);
+        double computed = (n_sel >= 3) ? beatmap_selected_bpm(beatmap) : 0.0;
+        if (computed > 0.0) {
+            ImGui::Text("(%.1f computed)", computed);
+            ImGui::SameLine();
+        } else if (n_sel > 0) {
+            ImGui::TextDisabled("(%d sel)", n_sel);
+            ImGui::SameLine();
+        }
+
+        // Fill button
+        if (n_sel < 2) ImGui::BeginDisabled();
+        if (ImGui::Button("Fill")) {
+            undo_push(undo, beatmap);
+            // Snapshot selected times before any insertions shift indices
+            static double sel_t[4096];
+            int sel_n = 0;
+            for (int i = 0; i < beatmap->count && sel_n < 4096; i++)
+                if (beatmap->beats[i].selected)
+                    sel_t[sel_n++] = beatmap->beats[i].time;
+
+            if (sel_n >= 3) {
+                // Compute average BPM from selected beats and update the field
+                double span = sel_t[sel_n - 1] - sel_t[0];
+                if (span > 0.0)
+                    editor->bpm = 60.0 * (sel_n - 1) / span;
+            }
+
+            // Fill between each consecutive pair of selected beats
+            for (int i = 0; i < sel_n - 1; i++)
+                beatmap_fill(beatmap, sel_t[i], sel_t[i + 1], editor->bpm);
+        }
+        if (n_sel < 2) ImGui::EndDisabled();
+    }
 
     ImGui::SameLine();
     ImGui::TextDisabled("|");
     ImGui::SameLine();
 
-    // Playback controls
+    // --- Playback controls ---
     bool can_play = audio->loaded && !audio->playing;
     bool can_stop = audio->loaded &&  audio->playing;
 
@@ -55,7 +110,7 @@ void ui_toolbar_render(EditorState* editor, AudioState* audio) {
     ImGui::TextDisabled("|");
     ImGui::SameLine();
 
-    // Position display
+    // --- Position display ---
     if (audio->loaded) {
         double pos = audio_get_position(audio);
         int m = (int)(pos / 60.0);
@@ -71,7 +126,7 @@ void ui_toolbar_render(EditorState* editor, AudioState* audio) {
     ImGui::TextDisabled("|");
     ImGui::SameLine();
 
-    // File open
+    // --- File open ---
     if (ImGui::Button("Open...")) {
         s_show_open_dialog = true;
         if (audio->loaded)
@@ -80,13 +135,12 @@ void ui_toolbar_render(EditorState* editor, AudioState* audio) {
 
     if (audio->loaded) {
         ImGui::SameLine();
-        // Show just the filename portion
         const char* slash = strrchr(audio->filename, '/');
         const char* name  = slash ? slash + 1 : audio->filename;
         ImGui::TextDisabled("%s", name);
     }
 
-    // Right-aligned ±5s seek buttons
+    // --- Right-aligned ±5s seek buttons ---
     {
         float btn_w   = 48.0f;
         float spacing = ImGui::GetStyle().ItemSpacing.x;
@@ -100,7 +154,7 @@ void ui_toolbar_render(EditorState* editor, AudioState* audio) {
             audio_seek(audio, audio_get_position(audio) + 5.0);
     }
 
-    // Simple path input modal
+    // --- Audio open modal ---
     if (s_show_open_dialog) {
         ImGui::OpenPopup("Open Audio File");
         s_show_open_dialog = false;
@@ -119,8 +173,13 @@ void ui_toolbar_render(EditorState* editor, AudioState* audio) {
         }
         ImGui::Spacing();
         if (ImGui::Button("Load", ImVec2(80, 0))) {
-            if (s_file_buf[0] != '\0')
+            if (s_file_buf[0] != '\0') {
                 audio_load(audio, s_file_buf);
+                char bm_path[512];
+                beatmap_path_for_audio(s_file_buf, bm_path, sizeof(bm_path));
+                if (!beatmap_load(beatmap, bm_path))
+                    beatmap->count = 0;
+            }
             ImGui::CloseCurrentPopup();
         }
         ImGui::SameLine();

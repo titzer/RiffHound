@@ -8,6 +8,7 @@
 #include "spectrogram.h"
 #include "editor.h"
 #include "beatmap.h"
+#include "undo.h"
 #include "ui_timeline.h"
 #include "ui_toolbar.h"
 #include "platform.h"
@@ -79,16 +80,23 @@ int main(int argc, char** argv) {
     SpectrogramState spectro;
     EditorState      editor;
     BeatMap          beatmap;
+    UndoStack        undo;
 
     audio_init(&audio);
     spectrogram_init(&spectro);
     editor_init(&editor);
     beatmap_init(&beatmap);
+    undo_init(&undo);
 
     // If a file was passed on the command line, load it.
     // Spectrogram will be computed on the first iteration of the main loop.
-    if (argc >= 2)
+    if (argc >= 2) {
         audio_load(&audio, argv[1]);
+        char bm_path[512];
+        beatmap_path_for_audio(argv[1], bm_path, sizeof(bm_path));
+        if (!beatmap_load(&beatmap, bm_path))
+            beatmap.count = 0;
+    }
 
     static bool show_demo = false;
 
@@ -135,6 +143,24 @@ int main(int argc, char** argv) {
                 audio_seek(&audio, audio_get_position(&audio) - 5.0);
             if (ImGui::IsKeyPressed(ImGuiKey_RightArrow, true))
                 audio_seek(&audio, audio_get_position(&audio) + 5.0);
+
+            // Delete / Backspace → remove selected beats
+            if (ImGui::IsKeyPressed(ImGuiKey_Delete) ||
+                ImGui::IsKeyPressed(ImGuiKey_Backspace)) {
+                bool any = false;
+                for (int i = 0; i < beatmap.count && !any; i++)
+                    if (beatmap.beats[i].selected) any = true;
+                if (any) {
+                    undo_push(&undo, &beatmap);
+                    for (int i = beatmap.count - 1; i >= 0; i--)
+                        if (beatmap.beats[i].selected)
+                            beatmap_remove(&beatmap, i);
+                }
+            }
+
+            // Ctrl+Z → undo
+            if (ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_Z))
+                undo_pop(&undo, &beatmap);
 
             // Ctrl+S → Save Beatmap
             if (ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_S)) {
@@ -195,11 +221,11 @@ int main(int argc, char** argv) {
             }
 
             // Toolbar strip
-            ui_toolbar_render(&editor, &audio);
+            ui_toolbar_render(&editor, &audio, &beatmap, &undo);
             ImGui::Separator();
 
             // Timeline
-            ui_timeline_render(&editor, &audio, &spectro, &beatmap);
+            ui_timeline_render(&editor, &audio, &spectro, &beatmap, &undo);
 
             ImGui::End();
         }
@@ -219,6 +245,7 @@ int main(int argc, char** argv) {
     }
 
     // Cleanup
+    undo_shutdown(&undo);
     beatmap_shutdown(&beatmap);
     audio_shutdown(&audio);
     spectrogram_shutdown(&spectro);

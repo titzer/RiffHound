@@ -2,8 +2,10 @@
 
 #include "editor.h"
 #include "audio.h"
+#include "beatmap.h"
+#include "undo.h"
 
-// Top toolbar: file open, playback controls, tool mode buttons.
-// Phase 0: stubs for everything; file open sets audio->filename.
+// Top toolbar: file open, playback controls, tool mode buttons, interpolate panel.
 
-void ui_toolbar_render(EditorState* editor, AudioState* audio);
+void ui_toolbar_render(EditorState* editor, AudioState* audio, BeatMap* beatmap,
+                       UndoStack* undo);

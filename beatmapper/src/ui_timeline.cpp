@@ -1,4 +1,5 @@
 #include "ui_timeline.h"
+#include "undo.h"
 #include "imgui.h"
 #include <math.h>
 #include <stdio.h>
@@ -141,8 +142,9 @@ static void draw_minimap(ImDrawList* dl,
 
 // --- beat area ----------------------------------------------------------
 
-static const float BEAT_AREA_H  = 80.0f;
-static const float DIAMOND_R    = 7.0f;
+static const float BEAT_AREA_H    = 80.0f;
+static const float DIAMOND_R      = 7.0f;   // fixed (hand-placed / committed) beats
+static const float DIAMOND_R_INTERP = 4.5f; // interpolated beats
 static const int   N_STAGGER    = 5;
 static const float STAGGER_Y[N_STAGGER] = { 0.50f, 0.28f, 0.72f, 0.10f, 0.90f };
 
@@ -170,7 +172,8 @@ static const float MINIMAP_H = 40.0f;
 // --- main widget -------------------------------------------------------
 
 void ui_timeline_render(EditorState* editor, AudioState* audio,
-                        SpectrogramState* spectro, BeatMap* beatmap)
+                        SpectrogramState* spectro, BeatMap* beatmap,
+                        UndoStack* undo)
 {
     ImGuiIO& io = ImGui::GetIO();
 
@@ -202,8 +205,7 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
     // Used for both hit-testing (this frame) and drawing.
     static BeatVis s_vis[4096];
     static int     s_vis_n = 0;
-    static int     s_sel_beat  = -1;  // selected beat index in beatmap->times[]
-    static int     s_drag_beat = -1;  // beat being dragged; -1 = none
+    static int     s_drag_beat  = -1;  // beat being dragged; -1 = none
     static double  s_drag_new_t = 0.0;
     static double  s_drag_dt    = 0.0; // (beat_t - cursor_t) at drag start
 
@@ -216,7 +218,7 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
 
         for (int i = 0; i < beatmap->count; i++) {
             // Dragged beat uses its virtual position for display
-            double t  = (s_drag_beat == i) ? s_drag_new_t : beatmap->times[i];
+            double t  = (s_drag_beat == i) ? s_drag_new_t : beatmap->beats[i].time;
             float  bx = (span > 0.0)
                 ? ba_x + (float)((t - editor->view_start) / span * ba_w)
                 : ba_x;
@@ -245,6 +247,8 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
     static bool   s_drag_in_ruler   = false;
     static bool   s_mm_seeking      = false;
     static bool   s_drag_in_beats   = false;
+    static bool   s_rect_sel        = false;  // rect selection in progress
+    static float  s_rect_x0         = 0.0f, s_rect_y0 = 0.0f;
     static double s_anchor          = 0.0;
 
     if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
@@ -253,6 +257,17 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
         s_drag_in_ruler   = (click_y >= ruler_y && click_y < ty);
         s_mm_seeking      = (click_y >= mm_y    && click_y < ruler_y);
         s_drag_in_beats   = (click_y >= ba_y    && click_y < ba_y + ba_h);
+
+        if (s_drag_in_ruler && audio->loaded) {
+            // Click on ruler seeks the playhead; dragging will pan as before.
+            double span = editor->view_end - editor->view_start;
+            double t = (rw > 0 && span > 0)
+                ? editor->view_start + (io.MousePos.x - rx) / rw * span
+                : editor->view_start;
+            if (t < 0.0)              t = 0.0;
+            if (t > editor->duration) t = editor->duration;
+            audio_seek(audio, t);
+        }
 
         if (s_drag_in_spectro) {
             double span = editor->view_end - editor->view_start;
@@ -282,27 +297,38 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
             }
 
             if (editor->tool_mode == ToolMode::Place) {
+                undo_push(undo, beatmap);
                 if (hit >= 0) {
-                    // Click on existing beat → remove it
-                    int idx = s_vis[hit].idx;
-                    if      (s_sel_beat == idx)  s_sel_beat = -1;
-                    else if (s_sel_beat >  idx)  s_sel_beat--;
-                    beatmap_remove(beatmap, idx);
+                    beatmap_remove(beatmap, s_vis[hit].idx);
                 } else {
-                    // Click on empty space → add beat
-                    int new_idx = beatmap_add(beatmap, t_click);
-                    s_sel_beat = new_idx;
+                    beatmap_add(beatmap, t_click);
                 }
                 s_drag_beat = -1;
-            } else {  // Select (and RegionSelect – treat same as Select in beat area)
+            } else if (editor->tool_mode == ToolMode::Interpolate) {
                 if (hit >= 0) {
-                    s_sel_beat   = s_vis[hit].idx;
-                    s_drag_beat  = s_sel_beat;
-                    s_drag_new_t = beatmap->times[s_drag_beat];
-                    s_drag_dt    = s_drag_new_t - t_click;
+                    // Toggle selection of clicked beat
+                    int idx = s_vis[hit].idx;
+                    beatmap->beats[idx].selected = !beatmap->beats[idx].selected;
                 } else {
-                    s_sel_beat  = -1;
+                    // Miss → deselect all
+                    beatmap_clear_selection(beatmap);
+                }
+                s_drag_beat = -1;
+            } else {  // Select / RegionSelect
+                if (hit >= 0) {
+                    beatmap_clear_selection(beatmap);
+                    int idx = s_vis[hit].idx;
+                    beatmap->beats[idx].selected = true;
+                    s_drag_beat  = idx;
+                    s_drag_new_t = beatmap->beats[s_drag_beat].time;
+                    s_drag_dt    = s_drag_new_t - t_click;
+                    s_rect_sel   = false;
+                } else {
+                    beatmap_clear_selection(beatmap);
                     s_drag_beat = -1;
+                    s_rect_sel  = true;
+                    s_rect_x0   = io.MousePos.x;
+                    s_rect_y0   = io.MousePos.y;
                 }
             }
         }
@@ -321,12 +347,34 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
         s_drag_new_t = new_t;
     }
 
-    // Beat drag release: remove from old position, re-insert sorted at new position
+    // Beat drag release: remove from old position, re-insert sorted at new position.
+    // Preserve the interp flag so dragging doesn't accidentally commit a beat.
     if (s_drag_beat >= 0 && !ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+        bool was_interp   = beatmap->beats[s_drag_beat].interp;
+        bool was_selected = beatmap->beats[s_drag_beat].selected;
+        if (fabs(s_drag_new_t - beatmap->beats[s_drag_beat].time) > 1e-6)
+            undo_push(undo, beatmap);
         beatmap_remove(beatmap, s_drag_beat);
         int new_idx = beatmap_add(beatmap, s_drag_new_t);
-        s_sel_beat  = (new_idx >= 0) ? new_idx : -1;
+        if (new_idx >= 0) {
+            beatmap->beats[new_idx].interp   = was_interp;
+            beatmap->beats[new_idx].selected = was_selected;
+        }
         s_drag_beat = -1;
+    }
+
+    // Rect selection release: select all visible beats whose centre falls inside the rect
+    if (s_rect_sel && !ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+        float rsx0 = s_rect_x0 < io.MousePos.x ? s_rect_x0 : io.MousePos.x;
+        float rsx1 = s_rect_x0 < io.MousePos.x ? io.MousePos.x : s_rect_x0;
+        float rsy0 = s_rect_y0 < io.MousePos.y ? s_rect_y0 : io.MousePos.y;
+        float rsy1 = s_rect_y0 < io.MousePos.y ? io.MousePos.y : s_rect_y0;
+        for (int i = 0; i < s_vis_n; i++) {
+            if (s_vis[i].bx >= rsx0 && s_vis[i].bx <= rsx1 &&
+                s_vis[i].cy >= rsy0 && s_vis[i].cy <= rsy1)
+                beatmap->beats[s_vis[i].idx].selected = true;
+        }
+        s_rect_sel = false;
     }
 
     if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
@@ -440,8 +488,11 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
     // Diamonds (clipped to beat area)
     dl->PushClipRect(ImVec2(ba_x, ba_y), ImVec2(ba_x + ba_w, ba_y + ba_h), true);
     for (int i = 0; i < s_vis_n; i++) {
-        bool dragging = (s_vis[i].idx == s_drag_beat);
-        bool selected = (s_vis[i].idx == s_sel_beat);
+        int   idx       = s_vis[i].idx;
+        bool  is_interp = beatmap->beats[idx].interp;
+        bool  dragging  = (idx == s_drag_beat);
+        bool  selected  = beatmap->beats[idx].selected;
+        float r = is_interp ? DIAMOND_R_INTERP : DIAMOND_R;
         ImU32 fill, border;
         if (dragging) {
             fill   = IM_COL32( 80, 220, 100, 220);
@@ -449,13 +500,80 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
         } else if (selected) {
             fill   = IM_COL32(100, 160, 255, 220);
             border = IM_COL32(180, 210, 255, 255);
+        } else if (is_interp) {
+            fill   = IM_COL32(255, 190,  40, 130);  // same hue, more transparent
+            border = IM_COL32(255, 220,  90, 180);
         } else {
             fill   = IM_COL32(255, 190,  40, 210);
             border = IM_COL32(255, 230, 100, 255);
         }
-        draw_diamond(dl, s_vis[i].bx, s_vis[i].cy, DIAMOND_R, fill, border);
+        draw_diamond(dl, s_vis[i].bx, s_vis[i].cy, r, fill, border);
     }
     dl->PopClipRect();
+
+    // Selection rect overlay
+    if (s_rect_sel && ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+        float rsx0 = s_rect_x0 < io.MousePos.x ? s_rect_x0 : io.MousePos.x;
+        float rsx1 = s_rect_x0 < io.MousePos.x ? io.MousePos.x : s_rect_x0;
+        float rsy0 = s_rect_y0 < io.MousePos.y ? s_rect_y0 : io.MousePos.y;
+        float rsy1 = s_rect_y0 < io.MousePos.y ? io.MousePos.y : s_rect_y0;
+        // Clamp to beat area
+        if (rsx0 < ba_x)        rsx0 = ba_x;
+        if (rsy0 < ba_y)        rsy0 = ba_y;
+        if (rsx1 > ba_x + ba_w) rsx1 = ba_x + ba_w;
+        if (rsy1 > ba_y + ba_h) rsy1 = ba_y + ba_h;
+        if (rsx1 > rsx0 && rsy1 > rsy0) {
+            dl->AddRectFilled(ImVec2(rsx0, rsy0), ImVec2(rsx1, rsy1),
+                              IM_COL32(100, 160, 255, 40));
+            dl->AddRect(ImVec2(rsx0, rsy0), ImVec2(rsx1, rsy1),
+                        IM_COL32(140, 200, 255, 200), 0.0f, 0, 1.0f);
+        }
+    }
+
+    // Hover BPM labels: instantaneous tempo to the left/right of the hovered beat
+    if (hovered && s_drag_beat < 0) {
+        float mpy = io.MousePos.y;
+        if (mpy >= ba_y && mpy < ba_y + ba_h) {
+            int   hv_vis  = -1;
+            float hv_best = DIAMOND_R + 2.0f;
+            for (int i = 0; i < s_vis_n; i++) {
+                float dx = fabsf(io.MousePos.x - s_vis[i].bx);
+                float dy = fabsf(io.MousePos.y - s_vis[i].cy);
+                if (dx + dy <= hv_best) { hv_best = dx + dy; hv_vis = i; }
+            }
+            if (hv_vis >= 0) {
+                int   idx  = s_vis[hv_vis].idx;
+                float bx   = s_vis[hv_vis].bx;
+                float cy   = s_vis[hv_vis].cy;
+                float r    = beatmap->beats[idx].interp ? DIAMOND_R_INTERP : DIAMOND_R;
+                char  buf[32];
+                ImVec2 ts;
+
+                if (idx > 0) {
+                    double dt = beatmap->beats[idx].time - beatmap->beats[idx - 1].time;
+                    if (dt > 1e-6) {
+                        snprintf(buf, sizeof(buf), "%.1f", 60.0 / dt);
+                        ts = ImGui::CalcTextSize(buf);
+                        float lx = bx - r - 4.0f - ts.x;
+                        if (lx >= ba_x)
+                            dl->AddText(ImVec2(lx, cy - ts.y * 0.5f),
+                                        IM_COL32(220, 220, 120, 220), buf);
+                    }
+                }
+                if (idx < beatmap->count - 1) {
+                    double dt = beatmap->beats[idx + 1].time - beatmap->beats[idx].time;
+                    if (dt > 1e-6) {
+                        snprintf(buf, sizeof(buf), "%.1f", 60.0 / dt);
+                        ts = ImGui::CalcTextSize(buf);
+                        float lx = bx + r + 4.0f;
+                        if (lx + ts.x <= ba_x + ba_w)
+                            dl->AddText(ImVec2(lx, cy - ts.y * 0.5f),
+                                        IM_COL32(220, 220, 120, 220), buf);
+                    }
+                }
+            }
+        }
+    }
 
     ImGui::EndChild();
 }
