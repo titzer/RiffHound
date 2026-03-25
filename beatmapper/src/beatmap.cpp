@@ -5,9 +5,11 @@
 #include <math.h>
 
 void beatmap_init(BeatMap* bm) {
-    bm->beats    = nullptr;
-    bm->count    = 0;
-    bm->capacity = 0;
+    bm->beats        = nullptr;
+    bm->count        = 0;
+    bm->capacity     = 0;
+    bm->dirty        = false;
+    bm->save_path[0] = '\0';
 }
 
 void beatmap_shutdown(BeatMap* bm) {
@@ -46,6 +48,7 @@ int beatmap_add(BeatMap* bm, double t) {
             (bm->count - pos) * sizeof(Beat));
     bm->beats[pos] = { t, false, false };
     bm->count++;
+    bm->dirty = true;
     return pos;
 }
 
@@ -54,6 +57,7 @@ void beatmap_remove(BeatMap* bm, int idx) {
     memmove(bm->beats + idx, bm->beats + idx + 1,
             (bm->count - idx - 1) * sizeof(Beat));
     bm->count--;
+    bm->dirty = true;
 }
 
 bool beatmap_save(BeatMap* bm, const char* path) {
@@ -68,6 +72,9 @@ bool beatmap_save(BeatMap* bm, const char* path) {
     fclose(f);
     fprintf(stderr, "[beatmap] saved %d beats to '%s'\n", bm->count, path);
     beatmap_commit(bm);
+    strncpy(bm->save_path, path, sizeof(bm->save_path) - 1);
+    bm->save_path[sizeof(bm->save_path) - 1] = '\0';
+    bm->dirty = false;
     return true;
 }
 
@@ -107,6 +114,7 @@ bool beatmap_load(BeatMap* bm, const char* path) {
     fclose(f);
     // beatmap_add sets interp=false, so all loaded beats are already fixed
     fprintf(stderr, "[beatmap] loaded %d beats from '%s'\n", bm->count, path);
+    bm->dirty = false;  // loaded state matches disk
     return true;
 }
 

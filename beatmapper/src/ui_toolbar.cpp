@@ -1,5 +1,6 @@
 #include "ui_toolbar.h"
 #include "undo.h"
+#include "recent.h"
 #include "imgui.h"
 #include "platform.h"
 #include <string.h>
@@ -7,6 +8,8 @@
 
 static char s_file_buf[512] = "";
 static bool s_show_open_dialog = false;
+
+void ui_toolbar_open_dialog() { s_show_open_dialog = true; }
 
 static ImVec4 kActiveColor = { 0.3f, 0.5f, 0.8f, 1.0f };
 
@@ -18,15 +21,11 @@ static void tool_button(const char* label, ToolMode mode, EditorState* editor) {
 }
 
 void ui_toolbar_render(EditorState* editor, AudioState* audio, BeatMap* beatmap,
-                       UndoStack* undo) {
+                       UndoStack* undo, RecentFiles* recent) {
     // --- Tool mode buttons ---
     ImGui::Text("Tool:");
     ImGui::SameLine();
     tool_button("Select",      ToolMode::Select,      editor);
-    ImGui::SameLine();
-    tool_button("Place",       ToolMode::Place,       editor);
-    ImGui::SameLine();
-    tool_button("Region",      ToolMode::RegionSelect, editor);
     ImGui::SameLine();
     tool_button("Interpolate", ToolMode::Interpolate, editor);
 
@@ -94,7 +93,11 @@ void ui_toolbar_render(EditorState* editor, AudioState* audio, BeatMap* beatmap,
     bool can_stop = audio->loaded &&  audio->playing;
 
     if (!can_play) ImGui::BeginDisabled();
-    if (ImGui::Button("Play")) audio_play(audio);
+    if (ImGui::Button("Play")) {
+        if (editor->has_region)
+            audio_seek(audio, editor->region_start);
+        audio_play(audio);
+    }
     if (!can_play) ImGui::EndDisabled();
 
     ImGui::SameLine();
@@ -102,7 +105,7 @@ void ui_toolbar_render(EditorState* editor, AudioState* audio, BeatMap* beatmap,
     if (!can_stop) ImGui::BeginDisabled();
     if (ImGui::Button("Stop")) {
         audio_pause(audio);
-        audio_seek(audio, 0.0);
+        audio_seek(audio, audio->play_start);
     }
     if (!can_stop) ImGui::EndDisabled();
 
@@ -139,6 +142,10 @@ void ui_toolbar_render(EditorState* editor, AudioState* audio, BeatMap* beatmap,
         const char* name  = slash ? slash + 1 : audio->filename;
         ImGui::TextDisabled("%s", name);
     }
+    if (beatmap->dirty) {
+        ImGui::SameLine();
+        ImGui::TextColored(ImVec4(1.0f, 0.65f, 0.1f, 1.0f), "*");
+    }
 
     // --- Right-aligned ±5s seek buttons ---
     {
@@ -162,9 +169,47 @@ void ui_toolbar_render(EditorState* editor, AudioState* audio, BeatMap* beatmap,
     if (ImGui::BeginPopupModal("Open Audio File", nullptr,
                                ImGuiWindowFlags_AlwaysAutoResize)) {
         if (ImGui::IsKeyPressed(ImGuiKey_Escape)) ImGui::CloseCurrentPopup();
-        ImGui::Text("Enter path to .mp3 or .wav:");
+
+        // Helper: load the file in s_file_buf, update recent list, close popup
+        auto do_load = [&]() {
+            if (s_file_buf[0] == '\0') return;
+            audio_load(audio, s_file_buf);
+            char bm_path[512];
+            beatmap_path_for_audio(s_file_buf, bm_path, sizeof(bm_path));
+            if (!beatmap_load(beatmap, bm_path))
+                beatmap->count = 0;
+            // Companion .txt is the default save target regardless of whether it exists
+            strncpy(beatmap->save_path, bm_path, sizeof(beatmap->save_path) - 1);
+            beatmap->dirty = false;
+            recent_add(recent, s_file_buf);
+            recent_save(recent);
+            ImGui::CloseCurrentPopup();
+        };
+
+        // Recent files list
+        if (recent->count > 0) {
+            ImGui::TextDisabled("Recent:");
+            for (int i = 0; i < recent->count; i++) {
+                const char* slash = strrchr(recent->paths[i], '/');
+                const char* name  = slash ? slash + 1 : recent->paths[i];
+                ImGui::PushID(i);
+                if (ImGui::Selectable(name, false, 0, ImVec2(400, 0))) {
+                    strncpy(s_file_buf, recent->paths[i], sizeof(s_file_buf) - 1);
+                    do_load();
+                }
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("%s", recent->paths[i]);
+                ImGui::PopID();
+            }
+            ImGui::Separator();
+            ImGui::Spacing();
+        }
+
+        // Manual entry
+        ImGui::Text("Path to .mp3 or .wav:");
         ImGui::SetNextItemWidth(360);
-        ImGui::InputText("##path", s_file_buf, sizeof(s_file_buf));
+        bool enter_pressed = ImGui::InputText("##path", s_file_buf, sizeof(s_file_buf),
+                                              ImGuiInputTextFlags_EnterReturnsTrue);
         ImGui::SameLine();
         if (ImGui::Button("Browse...")) {
             char picked[512] = {};
@@ -172,16 +217,8 @@ void ui_toolbar_render(EditorState* editor, AudioState* audio, BeatMap* beatmap,
                 strncpy(s_file_buf, picked, sizeof(s_file_buf) - 1);
         }
         ImGui::Spacing();
-        if (ImGui::Button("Load", ImVec2(80, 0))) {
-            if (s_file_buf[0] != '\0') {
-                audio_load(audio, s_file_buf);
-                char bm_path[512];
-                beatmap_path_for_audio(s_file_buf, bm_path, sizeof(bm_path));
-                if (!beatmap_load(beatmap, bm_path))
-                    beatmap->count = 0;
-            }
-            ImGui::CloseCurrentPopup();
-        }
+        if (ImGui::Button("Load", ImVec2(80, 0)) || enter_pressed)
+            do_load();
         ImGui::SameLine();
         if (ImGui::Button("Cancel", ImVec2(80, 0)))
             ImGui::CloseCurrentPopup();

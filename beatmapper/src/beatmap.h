@@ -10,6 +10,8 @@ struct BeatMap {
     Beat* beats;
     int   count;
     int   capacity;
+    bool  dirty;          // true when beats differ from the last save/load
+    char  save_path[512]; // path used for the last save or load; empty = never saved
 };
 
 void beatmap_init(BeatMap* bm);

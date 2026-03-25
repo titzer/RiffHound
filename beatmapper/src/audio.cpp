@@ -57,6 +57,7 @@ bool audio_load(AudioState* a, const char* path) {
 
 void audio_play(AudioState* a) {
     if (!s_sound_ok || !a->loaded) return;
+    a->play_start = a->position;
     ma_sound_start(&s_sound);
     a->playing = true;
 }

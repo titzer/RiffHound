@@ -9,6 +9,7 @@
 #include "editor.h"
 #include "beatmap.h"
 #include "undo.h"
+#include "recent.h"
 #include "ui_timeline.h"
 #include "ui_toolbar.h"
 #include "platform.h"
@@ -81,31 +82,53 @@ int main(int argc, char** argv) {
     EditorState      editor;
     BeatMap          beatmap;
     UndoStack        undo;
+    RecentFiles      recent;
 
     audio_init(&audio);
     spectrogram_init(&spectro);
     editor_init(&editor);
     beatmap_init(&beatmap);
     undo_init(&undo);
+    recent_init(&recent);
+    recent_load(&recent);
 
     // If a file was passed on the command line, load it.
     // Spectrogram will be computed on the first iteration of the main loop.
     if (argc >= 2) {
-        audio_load(&audio, argv[1]);
+        if (audio_load(&audio, argv[1])) {
+            recent_add(&recent, argv[1]);
+            recent_save(&recent);
+        }
         char bm_path[512];
         beatmap_path_for_audio(argv[1], bm_path, sizeof(bm_path));
         if (!beatmap_load(&beatmap, bm_path))
             beatmap.count = 0;
+        strncpy(beatmap.save_path, bm_path, sizeof(beatmap.save_path) - 1);
+        beatmap.dirty = false;
     }
 
-    static bool show_demo = false;
+    static bool show_demo       = false;
+    static bool show_quit_modal = false;
 
     // Main loop
     while (!glfwWindowShouldClose(window)) {
         glfwPollEvents();
 
+        // Intercept window-close when there are unsaved changes.
+        if (glfwWindowShouldClose(window) && beatmap.dirty) {
+            glfwSetWindowShouldClose(window, 0);
+            show_quit_modal = true;
+        }
+
         // Sync position and playing state from the audio thread.
         audio_update(&audio);
+
+        // Region loop: auto-stop when playhead reaches the end of the selection.
+        if (audio.playing && editor.has_region &&
+            audio.position >= editor.region_end) {
+            audio_pause(&audio);
+            audio_seek(&audio, audio.play_start);
+        }
 
         // Recompute spectrogram whenever a new file is loaded.
         // Detected by comparing the duration the spectrogram was last built for
@@ -134,8 +157,10 @@ int main(int argc, char** argv) {
             if (ImGui::IsKeyPressed(ImGuiKey_Space)) {
                 if (audio.playing) {
                     audio_pause(&audio);
-                    audio_seek(&audio, 0.0);
+                    audio_seek(&audio, audio.play_start);
                 } else {
+                    if (editor.has_region)
+                        audio_seek(&audio, editor.region_start);
                     audio_play(&audio);
                 }
             }
@@ -162,14 +187,18 @@ int main(int argc, char** argv) {
             if (ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_Z))
                 undo_pop(&undo, &beatmap);
 
-            // Ctrl+S → Save Beatmap
+            // Ctrl+S → Save Beatmap (silent overwrite if a path is already known)
             if (ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_S)) {
-                char suggested[256] = "beatmap.txt";
-                if (audio.loaded)
-                    beatmap_suggested_name(audio.filename, suggested, sizeof(suggested));
-                char save_path[512] = {};
-                if (platform_save_beatmap_dialog(save_path, sizeof(save_path), suggested))
-                    beatmap_save(&beatmap, save_path);
+                if (beatmap.save_path[0] != '\0') {
+                    beatmap_save(&beatmap, beatmap.save_path);
+                } else {
+                    char suggested[256] = "beatmap.txt";
+                    if (audio.loaded)
+                        beatmap_suggested_name(audio.filename, suggested, sizeof(suggested));
+                    char sp[512] = {};
+                    if (platform_save_beatmap_dialog(sp, sizeof(sp), suggested))
+                        beatmap_save(&beatmap, sp);
+                }
             }
         }
 
@@ -194,15 +223,19 @@ int main(int argc, char** argv) {
             // Menu bar
             if (ImGui::BeginMenuBar()) {
                 if (ImGui::BeginMenu("File")) {
-                    if (ImGui::MenuItem("Open Audio...")) { /* handled in toolbar */ }
+                    if (ImGui::MenuItem("Open Audio...")) { ui_toolbar_open_dialog(); }
                     ImGui::Separator();
-                    if (ImGui::MenuItem("Save Beatmap...", "Ctrl+S")) {
-                        char suggested[256] = "beatmap.txt";
-                        if (audio.loaded)
-                            beatmap_suggested_name(audio.filename, suggested, sizeof(suggested));
-                        char save_path[512] = {};
-                        if (platform_save_beatmap_dialog(save_path, sizeof(save_path), suggested))
-                            beatmap_save(&beatmap, save_path);
+                    if (ImGui::MenuItem("Save Beatmap", "Ctrl+S")) {
+                        if (beatmap.save_path[0] != '\0') {
+                            beatmap_save(&beatmap, beatmap.save_path);
+                        } else {
+                            char suggested[256] = "beatmap.txt";
+                            if (audio.loaded)
+                                beatmap_suggested_name(audio.filename, suggested, sizeof(suggested));
+                            char sp[512] = {};
+                            if (platform_save_beatmap_dialog(sp, sizeof(sp), suggested))
+                                beatmap_save(&beatmap, sp);
+                        }
                     }
                     if (ImGui::MenuItem("Load Beatmap...")) {
                         char load_path[512] = {};
@@ -221,7 +254,7 @@ int main(int argc, char** argv) {
             }
 
             // Toolbar strip
-            ui_toolbar_render(&editor, &audio, &beatmap, &undo);
+            ui_toolbar_render(&editor, &audio, &beatmap, &undo, &recent);
             ImGui::Separator();
 
             // Timeline
@@ -231,6 +264,55 @@ int main(int argc, char** argv) {
         }
 
         if (show_demo) ImGui::ShowDemoWindow(&show_demo);
+
+        // Update window title: "Beatmap Editor — filename [*]"
+        {
+            char title[600];
+            if (audio.loaded) {
+                const char* slash = strrchr(audio.filename, '/');
+                const char* name  = slash ? slash + 1 : audio.filename;
+                snprintf(title, sizeof(title), "Beatmap Editor \xe2\x80\x94 %s%s",
+                         name, beatmap.dirty ? " *" : "");
+            } else {
+                snprintf(title, sizeof(title), "Beatmap Editor%s",
+                         beatmap.dirty ? " *" : "");
+            }
+            glfwSetWindowTitle(window, title);
+        }
+
+        // Unsaved-changes quit dialog
+        if (show_quit_modal) {
+            ImGui::OpenPopup("Unsaved Changes");
+            show_quit_modal = false;
+        }
+        if (ImGui::BeginPopupModal("Unsaved Changes", nullptr,
+                                   ImGuiWindowFlags_AlwaysAutoResize)) {
+            ImGui::Text("The beatmap has unsaved changes.");
+            ImGui::Spacing();
+            if (ImGui::Button("Save and Quit", ImVec2(130, 0))) {
+                if (beatmap.save_path[0] != '\0') {
+                    beatmap_save(&beatmap, beatmap.save_path);
+                } else {
+                    char suggested[256] = "beatmap.txt";
+                    if (audio.loaded)
+                        beatmap_suggested_name(audio.filename, suggested, sizeof(suggested));
+                    char sp[512] = {};
+                    if (platform_save_beatmap_dialog(sp, sizeof(sp), suggested))
+                        beatmap_save(&beatmap, sp);
+                }
+                glfwSetWindowShouldClose(window, 1);
+                ImGui::CloseCurrentPopup();
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Discard", ImVec2(80, 0))) {
+                glfwSetWindowShouldClose(window, 1);
+                ImGui::CloseCurrentPopup();
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Cancel", ImVec2(80, 0)))
+                ImGui::CloseCurrentPopup();
+            ImGui::EndPopup();
+        }
 
         ImGui::Render();
 

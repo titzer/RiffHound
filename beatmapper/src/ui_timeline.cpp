@@ -165,9 +165,11 @@ static void draw_diamond(ImDrawList* dl, float cx, float cy, float r,
 
 // --- layout constants --------------------------------------------------
 
-static const float RULER_H   = 24.0f;
-static const float SPECTRO_H = 200.0f;
-static const float MINIMAP_H = 40.0f;
+static const float RULER_H    = 24.0f;
+static const float SPECTRO_H  = 200.0f;
+static const float MINIMAP_H  = 40.0f;
+static const float CTX_PANEL_H  = 36.0f;  // contextual interpolate panel
+static const float PLACE_STRIP_H = 22.0f; // beat placement strip
 
 // --- main widget -------------------------------------------------------
 
@@ -177,9 +179,22 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
 {
     ImGuiIO& io = ImGui::GetIO();
 
-    // Layout (top to bottom): minimap | ruler | spectrogram | beat area
+    // Pre-compute contextual panel visibility (needs beatmap state, but before BeginChild
+    // so we can set the correct child height).
+    // Show when exactly 2 adjacent beats are selected.
+    int ctx_sel[2] = { -1, -1 };
+    {
+        int n = 0;
+        for (int i = 0; i < beatmap->count && n < 3; i++)
+            if (beatmap->beats[i].selected) { if (n < 2) ctx_sel[n] = i; n++; }
+        if (n != 2 || ctx_sel[1] != ctx_sel[0] + 1) ctx_sel[0] = ctx_sel[1] = -1;
+    }
+    bool show_ctx = (ctx_sel[0] >= 0);
+    float ctx_h   = show_ctx ? CTX_PANEL_H : 0.0f;
+
+    // Layout (top to bottom): minimap | ruler | spectrogram | beat area [| ctx panel]
     ImVec2 avail = ImGui::GetContentRegionAvail();
-    float total_h = MINIMAP_H + 2.0f + RULER_H + 2.0f + SPECTRO_H + 2.0f + BEAT_AREA_H;
+    float total_h = MINIMAP_H + 2.0f + RULER_H + 2.0f + SPECTRO_H + 2.0f + PLACE_STRIP_H + 2.0f + BEAT_AREA_H + ctx_h;
     if (avail.y < total_h) total_h = avail.y;
 
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
@@ -198,7 +213,8 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
     float mm_x = rx, mm_y = ry,                       mm_w = rw, mm_h = MINIMAP_H;
     float ruler_y = mm_y + mm_h + 2.0f;
     float tx = rx,   ty = ruler_y + RULER_H + 2.0f,   tw = rw,   th = SPECTRO_H;
-    float ba_x = rx, ba_y = ty + th + 2.0f,            ba_w = rw, ba_h = BEAT_AREA_H;
+    float ps_x = rx, ps_y = ty + th + 2.0f,            ps_w = rw; // placement strip
+    float ba_x = rx, ba_y = ps_y + PLACE_STRIP_H + 2.0f, ba_w = rw, ba_h = BEAT_AREA_H;
 
     // --- Beat position layout pass (rebuilds every frame) ---
     // Computes screen positions + stagger rows for all beats.
@@ -236,9 +252,9 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
         }
     }
 
-    // --- Single InvisibleButton covering the whole timeline ---
+    // --- Single InvisibleButton covering the timeline (not the ctx panel) ---
     ImGui::SetCursorScreenPos(ImVec2(rx, ry));
-    ImGui::InvisibleButton("##timeline_input", ImVec2(rw, total_h),
+    ImGui::InvisibleButton("##timeline_input", ImVec2(rw, total_h - ctx_h),
                            ImGuiButtonFlags_MouseButtonLeft |
                            ImGuiButtonFlags_MouseButtonMiddle);
     bool hovered = ImGui::IsItemHovered();
@@ -246,17 +262,36 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
     static bool   s_drag_in_spectro = false;
     static bool   s_drag_in_ruler   = false;
     static bool   s_mm_seeking      = false;
+    static bool   s_drag_in_place   = false;
     static bool   s_drag_in_beats   = false;
     static bool   s_rect_sel        = false;  // rect selection in progress
     static float  s_rect_x0         = 0.0f, s_rect_y0 = 0.0f;
     static double s_anchor          = 0.0;
+
+    // Contextual interpolation panel state
+    static float s_ctx_bpm   = 120.0f;
+    static int   s_ctx_count = 1;
+    static int   s_ctx_prev0 = -1, s_ctx_prev1 = -1;  // last seen pair to detect changes
+    static bool  s_ctx_hover = false;
 
     if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
         float click_y = io.MousePos.y;
         s_drag_in_spectro = (click_y >= ty      && click_y < ty + th);
         s_drag_in_ruler   = (click_y >= ruler_y && click_y < ty);
         s_mm_seeking      = (click_y >= mm_y    && click_y < ruler_y);
+        s_drag_in_place   = (click_y >= ps_y    && click_y < ps_y + PLACE_STRIP_H);
         s_drag_in_beats   = (click_y >= ba_y    && click_y < ba_y + ba_h);
+
+        if (s_drag_in_place) {
+            double span = editor->view_end - editor->view_start;
+            double t_place = (ps_w > 0.0f && span > 0.0)
+                ? editor->view_start + (double)(io.MousePos.x - ps_x) / ps_w * span
+                : editor->view_start;
+            if (t_place < 0.0)              t_place = 0.0;
+            if (t_place > editor->duration) t_place = editor->duration;
+            undo_push(undo, beatmap);
+            beatmap_add(beatmap, t_place);
+        }
 
         if (s_drag_in_ruler && audio->loaded) {
             // Click on ruler seeks the playhead; dragging will pan as before.
@@ -296,15 +331,7 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
                 if (dx + dy <= best) { best = dx + dy; hit = i; }
             }
 
-            if (editor->tool_mode == ToolMode::Place) {
-                undo_push(undo, beatmap);
-                if (hit >= 0) {
-                    beatmap_remove(beatmap, s_vis[hit].idx);
-                } else {
-                    beatmap_add(beatmap, t_click);
-                }
-                s_drag_beat = -1;
-            } else if (editor->tool_mode == ToolMode::Interpolate) {
+            if (editor->tool_mode == ToolMode::Interpolate) {
                 if (hit >= 0) {
                     // Toggle selection of clicked beat
                     int idx = s_vis[hit].idx;
@@ -314,17 +341,23 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
                     beatmap_clear_selection(beatmap);
                 }
                 s_drag_beat = -1;
-            } else {  // Select / RegionSelect
+            } else {  // Select
                 if (hit >= 0) {
-                    beatmap_clear_selection(beatmap);
                     int idx = s_vis[hit].idx;
-                    beatmap->beats[idx].selected = true;
-                    s_drag_beat  = idx;
-                    s_drag_new_t = beatmap->beats[s_drag_beat].time;
-                    s_drag_dt    = s_drag_new_t - t_click;
-                    s_rect_sel   = false;
+                    if (io.KeyShift) {
+                        // Shift+click: toggle selection, no drag
+                        beatmap->beats[idx].selected = !beatmap->beats[idx].selected;
+                        s_drag_beat = -1;
+                    } else {
+                        beatmap_clear_selection(beatmap);
+                        beatmap->beats[idx].selected = true;
+                        s_drag_beat  = idx;
+                        s_drag_new_t = beatmap->beats[idx].time;
+                        s_drag_dt    = s_drag_new_t - t_click;
+                    }
+                    s_rect_sel = false;
                 } else {
-                    beatmap_clear_selection(beatmap);
+                    if (!io.KeyShift) beatmap_clear_selection(beatmap);
                     s_drag_beat = -1;
                     s_rect_sel  = true;
                     s_rect_x0   = io.MousePos.x;
@@ -381,6 +414,7 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
         s_drag_in_spectro = false;
         s_drag_in_ruler   = false;
         s_mm_seeking      = false;
+        s_drag_in_place   = false;
         s_drag_in_beats   = false;
     }
 
@@ -461,6 +495,72 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
         draw_playhead(dl, tx, ty, tw, th,
                       audio_get_position(audio),
                       editor->view_start, editor->view_end);
+
+    // Placement strip background
+    dl->AddRectFilled(ImVec2(ps_x, ps_y), ImVec2(ps_x + ps_w, ps_y + PLACE_STRIP_H),
+                      IM_COL32(12, 16, 22, 255));
+    dl->AddRect(ImVec2(ps_x, ps_y), ImVec2(ps_x + ps_w, ps_y + PLACE_STRIP_H),
+                IM_COL32(40, 50, 65, 255));
+
+    // Placement strip hover preview: outline diamond + instantaneous BPM labels
+    if (hovered) {
+        float mpy = io.MousePos.y;
+        if (mpy >= ps_y && mpy < ps_y + PLACE_STRIP_H) {
+            double span = editor->view_end - editor->view_start;
+            double t_hover = (span > 0.0 && ps_w > 0.0f)
+                ? editor->view_start + (double)(io.MousePos.x - ps_x) / ps_w * span
+                : editor->view_start;
+            if (t_hover >= 0.0 && t_hover <= editor->duration) {
+                float phx = io.MousePos.x;
+                float phy = ps_y + PLACE_STRIP_H * 0.5f;
+                float r   = DIAMOND_R;
+                ImVec2 pts[4] = {
+                    { phx,     phy - r },
+                    { phx + r, phy     },
+                    { phx,     phy + r },
+                    { phx - r, phy     },
+                };
+                dl->AddPolyline(pts, 4, IM_COL32(140, 160, 180, 160),
+                                ImDrawFlags_Closed, 1.5f);
+
+                // Binary search for insertion point
+                int ins = 0;
+                {
+                    int lo2 = 0, hi2 = beatmap->count;
+                    while (lo2 < hi2) {
+                        int mid = (lo2 + hi2) / 2;
+                        if (beatmap->beats[mid].time < t_hover) lo2 = mid + 1;
+                        else hi2 = mid;
+                    }
+                    ins = lo2;
+                }
+                char bpm_buf[32];
+                ImVec2 ts;
+                if (ins > 0) {
+                    double dt = t_hover - beatmap->beats[ins - 1].time;
+                    if (dt > 1e-6) {
+                        snprintf(bpm_buf, sizeof(bpm_buf), "%.1f", 60.0 / dt);
+                        ts = ImGui::CalcTextSize(bpm_buf);
+                        float lx = phx - r - 4.0f - ts.x;
+                        if (lx >= ps_x)
+                            dl->AddText(ImVec2(lx, phy - ts.y * 0.5f),
+                                        IM_COL32(160, 200, 140, 200), bpm_buf);
+                    }
+                }
+                if (ins < beatmap->count) {
+                    double dt = beatmap->beats[ins].time - t_hover;
+                    if (dt > 1e-6) {
+                        snprintf(bpm_buf, sizeof(bpm_buf), "%.1f", 60.0 / dt);
+                        ts = ImGui::CalcTextSize(bpm_buf);
+                        float lx = phx + r + 4.0f;
+                        if (lx + ts.x <= ps_x + ps_w)
+                            dl->AddText(ImVec2(lx, phy - ts.y * 0.5f),
+                                        IM_COL32(160, 200, 140, 200), bpm_buf);
+                    }
+                }
+            }
+        }
+    }
 
     // Cursor time hint line + tooltip
     if (hovered) {
@@ -573,6 +673,143 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
                 }
             }
         }
+    }
+
+    // --- Contextual interpolation panel ---
+    // Shown when exactly two adjacent beats are selected.
+    if (show_ctx) {
+        double t1 = beatmap->beats[ctx_sel[0]].time;
+        double t2 = beatmap->beats[ctx_sel[1]].time;
+        double dt = t2 - t1;
+
+        // Reset BPM/count when the selected pair changes
+        if (ctx_sel[0] != s_ctx_prev0 || ctx_sel[1] != s_ctx_prev1) {
+            s_ctx_prev0 = ctx_sel[0];
+            s_ctx_prev1 = ctx_sel[1];
+
+            // Instantaneous BPM from the interval immediately outside each selected beat
+            double bpm_left = 0.0, bpm_right = 0.0;
+            if (ctx_sel[0] > 0) {
+                double d = beatmap->beats[ctx_sel[0]].time
+                         - beatmap->beats[ctx_sel[0] - 1].time;
+                if (d > 1e-6) bpm_left = 60.0 / d;
+            }
+            if (ctx_sel[1] < beatmap->count - 1) {
+                double d = beatmap->beats[ctx_sel[1] + 1].time
+                         - beatmap->beats[ctx_sel[1]].time;
+                if (d > 1e-6) bpm_right = 60.0 / d;
+            }
+
+            // Average instantaneous BPM across the whole beatmap (plausible range only)
+            double avg_bpm = 0.0;
+            int    avg_n   = 0;
+            for (int k = 0; k < beatmap->count - 1; k++) {
+                double d = beatmap->beats[k + 1].time - beatmap->beats[k].time;
+                if (d > 1e-6) {
+                    double b = 60.0 / d;
+                    if (b >= 50.0 && b <= 250.0) { avg_bpm += b; avg_n++; }
+                }
+            }
+            if (avg_n > 0) avg_bpm /= avg_n;
+            else           avg_bpm  = 120.0;
+
+            // Pick the candidate within [50, 250] BPM closest to the average
+            bool left_ok  = (bpm_left  >= 50.0 && bpm_left  <= 250.0);
+            bool right_ok = (bpm_right >= 50.0 && bpm_right <= 250.0);
+            double suggested;
+            if (left_ok && right_ok)
+                suggested = (fabs(bpm_left  - avg_bpm) <= fabs(bpm_right - avg_bpm))
+                            ? bpm_left : bpm_right;
+            else if (left_ok)  suggested = bpm_left;
+            else if (right_ok) suggested = bpm_right;
+            else               suggested = avg_bpm;   // fallback: global average
+
+            // Derive count, then snap BPM so it's exact for the integer count
+            int n = (int)round(dt * suggested / 60.0);
+            s_ctx_count = (n > 1) ? n - 1 : 1;
+            s_ctx_bpm   = (dt > 1e-6)
+                          ? (float)(60.0 * (s_ctx_count + 1) / dt)
+                          : (float)suggested;
+        }
+
+        // Panel background
+        float ctx_y = ba_y + ba_h;
+        dl->AddRectFilled(ImVec2(ba_x, ctx_y), ImVec2(ba_x + ba_w, ctx_y + CTX_PANEL_H),
+                          IM_COL32(10, 10, 18, 255));
+        dl->AddLine(ImVec2(ba_x, ctx_y), ImVec2(ba_x + ba_w, ctx_y),
+                    IM_COL32(50, 50, 70, 255));
+
+        // Connector lines from the two selected beats down to the panel
+        float x0 = time_to_x(t1, editor->view_start, editor->view_end, ba_x, ba_w);
+        float x1 = time_to_x(t2, editor->view_start, editor->view_end, ba_x, ba_w);
+        float mid_x = (x0 + x1) * 0.5f;
+        dl->AddLine(ImVec2(x0, ba_y + ba_h), ImVec2(mid_x, ctx_y + CTX_PANEL_H * 0.3f),
+                    IM_COL32(100, 160, 255, 60), 1.0f);
+        dl->AddLine(ImVec2(x1, ba_y + ba_h), ImVec2(mid_x, ctx_y + CTX_PANEL_H * 0.3f),
+                    IM_COL32(100, 160, 255, 60), 1.0f);
+
+        // Widgets — position them centred under the midpoint between the two beats
+        float fh      = ImGui::GetFrameHeight();
+        float bpm_w   = 88.0f;
+        float count_w = 72.0f;
+        float btn_w   = 46.0f;
+        float sp      = ImGui::GetStyle().ItemSpacing.x;
+        float panel_w = bpm_w + sp + count_w + sp + btn_w;
+        float px      = mid_x - panel_w * 0.5f;
+        if (px < ba_x + 4)             px = ba_x + 4;
+        if (px + panel_w > ba_x + ba_w - 4) px = ba_x + ba_w - 4 - panel_w;
+        float py = ctx_y + (CTX_PANEL_H - fh) * 0.5f;
+
+        ImGui::SetCursorScreenPos(ImVec2(px, py));
+
+        // BPM drag — editing BPM recomputes count
+        ImGui::SetNextItemWidth(bpm_w);
+        if (ImGui::DragFloat("##ctx_bpm", &s_ctx_bpm, 0.5f, 1.0f, 9999.0f, "%.1f bpm")) {
+            if (s_ctx_bpm < 1.0f) s_ctx_bpm = 1.0f;
+            int n = (int)round(dt * s_ctx_bpm / 60.0);
+            s_ctx_count = (n > 1) ? n - 1 : 1;
+            // Snap BPM so it's exact for the count
+            s_ctx_bpm = (dt > 1e-6) ? (float)(60.0 * (s_ctx_count + 1) / dt) : s_ctx_bpm;
+        }
+        ImGui::SameLine();
+
+        // Count drag — editing count recomputes BPM
+        ImGui::SetNextItemWidth(count_w);
+        if (ImGui::DragInt("##ctx_count", &s_ctx_count, 0.2f, 1, 999, "%d beats")) {
+            if (s_ctx_count < 1) s_ctx_count = 1;
+            s_ctx_bpm = (dt > 1e-6) ? (float)(60.0 * (s_ctx_count + 1) / dt) : s_ctx_bpm;
+        }
+        ImGui::SameLine();
+
+        if (ImGui::Button("Fill##ctx", ImVec2(btn_w, 0))) {
+            undo_push(undo, beatmap);
+            beatmap_fill(beatmap, t1, t2, (double)s_ctx_bpm);
+        }
+        s_ctx_hover = ImGui::IsItemHovered();
+
+        // Preview: outline diamonds at interpolated positions, drawn over the beat area
+        if (s_ctx_hover && s_ctx_count >= 1) {
+            int n = s_ctx_count + 1;  // number of gaps
+            dl->PushClipRect(ImVec2(ba_x, ba_y), ImVec2(ba_x + ba_w, ba_y + ba_h), true);
+            for (int k = 1; k < n; k++) {
+                double t   = t1 + (t2 - t1) * (double)k / n;
+                float  bx  = time_to_x(t, editor->view_start, editor->view_end, ba_x, ba_w);
+                float  cy  = ba_y + 0.5f * ba_h;
+                ImVec2 pts[4] = {
+                    { bx,               cy - DIAMOND_R },
+                    { bx + DIAMOND_R,   cy             },
+                    { bx,               cy + DIAMOND_R },
+                    { bx - DIAMOND_R,   cy             },
+                };
+                dl->AddPolyline(pts, 4, IM_COL32(160, 210, 255, 180),
+                                ImDrawFlags_Closed, 1.5f);
+            }
+            dl->PopClipRect();
+        }
+    } else {
+        // Pair is no longer selected — invalidate cached indices
+        s_ctx_prev0 = s_ctx_prev1 = -1;
+        s_ctx_hover = false;
     }
 
     ImGui::EndChild();

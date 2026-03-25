@@ -47,6 +47,7 @@ bool undo_pop(UndoStack* us, BeatMap* bm) {
     bm->capacity = us->slots[idx].count;
     us->slots[idx].beats = nullptr;
     us->slots[idx].count = 0;
+    bm->dirty = true;
     return true;
 }
 

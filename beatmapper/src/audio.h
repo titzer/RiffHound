@@ -7,8 +7,9 @@
 struct AudioState {
     bool   loaded;
     bool   playing;
-    double duration;   // seconds; set on load
-    double position;   // seconds; updated each frame by audio_update
+    double duration;    // seconds; set on load
+    double position;    // seconds; updated each frame by audio_update
+    double play_start;  // position at which the last play was initiated
     char   filename[512];
 };
 
