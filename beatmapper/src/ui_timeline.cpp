@@ -181,7 +181,8 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
 
     // Pre-compute contextual panel visibility (needs beatmap state, but before BeginChild
     // so we can set the correct child height).
-    // Show when exactly 2 adjacent beats are selected.
+    // Show when exactly 2 adjacent beats are selected AND the gap fits at least one
+    // interpolated beat at the instantaneous BPM entering the first selected beat.
     int ctx_sel[2] = { -1, -1 };
     {
         int n = 0;
@@ -189,8 +190,20 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
             if (beatmap->beats[i].selected) { if (n < 2) ctx_sel[n] = i; n++; }
         if (n != 2 || ctx_sel[1] != ctx_sel[0] + 1) ctx_sel[0] = ctx_sel[1] = -1;
     }
-    bool show_ctx = (ctx_sel[0] >= 0);
-    float ctx_h   = show_ctx ? CTX_PANEL_H : 0.0f;
+    bool show_ctx = false;
+    if (ctx_sel[0] >= 0) {
+        double t1 = beatmap->beats[ctx_sel[0]].time;
+        double t2 = beatmap->beats[ctx_sel[1]].time;
+        double dt = t2 - t1;
+        // BPM reference: instantaneous tempo entering the first selected beat
+        double bpm_ref = 120.0;
+        if (ctx_sel[0] > 0) {
+            double d = t1 - beatmap->beats[ctx_sel[0] - 1].time;
+            if (d > 1e-6) bpm_ref = 60.0 / d;
+        }
+        show_ctx = ((int)round(dt * bpm_ref / 60.0) >= 2);
+    }
+    float ctx_h = show_ctx ? CTX_PANEL_H : 0.0f;
 
     // Layout (top to bottom): minimap | ruler | spectrogram | beat area [| ctx panel]
     ImVec2 avail = ImGui::GetContentRegionAvail();
@@ -312,6 +325,10 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
             if (s_anchor < 0.0)              s_anchor = 0.0;
             if (s_anchor > editor->duration) s_anchor = editor->duration;
             editor->has_region = false;
+            // A click on the spectrogram always seeks the playhead.
+            // If the user then drags, a region is created on top of that.
+            if (audio->loaded)
+                audio_seek(audio, s_anchor);
         }
 
         if (s_drag_in_beats) {
@@ -331,17 +348,7 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
                 if (dx + dy <= best) { best = dx + dy; hit = i; }
             }
 
-            if (editor->tool_mode == ToolMode::Interpolate) {
-                if (hit >= 0) {
-                    // Toggle selection of clicked beat
-                    int idx = s_vis[hit].idx;
-                    beatmap->beats[idx].selected = !beatmap->beats[idx].selected;
-                } else {
-                    // Miss → deselect all
-                    beatmap_clear_selection(beatmap);
-                }
-                s_drag_beat = -1;
-            } else {  // Select
+            {
                 if (hit >= 0) {
                     int idx = s_vis[hit].idx;
                     if (io.KeyShift) {

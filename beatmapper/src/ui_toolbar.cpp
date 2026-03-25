@@ -11,83 +11,8 @@ static bool s_show_open_dialog = false;
 
 void ui_toolbar_open_dialog() { s_show_open_dialog = true; }
 
-static ImVec4 kActiveColor = { 0.3f, 0.5f, 0.8f, 1.0f };
-
-static void tool_button(const char* label, ToolMode mode, EditorState* editor) {
-    bool active = (editor->tool_mode == mode);
-    if (active) ImGui::PushStyleColor(ImGuiCol_Button, kActiveColor);
-    if (ImGui::Button(label)) editor->tool_mode = mode;
-    if (active) ImGui::PopStyleColor();
-}
-
 void ui_toolbar_render(EditorState* editor, AudioState* audio, BeatMap* beatmap,
                        UndoStack* undo, RecentFiles* recent) {
-    // --- Tool mode buttons ---
-    ImGui::Text("Tool:");
-    ImGui::SameLine();
-    tool_button("Select",      ToolMode::Select,      editor);
-    ImGui::SameLine();
-    tool_button("Interpolate", ToolMode::Interpolate, editor);
-
-    // --- Interpolate panel (only when active) ---
-    if (editor->tool_mode == ToolMode::Interpolate) {
-        ImGui::SameLine();
-        ImGui::TextDisabled("|");
-        ImGui::SameLine();
-
-        // BPM input – wide enough for "0000.0" plus the two step-arrow buttons
-        ImGui::Text("BPM:");
-        ImGui::SameLine();
-        float bpm_f = (float)editor->bpm;
-        float bpm_w = ImGui::CalcTextSize("0000.0").x
-                    + ImGui::GetStyle().FramePadding.x   * 2.0f
-                    + ImGui::GetStyle().ItemInnerSpacing.x * 2.0f
-                    + ImGui::GetFrameHeight()             * 2.0f;
-        ImGui::SetNextItemWidth(bpm_w);
-        if (ImGui::InputFloat("##bpm", &bpm_f, 0.5f, 5.0f, "%.1f"))
-            editor->bpm = (bpm_f < 1.0f) ? 1.0 : (double)bpm_f;
-        ImGui::SameLine();
-
-        // Show computed BPM when 3+ beats are selected
-        int    n_sel    = beatmap_selected_count(beatmap);
-        double computed = (n_sel >= 3) ? beatmap_selected_bpm(beatmap) : 0.0;
-        if (computed > 0.0) {
-            ImGui::Text("(%.1f computed)", computed);
-            ImGui::SameLine();
-        } else if (n_sel > 0) {
-            ImGui::TextDisabled("(%d sel)", n_sel);
-            ImGui::SameLine();
-        }
-
-        // Fill button
-        if (n_sel < 2) ImGui::BeginDisabled();
-        if (ImGui::Button("Fill")) {
-            undo_push(undo, beatmap);
-            // Snapshot selected times before any insertions shift indices
-            static double sel_t[4096];
-            int sel_n = 0;
-            for (int i = 0; i < beatmap->count && sel_n < 4096; i++)
-                if (beatmap->beats[i].selected)
-                    sel_t[sel_n++] = beatmap->beats[i].time;
-
-            if (sel_n >= 3) {
-                // Compute average BPM from selected beats and update the field
-                double span = sel_t[sel_n - 1] - sel_t[0];
-                if (span > 0.0)
-                    editor->bpm = 60.0 * (sel_n - 1) / span;
-            }
-
-            // Fill between each consecutive pair of selected beats
-            for (int i = 0; i < sel_n - 1; i++)
-                beatmap_fill(beatmap, sel_t[i], sel_t[i + 1], editor->bpm);
-        }
-        if (n_sel < 2) ImGui::EndDisabled();
-    }
-
-    ImGui::SameLine();
-    ImGui::TextDisabled("|");
-    ImGui::SameLine();
-
     // --- Playback controls ---
     bool can_play = audio->loaded && !audio->playing;
     bool can_stop = audio->loaded &&  audio->playing;

@@ -8,11 +8,9 @@ void editor_init(EditorState* e) {
     e->view_start   = 0.0;
     e->view_end     = 30.0;
     e->duration     = DEFAULT_DURATION;
-    e->tool_mode    = ToolMode::Select;
     e->has_region   = false;
     e->region_start = 0.0;
     e->region_end   = 0.0;
-    e->bpm          = 120.0;
 }
 
 void editor_clamp_view(EditorState* e) {

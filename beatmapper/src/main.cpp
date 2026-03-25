@@ -123,11 +123,12 @@ int main(int argc, char** argv) {
         // Sync position and playing state from the audio thread.
         audio_update(&audio);
 
-        // Region loop: auto-stop when playhead reaches the end of the selection.
+        // Auto-stop when playhead reaches the end of the region selection.
+        // Just pause; leave the playhead at region_end so the user can see where
+        // they are. Play / Space will seek back to region_start automatically.
         if (audio.playing && editor.has_region &&
             audio.position >= editor.region_end) {
             audio_pause(&audio);
-            audio_seek(&audio, audio.play_start);
         }
 
         // Recompute spectrogram whenever a new file is loaded.

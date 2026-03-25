@@ -1,27 +1,15 @@
 #pragma once
 
-// Editor state: the single source of truth for scroll position, zoom,
-// tool mode, selection, and the undo/redo stack.
-// Phase 0: view state and tool mode only.
-
-enum class ToolMode {
-    Select,
-    Interpolate,
-};
-
+// Editor state: scroll position, zoom, duration, and region selection.
 struct EditorState {
     double view_start;   // seconds – left edge of visible window
     double view_end;     // seconds – right edge of visible window
     double duration;     // total track duration (seconds)
-    ToolMode tool_mode;
 
     // Region selection – time range to feed to the beat analyzer.
     bool   has_region;
     double region_start;  // seconds
     double region_end;    // seconds
-
-    // Current tempo used by the Interpolate tool.
-    double bpm;
 };
 
 void editor_init(EditorState* e);
