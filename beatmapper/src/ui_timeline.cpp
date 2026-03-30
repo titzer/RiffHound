@@ -767,6 +767,38 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
         if (px + panel_w > ba_x + ba_w - 4) px = ba_x + ba_w - 4 - panel_w;
         float py = ctx_y + (CTX_PANEL_H - fh) * 0.5f;
 
+        // Preview drawn before widget calls so the clip rect is still the full
+        // child-window rect (widget calls restrict it to the ctx panel region).
+        // Uses previous-frame s_ctx_hover; the 1-frame lag is imperceptible.
+        if (s_ctx_hover && s_ctx_count >= 1) {
+            int n = s_ctx_count + 1;  // number of gaps
+            // Vertical lines on spectrogram — manual bounds check, no clip push
+            // (matches pattern of region lines and cursor hint drawn on the spectrogram)
+            for (int k = 1; k < n; k++) {
+                double t  = t1 + (t2 - t1) * (double)k / n;
+                float  sx = time_to_x(t, editor->view_start, editor->view_end, tx, tw);
+                if (sx >= tx && sx <= tx + tw)
+                    dl->AddLine(ImVec2(sx, ty), ImVec2(sx, ty + th),
+                                IM_COL32(160, 210, 255, 90), 1.0f);
+            }
+            // Outline diamonds in beat area
+            dl->PushClipRect(ImVec2(ba_x, ba_y), ImVec2(ba_x + ba_w, ba_y + ba_h), true);
+            for (int k = 1; k < n; k++) {
+                double t   = t1 + (t2 - t1) * (double)k / n;
+                float  bx  = time_to_x(t, editor->view_start, editor->view_end, ba_x, ba_w);
+                float  cy  = ba_y + 0.5f * ba_h;
+                ImVec2 pts[4] = {
+                    { bx,               cy - DIAMOND_R },
+                    { bx + DIAMOND_R,   cy             },
+                    { bx,               cy + DIAMOND_R },
+                    { bx - DIAMOND_R,   cy             },
+                };
+                dl->AddPolyline(pts, 4, IM_COL32(160, 210, 255, 180),
+                                ImDrawFlags_Closed, 1.5f);
+            }
+            dl->PopClipRect();
+        }
+
         ImGui::SetCursorScreenPos(ImVec2(px, py));
 
         // BPM drag — editing BPM recomputes count
@@ -793,26 +825,6 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
             beatmap_fill(beatmap, t1, t2, (double)s_ctx_bpm);
         }
         s_ctx_hover = ImGui::IsItemHovered();
-
-        // Preview: outline diamonds at interpolated positions, drawn over the beat area
-        if (s_ctx_hover && s_ctx_count >= 1) {
-            int n = s_ctx_count + 1;  // number of gaps
-            dl->PushClipRect(ImVec2(ba_x, ba_y), ImVec2(ba_x + ba_w, ba_y + ba_h), true);
-            for (int k = 1; k < n; k++) {
-                double t   = t1 + (t2 - t1) * (double)k / n;
-                float  bx  = time_to_x(t, editor->view_start, editor->view_end, ba_x, ba_w);
-                float  cy  = ba_y + 0.5f * ba_h;
-                ImVec2 pts[4] = {
-                    { bx,               cy - DIAMOND_R },
-                    { bx + DIAMOND_R,   cy             },
-                    { bx,               cy + DIAMOND_R },
-                    { bx - DIAMOND_R,   cy             },
-                };
-                dl->AddPolyline(pts, 4, IM_COL32(160, 210, 255, 180),
-                                ImDrawFlags_Closed, 1.5f);
-            }
-            dl->PopClipRect();
-        }
     } else {
         // Pair is no longer selected — invalidate cached indices
         s_ctx_prev0 = s_ctx_prev1 = -1;

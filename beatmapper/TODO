@@ -1,0 +1,2 @@
+- show vertical lines on spectrogram for interpolated beats
+- extrapolate from last beat to current beat (ctrl, shift)?
