@@ -166,7 +166,6 @@ static void draw_diamond(ImDrawList* dl, float cx, float cy, float r,
 // --- layout constants --------------------------------------------------
 
 static const float RULER_H    = 24.0f;
-static const float SPECTRO_H  = 200.0f;
 static const float MINIMAP_H  = 40.0f;
 static const float CTX_PANEL_H  = 36.0f;  // contextual interpolate panel
 static const float PLACE_STRIP_H = 22.0f; // beat placement strip
@@ -205,10 +204,13 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
     }
     float ctx_h = show_ctx ? CTX_PANEL_H : 0.0f;
 
-    // Layout (top to bottom): minimap | ruler | spectrogram | beat area [| ctx panel]
+    // Layout (top to bottom): minimap | ruler | spectrogram | place strip | beat area [| ctx panel]
+    // Spectrogram fills all available vertical space; everything below it is fixed height.
     ImVec2 avail = ImGui::GetContentRegionAvail();
-    float total_h = MINIMAP_H + 2.0f + RULER_H + 2.0f + SPECTRO_H + 2.0f + PLACE_STRIP_H + 2.0f + BEAT_AREA_H + ctx_h;
-    if (avail.y < total_h) total_h = avail.y;
+    float fixed_h = MINIMAP_H + 2.0f + RULER_H + 2.0f + 2.0f + PLACE_STRIP_H + 2.0f + BEAT_AREA_H + ctx_h;
+    float spectro_h = avail.y - fixed_h;
+    if (spectro_h < 50.0f) spectro_h = 50.0f;
+    float total_h = fixed_h + spectro_h;
 
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
     bool visible = ImGui::BeginChild("##timeline", ImVec2(avail.x, total_h), false,
@@ -225,7 +227,7 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
 
     float mm_x = rx, mm_y = ry,                       mm_w = rw, mm_h = MINIMAP_H;
     float ruler_y = mm_y + mm_h + 2.0f;
-    float tx = rx,   ty = ruler_y + RULER_H + 2.0f,   tw = rw,   th = SPECTRO_H;
+    float tx = rx,   ty = ruler_y + RULER_H + 2.0f,   tw = rw,   th = spectro_h;
     float ps_x = rx, ps_y = ty + th + 2.0f,            ps_w = rw; // placement strip
     float ba_x = rx, ba_y = ps_y + PLACE_STRIP_H + 2.0f, ba_w = rw, ba_h = BEAT_AREA_H;
 
