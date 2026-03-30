@@ -303,7 +303,46 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
             if (t_place < 0.0)              t_place = 0.0;
             if (t_place > editor->duration) t_place = editor->duration;
             undo_push(undo, beatmap);
-            beatmap_add(beatmap, t_place);
+            if (io.KeyShift && beatmap->count >= 1) {
+                // Shift+click: add beat + fill from nearest beat using its instantaneous BPM.
+                // Binary search for insertion point.
+                int ins = 0;
+                {
+                    int lo2 = 0, hi2 = beatmap->count;
+                    while (lo2 < hi2) {
+                        int mid = (lo2 + hi2) / 2;
+                        if (beatmap->beats[mid].time < t_place) lo2 = mid + 1;
+                        else hi2 = mid;
+                    }
+                    ins = lo2;
+                }
+                double dist_l = (ins > 0)              ? t_place - beatmap->beats[ins-1].time : 1e18;
+                double dist_r = (ins < beatmap->count) ? beatmap->beats[ins].time - t_place   : 1e18;
+                int    near   = (dist_l <= dist_r) ? ins - 1 : ins;
+                double fill_bpm = 0.0, fill_t1, fill_t2;
+                if (near < ins) {
+                    // Earlier beat is nearer: BPM = (Bn - Bn-1)
+                    if (near > 0) {
+                        double d = beatmap->beats[near].time - beatmap->beats[near-1].time;
+                        if (d > 1e-6) fill_bpm = 60.0 / d;
+                    }
+                    fill_t1 = beatmap->beats[near].time;
+                    fill_t2 = t_place;
+                } else {
+                    // Later beat is nearer: BPM = (Bn+1 - Bn)
+                    if (near < beatmap->count - 1) {
+                        double d = beatmap->beats[near+1].time - beatmap->beats[near].time;
+                        if (d > 1e-6) fill_bpm = 60.0 / d;
+                    }
+                    fill_t1 = t_place;
+                    fill_t2 = beatmap->beats[near].time;
+                }
+                beatmap_add(beatmap, t_place);
+                if (fill_bpm > 0.0)
+                    beatmap_fill(beatmap, fill_t1, fill_t2, fill_bpm);
+            } else {
+                beatmap_add(beatmap, t_place);
+            }
         }
 
         if (s_drag_in_ruler && audio->loaded) {
@@ -509,7 +548,8 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
     dl->AddRect(ImVec2(ps_x, ps_y), ImVec2(ps_x + ps_w, ps_y + PLACE_STRIP_H),
                 IM_COL32(40, 50, 65, 255));
 
-    // Placement strip hover preview: outline diamond + instantaneous BPM labels
+    // Placement strip hover preview: outline diamond + instantaneous BPM labels.
+    // With Shift held: show fill preview (intermediate diamonds + spectrogram lines).
     if (hovered) {
         float mpy = io.MousePos.y;
         if (mpy >= ps_y && mpy < ps_y + PLACE_STRIP_H) {
@@ -521,16 +561,8 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
                 float phx = io.MousePos.x;
                 float phy = ps_y + PLACE_STRIP_H * 0.5f;
                 float r   = DIAMOND_R;
-                ImVec2 pts[4] = {
-                    { phx,     phy - r },
-                    { phx + r, phy     },
-                    { phx,     phy + r },
-                    { phx - r, phy     },
-                };
-                dl->AddPolyline(pts, 4, IM_COL32(140, 160, 180, 160),
-                                ImDrawFlags_Closed, 1.5f);
 
-                // Binary search for insertion point
+                // Binary search for insertion point (used in both branches)
                 int ins = 0;
                 {
                     int lo2 = 0, hi2 = beatmap->count;
@@ -541,28 +573,119 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
                     }
                     ins = lo2;
                 }
-                char bpm_buf[32];
-                ImVec2 ts;
-                if (ins > 0) {
-                    double dt = t_hover - beatmap->beats[ins - 1].time;
-                    if (dt > 1e-6) {
-                        snprintf(bpm_buf, sizeof(bpm_buf), "%.1f", 60.0 / dt);
-                        ts = ImGui::CalcTextSize(bpm_buf);
-                        float lx = phx - r - 4.0f - ts.x;
-                        if (lx >= ps_x)
-                            dl->AddText(ImVec2(lx, phy - ts.y * 0.5f),
-                                        IM_COL32(160, 200, 140, 200), bpm_buf);
+
+                if (io.KeyShift && beatmap->count >= 1) {
+                    // --- Shift hover: fill preview ---
+                    double dist_l = (ins > 0)              ? t_hover - beatmap->beats[ins-1].time : 1e18;
+                    double dist_r = (ins < beatmap->count) ? beatmap->beats[ins].time - t_hover   : 1e18;
+                    int    near   = (dist_l <= dist_r) ? ins - 1 : ins;
+                    double fill_bpm = 0.0, fill_t1, fill_t2;
+                    if (near < ins) {
+                        if (near > 0) {
+                            double d = beatmap->beats[near].time - beatmap->beats[near-1].time;
+                            if (d > 1e-6) fill_bpm = 60.0 / d;
+                        }
+                        fill_t1 = beatmap->beats[near].time;
+                        fill_t2 = t_hover;
+                    } else {
+                        if (near < beatmap->count - 1) {
+                            double d = beatmap->beats[near+1].time - beatmap->beats[near].time;
+                            if (d > 1e-6) fill_bpm = 60.0 / d;
+                        }
+                        fill_t1 = t_hover;
+                        fill_t2 = beatmap->beats[near].time;
                     }
-                }
-                if (ins < beatmap->count) {
-                    double dt = beatmap->beats[ins].time - t_hover;
-                    if (dt > 1e-6) {
-                        snprintf(bpm_buf, sizeof(bpm_buf), "%.1f", 60.0 / dt);
-                        ts = ImGui::CalcTextSize(bpm_buf);
-                        float lx = phx + r + 4.0f;
+                    int n_fill = (fill_bpm > 0.0 && fill_t2 > fill_t1 + 1e-6)
+                                 ? (int)round((fill_t2 - fill_t1) * fill_bpm / 60.0) : 0;
+
+                    // Endpoint diamond in placement strip (highlighted to signal shift mode)
+                    {
+                        ImVec2 pts[4] = {
+                            { phx,     phy - r },
+                            { phx + r, phy     },
+                            { phx,     phy + r },
+                            { phx - r, phy     },
+                        };
+                        dl->AddPolyline(pts, 4, IM_COL32(160, 255, 200, 200),
+                                        ImDrawFlags_Closed, 1.5f);
+                    }
+
+                    // Intermediate + endpoint preview in beat area and spectrogram
+                    if (n_fill >= 2) {
+                        // Spectrogram lines for all fill positions (k=1..n_fill-1) + endpoint
+                        for (int k = 1; k < n_fill; k++) {
+                            double t  = fill_t1 + (fill_t2 - fill_t1) * (double)k / n_fill;
+                            float  sx = time_to_x(t, editor->view_start, editor->view_end, tx, tw);
+                            if (sx >= tx && sx <= tx + tw)
+                                dl->AddLine(ImVec2(sx, ty), ImVec2(sx, ty + th),
+                                            IM_COL32(160, 255, 200, 70), 1.0f);
+                        }
+                        // Endpoint (t_hover) spectrogram line
+                        if (phx >= tx && phx <= tx + tw)
+                            dl->AddLine(ImVec2(phx, ty), ImVec2(phx, ty + th),
+                                        IM_COL32(160, 255, 200, 70), 1.0f);
+
+                        // Intermediate outline diamonds in beat area
+                        dl->PushClipRect(ImVec2(ba_x, ba_y), ImVec2(ba_x + ba_w, ba_y + ba_h), true);
+                        for (int k = 1; k < n_fill; k++) {
+                            double t   = fill_t1 + (fill_t2 - fill_t1) * (double)k / n_fill;
+                            float  bx  = time_to_x(t, editor->view_start, editor->view_end, ba_x, ba_w);
+                            float  cy  = ba_y + 0.5f * ba_h;
+                            ImVec2 pts[4] = {
+                                { bx,               cy - DIAMOND_R_INTERP },
+                                { bx + DIAMOND_R_INTERP, cy               },
+                                { bx,               cy + DIAMOND_R_INTERP },
+                                { bx - DIAMOND_R_INTERP, cy               },
+                            };
+                            dl->AddPolyline(pts, 4, IM_COL32(160, 255, 200, 180),
+                                            ImDrawFlags_Closed, 1.5f);
+                        }
+                        dl->PopClipRect();
+
+                        // BPM label
+                        char bpm_buf[32];
+                        snprintf(bpm_buf, sizeof(bpm_buf), "%.1f bpm", fill_bpm);
+                        ImVec2 ts = ImGui::CalcTextSize(bpm_buf);
+                        float  lx = phx + r + 4.0f;
                         if (lx + ts.x <= ps_x + ps_w)
                             dl->AddText(ImVec2(lx, phy - ts.y * 0.5f),
-                                        IM_COL32(160, 200, 140, 200), bpm_buf);
+                                        IM_COL32(160, 255, 200, 200), bpm_buf);
+                    }
+                } else {
+                    // --- Normal hover: single outline diamond + instantaneous BPM labels ---
+                    {
+                        ImVec2 pts[4] = {
+                            { phx,     phy - r },
+                            { phx + r, phy     },
+                            { phx,     phy + r },
+                            { phx - r, phy     },
+                        };
+                        dl->AddPolyline(pts, 4, IM_COL32(140, 160, 180, 160),
+                                        ImDrawFlags_Closed, 1.5f);
+                    }
+                    char bpm_buf[32];
+                    ImVec2 ts;
+                    if (ins > 0) {
+                        double dt = t_hover - beatmap->beats[ins - 1].time;
+                        if (dt > 1e-6) {
+                            snprintf(bpm_buf, sizeof(bpm_buf), "%.1f", 60.0 / dt);
+                            ts = ImGui::CalcTextSize(bpm_buf);
+                            float lx = phx - r - 4.0f - ts.x;
+                            if (lx >= ps_x)
+                                dl->AddText(ImVec2(lx, phy - ts.y * 0.5f),
+                                            IM_COL32(160, 200, 140, 200), bpm_buf);
+                        }
+                    }
+                    if (ins < beatmap->count) {
+                        double dt = beatmap->beats[ins].time - t_hover;
+                        if (dt > 1e-6) {
+                            snprintf(bpm_buf, sizeof(bpm_buf), "%.1f", 60.0 / dt);
+                            ts = ImGui::CalcTextSize(bpm_buf);
+                            float lx = phx + r + 4.0f;
+                            if (lx + ts.x <= ps_x + ps_w)
+                                dl->AddText(ImVec2(lx, phy - ts.y * 0.5f),
+                                            IM_COL32(160, 200, 140, 200), bpm_buf);
+                        }
                     }
                 }
             }
