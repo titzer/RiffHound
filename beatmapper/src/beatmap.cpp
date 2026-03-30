@@ -1,4 +1,5 @@
 #include "beatmap.h"
+#include "sectionmap.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -60,7 +61,7 @@ void beatmap_remove(BeatMap* bm, int idx) {
     bm->dirty = true;
 }
 
-bool beatmap_save(BeatMap* bm, const char* path) {
+bool beatmap_save(BeatMap* bm, SectionMap* sm, const char* path) {
     FILE* f = fopen(path, "w");
     if (!f) {
         fprintf(stderr, "[beatmap] failed to open '%s' for writing\n", path);
@@ -69,8 +70,24 @@ bool beatmap_save(BeatMap* bm, const char* path) {
     fprintf(f, "# Beatmap\n");
     for (int i = 0; i < bm->count; i++)
         fprintf(f, "%.6f\t%.6f\tB\n", bm->beats[i].time, bm->beats[i].time);
+
+    if (sm && sm->count > 0) {
+        fprintf(f, "# Sections\n");
+        for (int i = 0; i < sm->count; i++) {
+            const Section& s = sm->sections[i];
+            if (s.label[0])
+                fprintf(f, "%.6f\t%.6f\t%s: %s\n",
+                        s.t_start, s.t_end, SECTION_KIND_NAMES[s.kind], s.label);
+            else
+                fprintf(f, "%.6f\t%.6f\t%s\n",
+                        s.t_start, s.t_end, SECTION_KIND_NAMES[s.kind]);
+        }
+        sm->dirty = false;
+    }
+
     fclose(f);
-    fprintf(stderr, "[beatmap] saved %d beats to '%s'\n", bm->count, path);
+    fprintf(stderr, "[beatmap] saved %d beats + %d sections to '%s'\n",
+            bm->count, sm ? sm->count : 0, path);
     beatmap_commit(bm);
     strncpy(bm->save_path, path, sizeof(bm->save_path) - 1);
     bm->save_path[sizeof(bm->save_path) - 1] = '\0';
@@ -78,16 +95,18 @@ bool beatmap_save(BeatMap* bm, const char* path) {
     return true;
 }
 
-bool beatmap_load(BeatMap* bm, const char* path) {
+bool beatmap_load(BeatMap* bm, SectionMap* sm, const char* path) {
     FILE* f = fopen(path, "r");
     if (!f) {
         fprintf(stderr, "[beatmap] failed to open '%s'\n", path);
         return false;
     }
     bm->count = 0;
+    if (sm) sectionmap_clear(sm);
 
     char line[512];
     while (fgets(line, sizeof(line), f)) {
+        // Strip inline comments
         char* comment = strchr(line, '#');
         if (comment) *comment = '\0';
 
@@ -95,26 +114,55 @@ bool beatmap_load(BeatMap* bm, const char* path) {
         while (*p == ' ' || *p == '\t') p++;
         if (!*p || *p == '\n' || *p == '\r') continue;
 
+        // Read t1, t2, then the first token (kind name)
         double t1, t2;
-        char   name[64];
-        if (sscanf(p, "%lf %lf %63s", &t1, &t2, name) != 3) continue;
+        char   kind_tok[64];
+        int    off = 0;
+        if (sscanf(p, "%lf %lf %63s%n", &t1, &t2, kind_tok, &off) < 3) continue;
 
-        if (strcmp(name, "B") == 0) {
+        if (strcmp(kind_tok, "B") == 0) {
             beatmap_add(bm, t1);
-        } else if (strncmp(name, "Bx", 2) == 0) {
-            int n = atoi(name + 2);
+        } else if (strncmp(kind_tok, "Bx", 2) == 0) {
+            int n = atoi(kind_tok + 2);
             if (n == 1) {
                 beatmap_add(bm, t1);
             } else if (n > 1) {
                 for (int i = 0; i < n; i++)
                     beatmap_add(bm, t1 + (t2 - t1) * i / (n - 1));
             }
+        } else if (sm) {
+            // Strip trailing ':' from kind token (handles "verse:" written without space)
+            int klen = (int)strlen(kind_tok);
+            if (klen > 0 && kind_tok[klen - 1] == ':') kind_tok[--klen] = '\0';
+
+            // Match against known section kind names
+            int kind = -1;
+            for (int k = 0; k < SK_COUNT; k++) {
+                if (strcmp(kind_tok, SECTION_KIND_NAMES[k]) == 0) { kind = k; break; }
+            }
+            if (kind >= 0) {
+                // Collect optional label: rest of line after the first token
+                char label[48] = {};
+                const char* rest = p + off;
+                while (*rest == ' ' || *rest == '\t') rest++;
+                if (*rest == ':') {
+                    rest++;
+                    while (*rest == ' ' || *rest == '\t') rest++;
+                }
+                if (*rest && *rest != '\n' && *rest != '\r') {
+                    strncpy(label, rest, sizeof(label) - 1);
+                    int ll = (int)strlen(label);
+                    while (ll > 0 && (label[ll-1] <= ' ')) label[--ll] = '\0';
+                }
+                sectionmap_add(sm, t1, t2, (SectionKind)kind, label);
+            }
         }
     }
     fclose(f);
-    // beatmap_add sets interp=false, so all loaded beats are already fixed
-    fprintf(stderr, "[beatmap] loaded %d beats from '%s'\n", bm->count, path);
-    bm->dirty = false;  // loaded state matches disk
+    fprintf(stderr, "[beatmap] loaded %d beats + %d sections from '%s'\n",
+            bm->count, sm ? sm->count : 0, path);
+    bm->dirty = false;
+    if (sm) sm->dirty = false;
     return true;
 }
 

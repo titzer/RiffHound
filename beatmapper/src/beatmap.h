@@ -1,5 +1,7 @@
 #pragma once
 
+struct SectionMap;  // forward declaration — see sectionmap.h
+
 struct Beat {
     double time;
     bool   selected;  // Interpolate tool multi-selection
@@ -24,13 +26,15 @@ int  beatmap_add(BeatMap* bm, double t);
 // Remove beat at index idx.  No-op if idx is out of range.
 void beatmap_remove(BeatMap* bm, int idx);
 
-// Save to a timeseries file (format-spec.md).
-// On success all beats are committed (interp flags cleared).
-bool beatmap_save(BeatMap* bm, const char* path);
+// Save beats (and optionally sections) to a combined timeseries file.
+// On success all beats are committed and sm->dirty is cleared.
+// Pass sm=nullptr to omit sections.
+bool beatmap_save(BeatMap* bm, SectionMap* sm, const char* path);
 
-// Load from a timeseries file.  Clears existing beats first.
+// Load beats (and optionally sections) from a combined timeseries file.
+// Clears existing beats first; clears sm if sm != nullptr.
 // All loaded beats are fixed (interp=false).
-bool beatmap_load(BeatMap* bm, const char* path);
+bool beatmap_load(BeatMap* bm, SectionMap* sm, const char* path);
 
 // Mark all beats as fixed (clear all interp flags).
 // Called automatically by beatmap_save on success.

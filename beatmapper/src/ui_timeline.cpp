@@ -1,4 +1,5 @@
 #include "ui_timeline.h"
+#include "sectionmap.h"
 #include "undo.h"
 #include "imgui.h"
 #include <math.h>
@@ -11,6 +12,29 @@ static float time_to_x(double t, double view_start, double view_end,
     double span = view_end - view_start;
     if (span <= 0.0) return origin_x;
     return origin_x + (float)((t - view_start) / span * width);
+}
+
+// Snap t to the nearest beat within snap_px pixels; returns t unchanged if no
+// beat is within tolerance or beatmap is empty.
+static double snap_to_beat(double t, const BeatMap* bm,
+                            double view_start, double view_end, float area_w,
+                            float snap_px = 12.0f)
+{
+    if (bm->count == 0 || area_w <= 0) return t;
+    double span = view_end - view_start;
+    double tol  = (double)(snap_px / area_w) * span;
+    int lo = 0, hi = bm->count;
+    while (lo < hi) { int m = (lo+hi)/2; if (bm->beats[m].time < t) lo=m+1; else hi=m; }
+    double best = t, bd = tol + 1e-9;
+    if (lo > 0) {
+        double d = t - bm->beats[lo-1].time;
+        if (d < bd) { bd = d; best = bm->beats[lo-1].time; }
+    }
+    if (lo < bm->count) {
+        double d = bm->beats[lo].time - t;
+        if (d < bd) { best = bm->beats[lo].time; }
+    }
+    return best;
 }
 
 static double nice_interval(double span, int target_major_ticks, int* minor_div) {
@@ -165,16 +189,48 @@ static void draw_diamond(ImDrawList* dl, float cx, float cy, float r,
 
 // --- layout constants --------------------------------------------------
 
-static const float RULER_H    = 24.0f;
-static const float MINIMAP_H  = 40.0f;
-static const float CTX_PANEL_H  = 36.0f;  // contextual interpolate panel
-static const float PLACE_STRIP_H = 22.0f; // beat placement strip
+static const float RULER_H       = 24.0f;
+static const float MINIMAP_H     = 40.0f;
+static const float CTX_PANEL_H   = 36.0f;  // contextual interpolate panel
+static const float PLACE_STRIP_H = 22.0f;  // beat placement strip
+static const float SECTION_H     = 52.0f;  // section strip
+static const float SEC_PANEL_H   = 34.0f;  // selected-section edit panel
+
+// Per-kind fill and border colours (index = SectionKind)
+static const ImU32 s_sec_fill[SK_COUNT] = {
+    IM_COL32( 70, 130, 210, 170),  // intro        - blue
+    IM_COL32( 50, 160,  80, 170),  // verse        - green
+    IM_COL32(155, 185,  50, 170),  // pre-chorus   - yellow-green
+    IM_COL32(220, 120,  40, 170),  // chorus       - orange
+    IM_COL32(200,  60,  60, 170),  // post-chorus  - red
+    IM_COL32(130,  70, 200, 170),  // bridge       - purple
+    IM_COL32( 90,  90, 110, 170),  // breakdown    - slate
+    IM_COL32( 40, 170, 160, 170),  // instrumental - teal
+    IM_COL32(200, 170,  30, 170),  // solo         - gold
+    IM_COL32(180,  70, 170, 170),  // interlude    - violet
+    IM_COL32( 50,  90, 170, 170),  // outro        - dark blue
+    IM_COL32(190,  50, 100, 170),  // refrain      - crimson
+};
+static const ImU32 s_sec_border[SK_COUNT] = {
+    IM_COL32(120, 180, 255, 230),  // intro
+    IM_COL32(100, 210, 130, 230),  // verse
+    IM_COL32(200, 230,  90, 230),  // pre-chorus
+    IM_COL32(255, 170,  80, 230),  // chorus
+    IM_COL32(240, 110, 110, 230),  // post-chorus
+    IM_COL32(180, 120, 250, 230),  // bridge
+    IM_COL32(140, 140, 165, 230),  // breakdown
+    IM_COL32( 80, 220, 210, 230),  // instrumental
+    IM_COL32(240, 210,  80, 230),  // solo
+    IM_COL32(225, 120, 220, 230),  // interlude
+    IM_COL32(100, 140, 220, 230),  // outro
+    IM_COL32(230,  90, 145, 230),  // refrain
+};
 
 // --- main widget -------------------------------------------------------
 
 void ui_timeline_render(EditorState* editor, AudioState* audio,
                         SpectrogramState* spectro, BeatMap* beatmap,
-                        UndoStack* undo)
+                        UndoStack* undo, SectionMap* sectionmap)
 {
     ImGuiIO& io = ImGui::GetIO();
 
@@ -204,10 +260,21 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
     }
     float ctx_h = show_ctx ? CTX_PANEL_H : 0.0f;
 
-    // Layout (top to bottom): minimap | ruler | spectrogram | place strip | beat area [| ctx panel]
-    // Spectrogram fills all available vertical space; everything below it is fixed height.
+    // Pre-compute section edit panel visibility
+    static int s_sec_selected = -1;  // persistent selection index (static local)
+    if (s_sec_selected >= sectionmap->count) s_sec_selected = -1;
+    sectionmap->selected_idx = s_sec_selected;  // keep struct in sync for main.cpp delete
+    bool  show_sec_panel = (s_sec_selected >= 0);
+    float sec_panel_h    = show_sec_panel ? SEC_PANEL_H : 0.0f;
+
+    // Layout (top to bottom):
+    //   minimap | ruler | spectrogram (flexible) |
+    //   place strip | beat area | [ctx panel] | section strip | [sec edit panel]
+    // Spectrogram fills all available vertical space; bottom items are fixed height.
     ImVec2 avail = ImGui::GetContentRegionAvail();
-    float fixed_h = MINIMAP_H + 2.0f + RULER_H + 2.0f + 2.0f + PLACE_STRIP_H + 2.0f + BEAT_AREA_H + ctx_h;
+    float fixed_h = MINIMAP_H + 2.0f + RULER_H + 2.0f
+                  + 2.0f + PLACE_STRIP_H + 2.0f + BEAT_AREA_H + ctx_h
+                  + 2.0f + SECTION_H + sec_panel_h;
     float spectro_h = avail.y - fixed_h;
     if (spectro_h < 50.0f) spectro_h = 50.0f;
     float total_h = fixed_h + spectro_h;
@@ -230,6 +297,10 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
     float tx = rx,   ty = ruler_y + RULER_H + 2.0f,   tw = rw,   th = spectro_h;
     float ps_x = rx, ps_y = ty + th + 2.0f,            ps_w = rw; // placement strip
     float ba_x = rx, ba_y = ps_y + PLACE_STRIP_H + 2.0f, ba_w = rw, ba_h = BEAT_AREA_H;
+    // ctx panel sits between beat area and section strip (ctx_y defined after ba_y)
+    float ctx_y  = ba_y + ba_h;
+    float sa_x   = rx,  sa_y = ctx_y + ctx_h + 2.0f, sa_w = rw, sa_h = SECTION_H;
+    float sep_y  = sa_y + sa_h;  // section edit panel top
 
     // --- Beat position layout pass (rebuilds every frame) ---
     // Computes screen positions + stagger rows for all beats.
@@ -269,7 +340,7 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
 
     // --- Single InvisibleButton covering the timeline (not the ctx panel) ---
     ImGui::SetCursorScreenPos(ImVec2(rx, ry));
-    ImGui::InvisibleButton("##timeline_input", ImVec2(rw, total_h - ctx_h),
+    ImGui::InvisibleButton("##timeline_input", ImVec2(rw, total_h - ctx_h - sec_panel_h),
                            ImGuiButtonFlags_MouseButtonLeft |
                            ImGuiButtonFlags_MouseButtonMiddle);
     bool hovered = ImGui::IsItemHovered();
@@ -279,6 +350,14 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
     static bool   s_mm_seeking      = false;
     static bool   s_drag_in_place   = false;
     static bool   s_drag_in_beats   = false;
+    static bool   s_drag_in_sec     = false;   // drag started in section strip
+    // Section editing state
+    static bool   s_sec_drag        = false;   // drag-to-create in progress
+    static double s_sec_drag_t0     = 0.0;
+    static double s_sec_drag_t1     = 0.0;
+    static bool   s_sec_hdrag       = false;   // handle resize drag in progress
+    static int    s_sec_hdrag_idx   = -1;      // which section is handle-dragged
+    static int    s_sec_hdrag_end   = 0;       // 0 = start handle, 1 = end handle
     static bool   s_rect_sel        = false;  // rect selection in progress
     static float  s_rect_x0         = 0.0f, s_rect_y0 = 0.0f;
     static double s_anchor          = 0.0;
@@ -296,6 +375,7 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
         s_mm_seeking      = (click_y >= mm_y    && click_y < ruler_y);
         s_drag_in_place   = (click_y >= ps_y    && click_y < ps_y + PLACE_STRIP_H);
         s_drag_in_beats   = (click_y >= ba_y    && click_y < ba_y + ba_h);
+        s_drag_in_sec     = (click_y >= sa_y    && click_y < sa_y + sa_h);
 
         if (s_drag_in_place) {
             double span = editor->view_end - editor->view_start;
@@ -372,6 +452,47 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
                 audio_seek(audio, s_anchor);
         }
 
+        if (s_drag_in_sec) {
+            double span  = editor->view_end - editor->view_start;
+            double t_raw = (sa_w > 0 && span > 0)
+                ? editor->view_start + (double)(io.MousePos.x - sa_x) / sa_w * span
+                : editor->view_start;
+            double t_snap = snap_to_beat(t_raw, beatmap,
+                                          editor->view_start, editor->view_end, sa_w);
+
+            // Hit-test existing sections: check handles first, then body
+            const float HANDLE_PX = 6.0f;
+            int hit = -1, hit_end = 0;  // hit_end: 0=start, 1=end, 2=body
+            for (int i = 0; i < sectionmap->count; i++) {
+                float sx0 = time_to_x(sectionmap->sections[i].t_start,
+                                       editor->view_start, editor->view_end, sa_x, sa_w);
+                float sx1 = time_to_x(sectionmap->sections[i].t_end,
+                                       editor->view_start, editor->view_end, sa_x, sa_w);
+                float mx = io.MousePos.x;
+                if (fabsf(mx - sx0) <= HANDLE_PX) { hit = i; hit_end = 0; break; }
+                if (fabsf(mx - sx1) <= HANDLE_PX) { hit = i; hit_end = 1; break; }
+                if (mx > sx0 && mx < sx1)          { hit = i; hit_end = 2; break; }
+            }
+
+            if (hit >= 0) {
+                s_sec_selected = hit;
+                s_sec_drag     = false;
+                if (hit_end < 2) {
+                    s_sec_hdrag     = true;
+                    s_sec_hdrag_idx = hit;
+                    s_sec_hdrag_end = hit_end;
+                } else {
+                    s_sec_hdrag = false;
+                }
+            } else {
+                s_sec_selected = -1;
+                s_sec_drag     = true;
+                s_sec_drag_t0  = t_snap;
+                s_sec_drag_t1  = t_snap;
+                s_sec_hdrag    = false;
+            }
+        }
+
         if (s_drag_in_beats) {
             double span = editor->view_end - editor->view_start;
             double t_click = (ba_w > 0 && span > 0)
@@ -444,6 +565,52 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
         s_drag_beat = -1;
     }
 
+    // Section drag-to-create: update end time while mouse is held
+    if (s_sec_drag && s_drag_in_sec &&
+        ImGui::IsMouseDragging(ImGuiMouseButton_Left)) {
+        double span  = editor->view_end - editor->view_start;
+        double t_raw = (sa_w > 0 && span > 0)
+            ? editor->view_start + (double)(io.MousePos.x - sa_x) / sa_w * span
+            : editor->view_start;
+        s_sec_drag_t1 = snap_to_beat(t_raw, beatmap,
+                                      editor->view_start, editor->view_end, sa_w);
+    }
+
+    // Section handle drag: resize selected section
+    if (s_sec_hdrag && ImGui::IsMouseDragging(ImGuiMouseButton_Left)) {
+        if (s_sec_hdrag_idx >= 0 && s_sec_hdrag_idx < sectionmap->count) {
+            double span  = editor->view_end - editor->view_start;
+            double t_raw = (sa_w > 0 && span > 0)
+                ? editor->view_start + (double)(io.MousePos.x - sa_x) / sa_w * span
+                : editor->view_start;
+            double t_snap = snap_to_beat(t_raw, beatmap,
+                                          editor->view_start, editor->view_end, sa_w);
+            Section& s = sectionmap->sections[s_sec_hdrag_idx];
+            if (s_sec_hdrag_end == 0)
+                s.t_start = (t_snap < s.t_end - 0.001) ? t_snap : s.t_end - 0.001;
+            else
+                s.t_end   = (t_snap > s.t_start + 0.001) ? t_snap : s.t_start + 0.001;
+            sectionmap->dirty = true;
+        }
+    }
+
+    // Section drag-to-create release: commit new section
+    if (s_sec_drag && !ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+        double pt0 = (s_sec_drag_t0 < s_sec_drag_t1) ? s_sec_drag_t0 : s_sec_drag_t1;
+        double pt1 = (s_sec_drag_t0 < s_sec_drag_t1) ? s_sec_drag_t1 : s_sec_drag_t0;
+        if (pt1 - pt0 > 0.05) {  // minimum 50 ms to prevent accidental tiny sections
+            int idx = sectionmap_add(sectionmap, pt0, pt1, SK_VERSE, "");
+            if (idx >= 0) s_sec_selected = idx;
+        }
+        s_sec_drag = false;
+    }
+
+    // Section handle drag release
+    if (s_sec_hdrag && !ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+        s_sec_hdrag     = false;
+        s_sec_hdrag_idx = -1;
+    }
+
     // Rect selection release: select all visible beats whose centre falls inside the rect
     if (s_rect_sel && !ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
         float rsx0 = s_rect_x0 < io.MousePos.x ? s_rect_x0 : io.MousePos.x;
@@ -464,6 +631,7 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
         s_mm_seeking      = false;
         s_drag_in_place   = false;
         s_drag_in_beats   = false;
+        s_drag_in_sec     = false;
     }
 
     // Minimap seek/scrub
@@ -807,6 +975,68 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
         }
     }
 
+    // --- Section strip ---
+    // Drawn before ctx panel widget calls to avoid clip-rect restriction.
+    dl->AddRectFilled(ImVec2(sa_x, sa_y), ImVec2(sa_x + sa_w, sa_y + sa_h),
+                      IM_COL32(10, 10, 16, 255));
+    dl->AddLine(ImVec2(sa_x, sa_y), ImVec2(sa_x + sa_w, sa_y),
+                IM_COL32(40, 40, 60, 255));
+
+    dl->PushClipRect(ImVec2(sa_x, sa_y), ImVec2(sa_x + sa_w, sa_y + sa_h), true);
+    for (int i = 0; i < sectionmap->count; i++) {
+        const Section& sec = sectionmap->sections[i];
+        float sx0 = time_to_x(sec.t_start, editor->view_start, editor->view_end, sa_x, sa_w);
+        float sx1 = time_to_x(sec.t_end,   editor->view_start, editor->view_end, sa_x, sa_w);
+        if (sx1 <= sa_x || sx0 >= sa_x + sa_w) continue;
+        bool  sel = (i == s_sec_selected);
+        float y0  = sa_y + 2.0f, y1 = sa_y + sa_h - 2.0f;
+
+        dl->AddRectFilled(ImVec2(sx0, y0), ImVec2(sx1, y1), s_sec_fill[sec.kind]);
+        dl->AddRect(ImVec2(sx0, y0), ImVec2(sx1, y1),
+                    sel ? s_sec_border[sec.kind] : IM_COL32(0, 0, 0, 120),
+                    0.0f, 0, sel ? 2.0f : 1.0f);
+
+        // Kind name or custom label
+        const char* lbl   = sec.label[0] ? sec.label : SECTION_KIND_NAMES[sec.kind];
+        float       lbl_x = sx0 + 4.0f;
+        float       lbl_y = y0 + (y1 - y0 - ImGui::GetTextLineHeight()) * 0.5f;
+        ImVec2      lbl_s = ImGui::CalcTextSize(lbl);
+        if (lbl_x + lbl_s.x < sx1 - 2.0f)
+            dl->AddText(ImVec2(lbl_x, lbl_y), IM_COL32(255, 255, 255, 220), lbl);
+
+        // Resize handles on selected section
+        if (sel) {
+            float hmy = y0 + (y1 - y0) * 0.5f;
+            dl->AddRectFilled(ImVec2(sx0 - 3.0f, hmy - 8.0f),
+                              ImVec2(sx0 + 3.0f, hmy + 8.0f), s_sec_border[sec.kind]);
+            dl->AddRectFilled(ImVec2(sx1 - 3.0f, hmy - 8.0f),
+                              ImVec2(sx1 + 3.0f, hmy + 8.0f), s_sec_border[sec.kind]);
+        }
+    }
+    // Drag-to-create preview
+    if (s_sec_drag) {
+        double dt0 = (s_sec_drag_t0 < s_sec_drag_t1) ? s_sec_drag_t0 : s_sec_drag_t1;
+        double dt1 = (s_sec_drag_t0 < s_sec_drag_t1) ? s_sec_drag_t1 : s_sec_drag_t0;
+        float  dx0 = time_to_x(dt0, editor->view_start, editor->view_end, sa_x, sa_w);
+        float  dx1 = time_to_x(dt1, editor->view_start, editor->view_end, sa_x, sa_w);
+        if (dx1 > dx0) {
+            dl->AddRectFilled(ImVec2(dx0, sa_y + 2.0f), ImVec2(dx1, sa_y + sa_h - 2.0f),
+                              IM_COL32(120, 180, 255, 60));
+            dl->AddRect(ImVec2(dx0, sa_y + 2.0f), ImVec2(dx1, sa_y + sa_h - 2.0f),
+                        IM_COL32(160, 210, 255, 200), 0.0f, 0, 1.5f);
+        }
+    }
+    dl->PopClipRect();
+
+    // --- Section edit panel background ---
+    // Drawn before ctx panel widget calls for the same clip-rect reason.
+    if (show_sec_panel) {
+        dl->AddRectFilled(ImVec2(sa_x, sep_y), ImVec2(sa_x + sa_w, sep_y + SEC_PANEL_H),
+                          IM_COL32(10, 10, 18, 255));
+        dl->AddLine(ImVec2(sa_x, sep_y), ImVec2(sa_x + sa_w, sep_y),
+                    IM_COL32(50, 50, 70, 255));
+    }
+
     // --- Contextual interpolation panel ---
     // Shown when exactly two adjacent beats are selected.
     if (show_ctx) {
@@ -954,6 +1184,50 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
         // Pair is no longer selected — invalidate cached indices
         s_ctx_prev0 = s_ctx_prev1 = -1;
         s_ctx_hover = false;
+    }
+
+    // --- Section edit panel widgets ---
+    if (show_sec_panel && s_sec_selected >= 0 && s_sec_selected < sectionmap->count) {
+        Section& sec = sectionmap->sections[s_sec_selected];
+
+        float fh      = ImGui::GetFrameHeight();
+        float combo_w = 120.0f;
+        float label_w = 140.0f;
+        float btn_w   = 58.0f;
+        float sp      = ImGui::GetStyle().ItemSpacing.x;
+        float spx     = sa_x + 4.0f;
+        float spy     = sep_y + (SEC_PANEL_H - fh) * 0.5f;
+
+        ImGui::SetCursorScreenPos(ImVec2(spx, spy));
+
+        // Kind combo
+        ImGui::SetNextItemWidth(combo_w);
+        int kind_int = (int)sec.kind;
+        if (ImGui::BeginCombo("##sec_kind", SECTION_KIND_NAMES[kind_int])) {
+            for (int k = 0; k < SK_COUNT; k++) {
+                bool sel_k = (k == kind_int);
+                if (ImGui::Selectable(SECTION_KIND_NAMES[k], sel_k)) {
+                    sec.kind         = (SectionKind)k;
+                    sectionmap->dirty = true;
+                }
+                if (sel_k) ImGui::SetItemDefaultFocus();
+            }
+            ImGui::EndCombo();
+        }
+        ImGui::SameLine();
+
+        // Optional custom label
+        ImGui::SetNextItemWidth(label_w);
+        if (ImGui::InputText("##sec_label", sec.label, sizeof(sec.label)))
+            sectionmap->dirty = true;
+        ImGui::SameLine();
+
+        // Delete button
+        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + sp);
+        if (ImGui::Button("Delete##sec", ImVec2(btn_w, 0))) {
+            sectionmap_remove(sectionmap, s_sec_selected);
+            s_sec_selected = -1;
+        }
     }
 
     ImGui::EndChild();
