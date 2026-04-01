@@ -996,10 +996,51 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
                     sel ? s_sec_border[sec.kind] : IM_COL32(0, 0, 0, 120),
                     0.0f, 0, sel ? 2.0f : 1.0f);
 
-        // Kind name or custom label
+        // Measure ticks: binary-search for first beat in section, then count by ts_num
+        {
+            int bi;
+            {
+                int lo = 0, hi = beatmap->count;
+                while (lo < hi) {
+                    int m = (lo + hi) / 2;
+                    if (beatmap->beats[m].time < sec.t_start) lo = m + 1;
+                    else hi = m;
+                }
+                bi = lo;
+            }
+            int   beat_in_sec = 0;
+            int   meas_num    = 1;
+            float tick_top    = y0 + 1.0f;
+            float tick_bot    = y1 - 1.0f;
+            float num_y       = y0 + 2.0f;  // measure number sits at top of rect
+
+            for (int b = bi; b < beatmap->count && beatmap->beats[b].time <= sec.t_end; b++) {
+                if (beat_in_sec % sec.ts_num == 0) {
+                    float bx = time_to_x(beatmap->beats[b].time,
+                                          editor->view_start, editor->view_end, sa_x, sa_w);
+                    // Tick line (skip the very first beat — coincides with section left edge)
+                    if (bx > sx0 + 1.0f && bx < sx1 - 1.0f)
+                        dl->AddLine(ImVec2(bx, tick_top), ImVec2(bx, tick_bot),
+                                    IM_COL32(255, 255, 255, 55), 1.0f);
+                    // Measure number
+                    char mbuf[8];
+                    snprintf(mbuf, sizeof(mbuf), "%d", meas_num);
+                    float num_x = bx + 2.0f;
+                    if (num_x >= sx0 && num_x < sx1 - 2.0f)
+                        dl->AddText(ImVec2(num_x, num_y),
+                                    IM_COL32(255, 255, 255, 130), mbuf);
+                    meas_num++;
+                }
+                beat_in_sec++;
+            }
+        }
+
+        // Kind name or custom label — biased toward the lower half to leave room for
+        // measure numbers at the top
         const char* lbl   = sec.label[0] ? sec.label : SECTION_KIND_NAMES[sec.kind];
         float       lbl_x = sx0 + 4.0f;
-        float       lbl_y = y0 + (y1 - y0 - ImGui::GetTextLineHeight()) * 0.5f;
+        float       th_lbl = ImGui::GetTextLineHeight();
+        float       lbl_y = y0 + (y1 - y0) * 0.62f - th_lbl * 0.5f;
         ImVec2      lbl_s = ImGui::CalcTextSize(lbl);
         if (lbl_x + lbl_s.x < sx1 - 2.0f)
             dl->AddText(ImVec2(lbl_x, lbl_y), IM_COL32(255, 255, 255, 220), lbl);
@@ -1220,6 +1261,26 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
         ImGui::SetNextItemWidth(label_w);
         if (ImGui::InputText("##sec_label", sec.label, sizeof(sec.label)))
             sectionmap->dirty = true;
+        ImGui::SameLine();
+
+        // Time signature: numerator DragInt + "/" + denominator DragInt
+        ImGui::SetNextItemWidth(32.0f);
+        if (ImGui::DragInt("##ts_num", &sec.ts_num, 0.15f, 1, 16, "%d")) {
+            if (sec.ts_num < 1) sec.ts_num = 1;
+            sectionmap->dirty = true;
+        }
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Beats per measure");
+        ImGui::SameLine(0, 2.0f);
+        ImGui::TextUnformatted("/");
+        ImGui::SameLine(0, 2.0f);
+        ImGui::SetNextItemWidth(32.0f);
+        if (ImGui::DragInt("##ts_den", &sec.ts_den, 0.15f, 1, 32, "%d")) {
+            if (sec.ts_den < 1) sec.ts_den = 1;
+            sectionmap->dirty = true;
+        }
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Note value (4 = quarter note)");
         ImGui::SameLine();
 
         // Delete button

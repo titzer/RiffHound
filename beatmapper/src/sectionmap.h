@@ -16,6 +16,8 @@ struct Section {
     double      t_end;
     SectionKind kind;
     char        label[48];  // optional suffix after ':' (e.g. "1" in "verse: 1")
+    int         ts_num;     // time-signature numerator  (beats per measure), default 4
+    int         ts_den;     // time-signature denominator (note value = 1/ts_den), default 4
 };
 
 struct SectionMap {

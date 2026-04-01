@@ -95,19 +95,28 @@ int main(int argc, char** argv) {
     recent_init(&recent);
     recent_load(&recent);
 
-    // If a file was passed on the command line, load it.
-    // Spectrogram will be computed on the first iteration of the main loop.
+    // If files were passed on the command line, add all existing ones to the
+    // recent list and open the last valid file.
     if (argc >= 2) {
-        if (audio_load(&audio, argv[1])) {
-            recent_add(&recent, argv[1]);
-            recent_save(&recent);
+        const char* last_file = nullptr;
+        for (int i = 1; i < argc; i++) {
+            FILE* probe = fopen(argv[i], "rb");
+            if (probe) {
+                fclose(probe);
+                recent_add(&recent, argv[i]);
+                last_file = argv[i];
+            }
         }
-        char bm_path[512];
-        beatmap_path_for_audio(argv[1], bm_path, sizeof(bm_path));
-        if (!beatmap_load(&beatmap, &sectionmap, bm_path))
-            beatmap.count = 0;
-        strncpy(beatmap.save_path, bm_path, sizeof(beatmap.save_path) - 1);
-        beatmap.dirty = false;
+        if (last_file) {
+            recent_save(&recent);
+            audio_load(&audio, last_file);
+            char bm_path[512];
+            beatmap_path_for_audio(last_file, bm_path, sizeof(bm_path));
+            if (!beatmap_load(&beatmap, &sectionmap, bm_path))
+                beatmap.count = 0;
+            strncpy(beatmap.save_path, bm_path, sizeof(beatmap.save_path) - 1);
+            beatmap.dirty = false;
+        }
     }
 
     static bool show_demo       = false;

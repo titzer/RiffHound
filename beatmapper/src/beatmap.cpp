@@ -76,11 +76,13 @@ bool beatmap_save(BeatMap* bm, SectionMap* sm, const char* path) {
         for (int i = 0; i < sm->count; i++) {
             const Section& s = sm->sections[i];
             if (s.label[0])
-                fprintf(f, "%.6f\t%.6f\t%s: %s\n",
-                        s.t_start, s.t_end, SECTION_KIND_NAMES[s.kind], s.label);
+                fprintf(f, "%.6f\t%.6f\t%s: %s @%d/%d\n",
+                        s.t_start, s.t_end, SECTION_KIND_NAMES[s.kind],
+                        s.label, s.ts_num, s.ts_den);
             else
-                fprintf(f, "%.6f\t%.6f\t%s\n",
-                        s.t_start, s.t_end, SECTION_KIND_NAMES[s.kind]);
+                fprintf(f, "%.6f\t%.6f\t%s @%d/%d\n",
+                        s.t_start, s.t_end, SECTION_KIND_NAMES[s.kind],
+                        s.ts_num, s.ts_den);
         }
         sm->dirty = false;
     }
@@ -154,7 +156,30 @@ bool beatmap_load(BeatMap* bm, SectionMap* sm, const char* path) {
                     int ll = (int)strlen(label);
                     while (ll > 0 && (label[ll-1] <= ' ')) label[--ll] = '\0';
                 }
-                sectionmap_add(sm, t1, t2, (SectionKind)kind, label);
+                // Parse optional @N/D time-signature suffix from end of label
+                int ts_num = 4, ts_den = 4;
+                {
+                    int ll = (int)strlen(label);
+                    for (int k = ll - 1; k >= 0; k--) {
+                        if (label[k] == '@') {
+                            int n = 0, d = 0, rd = 0;
+                            if (sscanf(label + k + 1, "%d/%d%n", &n, &d, &rd) == 2
+                                    && n > 0 && d > 0) {
+                                ts_num = n;
+                                ts_den = d;
+                                // Trim trailing whitespace before '@'
+                                while (k > 0 && (label[k-1]==' ' || label[k-1]=='\t')) k--;
+                                label[k] = '\0';
+                            }
+                            break;
+                        }
+                    }
+                }
+                int sec_idx = sectionmap_add(sm, t1, t2, (SectionKind)kind, label);
+                if (sec_idx >= 0) {
+                    sm->sections[sec_idx].ts_num = ts_num;
+                    sm->sections[sec_idx].ts_den = ts_den;
+                }
             }
         }
     }
