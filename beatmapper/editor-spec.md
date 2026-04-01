@@ -41,14 +41,19 @@ The user can add, move or otherwise edit both the beat and section map by direct
 In the editor, sections will always be delimited in terms of beats (though the section map format allows seconds).
 The editor includes a beat finder tool that, given a selection of the track's audio, will perform audio analysis to determine suggested beats.
 The beat finder's suggested beats can be selected independently and then committed to the main working beatmap.
-The editor includes several useful tools for bulk-placing beats, such as selecting the beginning and end beat and then a beat-finder-assisted interpolation, plus a simple interpolation helper based on counting.
-Rather than relying on zooming / panning, the editor shows the track in multiple zoom levels simultaneously, with the widest zoom being the entire track and 2-4 levels between, with the tightest zoom level appropriately-sized for manual adjustment (e.g. 20-50 pixels for a beat).
+The editor includes several useful tools for bulk-placing beats, such as selecting the beginning and end beat and then interpolating.
+Simple interpolation is based on dividing the interval into evenly-sized sub-intervals based on the instantaneous BPM of one of the endpoints, calculated by the difference between the endpoint and the nearest beat outside the interval.
+A beat-finder-assisted interpolation examines candidate beats within the interval and suggests evenly-spaced splits that minimize error.
+The editor allows zooming and panning. 
 The editor uses the beatmap to show appropriate grids at each zoom level, and a time signature for different sections (default 4/4, with easy way to get to 3/4 6/8, etc) makes measures visually distinguishable.
 Mouseover adds subtle highlights to measures / beats to emphasize the underlying measure and section.
-The editor optimizes the in-memory representation of the beatmap to use repeated beats in order to compress the stored representation.
+The editor can optimize the in-memory representation of the beatmap to use repeated beats in order to compress the stored representation.
+Optimization of the beatmap can be to improve its regularity, reduce mean-squared error with detected beats, or other criteria.
 A quantize tool allows selecting a range of beats and then re-interpolating their positions based on the average BPM between the start and end, which allows a user to quickly mark all the beats (based on visualization of the spectrogram), select them, and have them quantized.
 A nudge tool allows selecting a range of beats and using the beat finder tool to adjust the beats to more exactly match detected beats.
-A cue tool allows creating count-ins for tricky sections and complex rhythm parts
+A cue tool allows creating count-ins for tricky sections and complex rhythm parts.
+A repeat tool can take a section and its contained beats and replicate it, and the section and its beats can be dragged as a unit to be placed at the start of another beat.
+A repeat tool can take a section and a number of repeat times, and the section is not replicated, but repeated, and the start of each repeat can be manually adjusted to align with track inconsistencies, and each repeat can be stretched a small amount to account for tempo inconsistencies.
 
 TODO: think of additional tools, like quantization, rulers, etc, and form implementation-plan.md
 
@@ -61,4 +66,8 @@ TODO: think of additional tools, like quantization, rulers, etc, and form implem
 - Chord buddy
 - Karaoke program with lyrics
 - Synced guitar tab player
-- Extraction and remix for looping
+- Extraction and remix for a smart loop station
+- Analyze multiple repeats of a section to extract differences or pick the best take
+  - e.g. variation of a main drum pattern, or detect melody as diff
+  - e.g. running jam session; pick the best take or small number of takes
+  
