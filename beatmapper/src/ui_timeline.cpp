@@ -377,6 +377,11 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
         s_drag_in_beats   = (click_y >= ba_y    && click_y < ba_y + ba_h);
         s_drag_in_sec     = (click_y >= sa_y    && click_y < sa_y + sa_h);
 
+        // Any click outside the section strip clears section selection so
+        // that a lingering selected section never hijacks Delete/Backspace.
+        if (!s_drag_in_sec)
+            s_sec_selected = -1;
+
         if (s_drag_in_place) {
             double span = editor->view_end - editor->view_start;
             double t_place = (ps_w > 0.0f && span > 0.0)

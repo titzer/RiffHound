@@ -182,22 +182,22 @@ int main(int argc, char** argv) {
             if (ImGui::IsKeyPressed(ImGuiKey_RightArrow, true))
                 audio_seek(&audio, audio_get_position(&audio) + 5.0);
 
-            // Delete / Backspace → remove selected section first, then selected beats
+            // Delete / Backspace → selected beats take priority; fall back to
+            // removing a selected section only when no beats are selected.
             if (ImGui::IsKeyPressed(ImGuiKey_Delete) ||
                 ImGui::IsKeyPressed(ImGuiKey_Backspace)) {
-                if (sectionmap.selected_idx >= 0) {
+                bool any_beats = false;
+                for (int i = 0; i < beatmap.count && !any_beats; i++)
+                    if (beatmap.beats[i].selected) any_beats = true;
+
+                if (any_beats) {
+                    undo_push(&undo, &beatmap);
+                    for (int i = beatmap.count - 1; i >= 0; i--)
+                        if (beatmap.beats[i].selected)
+                            beatmap_remove(&beatmap, i);
+                } else if (sectionmap.selected_idx >= 0) {
                     sectionmap_remove(&sectionmap, sectionmap.selected_idx);
                     sectionmap.selected_idx = -1;
-                } else {
-                    bool any = false;
-                    for (int i = 0; i < beatmap.count && !any; i++)
-                        if (beatmap.beats[i].selected) any = true;
-                    if (any) {
-                        undo_push(&undo, &beatmap);
-                        for (int i = beatmap.count - 1; i >= 0; i--)
-                            if (beatmap.beats[i].selected)
-                                beatmap_remove(&beatmap, i);
-                    }
                 }
             }
 

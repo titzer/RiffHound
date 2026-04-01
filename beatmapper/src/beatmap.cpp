@@ -98,13 +98,15 @@ bool beatmap_save(BeatMap* bm, SectionMap* sm, const char* path) {
 }
 
 bool beatmap_load(BeatMap* bm, SectionMap* sm, const char* path) {
+    // Always clear first so stale data never persists when the file is missing.
+    bm->count = 0;
+    if (sm) sectionmap_clear(sm);
+
     FILE* f = fopen(path, "r");
     if (!f) {
         fprintf(stderr, "[beatmap] failed to open '%s'\n", path);
         return false;
     }
-    bm->count = 0;
-    if (sm) sectionmap_clear(sm);
 
     char line[512];
     while (fgets(line, sizeof(line), f)) {
