@@ -12,6 +12,7 @@ bool platform_open_file_dialog(char* out_path, int out_size) {
         [UTType typeWithFilenameExtension:@"mp3"],
         [UTType typeWithFilenameExtension:@"wav"],
         [UTType typeWithFilenameExtension:@"flac"],
+        [UTType typeWithFilenameExtension:@"m4a"],
     ];
 
     if ([panel runModal] == NSModalResponseOK) {
