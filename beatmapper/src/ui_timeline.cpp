@@ -292,14 +292,19 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
 
     float rx = canvas_pos.x, ry = canvas_pos.y, rw = canvas_w;
 
-    float mm_x = rx, mm_y = ry,                       mm_w = rw, mm_h = MINIMAP_H;
+    // Left sidebar: just wide enough to show "20k" with 4 px padding on each side.
+    float sidebar_w = ImGui::CalcTextSize("20k").x + 8.0f;
+    float cx = rx + sidebar_w;   // content area left edge
+    float cw = rw - sidebar_w;   // content area width
+
+    float mm_x = cx, mm_y = ry,                       mm_w = cw, mm_h = MINIMAP_H;
     float ruler_y = mm_y + mm_h + 2.0f;
-    float tx = rx,   ty = ruler_y + RULER_H + 2.0f,   tw = rw,   th = spectro_h;
-    float ps_x = rx, ps_y = ty + th + 2.0f,            ps_w = rw; // placement strip
-    float ba_x = rx, ba_y = ps_y + PLACE_STRIP_H + 2.0f, ba_w = rw, ba_h = BEAT_AREA_H;
+    float tx = cx,   ty = ruler_y + RULER_H + 2.0f,   tw = cw,   th = spectro_h;
+    float ps_x = cx, ps_y = ty + th + 2.0f,            ps_w = cw; // placement strip
+    float ba_x = cx, ba_y = ps_y + PLACE_STRIP_H + 2.0f, ba_w = cw, ba_h = BEAT_AREA_H;
     // ctx panel sits between beat area and section strip (ctx_y defined after ba_y)
     float ctx_y  = ba_y + ba_h;
-    float sa_x   = rx,  sa_y = ctx_y + ctx_h + 2.0f, sa_w = rw, sa_h = SECTION_H;
+    float sa_x   = cx,  sa_y = ctx_y + ctx_h + 2.0f, sa_w = cw, sa_h = SECTION_H;
     float sep_y  = sa_y + sa_h;  // section edit panel top
 
     // --- Beat position layout pass (rebuilds every frame) ---
@@ -435,8 +440,8 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
         if (s_drag_in_ruler && audio->loaded) {
             // Click on ruler seeks the playhead; dragging will pan as before.
             double span = editor->view_end - editor->view_start;
-            double t = (rw > 0 && span > 0)
-                ? editor->view_start + (io.MousePos.x - rx) / rw * span
+            double t = (cw > 0 && span > 0)
+                ? editor->view_start + (io.MousePos.x - cx) / cw * span
                 : editor->view_start;
             if (t < 0.0)              t = 0.0;
             if (t > editor->duration) t = editor->duration;
@@ -662,7 +667,7 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
 
     if (hovered) {
         float mouse_x    = io.MousePos.x;
-        float pixel_frac = (rw > 0) ? (mouse_x - rx) / rw : 0.5f;
+        float pixel_frac = (cw > 0) ? (mouse_x - cx) / cw : 0.5f;
         if (pixel_frac < 0) pixel_frac = 0;
         if (pixel_frac > 1) pixel_frac = 1;
 
@@ -677,11 +682,45 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
         if (s_drag_in_ruler && ImGui::IsMouseDragging(ImGuiMouseButton_Left)) {
             float dx = io.MouseDelta.x;
             double span = editor->view_end - editor->view_start;
-            if (rw > 0) editor_pan(editor, -dx / rw * span);
+            if (cw > 0) editor_pan(editor, -dx / cw * span);
         }
     }
 
     // --- Draw ---
+
+    // Left sidebar: background + right border
+    dl->AddRectFilled(ImVec2(rx, ry), ImVec2(cx, ry + total_h),
+                      IM_COL32(12, 12, 18, 255));
+    dl->AddLine(ImVec2(cx, ry), ImVec2(cx, ry + total_h),
+                IM_COL32(50, 50, 70, 255));
+
+    // Frequency axis labels aligned to the spectrogram row
+    if (spectro->computed && spectro->sample_rate > 0 && th > 0.0f) {
+        float nyquist = (float)(spectro->sample_rate / 2);
+        static const int   sb_freqs[] = {
+            1000, 2000, 3000, 4000, 5000, 6000, 7000, 8000, 10000, 12000, 16000, 20000 };
+        static const char* sb_names[] = {
+            "1k", "2k", "3k", "4k", "5k", "6k", "7k", "8k", "10k", "12k", "16k", "20k" };
+        int   n_sb    = (int)(sizeof(sb_freqs) / sizeof(sb_freqs[0]));
+        float lh      = ImGui::GetTextLineHeight();
+        float last_bot = ty - lh - 2.0f;  // primed so the first label always passes
+        for (int i = n_sb - 1; i >= 0; i--) {  // high-freq → low-freq  (top → bottom)
+            if (sb_freqs[i] >= (int)nyquist) continue;
+            float frac    = 1.0f - (float)sb_freqs[i] / nyquist;
+            float cy_freq = ty + frac * th;
+            float label_y = cy_freq - lh * 0.5f;
+            if (label_y < ty) continue;
+            if (label_y + lh > ty + th) continue;
+            if (label_y < last_bot + 1.0f) continue;   // skip if overlapping
+            ImVec2 ts = ImGui::CalcTextSize(sb_names[i]);
+            dl->AddText(ImVec2(cx - ts.x - 4.0f, label_y),
+                        IM_COL32(150, 150, 170, 160), sb_names[i]);
+            // Short tick crossing the sidebar border
+            dl->AddLine(ImVec2(cx - 3.0f, cy_freq), ImVec2(cx + 3.0f, cy_freq),
+                        IM_COL32(150, 150, 170, 100));
+            last_bot = label_y + lh;
+        }
+    }
 
     draw_minimap(dl, mm_x, mm_y, mm_w, mm_h,
                  editor->duration,
@@ -689,7 +728,7 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
                  editor->has_region, editor->region_start, editor->region_end,
                  audio->loaded, audio_get_position(audio));
 
-    draw_ruler(dl, rx, ruler_y, rw, RULER_H,
+    draw_ruler(dl, cx, ruler_y, cw, RULER_H,
                editor->view_start, editor->view_end);
 
     spectrogram_render(spectro, dl, tx, ty, tw, th,
@@ -870,11 +909,11 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
     // Cursor time hint line + tooltip
     if (hovered) {
         float mx = io.MousePos.x;
-        if (mx >= rx && mx <= rx + rw) {
+        if (mx >= cx && mx <= cx + cw) {
             dl->AddLine(ImVec2(mx, ruler_y), ImVec2(mx, ty + th),
                         IM_COL32(255, 255, 255, 40), 1.0f);
             double hover_t = editor->view_start +
-                             (mx - rx) / rw * (editor->view_end - editor->view_start);
+                             (mx - cx) / cw * (editor->view_end - editor->view_start);
             int hm = (int)(hover_t / 60.0);
             double hs = hover_t - hm * 60.0;
             char tip[32];

@@ -10,6 +10,7 @@ struct SpectrogramState {
     unsigned int texture;     // GLuint (stored as uint to avoid GL headers here)
     int          tex_w;       // texture width  (time columns)
     int          tex_h;       // texture height (frequency bins)
+    unsigned int sample_rate; // native sample rate (for frequency axis labels)
 };
 
 void spectrogram_init(SpectrogramState* s);

@@ -94,11 +94,12 @@ static void colormap(float v, uint8_t* r, uint8_t* g, uint8_t* b)
 // ---------------------------------------------------------------------------
 
 void spectrogram_init(SpectrogramState* s) {
-    s->computed = false;
-    s->duration = 0.0;
-    s->texture  = 0;
-    s->tex_w    = 0;
-    s->tex_h    = 0;
+    s->computed     = false;
+    s->duration     = 0.0;
+    s->texture      = 0;
+    s->tex_w        = 0;
+    s->tex_h        = 0;
+    s->sample_rate  = 0;
 }
 
 void spectrogram_shutdown(SpectrogramState* s) {
@@ -200,11 +201,12 @@ void spectrogram_compute(SpectrogramState* s,
 
     free(pixels);
 
-    s->texture  = (unsigned int)tex;
-    s->tex_w    = tex_w;
-    s->tex_h    = tex_h;
-    s->duration = (double)num_samples / (double)sample_rate;
-    s->computed = true;
+    s->texture      = (unsigned int)tex;
+    s->tex_w        = tex_w;
+    s->tex_h        = tex_h;
+    s->duration     = (double)num_samples / (double)sample_rate;
+    s->sample_rate  = sample_rate;
+    s->computed     = true;
 
     printf("[spectrogram] %d×%d  duration=%.1fs  frames=%lld\n",
            tex_w, tex_h, s->duration, (long long)num_frames);
