@@ -12,8 +12,9 @@ A simple sorting tool can take an unsorted timeseries file and sort it without i
 
 ### Beatmap File Format
 The format of a beatmap file consists of beat events one per line as a timeseries file, where times are always in seconds.
-Beats are events that have the names "B" or "Bx<N>" where <N> is a positive decimal integer up to 10000.
+Beats are events that have the names "B", "BM", "Bx<N>", or "BMx<N>, where <N> is a positive decimal integer up to 10000.
 A "B" indicates a singular beat at the start time (ignoring the end time), and "BxN" indicates N beats, with the first starting at the start time, and the last at the end time, and the intervening beats evenly spaced between (i.e. interpolated).
+A beat labeled "BM" indicates a beat which starts a measure, which is used by some tools and can be used to compute a local time signature.
 Beats are numbered in increasing order starting from 1.
 
 #### Beatmap File Examples
@@ -68,4 +69,3 @@ sectionmap1.txt has two sections, with a verse from beat 45 to 64 and a chorus f
 Timeseries files can be merged together, in which case all events are sorted together and duplicate events can either be preserved or discarded according to application.
 For example, beat map files and section map files can be combined for easier file management.
 Events whose times are expressed in beats must follow the definitions of those beats from the beatmap.
-

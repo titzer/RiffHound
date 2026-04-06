@@ -4,8 +4,10 @@
 
 A standalone native application for macOS and Linux that allows users to load audio
 tracks and interactively produce beatmaps and section maps in the timeseries format
-defined in `format-spec.md`. The emphasis is on fast, accurate beat placement with
-bulk tools for interpolation and extrapolation, driven by a spectrogram view.
+defined in `format-spec.md`. The emphasis is on fast, accurate beat placement via
+manual, semi-automated, and automated mechanism, bulk tools for interpolation and
+extrapolation.
+The main user interface provides a spectrogram and a timeline view of beats and sections.
 
 ---
 
@@ -96,7 +98,7 @@ stored relative to beats in the editor (even though the format supports seconds)
 
 ### `audio`
 Thin wrapper around miniaudio:
-- Load MP3/WAV from file, expose decoded PCM as `float[]` at a canonical sample rate
+- Load MP3/WAV/M4A from file, expose decoded PCM as `float[]` at a canonical sample rate
   (44100 Hz, mono mix for analysis; stereo for playback)
 - Play/pause/seek by seconds
 - Playback speed multiplier (0.5×–2×) via miniaudio's resampler
@@ -129,12 +131,13 @@ with overlaid beat markers and section regions.
 ```
 +--[minimap strip: full track at low resolution, current view highlighted]--------+
 +--[time ruler: tick marks at appropriate intervals for current zoom]-------------+
-|                                                                                  |
+|      v playhead                                                                 |
+|      |                                                                          |
 |   [spectrogram texture, tiled]                                                  |
-|                                                                                  |
-|   |beat |beat    |beat         |beat                                            |
-|   [========= section: verse 1 =========]  [=== chorus ===]                     |
-|   ^playhead                                                                      |
+|                                                                                 |
+|   |--- insertion strip ---------------------------------------------------------|
+|   ◇beat ◇beat    ◇beat         ◇beat                                            |
+|   [========= section: verse 1 =========]  [=== chorus ===]                      |
 +---------------------------------------------------------------------------------+
 ```
 
@@ -149,10 +152,10 @@ with overlaid beat markers and section regions.
   substitute for the full stacked multi-zoom view
 
 ### Beat Markers
-- Rendered as vertical lines using `ImDrawList::AddLine`
+- Rendered as large (fixed, manually-placed) or small diamonds
 - Selected beats: highlighted (brighter color + slightly wider)
 - Hovered beat: subtle highlight; shows time in tooltip
-- Beat numbers shown below the ruler at coarser zoom levels
+- TODO: Beat numbers shown below the ruler at coarser zoom levels
 
 ### Section Overlays
 - Semi-transparent colored rects spanning section start/end beat positions
@@ -161,15 +164,11 @@ with overlaid beat markers and section regions.
 
 ### Interaction Modes (set from toolbar)
 
-**Select mode** (default):
 - Click a beat marker to select it (Shift+click to add to selection)
 - Click+drag a beat marker to move it
+- (Delete/Backspace deletes selected beats)
 - Click empty space to deselect
-
-**Place mode**:
-- Click empty space to add a beat at the cursor's time position
-- Click an existing beat to delete it
-- (Delete/Backspace in Select mode also deletes selected beats)
+- Click inside insertion strip to add a beat at the cursor's time position
 
 **Region Select mode**:
 - Click+drag on empty space draws a selection rectangle; all beats within are selected
