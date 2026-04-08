@@ -1,0 +1,201 @@
+// Clustering algorithm from "Automatic Extraction of Tempo and Beat from Expressive Performances" by Simon Dixon, 2001.
+
+type Event(onset: double);
+
+type Cluster(
+	interval: double,
+	size: int,
+	score: double,
+	members: Vector<double>
+);
+
+def abs(x: double) -> double {
+	if (x < 0.0) return -x;
+	return x;
+}
+
+def recomputeInterval(c: Cluster) -> Cluster {
+	var sum: double = 0.0;
+	var i: int = 0;
+
+	while (i < c.members.length) {
+		sum = sum + c.members.get(i);
+		i = i + 1;
+	}
+
+	if (c.members.length == 0) {
+		return Cluster(0.0, 0, c.score, c.members);
+	}
+
+	return Cluster(sum / c.members.length, c.members.length, c.score, c.members);
+}
+
+def newCluster(ioi: double) -> Cluster {
+	var m = Vector<double>.new();
+	m.put(ioi);
+	return Cluster(ioi, 1, 0.0, m);
+}
+
+def addToCluster(c: Cluster, ioi: double) -> Cluster {
+	c.members.put(ioi);
+	return recomputeInterval(c);
+}
+
+def mergeClusters(a: Cluster, b: Cluster) -> Cluster {
+	var i: int = 0;
+
+	while (i < b.members.length) {
+		a.members.put(b.members.get(i));
+		i = i + 1;
+	}
+
+	return recomputeInterval(
+		Cluster(a.interval, a.members.length, a.score + b.score, a.members)
+	);
+}
+
+/*
+ * Relationship factor f(n).
+ * Not specified in the paper, so define explicitly.
+ */
+def relationshipFactor(n: int) -> double {
+	if (n == 1) return 6.0;
+	if (n == 2) return 5.0;
+	if (n == 3) return 4.0;
+	if (n == 4) return 3.0;
+	return 0.0;
+}
+
+/*
+ * Phase 1: build clusters
+ */
+def buildClusters(events: Array<Event>, clusterWidth: double) -> Vector<Cluster> {
+	var clusters = Vector<Cluster>.new();
+	var i: int = 0;
+
+	while (i < events.length) {
+		var j: int = 0;
+
+		while (j < events.length) {
+			var ioi: double = abs(events[j].onset - events[i].onset);
+
+			var best: int = -1;
+			var bestDist: double = 0.0;
+
+			var k: int = 0;
+			while (k < clusters.length) {
+				var c = clusters.get(k);
+				var d = abs(c.interval - ioi);
+
+				if (d < clusterWidth) {
+					if (best < 0 || d < bestDist) {
+						best = k;
+						bestDist = d;
+					}
+				}
+
+				k = k + 1;
+			}
+
+			if (best >= 0) {
+				var c = clusters.get(best);
+				clusters.set(best, addToCluster(c, ioi));
+			} else {
+				clusters.put(newCluster(ioi));
+			}
+
+			j = j + 1;
+		}
+
+		i = i + 1;
+	}
+
+	return clusters;
+}
+
+/*
+ * Phase 2: merge nearby clusters
+ */
+def mergeNearbyClusters(clusters: Vector<Cluster>, clusterWidth: double) {
+	var i: int = 0;
+
+	while (i < clusters.length) {
+		var j: int = 0;
+
+		while (j < clusters.length) {
+			if (j != i) {
+				var ci = clusters.get(i);
+				var cj = clusters.get(j);
+
+				if (abs(ci.interval - cj.interval) < clusterWidth) {
+					var merged = mergeClusters(ci, cj);
+
+					clusters.set(i, merged);
+					remove(clusters, j);
+
+					if (j < i) {
+						i = i - 1;
+					}
+
+					continue;
+				}
+			}
+
+			j = j + 1;
+		}
+
+		i = i + 1;
+	}
+}
+def remove<T>(vec: Vector<T>, i: int) {
+	var j: int = i;
+	while (j < vec.length - 1) {
+		vec.set(j, vec.get(j + 1));
+		j = j + 1;
+	}
+	vec.resize(vec.length - 1);
+}
+
+/*
+ * Phase 3: scoring
+ *
+ * We must iterate over n.
+ * Choose a small bound (e.g. 1..4) as typical in rhythm literature.
+ */
+def scoreClusters(clusters: Vector<Cluster>, clusterWidth: double) {
+	var i: int = 0;
+
+	while (i < clusters.length) {
+		var ci = clusters.get(i);
+		var score: double = 0.0;
+
+		var j: int = 0;
+		while (j < clusters.length) {
+			var cj = clusters.get(j);
+
+			var n: int = 1;
+			while (n <= 4) {
+				if (abs(ci.interval - double.!(n) * cj.interval) < clusterWidth) {
+					score = score + relationshipFactor(n) * double.!(cj.members.length);
+				}
+
+				n = n + 1;
+			}
+
+			j = j + 1;
+		}
+
+		clusters.set(i, Cluster(ci.interval, ci.members.length, score, ci.members));
+		i = i + 1;
+	}
+}
+
+/*
+ * Full pipeline
+ */
+def clusterIOIs(events: Array<Event>, clusterWidth: double) -> Vector<Cluster> {
+	var clusters = buildClusters(events, clusterWidth);
+	mergeNearbyClusters(clusters, clusterWidth);
+	scoreClusters(clusters, clusterWidth);
+	return clusters;
+}
