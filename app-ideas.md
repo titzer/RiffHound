@@ -1,6 +1,6 @@
-RiffHound System Specification
+# RiffHound System Specification
 
-Abstract.
+## Abstract
 
 The RiffHound system is a modular collection of hardware and software subsystems for learning to play and perform music, with specific affordances for each type of instrument and style of music.
 The Riffhound system understands player goals, skill level, and knowledge base and works to efficiently and enjoyably expand skillsets.
@@ -10,35 +10,35 @@ Hardware and software co-operate to allow a customizable user experience that pl
 The Riffhound system can expand to fill any size room, can be configured to occupy a full room--like a pipe organ--or have a mini or travel version that consists of a box no larger than a small boombox.
 The Riffhound system can be used to complete an incomplete band in a fully-interactive jam session by emulating (at a virtuoso level) any musician's ability on any instrument, such as adding a virtual John Bonham to two dudes jamming in their basement.
 
-Fun.
+## Fun
 
 The number one requirement of Riffhound is that all activities must have some element of fun, ranging from easy games well within the player's skill level to challenging activities such as training ear, timing, rthythm, speed, feel, learning specific pieces or passages of music, and playing with others, which help a player grow.
 
-Virtual band.
+## Virtual band
 
 Riffhound can fill in the missing members of a band that is capable of practicing and performing any typical Rock, Blues, Metal, pop or other genre of music that the player desires.
 That includes functioning as a missing drummer, bassist, etc that can participate, lead, and follow, call/response, etc in a live jam that is both fun and challenging.
 
-Riffhound helps you learn.
+## Riffhound helps you learn
 
 Riffhound directs jamming gently toward improvement.
 For example, Riffhound intersperses lightweight learning while in a live groove/jam session in a pedagogical way that doesn't sacrifice the groove to stoop to learn.
 Instead, riffs, passages, musical ideas, and even whole pieces are presented in right-sized chunks at and slightly above the player's ability to allow them.
 This allows gentle, gradual stretching of ability, but comfortably in a way that sounds good and remains always fun.
 
-Riffhound hones your performance.
+## Riffhound hones your performance
 
 The player can choose to focus on performance of certain pieces, jams, improvs, etc, and Riffhound can help you perfect the piece when concentration is necessary.
 It includes a number of different analyzers, such as timing, precision, cleanliness, phrasing, etc that can offer lightweight feedback that doesn't feel overbearing or nitpicky.
 As always, the player can tune the amount of feedback and precision they want to get.
 
-Riffound knows what you want to learn.
+## Riffound knows what you want to learn
 
 The system understands the type of music you like, the type of music you can already play or have learned, and what you want to be able to play.
 It helps pick exercises, practices, jams, etc that always point toward achieving the music you want to be able to play.
 In its lightweight learning algorithm, it intersperses lessons, licks, and tricks that form the basis of skills that will be needed to get to the player's desired goals.
 
-Riffhound never breaks your flow.
+## Riffhound never breaks your flow
 
 The entire system is designed to allow control at all points but to never interrupt, nag, get stuck, crash, or balk at player intent.
 It absolutely does not show advertisements; the player can trust that it only has the player's interests in mind, and never advertisers' or the software authors'.
@@ -46,15 +46,15 @@ It has only your betterment in mind.
 When directed, it can back off of annoying levels of difficulty and won't nag or guilt trip that player into practicing hard things that are no fun.
 While it has more musical knowledge than any human and "knows" better than you, its attitude is infinitely patient and pedagogical, not snooty or mean--think of more like a best friend you can trust.
 
-Specific systems employed.
+# System concepts
 
-Monitors.
+## Monitors
 
 Riffhound has lots of ways to analyze your play or just entertain you with the music that is being produced.
 It can show audio spectrograms, do rhythm analysis, and understand other aspects of playing such as being able to analyze technique with cameras.
 It also monitors the groove and jam of overall sessions and adjusts VP behavior.
 
-Virtual Players
+## Virtual Players
 
 Riffhound can provide replacement band members: *virtual players, or VPs* to complete any multi-player session.
 For example, a guitarist and a drummer can have VPs of a bassist and rhythm guitarist, or even vocalist.
@@ -62,7 +62,7 @@ An expert VP can be selected and even given a blend of known personalities based
 Riffhound can provide appropriate visualizations of VPs, for example with a cylindrical, dome-shaped 3D holographic display of the performer, perhaps in miniature for convenience purposes.
 Visualizations of VPs can be completely customized.
 
-Hardware ideas:
+## Hardware ideas
 
 - Pressure buttons on the floor for foot operation.
   Should be industrially-strength robust--tough enough to jump and land with your full bodyweight on, repeatedly, for years.
@@ -109,19 +109,19 @@ Hardware ideas:
   Thus if a hardware console is de-activated (which can only be done by a hardware switch at the site of the console), then control reverts to Riffhound software.
   If a hardware console is "activated
 
-Jam mode.
+## Jam mode
   Riffhound has the concept of different "modes".
   In jam mode, Riffhound can keep a jam up with the player(s) centered around a song, a group, a genre, a playlist, riff ideas, etc.
   The key hallmarks of a good jam session are a feeling of fun, of groove, of locking tight in the group, trading ideas, learning, not being embarrassed, confidence, expression.
   In jam mode Riffhound may challenge the player with new riffs or difficult riffs or passages, but always with the aim of leading the player to better skill.
   Challenges may be so subtle the player doesn't notice.
 
-Practice mode.
+## Practice mode
   In practice mode, the player directs focus to learning a specific song, setlist, riff, or test.
   It's disciplined practice that helps the player specifically focus on developing new skills and knowledge.
   Riffhound should assist in focus, analyze playing automatically and help correct mistakes, and generally act as the most disciplined, efficient, and empathetic teacher a player could want.
 
-AI Model integration.
+## AI Model integration
   Riffhound can utilize artificial intelligence modules for all aspects, particularly VPs.
   AI can help determine exercises, backing tracks, backing parts, lessons, riffs, call/response, etc.
   AI has been trained on thousands or millions of instructional videos and is ready to teach a player any instrument in any notation at any time.
