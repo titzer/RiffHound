@@ -46,6 +46,8 @@ static void wsola_step(WsolaSource* ws)
 
     double input_pos = ws->input_pos;
     float  speed     = ws->speed.load(std::memory_order_relaxed);
+    float  pitch     = ws->pitch.load(std::memory_order_relaxed);
+    if (pitch < 0.01f) pitch = 0.01f;  // guard against division by zero
 
     // 1. Find the best analysis position by maximizing cross-correlation
     //    between the candidate input frame and the current overlap tail.
@@ -96,8 +98,10 @@ static void wsola_step(WsolaSource* ws)
             tail * ch * sizeof(float));
     memset(ws->synth_buf + tail * ch, 0, HOP * ch * sizeof(float));
 
-    // 6. Advance the input read head by the analysis hop (HA = HOP * speed).
-    ws->input_pos += (double)HOP * speed;
+    // 6. Advance the input read head by the analysis hop (HA = HOP * speed / pitch).
+    // Dividing by pitch compensates for the resampler that multiplies by pitch,
+    // so the net tempo stays at 'speed' while the pitch shifts by 'pitch'.
+    ws->input_pos += (double)HOP * speed / pitch;
     ws->cursor_frames.store((uint64_t)ws->input_pos, std::memory_order_relaxed);
     ws->output_pending = HOP;
     ws->output_offset  = 0;
@@ -212,6 +216,7 @@ bool wsola_init(WsolaSource* ws, float* pcm, uint64_t frames,
     ws->output_offset  = 0;
     ws->first_frame    = false;
     ws->speed.store(1.0f, std::memory_order_relaxed);
+    ws->pitch.store(1.0f, std::memory_order_relaxed);
     ws->cursor_frames.store(0, std::memory_order_relaxed);
     ws->loop_enabled.store(false, std::memory_order_relaxed);
     ws->loop_start_frames.store(0, std::memory_order_relaxed);
@@ -247,6 +252,16 @@ void wsola_set_speed(WsolaSource* ws, float speed)
 float wsola_get_speed(const WsolaSource* ws)
 {
     return ws->speed.load(std::memory_order_relaxed);
+}
+
+void wsola_set_pitch(WsolaSource* ws, float pitch)
+{
+    ws->pitch.store(pitch, std::memory_order_relaxed);
+}
+
+float wsola_get_pitch(const WsolaSource* ws)
+{
+    return ws->pitch.load(std::memory_order_relaxed);
 }
 
 void wsola_set_loop(WsolaSource* ws, bool enabled,

@@ -164,9 +164,10 @@ int main(int argc, char** argv) {
                 audio_free_pcm(pcm);
             }
             // Always update these so we don't retry endlessly on decode failure.
-            spectro.duration = audio.duration;
-            editor.duration  = audio.duration;
-            editor.view_end  = (audio.duration < 30.0) ? audio.duration : 30.0;
+            spectro.duration  = audio.duration;
+            editor.duration   = audio.duration;
+            editor.view_start = 0.0;
+            editor.view_end   = (audio.duration < 30.0) ? audio.duration : 30.0;
             editor_clamp_view(&editor);
         }
 

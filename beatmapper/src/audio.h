@@ -12,6 +12,8 @@ struct AudioState {
     double position;    // seconds; updated each frame by audio_update
     double play_start;  // position at which the last play was initiated
     float  speed;       // playback speed [0.25, 2.0], default 1.0
+    int    semitones;   // pitch shift in semitones [-12, 12]
+    int    cents;       // pitch fine-tune in cents  [-100, 100]
     char   filename[512];
 };
 
@@ -25,6 +27,10 @@ double audio_get_position(AudioState* a);
 // Clamp speed to [0.25, 2.0] and round to nearest 0.05.
 void   audio_set_speed(AudioState* a, float speed);
 float  audio_get_speed(AudioState* a);
+
+// Set pitch shift. semitones in [-12, 12], cents in [-100, 100].
+// Pitch ratio = 2^((semitones*100 + cents) / 1200).
+void   audio_set_pitch(AudioState* a, int semitones, int cents);
 
 // Set loop mode and region. When enabled, playback wraps from loop_end back to
 // loop_start seamlessly. Pass loop_start=0, loop_end=duration to loop the whole track.

@@ -28,6 +28,7 @@ struct WsolaSource {
     // input_pos written by audio thread; cursor_frames readable from any thread
     double                input_pos;       // fractional input frame index
     std::atomic<float>    speed;           // [0.25, 2.0]; set from main thread
+    std::atomic<float>    pitch;           // [0.5, 2.0] ratio; set from main thread
     std::atomic<uint64_t> cursor_frames;   // last committed input frame (for UI)
 
     // Loop parameters (set from main thread, read from audio thread)
@@ -54,6 +55,12 @@ void  wsola_uninit(WsolaSource* ws);
 // Thread-safe speed accessors (atomic).
 void  wsola_set_speed(WsolaSource* ws, float speed);
 float wsola_get_speed(const WsolaSource* ws);
+
+// Thread-safe pitch accessors (atomic).
+// pitch is a frequency ratio: 2^(total_cents/1200).  [0.5, 2.0] = ±12 semitones.
+// The PitchNode reads this same atomic to update its resampler on the audio thread.
+void  wsola_set_pitch(WsolaSource* ws, float pitch);
+float wsola_get_pitch(const WsolaSource* ws);
 
 // Thread-safe loop control (all parameters written atomically from main thread).
 // loop_end_frames == 0 disables looping regardless of loop_enabled.

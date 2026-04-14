@@ -2,6 +2,7 @@
 #include "miniaudio.h"
 #include "audio.h"
 #include "wsola.h"
+#include "pitch_node.h"
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -16,9 +17,11 @@
 static ma_engine   s_engine;
 static ma_sound    s_sound;
 static WsolaSource s_wsola;
+static PitchNode   s_pitch;
 static bool        s_engine_ok = false;
 static bool        s_sound_ok  = false;
 static bool        s_wsola_ok  = false;
+static bool        s_pitch_ok  = false;
 
 #ifdef __APPLE__
 static bool path_is_m4a(const char* p) {
@@ -186,7 +189,8 @@ bool audio_load(AudioState* a, const char* path) {
     if (!s_engine_ok) return false;
 
     // Tear down the previous sound if one was loaded.
-    if (s_sound_ok) { ma_sound_uninit(&s_sound);  s_sound_ok = false; }
+    if (s_sound_ok) { ma_sound_uninit(&s_sound);   s_sound_ok = false; }
+    if (s_pitch_ok) { pitch_node_uninit(&s_pitch); s_pitch_ok = false; }
     if (s_wsola_ok) { wsola_uninit(&s_wsola);      s_wsola_ok = false; }
 
     a->loaded   = false;
@@ -209,14 +213,26 @@ bool audio_load(AudioState* a, const char* path) {
         return false;
     }
     wsola_set_speed(&s_wsola, a->speed);  // apply any pre-existing speed setting
+    // Apply any pre-existing pitch setting.
+    float pitch_ratio = powf(2.0f, (float)(a->semitones * 100 + a->cents) / 1200.0f);
+    wsola_set_pitch(&s_wsola, pitch_ratio);
     s_wsola_ok = true;
 
-    // Initialise miniaudio sound backed by the WSOLA data source.
+    // Wrap WSOLA in a PitchNode (resampler stage for pitch shifting).
+    if (!pitch_node_init(&s_pitch, &s_wsola, sr, 2)) {
+        wsola_uninit(&s_wsola); s_wsola_ok = false;
+        fprintf(stderr, "[audio] pitch_node_init failed for '%s'\n", path);
+        return false;
+    }
+    s_pitch_ok = true;
+
+    // Initialise miniaudio sound backed by the PitchNode.
     ma_result result = ma_sound_init_from_data_source(
-        &s_engine, &s_wsola,
+        &s_engine, &s_pitch,
         MA_SOUND_FLAG_NO_PITCH | MA_SOUND_FLAG_NO_SPATIALIZATION,
         NULL, &s_sound);
     if (result != MA_SUCCESS) {
+        pitch_node_uninit(&s_pitch); s_pitch_ok = false;
         wsola_uninit(&s_wsola); s_wsola_ok = false;
         fprintf(stderr, "[audio] ma_sound_init_from_data_source failed: %d\n", result);
         return false;
@@ -274,6 +290,17 @@ void audio_set_speed(AudioState* a, float speed) {
 
 float audio_get_speed(AudioState* a) {
     return a->speed;
+}
+
+void audio_set_pitch(AudioState* a, int semitones, int cents) {
+    if (semitones < -12) semitones = -12;
+    if (semitones >  12) semitones =  12;
+    if (cents < -100) cents = -100;
+    if (cents >  100) cents =  100;
+    a->semitones = semitones;
+    a->cents     = cents;
+    float ratio = powf(2.0f, (float)(semitones * 100 + cents) / 1200.0f);
+    if (s_wsola_ok) wsola_set_pitch(&s_wsola, ratio);
 }
 
 void audio_set_loop(AudioState* a, bool enabled, double loop_start, double loop_end) {
@@ -367,11 +394,12 @@ void audio_free_pcm(float* samples) {
 
 void audio_shutdown(AudioState* a) {
     // Stop the sound (removes it from the node graph) first.
-    if (s_sound_ok) { ma_sound_uninit(&s_sound);  s_sound_ok = false; }
-    // Stop the engine's audio thread BEFORE freeing WSOLA memory.
+    if (s_sound_ok)  { ma_sound_uninit(&s_sound);   s_sound_ok = false; }
+    // Stop the engine's audio thread BEFORE freeing WSOLA/PitchNode memory.
+    if (s_engine_ok) { ma_engine_uninit(&s_engine);  s_engine_ok = false; }
+    if (s_pitch_ok)  { pitch_node_uninit(&s_pitch);  s_pitch_ok = false; }
     // wsola_uninit frees ws->pcm; the audio thread must not be reading it.
-    if (s_engine_ok) { ma_engine_uninit(&s_engine); s_engine_ok = false; }
-    if (s_wsola_ok) { wsola_uninit(&s_wsola);      s_wsola_ok = false; }
+    if (s_wsola_ok)  { wsola_uninit(&s_wsola);       s_wsola_ok = false; }
     a->loaded  = false;
     a->playing = false;
 }

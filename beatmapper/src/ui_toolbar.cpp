@@ -101,16 +101,72 @@ void ui_toolbar_render(EditorState* editor, AudioState* audio, BeatMap* beatmap,
         ImGui::TextColored(ImVec4(1.0f, 0.65f, 0.1f, 1.0f), "*");
     }
 
-    // --- Speed control (right-aligned) ---
-    // Layout: [-]  0.75x  [+]
+    // --- Pitch + Speed controls (right-aligned) ---
+    // Layout:  [-] -3 st [+]  [-] +25 ct [+]  |  [-] 0.75x [+]
     {
-        const float btn_w  = 30.0f;
-        const float num_w  = ImGui::CalcTextSize("0.00x").x + 8.0f; // a little padding
-        const float spacing = ImGui::GetStyle().ItemSpacing.x;
-        const float padding = ImGui::GetStyle().WindowPadding.x;
-        float total_w = btn_w + spacing + num_w + spacing + btn_w;
+        const float btn_w     = 30.0f;
+        const float st_num_w  = ImGui::CalcTextSize("-12 st").x  + 8.0f;
+        const float ct_num_w  = ImGui::CalcTextSize("-100 ct").x + 8.0f;
+        const float spd_num_w = ImGui::CalcTextSize("0.00x").x   + 8.0f;
+        const float div_w     = ImGui::CalcTextSize("|").x;
+        const float spacing   = ImGui::GetStyle().ItemSpacing.x;
+        const float padding   = ImGui::GetStyle().WindowPadding.x;
+
+        float total_w = btn_w + spacing + st_num_w  + spacing + btn_w
+                      + spacing
+                      + btn_w + spacing + ct_num_w  + spacing + btn_w
+                      + spacing + div_w + spacing
+                      + btn_w + spacing + spd_num_w + spacing + btn_w;
         float right_x = ImGui::GetWindowWidth() - padding - total_w;
         ImGui::SameLine(right_x);
+
+        bool pitch_active = (audio->semitones != 0 || audio->cents != 0);
+
+        // Semitones: [-] value [+]
+        if (ImGui::Button("-##st", ImVec2(btn_w, 0)))
+            audio_set_pitch(audio, audio->semitones - 1, audio->cents);
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Pitch: -1 semitone");
+
+        ImGui::SameLine();
+        char st_buf[16];
+        snprintf(st_buf, sizeof(st_buf), "%+d st", audio->semitones);
+        float st_txt_w = ImGui::CalcTextSize(st_buf).x;
+        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (st_num_w - st_txt_w) * 0.5f);
+        if (pitch_active)
+            ImGui::TextColored(ImVec4(0.45f, 0.70f, 1.0f, 1.0f), "%s", st_buf);
+        else
+            ImGui::Text("%s", st_buf);
+        ImGui::SameLine(0, (st_num_w - st_txt_w) * 0.5f + spacing);
+
+        if (ImGui::Button("+##st", ImVec2(btn_w, 0)))
+            audio_set_pitch(audio, audio->semitones + 1, audio->cents);
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Pitch: +1 semitone");
+
+        ImGui::SameLine();
+
+        // Cents: [-] value [+]
+        if (ImGui::Button("-##ct", ImVec2(btn_w, 0)))
+            audio_set_pitch(audio, audio->semitones, audio->cents - 1);
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Pitch: -1 cent");
+
+        ImGui::SameLine();
+        char ct_buf[16];
+        snprintf(ct_buf, sizeof(ct_buf), "%+d ct", audio->cents);
+        float ct_txt_w = ImGui::CalcTextSize(ct_buf).x;
+        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (ct_num_w - ct_txt_w) * 0.5f);
+        if (pitch_active)
+            ImGui::TextColored(ImVec4(0.45f, 0.70f, 1.0f, 1.0f), "%s", ct_buf);
+        else
+            ImGui::Text("%s", ct_buf);
+        ImGui::SameLine(0, (ct_num_w - ct_txt_w) * 0.5f + spacing);
+
+        if (ImGui::Button("+##ct", ImVec2(btn_w, 0)))
+            audio_set_pitch(audio, audio->semitones, audio->cents + 1);
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Pitch: +1 cent");
+
+        ImGui::SameLine();
+        ImGui::TextDisabled("|");
+        ImGui::SameLine();
 
         if (ImGui::Button("-", ImVec2(btn_w, 0)))
             audio_set_speed(audio, audio->speed - 0.05f);
@@ -118,11 +174,10 @@ void ui_toolbar_render(EditorState* editor, AudioState* audio, BeatMap* beatmap,
         ImGui::SameLine();
         char spd_buf[16];
         snprintf(spd_buf, sizeof(spd_buf), "%.2fx", audio->speed);
-        // Centre the text within num_w
-        float txt_w = ImGui::CalcTextSize(spd_buf).x;
-        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (num_w - txt_w) * 0.5f);
+        float spd_txt_w = ImGui::CalcTextSize(spd_buf).x;
+        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (spd_num_w - spd_txt_w) * 0.5f);
         ImGui::Text("%s", spd_buf);
-        ImGui::SameLine(0, (num_w - txt_w) * 0.5f + spacing);
+        ImGui::SameLine(0, (spd_num_w - spd_txt_w) * 0.5f + spacing);
 
         if (ImGui::Button("+", ImVec2(btn_w, 0)))
             audio_set_speed(audio, audio->speed + 0.05f);

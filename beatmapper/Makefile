@@ -11,6 +11,7 @@ SOURCES := \
     $(SRC_DIR)/main.cpp \
     $(SRC_DIR)/audio.cpp \
     $(SRC_DIR)/wsola.cpp \
+    $(SRC_DIR)/pitch_node.cpp \
     $(SRC_DIR)/spectrogram.cpp \
     $(SRC_DIR)/editor.cpp \
     $(SRC_DIR)/beatmap.cpp \
