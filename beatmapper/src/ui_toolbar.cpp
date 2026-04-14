@@ -54,6 +54,17 @@ void ui_toolbar_render(EditorState* editor, AudioState* audio, BeatMap* beatmap,
     ImGui::TextDisabled("|");
     ImGui::SameLine();
 
+    // --- ±5s seek buttons (now in the main flow) ---
+    if (ImGui::Button("-5s", ImVec2(40, 0)))
+        audio_seek(audio, audio_get_position(audio) - 5.0);
+    ImGui::SameLine();
+    if (ImGui::Button("+5s", ImVec2(40, 0)))
+        audio_seek(audio, audio_get_position(audio) + 5.0);
+
+    ImGui::SameLine();
+    ImGui::TextDisabled("|");
+    ImGui::SameLine();
+
     // --- File open ---
     if (ImGui::Button("Open...")) {
         s_show_open_dialog = true;
@@ -72,18 +83,40 @@ void ui_toolbar_render(EditorState* editor, AudioState* audio, BeatMap* beatmap,
         ImGui::TextColored(ImVec4(1.0f, 0.65f, 0.1f, 1.0f), "*");
     }
 
-    // --- Right-aligned ±5s seek buttons ---
+    // --- Speed control (right-aligned) ---
+    // Layout: [<<]  0.75x  [>>]
     {
-        float btn_w   = 48.0f;
-        float spacing = ImGui::GetStyle().ItemSpacing.x;
-        float padding = ImGui::GetStyle().WindowPadding.x;
-        float right_x = ImGui::GetWindowWidth() - padding - btn_w * 2 - spacing;
+        const float btn_w  = 30.0f;
+        const float num_w  = ImGui::CalcTextSize("0.00x").x + 8.0f; // a little padding
+        const float spacing = ImGui::GetStyle().ItemSpacing.x;
+        const float padding = ImGui::GetStyle().WindowPadding.x;
+        float total_w = btn_w + spacing + num_w + spacing + btn_w;
+        float right_x = ImGui::GetWindowWidth() - padding - total_w;
         ImGui::SameLine(right_x);
-        if (ImGui::Button("-5s", ImVec2(btn_w, 0)))
-            audio_seek(audio, audio_get_position(audio) - 5.0);
+
+        if (ImGui::Button("<<", ImVec2(btn_w, 0)))
+            audio_set_speed(audio, audio->speed - 0.05f);
+
         ImGui::SameLine();
-        if (ImGui::Button("+5s", ImVec2(btn_w, 0)))
-            audio_seek(audio, audio_get_position(audio) + 5.0);
+        char spd_buf[16];
+        snprintf(spd_buf, sizeof(spd_buf), "%.2fx", audio->speed);
+        // Centre the text within num_w
+        float txt_w = ImGui::CalcTextSize(spd_buf).x;
+        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (num_w - txt_w) * 0.5f);
+        ImGui::Text("%s", spd_buf);
+        ImGui::SameLine(0, (num_w - txt_w) * 0.5f + spacing);
+
+        if (ImGui::Button(">>", ImVec2(btn_w, 0)))
+            audio_set_speed(audio, audio->speed + 0.05f);
+    }
+
+    // --- Speed keyboard shortcuts (- / = keys, not captured by a text field) ---
+    if (!ImGui::GetIO().WantCaptureKeyboard) {
+        if (ImGui::IsKeyPressed(ImGuiKey_Minus, false))
+            audio_set_speed(audio, audio->speed - 0.05f);
+        // The = key is the unshifted + on a standard keyboard
+        if (ImGui::IsKeyPressed(ImGuiKey_Equal, false))
+            audio_set_speed(audio, audio->speed + 0.05f);
     }
 
     // --- Audio open modal ---

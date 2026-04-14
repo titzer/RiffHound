@@ -1,8 +1,11 @@
 #define MINIAUDIO_IMPLEMENTATION
 #include "miniaudio.h"
 #include "audio.h"
+#include "wsola.h"
 #include <string.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include <math.h>
 
 #ifdef __APPLE__
 #include <AudioToolbox/ExtendedAudioFile.h>
@@ -10,17 +13,14 @@
 #include <strings.h>  // strcasecmp
 #endif
 
-static ma_engine s_engine;
-static ma_sound  s_sound;
-static bool      s_engine_ok = false;
-static bool      s_sound_ok  = false;
+static ma_engine   s_engine;
+static ma_sound    s_sound;
+static WsolaSource s_wsola;
+static bool        s_engine_ok = false;
+static bool        s_sound_ok  = false;
+static bool        s_wsola_ok  = false;
 
 #ifdef __APPLE__
-static ma_audio_buffer s_m4a_buf;
-static float*          s_m4a_pcm    = nullptr;
-static bool            s_m4a_active = false;
-static uint32_t        s_m4a_sr     = 0;  // native sample rate of the M4A buffer
-
 static bool path_is_m4a(const char* p) {
     const char* dot = strrchr(p, '.');
     return dot && strcasecmp(dot, ".m4a") == 0;
@@ -101,8 +101,80 @@ static bool decode_m4a_to_f32(const char* path, float** out_pcm,
 }
 #endif  // __APPLE__
 
+// Decode any supported file to stereo (2-channel) f32 PCM at the native sample
+// rate.  miniaudio handles mono→stereo upmix for mp3/wav; M4A channel conversion
+// is done here.  Caller must free *out_pcm with free().
+static bool decode_to_pcm_stereo(const char* path, float** out_pcm,
+                                   uint64_t* out_frames, uint32_t* out_sr)
+{
+#ifdef __APPLE__
+    if (path_is_m4a(path)) {
+        float*    pcm;
+        uint64_t  frames;
+        ma_uint32 nch;
+        uint32_t  sr;
+        if (!decode_m4a_to_f32(path, &pcm, &frames, &nch, &sr)) return false;
+
+        if (nch != 2) {
+            // Convert to stereo
+            float* stereo = (float*)malloc(frames * 2 * sizeof(float));
+            if (!stereo) { free(pcm); return false; }
+            for (uint64_t i = 0; i < frames; i++) {
+                float l = (nch >= 1) ? pcm[i * nch + 0] : 0.0f;
+                float r = (nch >= 2) ? pcm[i * nch + 1] : l;
+                stereo[i * 2 + 0] = l;
+                stereo[i * 2 + 1] = r;
+            }
+            free(pcm);
+            pcm = stereo;
+        }
+        *out_pcm    = pcm;
+        *out_frames = frames;
+        *out_sr     = sr;
+        return true;
+    }
+#endif
+
+    // Decode mp3/wav/etc. to stereo f32 at the file's native sample rate.
+    ma_decoder_config cfg = ma_decoder_config_init(ma_format_f32, 2, 0);
+    ma_decoder decoder;
+    if (ma_decoder_init_file(path, &cfg, &decoder) != MA_SUCCESS) return false;
+
+    uint32_t sr = decoder.outputSampleRate;
+
+    const ma_uint64 CHUNK = 65536;
+    float*  buf      = NULL;
+    size_t  total    = 0;
+    size_t  capacity = 0;
+
+    for (;;) {
+        if (total + CHUNK > capacity) {
+            size_t new_cap = (capacity == 0) ? CHUNK * 16 : capacity * 2;
+            float* tmp = (float*)realloc(buf, new_cap * 2 * sizeof(float));
+            if (!tmp) { free(buf); ma_decoder_uninit(&decoder); return false; }
+            buf = tmp;
+            capacity = new_cap;
+        }
+        ma_uint64 read = 0;
+        ma_result res = ma_decoder_read_pcm_frames(&decoder, buf + total * 2, CHUNK, &read);
+        total += (size_t)read;
+        if (res == MA_AT_END || read == 0) break;
+    }
+
+    uint32_t out_sr_val = decoder.outputSampleRate;
+    ma_decoder_uninit(&decoder);
+
+    if (total == 0) { free(buf); return false; }
+    *out_pcm    = buf;
+    *out_frames = (uint64_t)total;
+    *out_sr     = out_sr_val;
+    (void)sr;
+    return true;
+}
+
 void audio_init(AudioState* a) {
     memset(a, 0, sizeof(*a));
+    a->speed = 1.0f;
     if (ma_engine_init(NULL, &s_engine) != MA_SUCCESS) {
         fprintf(stderr, "[audio] failed to init miniaudio engine\n");
         return;
@@ -114,86 +186,52 @@ bool audio_load(AudioState* a, const char* path) {
     if (!s_engine_ok) return false;
 
     // Tear down the previous sound if one was loaded.
-    if (s_sound_ok) {
-        ma_sound_uninit(&s_sound);
-        s_sound_ok = false;
-    }
-#ifdef __APPLE__
-    if (s_m4a_active) {
-        ma_audio_buffer_uninit(&s_m4a_buf);
-        free(s_m4a_pcm);
-        s_m4a_pcm    = nullptr;
-        s_m4a_active = false;
-    }
-#endif
+    if (s_sound_ok) { ma_sound_uninit(&s_sound);  s_sound_ok = false; }
+    if (s_wsola_ok) { wsola_uninit(&s_wsola);      s_wsola_ok = false; }
+
     a->loaded   = false;
     a->playing  = false;
     a->position = 0.0;
 
-#ifdef __APPLE__
-    if (path_is_m4a(path)) {
-        float*    pcm;
-        uint64_t  frames;
-        ma_uint32 nch;
-        uint32_t  sr;
-        if (!decode_m4a_to_f32(path, &pcm, &frames, &nch, &sr)) {
-            fprintf(stderr, "[audio] failed to decode M4A '%s'\n", path);
-            return false;
-        }
-        ma_audio_buffer_config cfg =
-            ma_audio_buffer_config_init(ma_format_f32, nch, frames, pcm, NULL);
-        if (ma_audio_buffer_init(&cfg, &s_m4a_buf) != MA_SUCCESS) {
-            free(pcm);
-            fprintf(stderr, "[audio] failed to create audio buffer for '%s'\n", path);
-            return false;
-        }
-        ma_result result = ma_sound_init_from_data_source(
-            &s_engine, &s_m4a_buf, MA_SOUND_FLAG_NO_SPATIALIZATION, NULL, &s_sound);
-        if (result != MA_SUCCESS) {
-            ma_audio_buffer_uninit(&s_m4a_buf);
-            free(pcm);
-            fprintf(stderr, "[audio] failed to init sound from M4A '%s': %d\n", path, result);
-            return false;
-        }
-        s_m4a_pcm    = pcm;
-        s_m4a_active = true;
-        s_m4a_sr     = sr;
-        s_sound_ok   = true;
-
-        strncpy(a->filename, path, sizeof(a->filename) - 1);
-        a->filename[sizeof(a->filename) - 1] = '\0';
-        a->duration = (double)frames / sr;
-        a->position = 0.0;
-        a->playing  = false;
-        a->loaded   = true;
-        printf("[audio] loaded M4A '%s'  duration=%.2fs  ch=%u  sr=%u\n",
-               path, a->duration, nch, sr);
-        return true;
+    // Decode to stereo f32 PCM.
+    float*   pcm;
+    uint64_t frames;
+    uint32_t sr;
+    if (!decode_to_pcm_stereo(path, &pcm, &frames, &sr)) {
+        fprintf(stderr, "[audio] failed to decode '%s'\n", path);
+        return false;
     }
-#endif
 
-    ma_result result = ma_sound_init_from_file(
-        &s_engine, path,
-        MA_SOUND_FLAG_DECODE | MA_SOUND_FLAG_NO_SPATIALIZATION,
-        NULL, NULL, &s_sound);
+    // Initialise WSOLA source (takes ownership of pcm).
+    if (!wsola_init(&s_wsola, pcm, frames, 2, sr, /*owns_pcm=*/true)) {
+        free(pcm);
+        fprintf(stderr, "[audio] wsola_init failed for '%s'\n", path);
+        return false;
+    }
+    wsola_set_speed(&s_wsola, a->speed);  // apply any pre-existing speed setting
+    s_wsola_ok = true;
 
+    // Initialise miniaudio sound backed by the WSOLA data source.
+    ma_result result = ma_sound_init_from_data_source(
+        &s_engine, &s_wsola,
+        MA_SOUND_FLAG_NO_PITCH | MA_SOUND_FLAG_NO_SPATIALIZATION,
+        NULL, &s_sound);
     if (result != MA_SUCCESS) {
-        fprintf(stderr, "[audio] failed to load '%s' (miniaudio error %d)\n", path, result);
+        wsola_uninit(&s_wsola); s_wsola_ok = false;
+        fprintf(stderr, "[audio] ma_sound_init_from_data_source failed: %d\n", result);
         return false;
     }
     s_sound_ok = true;
 
-    float length_sec = 0.0f;
-    ma_sound_get_length_in_seconds(&s_sound, &length_sec);
-
     strncpy(a->filename, path, sizeof(a->filename) - 1);
     a->filename[sizeof(a->filename) - 1] = '\0';
-    a->duration = (double)length_sec;
+    a->duration = (double)frames / sr;
     a->position = 0.0;
     a->playing  = false;
     a->loaded   = true;
 
-    printf("[audio] loaded '%s'  duration=%.2fs\n", path, a->duration);
+    printf("[audio] loaded '%s'  duration=%.2fs  ch=2  sr=%u\n",
+           path, a->duration, sr);
     return true;
 }
 
@@ -212,18 +250,11 @@ void audio_pause(AudioState* a) {
 
 void audio_seek(AudioState* a, double time_sec) {
     if (!s_sound_ok || !a->loaded) return;
-    if (time_sec < 0.0)          time_sec = 0.0;
-    if (time_sec > a->duration)  time_sec = a->duration;
+    if (time_sec < 0.0)         time_sec = 0.0;
+    if (time_sec > a->duration) time_sec = a->duration;
 
-    // For decoded (file-based) sounds the engine pre-converts to its own sample
-    // rate, so seek frames must use the engine rate.  For M4A the sound is backed
-    // by an ma_audio_buffer at the file's native rate, so use that rate instead.
-#ifdef __APPLE__
-    ma_uint32 sample_rate = s_m4a_active ? s_m4a_sr : ma_engine_get_sample_rate(&s_engine);
-#else
-    ma_uint32 sample_rate = ma_engine_get_sample_rate(&s_engine);
-#endif
-    ma_uint64 frame = (ma_uint64)(time_sec * sample_rate + 0.5);
+    // Seek in terms of the data source's (file's) sample rate.
+    ma_uint64 frame = (ma_uint64)(time_sec * s_wsola.sample_rate + 0.5);
     ma_sound_seek_to_pcm_frame(&s_sound, frame);
     a->position = time_sec;
 }
@@ -232,27 +263,30 @@ double audio_get_position(AudioState* a) {
     return a->position;
 }
 
+void audio_set_speed(AudioState* a, float speed) {
+    if (speed < 0.25f) speed = 0.25f;
+    if (speed > 2.00f) speed = 2.00f;
+    // Round to nearest 0.05
+    speed = roundf(speed * 20.0f) / 20.0f;
+    a->speed = speed;
+    if (s_wsola_ok) wsola_set_speed(&s_wsola, speed);
+}
+
+float audio_get_speed(AudioState* a) {
+    return a->speed;
+}
+
 void audio_update(AudioState* a) {
     if (!s_sound_ok || !a->loaded) return;
 
     // Sync playing flag from the audio thread.
     a->playing = (bool)ma_sound_is_playing(&s_sound);
 
-    // Sync cursor position.
-#ifdef __APPLE__
-    // ma_sound_get_cursor_in_seconds is unreliable for data-source-backed sounds
-    // (ma_sound_init_from_data_source). Query the buffer directly instead.
-    if (s_m4a_active && s_m4a_sr > 0) {
-        ma_uint64 cursor_frames = 0;
-        if (ma_data_source_get_cursor_in_pcm_frames((ma_data_source*)&s_m4a_buf,
-                                                     &cursor_frames) == MA_SUCCESS)
-            a->position = (double)cursor_frames / s_m4a_sr;
-        return;
+    // Read cursor from the atomic updated by the audio thread after each hop.
+    if (s_wsola_ok) {
+        uint64_t cur = s_wsola.cursor_frames.load(std::memory_order_relaxed);
+        a->position = (double)cur / s_wsola.sample_rate;
     }
-#endif
-    float cursor_sec = 0.0f;
-    if (ma_sound_get_cursor_in_seconds(&s_sound, &cursor_sec) == MA_SUCCESS)
-        a->position = (double)cursor_sec;
 }
 
 bool audio_decode_pcm(const char* path, float** out_samples,
@@ -321,22 +355,12 @@ void audio_free_pcm(float* samples) {
 }
 
 void audio_shutdown(AudioState* a) {
-    if (s_sound_ok) {
-        ma_sound_uninit(&s_sound);
-        s_sound_ok = false;
-    }
-#ifdef __APPLE__
-    if (s_m4a_active) {
-        ma_audio_buffer_uninit(&s_m4a_buf);
-        free(s_m4a_pcm);
-        s_m4a_pcm    = nullptr;
-        s_m4a_active = false;
-    }
-#endif
-    if (s_engine_ok) {
-        ma_engine_uninit(&s_engine);
-        s_engine_ok = false;
-    }
+    // Stop the sound (removes it from the node graph) first.
+    if (s_sound_ok) { ma_sound_uninit(&s_sound);  s_sound_ok = false; }
+    // Stop the engine's audio thread BEFORE freeing WSOLA memory.
+    // wsola_uninit frees ws->pcm; the audio thread must not be reading it.
+    if (s_engine_ok) { ma_engine_uninit(&s_engine); s_engine_ok = false; }
+    if (s_wsola_ok) { wsola_uninit(&s_wsola);      s_wsola_ok = false; }
     a->loaded  = false;
     a->playing = false;
 }

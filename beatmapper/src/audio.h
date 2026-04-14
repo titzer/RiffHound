@@ -2,7 +2,7 @@
 
 #include <stdint.h>
 
-// Audio module: miniaudio wrapper
+// Audio module: miniaudio + WSOLA pitch-preserving time stretching
 
 struct AudioState {
     bool   loaded;
@@ -10,6 +10,7 @@ struct AudioState {
     double duration;    // seconds; set on load
     double position;    // seconds; updated each frame by audio_update
     double play_start;  // position at which the last play was initiated
+    float  speed;       // playback speed [0.25, 2.0], default 1.0
     char   filename[512];
 };
 
@@ -19,6 +20,10 @@ void   audio_play(AudioState* a);
 void   audio_pause(AudioState* a);
 void   audio_seek(AudioState* a, double time_sec);
 double audio_get_position(AudioState* a);
+
+// Clamp speed to [0.25, 2.0] and round to nearest 0.05.
+void   audio_set_speed(AudioState* a, float speed);
+float  audio_get_speed(AudioState* a);
 
 // Call once per frame to sync position/playing state from the audio thread.
 void   audio_update(AudioState* a);
