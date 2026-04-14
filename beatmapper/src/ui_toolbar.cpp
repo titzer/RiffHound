@@ -84,7 +84,7 @@ void ui_toolbar_render(EditorState* editor, AudioState* audio, BeatMap* beatmap,
     }
 
     // --- Speed control (right-aligned) ---
-    // Layout: [<<]  0.75x  [>>]
+    // Layout: [-]  0.75x  [+]
     {
         const float btn_w  = 30.0f;
         const float num_w  = ImGui::CalcTextSize("0.00x").x + 8.0f; // a little padding
@@ -94,7 +94,7 @@ void ui_toolbar_render(EditorState* editor, AudioState* audio, BeatMap* beatmap,
         float right_x = ImGui::GetWindowWidth() - padding - total_w;
         ImGui::SameLine(right_x);
 
-        if (ImGui::Button("<<", ImVec2(btn_w, 0)))
+        if (ImGui::Button("-", ImVec2(btn_w, 0)))
             audio_set_speed(audio, audio->speed - 0.05f);
 
         ImGui::SameLine();
@@ -106,7 +106,7 @@ void ui_toolbar_render(EditorState* editor, AudioState* audio, BeatMap* beatmap,
         ImGui::Text("%s", spd_buf);
         ImGui::SameLine(0, (num_w - txt_w) * 0.5f + spacing);
 
-        if (ImGui::Button(">>", ImVec2(btn_w, 0)))
+        if (ImGui::Button("+", ImVec2(btn_w, 0)))
             audio_set_speed(audio, audio->speed + 0.05f);
     }
 
