@@ -1,2 +1,5 @@
 - show vertical lines on spectrogram for interpolated beats
 - extrapolate from last beat to current beat (ctrl, shift)?
+- Pitch fine-tuning adjustment and key change (transpose by N semitones)
+- loop selection and playback
+- loop schedule (verse#2 x 3, chorus#2 x 1, fill#44, verse#1)
