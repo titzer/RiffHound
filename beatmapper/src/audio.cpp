@@ -276,6 +276,17 @@ float audio_get_speed(AudioState* a) {
     return a->speed;
 }
 
+void audio_set_loop(AudioState* a, bool enabled, double loop_start, double loop_end) {
+    a->loop = enabled;
+    if (s_wsola_ok) {
+        uint64_t sf = (uint64_t)(loop_start * s_wsola.sample_rate + 0.5);
+        uint64_t ef = (uint64_t)(loop_end   * s_wsola.sample_rate + 0.5);
+        if (ef > s_wsola.frame_count) ef = s_wsola.frame_count;
+        if (sf >= ef) sf = 0;
+        wsola_set_loop(&s_wsola, enabled, sf, ef);
+    }
+}
+
 void audio_update(AudioState* a) {
     if (!s_sound_ok || !a->loaded) return;
 

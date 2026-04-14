@@ -35,6 +35,24 @@ void ui_toolbar_render(EditorState* editor, AudioState* audio, BeatMap* beatmap,
     if (!can_stop) ImGui::EndDisabled();
 
     ImGui::SameLine();
+
+    // Loop toggle button — highlighted (blue) when active.
+    // Snapshot before Button() so push/pop counts always match regardless of
+    // whether the click toggles the flag inside the same frame.
+    bool loop_active = audio->loop;
+    if (loop_active) {
+        ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.20f, 0.45f, 0.85f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.30f, 0.55f, 0.95f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive,  ImVec4(0.15f, 0.40f, 0.75f, 1.0f));
+    }
+    if (ImGui::Button("Loop"))
+        audio->loop = !audio->loop;
+    if (loop_active)
+        ImGui::PopStyleColor(3);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Toggle loop playback (L)");
+
+    ImGui::SameLine();
     ImGui::TextDisabled("|");
     ImGui::SameLine();
 
@@ -139,6 +157,7 @@ void ui_toolbar_render(EditorState* editor, AudioState* audio, BeatMap* beatmap,
             // Companion .txt is the default save target regardless of whether it exists
             strncpy(beatmap->save_path, bm_path, sizeof(beatmap->save_path) - 1);
             beatmap->dirty = false;
+            editor->has_region = false;
             recent_add(recent, s_file_buf);
             recent_save(recent);
             ImGui::CloseCurrentPopup();

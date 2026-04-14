@@ -117,7 +117,25 @@ static ma_result wsola_on_read(ma_data_source* pDS, void* pFramesOut,
     while (written < frameCount) {
         // Refill staging buffer when exhausted.
         if (ws->output_offset >= ws->output_pending) {
-            if (ws->input_pos >= (double)ws->frame_count) break;  // EOF
+            bool     loop_en = ws->loop_enabled.load(std::memory_order_relaxed);
+            uint64_t loop_e  = ws->loop_end_frames.load(std::memory_order_relaxed);
+            uint64_t loop_s  = ws->loop_start_frames.load(std::memory_order_relaxed);
+            double   eof     = (loop_en && loop_e > loop_s) ? (double)loop_e
+                                                             : (double)ws->frame_count;
+            if (ws->input_pos >= eof) {
+                if (loop_en && loop_e > loop_s) {
+                    // Seamless wrap: modulo the loop range.
+                    // Preserve synth_buf — the OLA overlap tail provides a natural
+                    // crossfade between loop-end and loop-start audio.
+                    double range  = (double)(loop_e - loop_s);
+                    ws->input_pos = (double)loop_s +
+                                    fmod(ws->input_pos - (double)loop_s, range);
+                    ws->cursor_frames.store((uint64_t)ws->input_pos,
+                                           std::memory_order_relaxed);
+                } else {
+                    break;  // EOF, no loop
+                }
+            }
             wsola_step(ws);
         }
         int       avail = ws->output_pending - ws->output_offset;
@@ -195,6 +213,9 @@ bool wsola_init(WsolaSource* ws, float* pcm, uint64_t frames,
     ws->first_frame    = false;
     ws->speed.store(1.0f, std::memory_order_relaxed);
     ws->cursor_frames.store(0, std::memory_order_relaxed);
+    ws->loop_enabled.store(false, std::memory_order_relaxed);
+    ws->loop_start_frames.store(0, std::memory_order_relaxed);
+    ws->loop_end_frames.store(0, std::memory_order_relaxed);
 
     ma_data_source_config cfg = ma_data_source_config_init();
     cfg.vtable = &s_vtable;
@@ -226,4 +247,12 @@ void wsola_set_speed(WsolaSource* ws, float speed)
 float wsola_get_speed(const WsolaSource* ws)
 {
     return ws->speed.load(std::memory_order_relaxed);
+}
+
+void wsola_set_loop(WsolaSource* ws, bool enabled,
+                    uint64_t loop_start_frames, uint64_t loop_end_frames)
+{
+    ws->loop_start_frames.store(loop_start_frames, std::memory_order_relaxed);
+    ws->loop_end_frames.store(loop_end_frames,     std::memory_order_relaxed);
+    ws->loop_enabled.store(enabled,                std::memory_order_relaxed);
 }

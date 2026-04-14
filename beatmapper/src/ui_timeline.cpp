@@ -493,6 +493,12 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
                     s_sec_hdrag_end = hit_end;
                 } else {
                     s_sec_hdrag = false;
+                    // Double-click on section body → select it as the loop region
+                    if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
+                        editor->has_region   = true;
+                        editor->region_start = sectionmap->sections[hit].t_start;
+                        editor->region_end   = sectionmap->sections[hit].t_end;
+                    }
                 }
             } else {
                 s_sec_selected = -1;

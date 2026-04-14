@@ -30,6 +30,11 @@ struct WsolaSource {
     std::atomic<float>    speed;           // [0.25, 2.0]; set from main thread
     std::atomic<uint64_t> cursor_frames;   // last committed input frame (for UI)
 
+    // Loop parameters (set from main thread, read from audio thread)
+    std::atomic<bool>     loop_enabled;
+    std::atomic<uint64_t> loop_start_frames;
+    std::atomic<uint64_t> loop_end_frames;
+
     // WSOLA synthesis accumulation buffer (overlap-add staging)
     float synth_buf[WSOLA_FRAME * WSOLA_MAX_CH];
     // One hop of output ready to drain before the next wsola_step
@@ -49,3 +54,8 @@ void  wsola_uninit(WsolaSource* ws);
 // Thread-safe speed accessors (atomic).
 void  wsola_set_speed(WsolaSource* ws, float speed);
 float wsola_get_speed(const WsolaSource* ws);
+
+// Thread-safe loop control (all parameters written atomically from main thread).
+// loop_end_frames == 0 disables looping regardless of loop_enabled.
+void  wsola_set_loop(WsolaSource* ws, bool enabled,
+                     uint64_t loop_start_frames, uint64_t loop_end_frames);

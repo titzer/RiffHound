@@ -7,6 +7,7 @@
 struct AudioState {
     bool   loaded;
     bool   playing;
+    bool   loop;        // loop mode on/off
     double duration;    // seconds; set on load
     double position;    // seconds; updated each frame by audio_update
     double play_start;  // position at which the last play was initiated
@@ -24,6 +25,10 @@ double audio_get_position(AudioState* a);
 // Clamp speed to [0.25, 2.0] and round to nearest 0.05.
 void   audio_set_speed(AudioState* a, float speed);
 float  audio_get_speed(AudioState* a);
+
+// Set loop mode and region. When enabled, playback wraps from loop_end back to
+// loop_start seamlessly. Pass loop_start=0, loop_end=duration to loop the whole track.
+void   audio_set_loop(AudioState* a, bool enabled, double loop_start, double loop_end);
 
 // Call once per frame to sync position/playing state from the audio thread.
 void   audio_update(AudioState* a);

@@ -135,10 +135,19 @@ int main(int argc, char** argv) {
         // Sync position and playing state from the audio thread.
         audio_update(&audio);
 
+        // Keep WSOLA loop parameters in sync every frame (cheap atomic writes).
+        // Uses the current region if one exists, otherwise the full track.
+        {
+            double ls = editor.has_region ? editor.region_start : 0.0;
+            double le = editor.has_region ? editor.region_end   : audio.duration;
+            audio_set_loop(&audio, audio.loop, ls, le);
+        }
+
         // Auto-stop when playhead reaches the end of the region selection.
+        // Skipped when loop mode is on — WSOLA handles the wrap internally.
         // Just pause; leave the playhead at region_end so the user can see where
         // they are. Play / Space will seek back to region_start automatically.
-        if (audio.playing && editor.has_region &&
+        if (audio.playing && editor.has_region && !audio.loop &&
             audio.position >= editor.region_end) {
             audio_pause(&audio);
         }
@@ -181,6 +190,8 @@ int main(int argc, char** argv) {
                 audio_seek(&audio, audio_get_position(&audio) - 5.0);
             if (ImGui::IsKeyPressed(ImGuiKey_RightArrow, true))
                 audio_seek(&audio, audio_get_position(&audio) + 5.0);
+            if (ImGui::IsKeyPressed(ImGuiKey_L))
+                audio.loop = !audio.loop;
 
             // Delete / Backspace → selected beats take priority; fall back to
             // removing a selected section only when no beats are selected.
