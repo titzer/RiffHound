@@ -1,6 +1,12 @@
-- show vertical lines on spectrogram for interpolated beats
-- extrapolate from last beat to current beat (ctrl, shift)?
-- loop schedule (verse#2 x 3, chorus#2 x 1, fill#44, verse#1)
+- Load dialog should immediately load after system dialog returns selection
+- Load dialog should allow up and down arrows
+- beat analysis shows possible beats (and eventually drum voices like snare, kick, tom, etc) on spectrogram
+  - makes it easy to select a range of spectrogram, get suggested beats, and put them in
+- section duplicate tool:
+  - duplicates the beat pattern and measures of a given section (e.g. verse)
+  - the new pasted section can be dragged on the timeline,
+  - but analysis tools help match its structure to the underlying audio (i.e. find and fix to the right beats)
+  - bonus: automatically find verse 2 from verse 1.
 - better bulk insertion
   - global BPM inference range setting (e.g. 50 to 180bpm)
   - audio analysis for suggested beats
@@ -8,5 +14,39 @@
   - reinterpolate beats between (delete and reinsert)
   - insert measure(s) 4,8,12 beats
 - Chord progressions per section
-- Lyrics
+- Lyric editing:
+  Add an editor timeline pane similar to the section editor pane, for editing lyrics.
+  A lyric line is a selection that includes editable text.
+  Lyrics are stored in the timeseries file as "lyric: text" lines and have a start and end time just like sections.
+- Bulk lyric insertion / editing:
+  A dialog that allows pasting in multiple lines of text (e.g. copied from a webpage).
+  Lyrics are broken into lyric sections per line of text.
+  A fuzzy, somewhat smart parser can take a cut-and-pasted bulk text and line up lyrics with the sections they are contained in, e.g. paste in:
+
+[Verse 1]
+There's a lady who's sure all that glitters is gold
+And she's buying a stairway to Heaven
+When she gets there, she knows if the stores are all closed
+With a word, she can get what she came for
+Ooh, and she's buying a stairway to Heaven
+
+[Verse 2]
+There's a sign on the wall, but she wants to be sure
+'Cause you know sometimes words have two meanings
+In a tree by the brook, there's a songbird who sings
+Sometimes all of our thoughts are misgiven
+
+[Refrain]
+Ooh, it makes me wonder
+Ooh, makes me wonder
+
+  Stretch: this representation is editable and kept in correspondence with the timeline; lyrics are displayed/editable as a combined simple text file; when editing the current line highlights the section it is in and the lyric line.
+  TBD: Beat-precise lyrics. In the lyric editing timeline pane, there is a way to line up beats with individual words and syllables.
 - Riff text
+
+Playback/jamming
+- set / playlist creation
+- much better track selection
+- loop schedule (verse#2 x 3, chorus#2 x 1, fill#44, verse#1)
+- mashup
+- Quist jamalong mode: randomly select licks from appropriate parts of backing track, versus selecting just backing track

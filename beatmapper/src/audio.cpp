@@ -317,8 +317,12 @@ void audio_set_loop(AudioState* a, bool enabled, double loop_start, double loop_
 void audio_update(AudioState* a) {
     if (!s_sound_ok || !a->loaded) return;
 
-    // Sync playing flag from the audio thread.
-    a->playing = (bool)ma_sound_is_playing(&s_sound);
+    // Sync the playing flag from the audio thread, but only allow it to go
+    // false here.  audio_play() is the sole place that sets it true, so that
+    // the brief async delay before ma_sound_is_playing reflects a ma_sound_stop
+    // call doesn't flip playing back to true and confuse the stop/start logic.
+    if (!ma_sound_is_playing(&s_sound))
+        a->playing = false;
 
     // Read cursor from the atomic updated by the audio thread after each hop.
     if (s_wsola_ok) {

@@ -16,6 +16,7 @@ SOURCES := \
     $(SRC_DIR)/editor.cpp \
     $(SRC_DIR)/beatmap.cpp \
     $(SRC_DIR)/sectionmap.cpp \
+    $(SRC_DIR)/lyricmap.cpp \
     $(SRC_DIR)/undo.cpp \
     $(SRC_DIR)/recent.cpp \
     $(SRC_DIR)/ui_timeline.cpp \

@@ -5,11 +5,13 @@
 #include "spectrogram.h"
 #include "beatmap.h"
 #include "sectionmap.h"
+#include "lyricmap.h"
 #include "undo.h"
 
-// Main timeline widget: spectrogram + time ruler + beat markers + section overlays.
+// Main timeline widget: spectrogram + time ruler + beat markers + section/lyric overlays.
 // Handles its own scroll/zoom input.
 
 void ui_timeline_render(EditorState* editor, AudioState* audio,
                         SpectrogramState* spectro, BeatMap* beatmap,
-                        UndoStack* undo, SectionMap* sectionmap);
+                        UndoStack* undo, SectionMap* sectionmap,
+                        LyricMap* lyricmap);

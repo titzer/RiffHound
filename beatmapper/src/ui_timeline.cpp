@@ -1,5 +1,6 @@
 #include "ui_timeline.h"
 #include "sectionmap.h"
+#include "lyricmap.h"
 #include "undo.h"
 #include "imgui.h"
 #include <math.h>
@@ -195,6 +196,8 @@ static const float CTX_PANEL_H   = 36.0f;  // contextual interpolate panel
 static const float PLACE_STRIP_H = 22.0f;  // beat placement strip
 static const float SECTION_H     = 52.0f;  // section strip
 static const float SEC_PANEL_H   = 34.0f;  // selected-section edit panel
+static const float LYRIC_H       = 36.0f;  // lyric strip
+static const float LYR_PANEL_H   = 34.0f;  // selected-lyric edit panel
 
 // Per-kind fill and border colours (index = SectionKind)
 static const ImU32 s_sec_fill[SK_COUNT] = {
@@ -230,7 +233,8 @@ static const ImU32 s_sec_border[SK_COUNT] = {
 
 void ui_timeline_render(EditorState* editor, AudioState* audio,
                         SpectrogramState* spectro, BeatMap* beatmap,
-                        UndoStack* undo, SectionMap* sectionmap)
+                        UndoStack* undo, SectionMap* sectionmap,
+                        LyricMap* lyricmap)
 {
     ImGuiIO& io = ImGui::GetIO();
 
@@ -271,15 +275,24 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
     bool  show_sec_panel = (s_sec_selected >= 0);
     float sec_panel_h    = show_sec_panel ? SEC_PANEL_H : 0.0f;
 
+    // Pre-compute lyric edit panel visibility
+    static int s_lyr_selected = -1;  // persistent selection index
+    if (s_lyr_selected >= lyricmap->count) s_lyr_selected = -1;
+    lyricmap->selected_idx = s_lyr_selected;  // keep struct in sync for main.cpp delete
+    bool  show_lyr_panel = (s_lyr_selected >= 0);
+    float lyr_panel_h    = show_lyr_panel ? LYR_PANEL_H : 0.0f;
+
     // Layout (top to bottom):
     //   minimap | ruler | spectrogram (flexible) |
     //   place strip | beat area | [ctx panel] | section strip | [sec edit panel]
+    //   lyric strip | [lyric edit panel]
     // Spectrogram fills all available vertical space; bottom items are fixed height.
     ImVec2 avail = ImGui::GetContentRegionAvail();
     float fixed_h = MINIMAP_H + 2.0f + RULER_H + 2.0f
                   + 2.0f + PLACE_STRIP_H + 2.0f
                   + (s_beats_collapsed ? 0.0f : BEAT_AREA_H + ctx_h)
-                  + 2.0f + SECTION_H + sec_panel_h;
+                  + 2.0f + SECTION_H + sec_panel_h
+                  + 2.0f + LYRIC_H + lyr_panel_h;
     float spectro_h = avail.y - fixed_h;
     if (spectro_h < 50.0f) spectro_h = 50.0f;
     float total_h = fixed_h + spectro_h;
@@ -312,6 +325,8 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
     float ctx_y  = ba_y + ba_h;
     float sa_x   = cx,  sa_y = ctx_y + ctx_h + 2.0f, sa_w = cw, sa_h = SECTION_H;
     float sep_y  = sa_y + sa_h;  // section edit panel top
+    float la_x   = cx,  la_y = sep_y + sec_panel_h + 2.0f, la_w = cw, la_h = LYRIC_H;
+    float lyp_y  = la_y + la_h;  // lyric edit panel top
 
     // --- Beat position layout pass (rebuilds every frame) ---
     // Computes screen positions + stagger rows for all beats.
@@ -351,7 +366,8 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
 
     // --- Single InvisibleButton covering the timeline (not the ctx panel) ---
     ImGui::SetCursorScreenPos(ImVec2(rx, ry));
-    ImGui::InvisibleButton("##timeline_input", ImVec2(rw, total_h - ctx_h - sec_panel_h),
+    ImGui::InvisibleButton("##timeline_input",
+                           ImVec2(rw, total_h - ctx_h - sec_panel_h - lyr_panel_h),
                            ImGuiButtonFlags_MouseButtonLeft |
                            ImGuiButtonFlags_MouseButtonMiddle);
     bool hovered = ImGui::IsItemHovered();
@@ -362,6 +378,7 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
     static bool   s_drag_in_place   = false;
     static bool   s_drag_in_beats   = false;
     static bool   s_drag_in_sec     = false;   // drag started in section strip
+    static bool   s_drag_in_lyr     = false;   // drag started in lyric strip
     // Section editing state
     static bool   s_sec_drag        = false;   // drag-to-create in progress
     static double s_sec_drag_t0     = 0.0;
@@ -369,6 +386,13 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
     static bool   s_sec_hdrag       = false;   // handle resize drag in progress
     static int    s_sec_hdrag_idx   = -1;      // which section is handle-dragged
     static int    s_sec_hdrag_end   = 0;       // 0 = start handle, 1 = end handle
+    // Lyric editing state
+    static bool   s_lyr_drag        = false;   // drag-to-create in progress
+    static double s_lyr_drag_t0     = 0.0;
+    static double s_lyr_drag_t1     = 0.0;
+    static bool   s_lyr_hdrag       = false;   // handle resize drag in progress
+    static int    s_lyr_hdrag_idx   = -1;
+    static int    s_lyr_hdrag_end   = 0;
     static bool   s_rect_sel        = false;  // rect selection in progress
     static float  s_rect_x0         = 0.0f, s_rect_y0 = 0.0f;
     static double s_anchor          = 0.0;
@@ -395,11 +419,14 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
                               click_y >= ps_y && click_y < ps_y + PLACE_STRIP_H);
         s_drag_in_beats   = (click_y >= ba_y    && click_y < ba_y + ba_h);
         s_drag_in_sec     = (click_y >= sa_y    && click_y < sa_y + sa_h);
+        s_drag_in_lyr     = (click_y >= la_y    && click_y < la_y + la_h);
 
-        // Any click outside the section strip clears section selection so
-        // that a lingering selected section never hijacks Delete/Backspace.
+        // Any click outside the section strip clears section selection.
         if (!s_drag_in_sec)
             s_sec_selected = -1;
+        // Any click outside the lyric strip clears lyric selection.
+        if (!s_drag_in_lyr)
+            s_lyr_selected = -1;
 
         if (s_drag_in_place) {
             double span = editor->view_end - editor->view_start;
@@ -523,6 +550,51 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
             }
         }
 
+        if (s_drag_in_lyr) {
+            double span  = editor->view_end - editor->view_start;
+            double t_raw = (la_w > 0 && span > 0)
+                ? editor->view_start + (double)(io.MousePos.x - la_x) / la_w * span
+                : editor->view_start;
+            double t_snap = snap_to_beat(t_raw, beatmap,
+                                          editor->view_start, editor->view_end, la_w);
+
+            const float HANDLE_PX = 6.0f;
+            int hit = -1, hit_end = 0;
+            for (int i = 0; i < lyricmap->count; i++) {
+                float lx0 = time_to_x(lyricmap->lyrics[i].t_start,
+                                       editor->view_start, editor->view_end, la_x, la_w);
+                float lx1 = time_to_x(lyricmap->lyrics[i].t_end,
+                                       editor->view_start, editor->view_end, la_x, la_w);
+                float mx = io.MousePos.x;
+                if (fabsf(mx - lx0) <= HANDLE_PX) { hit = i; hit_end = 0; break; }
+                if (fabsf(mx - lx1) <= HANDLE_PX) { hit = i; hit_end = 1; break; }
+                if (mx > lx0 && mx < lx1)          { hit = i; hit_end = 2; break; }
+            }
+
+            if (hit >= 0) {
+                s_lyr_selected = hit;
+                s_lyr_drag     = false;
+                if (hit_end < 2) {
+                    s_lyr_hdrag     = true;
+                    s_lyr_hdrag_idx = hit;
+                    s_lyr_hdrag_end = hit_end;
+                } else {
+                    s_lyr_hdrag = false;
+                    if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
+                        editor->has_region   = true;
+                        editor->region_start = lyricmap->lyrics[hit].t_start;
+                        editor->region_end   = lyricmap->lyrics[hit].t_end;
+                    }
+                }
+            } else {
+                s_lyr_selected = -1;
+                s_lyr_drag     = true;
+                s_lyr_drag_t0  = t_snap;
+                s_lyr_drag_t1  = t_snap;
+                s_lyr_hdrag    = false;
+            }
+        }
+
         if (s_drag_in_beats) {
             double span = editor->view_end - editor->view_start;
             double t_click = (ba_w > 0 && span > 0)
@@ -641,6 +713,52 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
         s_sec_hdrag_idx = -1;
     }
 
+    // Lyric drag-to-create: update end time while mouse is held
+    if (s_lyr_drag && s_drag_in_lyr &&
+        ImGui::IsMouseDragging(ImGuiMouseButton_Left)) {
+        double span  = editor->view_end - editor->view_start;
+        double t_raw = (la_w > 0 && span > 0)
+            ? editor->view_start + (double)(io.MousePos.x - la_x) / la_w * span
+            : editor->view_start;
+        s_lyr_drag_t1 = snap_to_beat(t_raw, beatmap,
+                                      editor->view_start, editor->view_end, la_w);
+    }
+
+    // Lyric handle drag: resize selected lyric
+    if (s_lyr_hdrag && ImGui::IsMouseDragging(ImGuiMouseButton_Left)) {
+        if (s_lyr_hdrag_idx >= 0 && s_lyr_hdrag_idx < lyricmap->count) {
+            double span  = editor->view_end - editor->view_start;
+            double t_raw = (la_w > 0 && span > 0)
+                ? editor->view_start + (double)(io.MousePos.x - la_x) / la_w * span
+                : editor->view_start;
+            double t_snap = snap_to_beat(t_raw, beatmap,
+                                          editor->view_start, editor->view_end, la_w);
+            Lyric& ly = lyricmap->lyrics[s_lyr_hdrag_idx];
+            if (s_lyr_hdrag_end == 0)
+                ly.t_start = (t_snap < ly.t_end - 0.001) ? t_snap : ly.t_end - 0.001;
+            else
+                ly.t_end   = (t_snap > ly.t_start + 0.001) ? t_snap : ly.t_start + 0.001;
+            lyricmap->dirty = true;
+        }
+    }
+
+    // Lyric drag-to-create release: commit new lyric
+    if (s_lyr_drag && !ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+        double pt0 = (s_lyr_drag_t0 < s_lyr_drag_t1) ? s_lyr_drag_t0 : s_lyr_drag_t1;
+        double pt1 = (s_lyr_drag_t0 < s_lyr_drag_t1) ? s_lyr_drag_t1 : s_lyr_drag_t0;
+        if (pt1 - pt0 > 0.05) {
+            int idx = lyricmap_add(lyricmap, pt0, pt1, "");
+            if (idx >= 0) s_lyr_selected = idx;
+        }
+        s_lyr_drag = false;
+    }
+
+    // Lyric handle drag release
+    if (s_lyr_hdrag && !ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+        s_lyr_hdrag     = false;
+        s_lyr_hdrag_idx = -1;
+    }
+
     // Rect selection release: select all visible beats whose centre falls inside the rect
     if (s_rect_sel && !ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
         float rsx0 = s_rect_x0 < io.MousePos.x ? s_rect_x0 : io.MousePos.x;
@@ -662,6 +780,7 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
         s_drag_in_place   = false;
         s_drag_in_beats   = false;
         s_drag_in_sec     = false;
+        s_drag_in_lyr     = false;
     }
 
     // Minimap seek/scrub
@@ -1274,6 +1393,76 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
                     IM_COL32(50, 50, 70, 255));
     }
 
+    // --- Lyric strip ---
+    dl->AddRectFilled(ImVec2(la_x, la_y), ImVec2(la_x + la_w, la_y + la_h),
+                      IM_COL32(10, 14, 18, 255));
+    dl->AddLine(ImVec2(la_x, la_y), ImVec2(la_x + la_w, la_y),
+                IM_COL32(40, 40, 60, 255));
+
+    dl->PushClipRect(ImVec2(la_x, la_y), ImVec2(la_x + la_w, la_y + la_h), true);
+    for (int i = 0; i < lyricmap->count; i++) {
+        const Lyric& ly = lyricmap->lyrics[i];
+        float lx0 = time_to_x(ly.t_start, editor->view_start, editor->view_end, la_x, la_w);
+        float lx1 = time_to_x(ly.t_end,   editor->view_start, editor->view_end, la_x, la_w);
+        if (lx1 <= la_x || lx0 >= la_x + la_w) continue;
+        bool  sel = (i == s_lyr_selected);
+        float y0  = la_y + 3.0f, y1 = la_y + la_h - 3.0f;
+
+        dl->AddRectFilled(ImVec2(lx0, y0), ImVec2(lx1, y1),
+                          IM_COL32(45, 95, 130, 160));
+        dl->AddRect(ImVec2(lx0, y0), ImVec2(lx1, y1),
+                    sel ? IM_COL32(90, 180, 220, 230) : IM_COL32(0, 0, 0, 120),
+                    0.0f, 0, sel ? 2.0f : 1.0f);
+
+        // Lyric text, left-aligned inside the rect
+        if (ly.text[0]) {
+            float th_lbl = ImGui::GetTextLineHeight();
+            float lbl_y  = y0 + (y1 - y0 - th_lbl) * 0.5f;
+            float lbl_x  = lx0 + 4.0f;
+            ImVec2 ts = ImGui::CalcTextSize(ly.text);
+            // Clip text to lyric rect width
+            if (lbl_x + ts.x < lx1 - 2.0f)
+                dl->AddText(ImVec2(lbl_x, lbl_y), IM_COL32(220, 220, 200, 230), ly.text);
+            else if (lx1 - lx0 > 10.0f) {
+                // Ellipsis: push clip rect for the individual lyric
+                dl->PushClipRect(ImVec2(lx0, y0), ImVec2(lx1 - 2.0f, y1), true);
+                dl->AddText(ImVec2(lbl_x, lbl_y), IM_COL32(220, 220, 200, 230), ly.text);
+                dl->PopClipRect();
+            }
+        }
+
+        // Resize handles on selected lyric
+        if (sel) {
+            float hmy = y0 + (y1 - y0) * 0.5f;
+            dl->AddRectFilled(ImVec2(lx0 - 3.0f, hmy - 8.0f),
+                              ImVec2(lx0 + 3.0f, hmy + 8.0f), IM_COL32(90, 180, 220, 230));
+            dl->AddRectFilled(ImVec2(lx1 - 3.0f, hmy - 8.0f),
+                              ImVec2(lx1 + 3.0f, hmy + 8.0f), IM_COL32(90, 180, 220, 230));
+        }
+    }
+    // Drag-to-create preview
+    if (s_lyr_drag) {
+        double dt0 = (s_lyr_drag_t0 < s_lyr_drag_t1) ? s_lyr_drag_t0 : s_lyr_drag_t1;
+        double dt1 = (s_lyr_drag_t0 < s_lyr_drag_t1) ? s_lyr_drag_t1 : s_lyr_drag_t0;
+        float  dx0 = time_to_x(dt0, editor->view_start, editor->view_end, la_x, la_w);
+        float  dx1 = time_to_x(dt1, editor->view_start, editor->view_end, la_x, la_w);
+        if (dx1 > dx0) {
+            dl->AddRectFilled(ImVec2(dx0, la_y + 3.0f), ImVec2(dx1, la_y + la_h - 3.0f),
+                              IM_COL32(90, 160, 200, 60));
+            dl->AddRect(ImVec2(dx0, la_y + 3.0f), ImVec2(dx1, la_y + la_h - 3.0f),
+                        IM_COL32(120, 200, 240, 200), 0.0f, 0, 1.5f);
+        }
+    }
+    dl->PopClipRect();
+
+    // --- Lyric edit panel background ---
+    if (show_lyr_panel) {
+        dl->AddRectFilled(ImVec2(la_x, lyp_y), ImVec2(la_x + la_w, lyp_y + LYR_PANEL_H),
+                          IM_COL32(10, 10, 18, 255));
+        dl->AddLine(ImVec2(la_x, lyp_y), ImVec2(la_x + la_w, lyp_y),
+                    IM_COL32(50, 50, 70, 255));
+    }
+
     // --- Contextual interpolation panel ---
     // Shown when exactly two adjacent beats are selected.
     if (show_ctx) {
@@ -1484,6 +1673,34 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
         if (ImGui::Button("Delete##sec", ImVec2(btn_w, 0))) {
             sectionmap_remove(sectionmap, s_sec_selected);
             s_sec_selected = -1;
+        }
+    }
+
+    // --- Lyric edit panel widgets ---
+    if (show_lyr_panel && s_lyr_selected >= 0 && s_lyr_selected < lyricmap->count) {
+        Lyric& ly = lyricmap->lyrics[s_lyr_selected];
+
+        float fh      = ImGui::GetFrameHeight();
+        float text_w  = 320.0f;
+        float btn_w   = 58.0f;
+        float sp      = ImGui::GetStyle().ItemSpacing.x;
+        float spx     = la_x + 4.0f;
+        float spy     = lyp_y + (LYR_PANEL_H - fh) * 0.5f;
+
+        ImGui::SetCursorScreenPos(ImVec2(spx, spy));
+
+        ImGui::TextUnformatted("Lyric:");
+        ImGui::SameLine();
+
+        ImGui::SetNextItemWidth(text_w);
+        if (ImGui::InputText("##lyr_text", ly.text, sizeof(ly.text)))
+            lyricmap->dirty = true;
+        ImGui::SameLine();
+
+        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + sp);
+        if (ImGui::Button("Delete##lyr", ImVec2(btn_w, 0))) {
+            lyricmap_remove(lyricmap, s_lyr_selected);
+            s_lyr_selected = -1;
         }
     }
 

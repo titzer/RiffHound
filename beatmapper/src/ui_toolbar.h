@@ -4,13 +4,15 @@
 #include "audio.h"
 #include "beatmap.h"
 #include "sectionmap.h"
+#include "lyricmap.h"
 #include "undo.h"
 #include "recent.h"
 
 // Top toolbar: file open, playback controls, tool mode buttons, interpolate panel.
 
 void ui_toolbar_render(EditorState* editor, AudioState* audio, BeatMap* beatmap,
-                       UndoStack* undo, RecentFiles* recent, SectionMap* sectionmap);
+                       UndoStack* undo, RecentFiles* recent, SectionMap* sectionmap,
+                       LyricMap* lyricmap);
 
 // Request the Open Audio dialog to appear on the next frame (callable from menu bar).
 void ui_toolbar_open_dialog();

@@ -1,6 +1,7 @@
 #pragma once
 
 struct SectionMap;  // forward declaration — see sectionmap.h
+struct LyricMap;    // forward declaration — see lyricmap.h
 
 struct Beat {
     double time;
@@ -26,15 +27,15 @@ int  beatmap_add(BeatMap* bm, double t);
 // Remove beat at index idx.  No-op if idx is out of range.
 void beatmap_remove(BeatMap* bm, int idx);
 
-// Save beats (and optionally sections) to a combined timeseries file.
-// On success all beats are committed and sm->dirty is cleared.
-// Pass sm=nullptr to omit sections.
-bool beatmap_save(BeatMap* bm, SectionMap* sm, const char* path);
+// Save beats, sections, and lyrics to a combined timeseries file.
+// On success all beats are committed and dirty flags are cleared.
+// Pass sm=nullptr to omit sections; pass lm=nullptr to omit lyrics.
+bool beatmap_save(BeatMap* bm, SectionMap* sm, LyricMap* lm, const char* path);
 
-// Load beats (and optionally sections) from a combined timeseries file.
-// Clears existing beats first; clears sm if sm != nullptr.
+// Load beats, sections, and lyrics from a combined timeseries file.
+// Clears existing beats first; clears sm/lm if non-nullptr.
 // All loaded beats are fixed (interp=false).
-bool beatmap_load(BeatMap* bm, SectionMap* sm, const char* path);
+bool beatmap_load(BeatMap* bm, SectionMap* sm, LyricMap* lm, const char* path);
 
 // Mark all beats as fixed (clear all interp flags).
 // Called automatically by beatmap_save on success.

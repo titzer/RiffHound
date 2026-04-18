@@ -1,5 +1,6 @@
 #include "beatmap.h"
 #include "sectionmap.h"
+#include "lyricmap.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -61,7 +62,7 @@ void beatmap_remove(BeatMap* bm, int idx) {
     bm->dirty = true;
 }
 
-bool beatmap_save(BeatMap* bm, SectionMap* sm, const char* path) {
+bool beatmap_save(BeatMap* bm, SectionMap* sm, LyricMap* lm, const char* path) {
     FILE* f = fopen(path, "w");
     if (!f) {
         fprintf(stderr, "[beatmap] failed to open '%s' for writing\n", path);
@@ -87,9 +88,18 @@ bool beatmap_save(BeatMap* bm, SectionMap* sm, const char* path) {
         sm->dirty = false;
     }
 
+    if (lm && lm->count > 0) {
+        fprintf(f, "# Lyrics\n");
+        for (int i = 0; i < lm->count; i++) {
+            const Lyric& ly = lm->lyrics[i];
+            fprintf(f, "%.6f\t%.6f\tlyric: %s\n", ly.t_start, ly.t_end, ly.text);
+        }
+        lm->dirty = false;
+    }
+
     fclose(f);
-    fprintf(stderr, "[beatmap] saved %d beats + %d sections to '%s'\n",
-            bm->count, sm ? sm->count : 0, path);
+    fprintf(stderr, "[beatmap] saved %d beats + %d sections + %d lyrics to '%s'\n",
+            bm->count, sm ? sm->count : 0, lm ? lm->count : 0, path);
     beatmap_commit(bm);
     strncpy(bm->save_path, path, sizeof(bm->save_path) - 1);
     bm->save_path[sizeof(bm->save_path) - 1] = '\0';
@@ -97,10 +107,11 @@ bool beatmap_save(BeatMap* bm, SectionMap* sm, const char* path) {
     return true;
 }
 
-bool beatmap_load(BeatMap* bm, SectionMap* sm, const char* path) {
+bool beatmap_load(BeatMap* bm, SectionMap* sm, LyricMap* lm, const char* path) {
     // Always clear first so stale data never persists when the file is missing.
     bm->count = 0;
     if (sm) sectionmap_clear(sm);
+    if (lm) lyricmap_clear(lm);
 
     FILE* f = fopen(path, "r");
     if (!f) {
@@ -126,6 +137,16 @@ bool beatmap_load(BeatMap* bm, SectionMap* sm, const char* path) {
 
         if (strcmp(kind_tok, "B") == 0) {
             beatmap_add(bm, t1);
+        } else if (lm && (strcmp(kind_tok, "lyric:") == 0 ||
+                          strcmp(kind_tok, "lyric")  == 0)) {
+            const char* rest = p + off;
+            while (*rest == ' ' || *rest == '\t') rest++;
+            if (*rest == ':') { rest++; while (*rest == ' ' || *rest == '\t') rest++; }
+            char text[128] = {};
+            strncpy(text, rest, sizeof(text) - 1);
+            int ll = (int)strlen(text);
+            while (ll > 0 && (text[ll - 1] <= ' ')) text[--ll] = '\0';
+            lyricmap_add(lm, t1, t2, text);
         } else if (strncmp(kind_tok, "Bx", 2) == 0) {
             int n = atoi(kind_tok + 2);
             if (n == 1) {
@@ -186,10 +207,11 @@ bool beatmap_load(BeatMap* bm, SectionMap* sm, const char* path) {
         }
     }
     fclose(f);
-    fprintf(stderr, "[beatmap] loaded %d beats + %d sections from '%s'\n",
-            bm->count, sm ? sm->count : 0, path);
+    fprintf(stderr, "[beatmap] loaded %d beats + %d sections + %d lyrics from '%s'\n",
+            bm->count, sm ? sm->count : 0, lm ? lm->count : 0, path);
     bm->dirty = false;
     if (sm) sm->dirty = false;
+    if (lm) lm->dirty = false;
     return true;
 }
 
