@@ -234,6 +234,8 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
 {
     ImGuiIO& io = ImGui::GetIO();
 
+    static bool s_beats_collapsed = false;  // beat editor collapsed to slim display strip
+
     // Pre-compute contextual panel visibility (needs beatmap state, but before BeginChild
     // so we can set the correct child height).
     // Show when exactly 2 adjacent beats are selected AND the gap fits at least one
@@ -259,6 +261,8 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
         show_ctx = ((int)round(dt * bpm_ref / 60.0) >= 2);
     }
     float ctx_h = show_ctx ? CTX_PANEL_H : 0.0f;
+    // Ctx panel and beat editing are hidden when the beat editor is collapsed.
+    if (s_beats_collapsed) { show_ctx = false; ctx_h = 0.0f; }
 
     // Pre-compute section edit panel visibility
     static int s_sec_selected = -1;  // persistent selection index (static local)
@@ -273,7 +277,8 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
     // Spectrogram fills all available vertical space; bottom items are fixed height.
     ImVec2 avail = ImGui::GetContentRegionAvail();
     float fixed_h = MINIMAP_H + 2.0f + RULER_H + 2.0f
-                  + 2.0f + PLACE_STRIP_H + 2.0f + BEAT_AREA_H + ctx_h
+                  + 2.0f + PLACE_STRIP_H + 2.0f
+                  + (s_beats_collapsed ? 0.0f : BEAT_AREA_H + ctx_h)
                   + 2.0f + SECTION_H + sec_panel_h;
     float spectro_h = avail.y - fixed_h;
     if (spectro_h < 50.0f) spectro_h = 50.0f;
@@ -301,7 +306,8 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
     float ruler_y = mm_y + mm_h + 2.0f;
     float tx = cx,   ty = ruler_y + RULER_H + 2.0f,   tw = cw,   th = spectro_h;
     float ps_x = cx, ps_y = ty + th + 2.0f,            ps_w = cw; // placement strip
-    float ba_x = cx, ba_y = ps_y + PLACE_STRIP_H + 2.0f, ba_w = cw, ba_h = BEAT_AREA_H;
+    float ba_x = cx, ba_y = ps_y + PLACE_STRIP_H + 2.0f, ba_w = cw,
+          ba_h = s_beats_collapsed ? 0.0f : BEAT_AREA_H;
     // ctx panel sits between beat area and section strip (ctx_y defined after ba_y)
     float ctx_y  = ba_y + ba_h;
     float sa_x   = cx,  sa_y = ctx_y + ctx_h + 2.0f, sa_w = cw, sa_h = SECTION_H;
@@ -374,11 +380,19 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
     static bool  s_ctx_hover = false;
 
     if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+        float click_x = io.MousePos.x;
         float click_y = io.MousePos.y;
+
+        // Triangle in left sidebar: toggle beat editor collapse (eats the click)
+        if (click_x < cx && click_y >= ps_y && click_y < ps_y + PLACE_STRIP_H)
+            s_beats_collapsed = !s_beats_collapsed;
+
         s_drag_in_spectro = (click_y >= ty      && click_y < ty + th);
         s_drag_in_ruler   = (click_y >= ruler_y && click_y < ty);
         s_mm_seeking      = (click_y >= mm_y    && click_y < ruler_y);
-        s_drag_in_place   = (click_y >= ps_y    && click_y < ps_y + PLACE_STRIP_H);
+        // Beat placement: only in content area, only when expanded
+        s_drag_in_place   = (!s_beats_collapsed && click_x >= cx &&
+                              click_y >= ps_y && click_y < ps_y + PLACE_STRIP_H);
         s_drag_in_beats   = (click_y >= ba_y    && click_y < ba_y + ba_h);
         s_drag_in_sec     = (click_y >= sa_y    && click_y < sa_y + sa_h);
 
@@ -732,6 +746,24 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
     dl->AddLine(ImVec2(cx, ry), ImVec2(cx, ry + total_h),
                 IM_COL32(50, 50, 70, 255));
 
+    // Beat-editor collapse triangle in the left sidebar
+    {
+        float tcx = rx + sidebar_w * 0.5f;
+        float tcy = ps_y + PLACE_STRIP_H * 0.5f;
+        ImU32 tri_col = IM_COL32(160, 160, 190, 200);
+        if (s_beats_collapsed) {
+            // Right-pointing (▶): collapsed
+            dl->AddTriangleFilled(ImVec2(tcx - 4.0f, tcy - 5.0f),
+                                  ImVec2(tcx - 4.0f, tcy + 5.0f),
+                                  ImVec2(tcx + 4.0f, tcy), tri_col);
+        } else {
+            // Down-pointing (▼): expanded
+            dl->AddTriangleFilled(ImVec2(tcx - 5.0f, tcy - 3.5f),
+                                  ImVec2(tcx + 5.0f, tcy - 3.5f),
+                                  ImVec2(tcx,        tcy + 4.5f), tri_col);
+        }
+    }
+
     // Frequency axis labels aligned to the spectrogram row
     if (spectro->computed && spectro->sample_rate > 0 && th > 0.0f) {
         float nyquist = (float)(spectro->sample_rate / 2);
@@ -819,11 +851,58 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
     dl->AddRect(ImVec2(ps_x, ps_y), ImVec2(ps_x + ps_w, ps_y + PLACE_STRIP_H),
                 IM_COL32(40, 50, 65, 255));
 
+    // Condensed beat display (collapsed mode only) ----------------------------
+    // Renders diamonds when beats are spread enough, lines when any adjacent pair
+    // would overlap as diamonds (decision applies to the whole visible set).
+    if (s_beats_collapsed && beatmap->count > 0) {
+        const float CD_R    = 5.0f;  // diamond radius in collapsed strip
+        float       strip_cy = ps_y + PLACE_STRIP_H * 0.5f;
+        double      span     = editor->view_end - editor->view_start;
+
+        // Pass 1: determine whether to use lines (overlap check on visible beats)
+        bool  use_lines = false;
+        float prev_bx   = -1e9f;
+        for (int i = 0; i < beatmap->count && !use_lines; i++) {
+            double t = beatmap->beats[i].time;
+            if (t < editor->view_start || t > editor->view_end) continue;
+            float bx = (span > 0.0 && ps_w > 0)
+                ? ps_x + (float)((t - editor->view_start) / span * ps_w)
+                : ps_x;
+            if (prev_bx > -1e8f && bx - prev_bx < 2.0f * CD_R)
+                use_lines = true;
+            prev_bx = bx;
+        }
+
+        // Pass 2: draw
+        dl->PushClipRect(ImVec2(ps_x, ps_y), ImVec2(ps_x + ps_w, ps_y + PLACE_STRIP_H), true);
+        for (int i = 0; i < beatmap->count; i++) {
+            double t = beatmap->beats[i].time;
+            if (t < editor->view_start - 1e-6 || t > editor->view_end + 1e-6) continue;
+            float bx = (span > 0.0 && ps_w > 0)
+                ? ps_x + (float)((t - editor->view_start) / span * ps_w)
+                : ps_x;
+            bool  is_interp = beatmap->beats[i].interp;
+            ImU32 fill   = is_interp ? IM_COL32(255, 190, 40, 130) : IM_COL32(255, 190, 40, 210);
+            ImU32 border = is_interp ? IM_COL32(255, 220, 90, 180) : IM_COL32(255, 230, 100, 255);
+            if (use_lines) {
+                dl->AddLine(ImVec2(bx, ps_y + 2.0f), ImVec2(bx, ps_y + PLACE_STRIP_H - 2.0f),
+                            fill, 1.0f);
+            } else {
+                draw_diamond(dl, bx, strip_cy, CD_R, fill, border);
+            }
+        }
+        dl->PopClipRect();
+    }
+
     // Placement strip hover preview: outline diamond + instantaneous BPM labels.
     // With Shift held: show fill preview (intermediate diamonds + spectrogram lines).
     if (hovered) {
+        // Triangle tooltip
+        if (io.MousePos.x < cx && io.MousePos.y >= ps_y && io.MousePos.y < ps_y + PLACE_STRIP_H)
+            ImGui::SetTooltip(s_beats_collapsed ? "Expand beat editor" : "Collapse beat editor");
+
         float mpy = io.MousePos.y;
-        if (mpy >= ps_y && mpy < ps_y + PLACE_STRIP_H) {
+        if (!s_beats_collapsed && mpy >= ps_y && mpy < ps_y + PLACE_STRIP_H) {
             double span = editor->view_end - editor->view_start;
             double t_hover = (span > 0.0 && ps_w > 0.0f)
                 ? editor->view_start + (double)(io.MousePos.x - ps_x) / ps_w * span
