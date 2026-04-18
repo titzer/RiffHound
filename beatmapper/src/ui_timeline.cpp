@@ -819,6 +819,21 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
         if (rx2 >= tx && rx2 <= tx + tw)
             dl->AddLine(ImVec2(rx2, ty), ImVec2(rx2, ty + th),
                         IM_COL32(130, 200, 255, 230), 1.5f);
+
+        // Selection duration label: one text-line below the cursor timestamp,
+        // anchored just right of the (possibly clamped) selection start.
+        if (cx2 > cx1) {
+            char     dur_buf[32];
+            snprintf(dur_buf, sizeof(dur_buf), "%.3fs",
+                     editor->region_end - editor->region_start);
+            ImVec2   sz    = ImGui::CalcTextSize(dur_buf);
+            float    lbl_x = cx1 + 4.0f;
+            float    lbl_y = ty  + 4.0f;
+            if (lbl_x + sz.x > tx + tw) lbl_x = tx + tw - sz.x - 2.0f;
+            if (lbl_y + sz.y <= ty + th)
+                dl->AddText(ImVec2(lbl_x, lbl_y),
+                            IM_COL32(130, 200, 255, 200), dur_buf);
+        }
     }
 
     if (audio->loaded)
@@ -1054,7 +1069,8 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
             double hs = hover_t - hm * 60.0;
             char tip[32];
             snprintf(tip, sizeof(tip), "%d:%06.3f", hm, hs);
-            dl->AddText(ImVec2(mx + 4, ruler_y + 4),
+            float lh_hint = ImGui::GetTextLineHeight();
+            dl->AddText(ImVec2(mx + 4, ty + 4.0f + lh_hint),
                         IM_COL32(255, 255, 255, 180), tip);
         }
     }
