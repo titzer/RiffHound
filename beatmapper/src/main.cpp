@@ -193,6 +193,8 @@ int main(int argc, char** argv) {
                 audio_seek(&audio, audio_get_position(&audio) + 5.0);
             if (ImGui::IsKeyPressed(ImGuiKey_L))
                 audio.loop = !audio.loop;
+            if (ImGui::IsKeyPressed(ImGuiKey_F))
+                editor.autoscroll = !editor.autoscroll;
 
             // Delete / Backspace → selected beats take priority; fall back to
             // removing a selected section only when no beats are selected.
@@ -212,6 +214,11 @@ int main(int argc, char** argv) {
                     sectionmap.selected_idx = -1;
                 }
             }
+
+            // Ctrl/Cmd+O → Open Audio File
+            if ((ImGui::GetIO().KeyCtrl || ImGui::GetIO().KeySuper) &&
+                ImGui::IsKeyPressed(ImGuiKey_O))
+                ui_toolbar_open_dialog();
 
             // Ctrl+Z → undo
             if (ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_Z))

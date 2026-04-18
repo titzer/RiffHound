@@ -692,6 +692,38 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
         }
     }
 
+    // --- Autoscroll: pan the view to keep the playhead at the centre ---
+    // Runs every frame while playing, after all manual input has been processed.
+    if (editor->autoscroll && audio->loaded && audio->playing) {
+        double pos  = audio_get_position(audio);
+        double span = editor->view_end - editor->view_start;
+        bool   do_pan    = true;
+        double min_start = 0.0, max_start = 0.0;
+
+        if (audio->loop) {
+            double ls = editor->has_region ? editor->region_start : 0.0;
+            double le = editor->has_region ? editor->region_end   : audio->duration;
+            if (le - ls <= span) {
+                do_pan = false;  // loop fits in view: let playhead advance freely
+            } else {
+                min_start = ls;
+                max_start = le - span;
+            }
+        } else {
+            min_start = 0.0;
+            max_start = audio->duration - span;
+            if (max_start < 0.0) max_start = 0.0;
+        }
+
+        if (do_pan) {
+            double desired   = pos - span * 0.5;
+            double new_start = desired < min_start ? min_start :
+                               desired > max_start ? max_start : desired;
+            editor->view_start = new_start;
+            editor->view_end   = new_start + span;
+        }
+    }
+
     // --- Draw ---
 
     // Left sidebar: background + right border
@@ -761,6 +793,25 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
         draw_playhead(dl, tx, ty, tw, th,
                       audio_get_position(audio),
                       editor->view_start, editor->view_end);
+
+    // Loop-end marker: shown when autoscroll + loop + loop doesn't fit in the view.
+    // Drawn as an orange vertical line + downward triangle (same visual language as
+    // the playhead) so the user can see where the view will jump back to loop_start.
+    if (editor->autoscroll && audio->loop && audio->loaded) {
+        double ls = editor->has_region ? editor->region_start : 0.0;
+        double le = editor->has_region ? editor->region_end   : audio->duration;
+        double span = editor->view_end - editor->view_start;
+        if (le - ls > span) {
+            float ex = time_to_x(le, editor->view_start, editor->view_end, tx, tw);
+            if (ex >= tx && ex <= tx + tw) {
+                dl->AddLine(ImVec2(ex, ruler_y), ImVec2(ex, ba_y + ba_h),
+                            IM_COL32(255, 120, 40, 220), 2.0f);
+                dl->AddTriangleFilled(ImVec2(ex - 5, ruler_y), ImVec2(ex + 5, ruler_y),
+                                      ImVec2(ex, ruler_y + 10),
+                                      IM_COL32(255, 120, 40, 220));
+            }
+        }
+    }
 
     // Placement strip background
     dl->AddRectFilled(ImVec2(ps_x, ps_y), ImVec2(ps_x + ps_w, ps_y + PLACE_STRIP_H),

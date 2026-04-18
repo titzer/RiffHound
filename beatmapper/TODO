@@ -1,5 +1,12 @@
 - show vertical lines on spectrogram for interpolated beats
 - extrapolate from last beat to current beat (ctrl, shift)?
-- Pitch fine-tuning adjustment and key change (transpose by N semitones)
-- loop selection and playback
 - loop schedule (verse#2 x 3, chorus#2 x 1, fill#44, verse#1)
+- better bulk insertion
+  - global BPM inference range setting (e.g. 50 to 180bpm)
+  - audio analysis for suggested beats
+  - mark beginning and end of section, offer subdivision choice 2=100bpm,3,4=200bpm,5
+  - reinterpolate beats between (delete and reinsert)
+  - insert measure(s) 4,8,12 beats
+- Chord progressions per section
+- Lyrics
+- Riff text

@@ -10,6 +10,8 @@ struct EditorState {
     bool   has_region;
     double region_start;  // seconds
     double region_end;    // seconds
+
+    bool   autoscroll;    // scroll timeline to follow playhead during playback
 };
 
 void editor_init(EditorState* e);
