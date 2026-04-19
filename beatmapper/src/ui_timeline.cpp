@@ -195,9 +195,8 @@ static const float MINIMAP_H     = 40.0f;
 static const float CTX_PANEL_H   = 36.0f;  // contextual interpolate panel
 static const float PLACE_STRIP_H = 22.0f;  // beat placement strip
 static const float SECTION_H     = 52.0f;  // section strip
-static const float SEC_PANEL_H   = 34.0f;  // selected-section edit panel
 static const float LYRIC_H       = 36.0f;  // lyric strip
-static const float LYR_PANEL_H   = 34.0f;  // selected-lyric edit panel
+static const float EDIT_PANEL_H  = 34.0f;  // unified edit panel (section or lyric) at bottom
 
 // Per-kind fill and border colours (index = SectionKind)
 static const ImU32 s_sec_fill[SK_COUNT] = {
@@ -268,31 +267,26 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
     // Ctx panel and beat editing are hidden when the beat editor is collapsed.
     if (s_beats_collapsed) { show_ctx = false; ctx_h = 0.0f; }
 
-    // Pre-compute section edit panel visibility
-    static int s_sec_selected = -1;  // persistent selection index (static local)
+    // Persistent selection indices for section and lyric strips.
+    static int s_sec_selected = -1;
     if (s_sec_selected >= sectionmap->count) s_sec_selected = -1;
     sectionmap->selected_idx = s_sec_selected;  // keep struct in sync for main.cpp delete
-    bool  show_sec_panel = (s_sec_selected >= 0);
-    float sec_panel_h    = show_sec_panel ? SEC_PANEL_H : 0.0f;
 
-    // Pre-compute lyric edit panel visibility
-    static int s_lyr_selected = -1;  // persistent selection index
+    static int s_lyr_selected = -1;
     if (s_lyr_selected >= lyricmap->count) s_lyr_selected = -1;
     lyricmap->selected_idx = s_lyr_selected;  // keep struct in sync for main.cpp delete
-    bool  show_lyr_panel = (s_lyr_selected >= 0);
-    float lyr_panel_h    = show_lyr_panel ? LYR_PANEL_H : 0.0f;
 
     // Layout (top to bottom):
     //   minimap | ruler | spectrogram (flexible) |
-    //   place strip | beat area | [ctx panel] | section strip | [sec edit panel]
-    //   lyric strip | [lyric edit panel]
-    // Spectrogram fills all available vertical space; bottom items are fixed height.
+    //   place strip | beat area | [ctx panel] | section strip | lyric strip | edit panel
+    // The edit panel is always reserved at a fixed height at the very bottom and shows
+    // section or lyric widgets depending on which is currently selected.
     ImVec2 avail = ImGui::GetContentRegionAvail();
     float fixed_h = MINIMAP_H + 2.0f + RULER_H + 2.0f
                   + 2.0f + PLACE_STRIP_H + 2.0f
                   + (s_beats_collapsed ? 0.0f : BEAT_AREA_H + ctx_h)
-                  + 2.0f + SECTION_H + sec_panel_h
-                  + 2.0f + LYRIC_H + lyr_panel_h;
+                  + 2.0f + SECTION_H
+                  + 2.0f + LYRIC_H + EDIT_PANEL_H;
     float spectro_h = avail.y - fixed_h;
     if (spectro_h < 50.0f) spectro_h = 50.0f;
     float total_h = fixed_h + spectro_h;
@@ -324,9 +318,8 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
     // ctx panel sits between beat area and section strip (ctx_y defined after ba_y)
     float ctx_y  = ba_y + ba_h;
     float sa_x   = cx,  sa_y = ctx_y + ctx_h + 2.0f, sa_w = cw, sa_h = SECTION_H;
-    float sep_y  = sa_y + sa_h;  // section edit panel top
-    float la_x   = cx,  la_y = sep_y + sec_panel_h + 2.0f, la_w = cw, la_h = LYRIC_H;
-    float lyp_y  = la_y + la_h;  // lyric edit panel top
+    float la_x   = cx,  la_y = sa_y + SECTION_H + 2.0f, la_w = cw, la_h = LYRIC_H;
+    float ep_y   = la_y + la_h;   // unified edit panel top (always reserved)
 
     // --- Beat position layout pass (rebuilds every frame) ---
     // Computes screen positions + stagger rows for all beats.
@@ -367,7 +360,7 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
     // --- Single InvisibleButton covering the timeline (not the ctx panel) ---
     ImGui::SetCursorScreenPos(ImVec2(rx, ry));
     ImGui::InvisibleButton("##timeline_input",
-                           ImVec2(rw, total_h - ctx_h - sec_panel_h - lyr_panel_h),
+                           ImVec2(rw, total_h - ctx_h - EDIT_PANEL_H),
                            ImGuiButtonFlags_MouseButtonLeft |
                            ImGuiButtonFlags_MouseButtonMiddle);
     bool hovered = ImGui::IsItemHovered();
@@ -1384,14 +1377,6 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
     }
     dl->PopClipRect();
 
-    // --- Section edit panel background ---
-    // Drawn before ctx panel widget calls for the same clip-rect reason.
-    if (show_sec_panel) {
-        dl->AddRectFilled(ImVec2(sa_x, sep_y), ImVec2(sa_x + sa_w, sep_y + SEC_PANEL_H),
-                          IM_COL32(10, 10, 18, 255));
-        dl->AddLine(ImVec2(sa_x, sep_y), ImVec2(sa_x + sa_w, sep_y),
-                    IM_COL32(50, 50, 70, 255));
-    }
 
     // --- Lyric strip ---
     dl->AddRectFilled(ImVec2(la_x, la_y), ImVec2(la_x + la_w, la_y + la_h),
@@ -1455,13 +1440,11 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
     }
     dl->PopClipRect();
 
-    // --- Lyric edit panel background ---
-    if (show_lyr_panel) {
-        dl->AddRectFilled(ImVec2(la_x, lyp_y), ImVec2(la_x + la_w, lyp_y + LYR_PANEL_H),
-                          IM_COL32(10, 10, 18, 255));
-        dl->AddLine(ImVec2(la_x, lyp_y), ImVec2(la_x + la_w, lyp_y),
-                    IM_COL32(50, 50, 70, 255));
-    }
+    // --- Unified edit panel background --- always drawn to keep layout stable.
+    dl->AddRectFilled(ImVec2(cx, ep_y), ImVec2(cx + cw, ep_y + EDIT_PANEL_H),
+                      IM_COL32(10, 10, 18, 255));
+    dl->AddLine(ImVec2(cx, ep_y), ImVec2(cx + cw, ep_y),
+                IM_COL32(50, 50, 70, 255));
 
     // --- Contextual interpolation panel ---
     // Shown when exactly two adjacent beats are selected.
@@ -1612,95 +1595,85 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
         s_ctx_hover = false;
     }
 
-    // --- Section edit panel widgets ---
-    if (show_sec_panel && s_sec_selected >= 0 && s_sec_selected < sectionmap->count) {
-        Section& sec = sectionmap->sections[s_sec_selected];
+    // --- Unified edit panel widgets ---
+    // Shows section or lyric controls depending on which is selected.
+    {
+        float fh  = ImGui::GetFrameHeight();
+        float btn_w = 58.0f;
+        float py  = ep_y + (EDIT_PANEL_H - fh) * 0.5f;
 
-        float fh      = ImGui::GetFrameHeight();
-        float combo_w = 120.0f;
-        float label_w = 140.0f;
-        float btn_w   = 58.0f;
-        float sp      = ImGui::GetStyle().ItemSpacing.x;
-        float spx     = sa_x + 4.0f;
-        float spy     = sep_y + (SEC_PANEL_H - fh) * 0.5f;
+        if (s_sec_selected >= 0 && s_sec_selected < sectionmap->count) {
+            Section& sec = sectionmap->sections[s_sec_selected];
+            float combo_w = 120.0f;
+            float label_w = 140.0f;
 
-        ImGui::SetCursorScreenPos(ImVec2(spx, spy));
+            ImGui::SetCursorScreenPos(ImVec2(cx + 4.0f, py));
 
-        // Kind combo
-        ImGui::SetNextItemWidth(combo_w);
-        int kind_int = (int)sec.kind;
-        if (ImGui::BeginCombo("##sec_kind", SECTION_KIND_NAMES[kind_int])) {
-            for (int k = 0; k < SK_COUNT; k++) {
-                bool sel_k = (k == kind_int);
-                if (ImGui::Selectable(SECTION_KIND_NAMES[k], sel_k)) {
-                    sec.kind         = (SectionKind)k;
-                    sectionmap->dirty = true;
+            // Kind combo
+            ImGui::SetNextItemWidth(combo_w);
+            int kind_int = (int)sec.kind;
+            if (ImGui::BeginCombo("##sec_kind", SECTION_KIND_NAMES[kind_int])) {
+                for (int k = 0; k < SK_COUNT; k++) {
+                    bool sel_k = (k == kind_int);
+                    if (ImGui::Selectable(SECTION_KIND_NAMES[k], sel_k)) {
+                        sec.kind          = (SectionKind)k;
+                        sectionmap->dirty = true;
+                    }
+                    if (sel_k) ImGui::SetItemDefaultFocus();
                 }
-                if (sel_k) ImGui::SetItemDefaultFocus();
+                ImGui::EndCombo();
             }
-            ImGui::EndCombo();
-        }
-        ImGui::SameLine();
+            ImGui::SameLine();
 
-        // Optional custom label
-        ImGui::SetNextItemWidth(label_w);
-        if (ImGui::InputText("##sec_label", sec.label, sizeof(sec.label)))
-            sectionmap->dirty = true;
-        ImGui::SameLine();
+            // Optional custom label
+            ImGui::SetNextItemWidth(label_w);
+            if (ImGui::InputText("##sec_label", sec.label, sizeof(sec.label)))
+                sectionmap->dirty = true;
+            ImGui::SameLine();
 
-        // Time signature: numerator DragInt + "/" + denominator DragInt
-        ImGui::SetNextItemWidth(32.0f);
-        if (ImGui::DragInt("##ts_num", &sec.ts_num, 0.15f, 1, 16, "%d")) {
-            if (sec.ts_num < 1) sec.ts_num = 1;
-            sectionmap->dirty = true;
-        }
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Beats per measure");
-        ImGui::SameLine(0, 2.0f);
-        ImGui::TextUnformatted("/");
-        ImGui::SameLine(0, 2.0f);
-        ImGui::SetNextItemWidth(32.0f);
-        if (ImGui::DragInt("##ts_den", &sec.ts_den, 0.15f, 1, 32, "%d")) {
-            if (sec.ts_den < 1) sec.ts_den = 1;
-            sectionmap->dirty = true;
-        }
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Note value (4 = quarter note)");
-        ImGui::SameLine();
+            // Time signature: numerator DragInt + "/" + denominator DragInt
+            ImGui::SetNextItemWidth(32.0f);
+            if (ImGui::DragInt("##ts_num", &sec.ts_num, 0.15f, 1, 16, "%d")) {
+                if (sec.ts_num < 1) sec.ts_num = 1;
+                sectionmap->dirty = true;
+            }
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Beats per measure");
+            ImGui::SameLine(0, 2.0f);
+            ImGui::TextUnformatted("/");
+            ImGui::SameLine(0, 2.0f);
+            ImGui::SetNextItemWidth(32.0f);
+            if (ImGui::DragInt("##ts_den", &sec.ts_den, 0.15f, 1, 32, "%d")) {
+                if (sec.ts_den < 1) sec.ts_den = 1;
+                sectionmap->dirty = true;
+            }
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Note value (4 = quarter note)");
 
-        // Delete button
-        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + sp);
-        if (ImGui::Button("Delete##sec", ImVec2(btn_w, 0))) {
-            sectionmap_remove(sectionmap, s_sec_selected);
-            s_sec_selected = -1;
-        }
-    }
+            // Delete button — right-aligned
+            ImGui::SameLine(ImGui::GetWindowWidth() - btn_w - 4.0f);
+            if (ImGui::Button("Delete##sec", ImVec2(btn_w, 0))) {
+                sectionmap_remove(sectionmap, s_sec_selected);
+                s_sec_selected = -1;
+            }
 
-    // --- Lyric edit panel widgets ---
-    if (show_lyr_panel && s_lyr_selected >= 0 && s_lyr_selected < lyricmap->count) {
-        Lyric& ly = lyricmap->lyrics[s_lyr_selected];
+        } else if (s_lyr_selected >= 0 && s_lyr_selected < lyricmap->count) {
+            Lyric& ly = lyricmap->lyrics[s_lyr_selected];
+            float text_w = 320.0f;
 
-        float fh      = ImGui::GetFrameHeight();
-        float text_w  = 320.0f;
-        float btn_w   = 58.0f;
-        float sp      = ImGui::GetStyle().ItemSpacing.x;
-        float spx     = la_x + 4.0f;
-        float spy     = lyp_y + (LYR_PANEL_H - fh) * 0.5f;
+            ImGui::SetCursorScreenPos(ImVec2(cx + 4.0f, py));
 
-        ImGui::SetCursorScreenPos(ImVec2(spx, spy));
+            ImGui::TextUnformatted("Lyric:");
+            ImGui::SameLine();
 
-        ImGui::TextUnformatted("Lyric:");
-        ImGui::SameLine();
+            ImGui::SetNextItemWidth(text_w);
+            if (ImGui::InputText("##lyr_text", ly.text, sizeof(ly.text)))
+                lyricmap->dirty = true;
 
-        ImGui::SetNextItemWidth(text_w);
-        if (ImGui::InputText("##lyr_text", ly.text, sizeof(ly.text)))
-            lyricmap->dirty = true;
-        ImGui::SameLine();
-
-        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + sp);
-        if (ImGui::Button("Delete##lyr", ImVec2(btn_w, 0))) {
-            lyricmap_remove(lyricmap, s_lyr_selected);
-            s_lyr_selected = -1;
+            // Delete button — right-aligned
+            ImGui::SameLine(ImGui::GetWindowWidth() - btn_w - 4.0f);
+            if (ImGui::Button("Delete##lyr", ImVec2(btn_w, 0))) {
+                lyricmap_remove(lyricmap, s_lyr_selected);
+                s_lyr_selected = -1;
+            }
         }
     }
 
