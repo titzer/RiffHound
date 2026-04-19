@@ -977,6 +977,7 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
                       IM_COL32(12, 16, 22, 255));
     dl->AddRect(ImVec2(ps_x, ps_y), ImVec2(ps_x + ps_w, ps_y + PLACE_STRIP_H),
                 IM_COL32(40, 50, 65, 255));
+    dl->AddText(ImVec2(cx + 4.0f, ps_y + 3.0f), IM_COL32(90, 90, 110, 100), "Insert");
 
     // Condensed beat display (collapsed mode only) ----------------------------
     // Renders diamonds when beats are spread enough, lines when any adjacent pair
@@ -1192,6 +1193,8 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
                       IM_COL32(14, 14, 22, 255));
     dl->AddRect(ImVec2(ba_x, ba_y), ImVec2(ba_x + ba_w, ba_y + ba_h),
                 IM_COL32(50, 50, 70, 255));
+    if (!s_beats_collapsed)
+        dl->AddText(ImVec2(cx + 4.0f, ba_y + 3.0f), IM_COL32(90, 90, 110, 100), "Beats");
 
     // Diamonds (clipped to beat area)
     dl->PushClipRect(ImVec2(ba_x, ba_y), ImVec2(ba_x + ba_w, ba_y + ba_h), true);
@@ -1289,6 +1292,7 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
                       IM_COL32(10, 10, 16, 255));
     dl->AddLine(ImVec2(sa_x, sa_y), ImVec2(sa_x + sa_w, sa_y),
                 IM_COL32(40, 40, 60, 255));
+    dl->AddText(ImVec2(cx + 4.0f, sa_y + 3.0f), IM_COL32(90, 90, 110, 100), "Sections");
 
     dl->PushClipRect(ImVec2(sa_x, sa_y), ImVec2(sa_x + sa_w, sa_y + sa_h), true);
     for (int i = 0; i < sectionmap->count; i++) {
@@ -1383,6 +1387,7 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
                       IM_COL32(10, 14, 18, 255));
     dl->AddLine(ImVec2(la_x, la_y), ImVec2(la_x + la_w, la_y),
                 IM_COL32(40, 40, 60, 255));
+    dl->AddText(ImVec2(cx + 4.0f, la_y + 3.0f), IM_COL32(90, 90, 110, 100), "Lyrics");
 
     dl->PushClipRect(ImVec2(la_x, la_y), ImVec2(la_x + la_w, la_y + la_h), true);
     for (int i = 0; i < lyricmap->count; i++) {
@@ -1445,6 +1450,8 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
                       IM_COL32(10, 10, 18, 255));
     dl->AddLine(ImVec2(cx, ep_y), ImVec2(cx + cw, ep_y),
                 IM_COL32(50, 50, 70, 255));
+    if (s_sec_selected < 0 && s_lyr_selected < 0)
+        dl->AddText(ImVec2(cx + 4.0f, ep_y + 3.0f), IM_COL32(90, 90, 110, 100), "Edit");
 
     // --- Contextual interpolation panel ---
     // Shown when exactly two adjacent beats are selected.
