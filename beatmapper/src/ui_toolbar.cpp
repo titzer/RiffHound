@@ -137,16 +137,16 @@ void ui_toolbar_render(EditorState* editor, AudioState* audio, BeatMap* beatmap,
         float right_x = ImGui::GetWindowWidth() - padding - total_w;
         ImGui::SameLine(right_x);
 
-        bool pitch_active = (audio->semitones != 0 || audio->cents != 0);
+        bool pitch_active = (editor->semitones != 0 || editor->cents != 0);
 
         // Semitones: [-] value [+]
         if (ImGui::Button("-##st", ImVec2(btn_w, 0)))
-            audio_set_pitch(audio, audio->semitones - 1, audio->cents);
+            audio_set_pitch(editor, editor->semitones - 1, editor->cents);
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("Pitch: -1 semitone");
 
         ImGui::SameLine();
         char st_buf[16];
-        snprintf(st_buf, sizeof(st_buf), "%+d st", audio->semitones);
+        snprintf(st_buf, sizeof(st_buf), "%+d st", editor->semitones);
         float st_txt_w = ImGui::CalcTextSize(st_buf).x;
         ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (st_num_w - st_txt_w) * 0.5f);
         if (pitch_active)
@@ -156,19 +156,19 @@ void ui_toolbar_render(EditorState* editor, AudioState* audio, BeatMap* beatmap,
         ImGui::SameLine(0, (st_num_w - st_txt_w) * 0.5f + spacing);
 
         if (ImGui::Button("+##st", ImVec2(btn_w, 0)))
-            audio_set_pitch(audio, audio->semitones + 1, audio->cents);
+            audio_set_pitch(editor, editor->semitones + 1, editor->cents);
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("Pitch: +1 semitone");
 
         ImGui::SameLine();
 
         // Cents: [-] value [+]
         if (ImGui::Button("-##ct", ImVec2(btn_w, 0)))
-            audio_set_pitch(audio, audio->semitones, audio->cents - 1);
+            audio_set_pitch(editor, editor->semitones, editor->cents - 1);
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("Pitch: -1 cent");
 
         ImGui::SameLine();
         char ct_buf[16];
-        snprintf(ct_buf, sizeof(ct_buf), "%+d ct", audio->cents);
+        snprintf(ct_buf, sizeof(ct_buf), "%+d ct", editor->cents);
         float ct_txt_w = ImGui::CalcTextSize(ct_buf).x;
         ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (ct_num_w - ct_txt_w) * 0.5f);
         if (pitch_active)
@@ -178,7 +178,7 @@ void ui_toolbar_render(EditorState* editor, AudioState* audio, BeatMap* beatmap,
         ImGui::SameLine(0, (ct_num_w - ct_txt_w) * 0.5f + spacing);
 
         if (ImGui::Button("+##ct", ImVec2(btn_w, 0)))
-            audio_set_pitch(audio, audio->semitones, audio->cents + 1);
+            audio_set_pitch(editor, editor->semitones, editor->cents + 1);
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("Pitch: +1 cent");
 
         ImGui::SameLine();
@@ -186,27 +186,27 @@ void ui_toolbar_render(EditorState* editor, AudioState* audio, BeatMap* beatmap,
         ImGui::SameLine();
 
         if (ImGui::Button("-", ImVec2(btn_w, 0)))
-            audio_set_speed(audio, audio->speed - 0.05f);
+            audio_set_speed(editor, editor->speed - 0.05f);
 
         ImGui::SameLine();
         char spd_buf[16];
-        snprintf(spd_buf, sizeof(spd_buf), "%.2fx", audio->speed);
+        snprintf(spd_buf, sizeof(spd_buf), "%.2fx", editor->speed);
         float spd_txt_w = ImGui::CalcTextSize(spd_buf).x;
         ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (spd_num_w - spd_txt_w) * 0.5f);
         ImGui::Text("%s", spd_buf);
         ImGui::SameLine(0, (spd_num_w - spd_txt_w) * 0.5f + spacing);
 
         if (ImGui::Button("+", ImVec2(btn_w, 0)))
-            audio_set_speed(audio, audio->speed + 0.05f);
+            audio_set_speed(editor, editor->speed + 0.05f);
     }
 
     // --- Speed keyboard shortcuts (- / = keys, not captured by a text field) ---
     if (!ImGui::GetIO().WantCaptureKeyboard) {
         if (ImGui::IsKeyPressed(ImGuiKey_Minus, false))
-            audio_set_speed(audio, audio->speed - 0.05f);
+            audio_set_speed(editor, editor->speed - 0.05f);
         // The = key is the unshifted + on a standard keyboard
         if (ImGui::IsKeyPressed(ImGuiKey_Equal, false))
-            audio_set_speed(audio, audio->speed + 0.05f);
+            audio_set_speed(editor, editor->speed + 0.05f);
     }
 
     // --- Audio open modal ---
@@ -221,7 +221,7 @@ void ui_toolbar_render(EditorState* editor, AudioState* audio, BeatMap* beatmap,
         // Helper: load the file in s_file_buf, update recent list, close popup
         auto do_load = [&]() {
             if (s_file_buf[0] == '\0') return;
-            audio_load(audio, s_file_buf);
+            audio_load(audio, editor, s_file_buf);
             char bm_path[512];
             beatmap_path_for_audio(s_file_buf, bm_path, sizeof(bm_path));
             if (!beatmap_load(beatmap, sectionmap, lyricmap, bm_path))

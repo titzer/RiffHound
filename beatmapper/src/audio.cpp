@@ -177,7 +177,6 @@ static bool decode_to_pcm_stereo(const char* path, float** out_pcm,
 
 void audio_init(AudioState* a) {
     memset(a, 0, sizeof(*a));
-    a->speed = 1.0f;
     if (ma_engine_init(NULL, &s_engine) != MA_SUCCESS) {
         fprintf(stderr, "[audio] failed to init miniaudio engine\n");
         return;
@@ -185,7 +184,7 @@ void audio_init(AudioState* a) {
     s_engine_ok = true;
 }
 
-bool audio_load(AudioState* a, const char* path) {
+bool audio_load(AudioState* a, EditorState* e, const char* path) {
     if (!s_engine_ok) return false;
 
     // Tear down the previous sound if one was loaded.
@@ -212,10 +211,12 @@ bool audio_load(AudioState* a, const char* path) {
         fprintf(stderr, "[audio] wsola_init failed for '%s'\n", path);
         return false;
     }
-    wsola_set_speed(&s_wsola, a->speed);  // apply any pre-existing speed setting
-    // Apply any pre-existing pitch setting.
-    float pitch_ratio = powf(2.0f, (float)(a->semitones * 100 + a->cents) / 1200.0f);
-    wsola_set_pitch(&s_wsola, pitch_ratio);
+    // Reset speed and pitch to defaults on every new file load.
+    e->speed     = 1.0f;
+    e->semitones = 0;
+    e->cents     = 0;
+    wsola_set_speed(&s_wsola, 1.0f);
+    wsola_set_pitch(&s_wsola, 1.0f);
     s_wsola_ok = true;
 
     // Wrap WSOLA in a PitchNode (resampler stage for pitch shifting).
@@ -279,26 +280,22 @@ double audio_get_position(AudioState* a) {
     return a->position;
 }
 
-void audio_set_speed(AudioState* a, float speed) {
+void audio_set_speed(EditorState* e, float speed) {
     if (speed < 0.25f) speed = 0.25f;
     if (speed > 2.00f) speed = 2.00f;
     // Round to nearest 0.05
     speed = roundf(speed * 20.0f) / 20.0f;
-    a->speed = speed;
+    e->speed = speed;
     if (s_wsola_ok) wsola_set_speed(&s_wsola, speed);
 }
 
-float audio_get_speed(AudioState* a) {
-    return a->speed;
-}
-
-void audio_set_pitch(AudioState* a, int semitones, int cents) {
+void audio_set_pitch(EditorState* e, int semitones, int cents) {
     if (semitones < -12) semitones = -12;
     if (semitones >  12) semitones =  12;
     if (cents < -100) cents = -100;
     if (cents >  100) cents =  100;
-    a->semitones = semitones;
-    a->cents     = cents;
+    e->semitones = semitones;
+    e->cents     = cents;
     float ratio = powf(2.0f, (float)(semitones * 100 + cents) / 1200.0f);
     if (s_wsola_ok) wsola_set_pitch(&s_wsola, ratio);
 }

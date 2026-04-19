@@ -12,6 +12,11 @@ struct EditorState {
     double region_end;    // seconds
 
     bool   autoscroll;    // scroll timeline to follow playhead during playback
+
+    // Playback parameters – reset to defaults on each new file load.
+    float  speed;         // playback speed [0.25, 2.0], default 1.0
+    int    semitones;     // pitch shift in semitones [-12, 12]
+    int    cents;         // pitch fine-tune in cents  [-100, 100]
 };
 
 void editor_init(EditorState* e);

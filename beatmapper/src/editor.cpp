@@ -12,6 +12,9 @@ void editor_init(EditorState* e) {
     e->region_start = 0.0;
     e->region_end   = 0.0;
     e->autoscroll   = false;
+    e->speed        = 1.0f;
+    e->semitones    = 0;
+    e->cents        = 0;
 }
 
 void editor_clamp_view(EditorState* e) {

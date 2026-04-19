@@ -112,7 +112,7 @@ int main(int argc, char** argv) {
         }
         if (last_file) {
             recent_save(&recent);
-            audio_load(&audio, last_file);
+            audio_load(&audio, &editor, last_file);
             char bm_path[512];
             beatmap_path_for_audio(last_file, bm_path, sizeof(bm_path));
             if (!beatmap_load(&beatmap, &sectionmap, &lyricmap, bm_path))
