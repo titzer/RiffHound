@@ -42,6 +42,21 @@ bool platform_open_beatmap_dialog(char* out_path, int out_size) {
     return false;
 }
 
+void platform_install_fullscreen_shortcut() {
+    // Intercept Cmd+F at the NSEvent level so GLFW never sees the keystroke.
+    // Returning nil consumes the event; returning the event passes it through.
+    [NSEvent addLocalMonitorForEventsMatchingMask:NSEventMaskKeyDown
+                                          handler:^NSEvent*(NSEvent* ev) {
+        if ((ev.modifierFlags & NSEventModifierFlagCommand) &&
+            [ev.characters isEqualToString:@"f"]) {
+            NSWindow* win = [NSApp mainWindow];
+            if (win) [win toggleFullScreen:nil];
+            return nil;  // consume — GLFW won't see this
+        }
+        return ev;
+    }];
+}
+
 bool platform_save_beatmap_dialog(char* out_path, int out_size,
                                   const char* suggested_name) {
     NSSavePanel* panel = [NSSavePanel savePanel];

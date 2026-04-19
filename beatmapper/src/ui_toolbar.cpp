@@ -67,7 +67,7 @@ void ui_toolbar_render(EditorState* editor, AudioState* audio, BeatMap* beatmap,
     if (follow_active)
         ImGui::PopStyleColor(3);
     if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Scroll timeline with playback (F)");
+        ImGui::SetTooltip("Scroll timeline with playback");
 
     ImGui::SameLine();
     ImGui::TextDisabled("|");

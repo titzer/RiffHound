@@ -36,7 +36,37 @@ static void glfw_error_callback(int error, const char* description) {
     fprintf(stderr, "GLFW error %d: %s\n", error, description);
 }
 
+// Config paths — fixed relative to $HOME so they're CWD-independent.
+static char s_ini_path[512] = "";
+static char s_win_path[512] = "";
+
+static void config_paths_init() {
+    const char* home = getenv("HOME");
+    if (!home) home = ".";
+    snprintf(s_ini_path, sizeof(s_ini_path), "%s/.beatmapper_ui.ini", home);
+    snprintf(s_win_path, sizeof(s_win_path), "%s/.beatmapper_win", home);
+}
+
+static void window_size_load(int* w, int* h) {
+    FILE* f = fopen(s_win_path, "r");
+    if (!f) return;
+    int rw, rh;
+    if (fscanf(f, "%d %d", &rw, &rh) == 2 && rw >= 640 && rh >= 400) {
+        *w = rw; *h = rh;
+    }
+    fclose(f);
+}
+
+static void window_size_save(int w, int h) {
+    FILE* f = fopen(s_win_path, "w");
+    if (!f) return;
+    fprintf(f, "%d %d\n", w, h);
+    fclose(f);
+}
+
 int main(int argc, char** argv) {
+    config_paths_init();
+
     glfwSetErrorCallback(glfw_error_callback);
     if (!glfwInit()) {
         fprintf(stderr, "Failed to init GLFW\n");
@@ -51,7 +81,9 @@ int main(int argc, char** argv) {
     glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);
 #endif
 
-    GLFWwindow* window = glfwCreateWindow(1280, 800, "Beatmap Editor", nullptr, nullptr);
+    int init_w = 1280, init_h = 800;
+    window_size_load(&init_w, &init_h);
+    GLFWwindow* window = glfwCreateWindow(init_w, init_h, "Beatmap Editor", nullptr, nullptr);
     if (!window) {
         fprintf(stderr, "Failed to create GLFW window\n");
         glfwTerminate();
@@ -59,10 +91,12 @@ int main(int argc, char** argv) {
     }
     glfwMakeContextCurrent(window);
     glfwSwapInterval(1);  // vsync
+    platform_install_fullscreen_shortcut();
 
     // ImGui setup
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
+    ImGui::GetIO().IniFilename = s_ini_path;  // fixed path, CWD-independent
     // NavEnableKeyboard is intentionally not set: it would make Space activate
     // the focused button, conflicting with our global play/stop shortcut.
 
@@ -197,8 +231,7 @@ int main(int argc, char** argv) {
                 audio_seek(&audio, audio_get_position(&audio) + 5.0);
             if (ImGui::IsKeyPressed(ImGuiKey_L))
                 audio.loop = !audio.loop;
-            if (ImGui::IsKeyPressed(ImGuiKey_F))
-                editor.autoscroll = !editor.autoscroll;
+
 
             // Delete / Backspace → selected beats take priority; fall back to
             // removing a selected section only when no beats are selected.
@@ -226,6 +259,7 @@ int main(int argc, char** argv) {
             if ((ImGui::GetIO().KeyCtrl || ImGui::GetIO().KeySuper) &&
                 ImGui::IsKeyPressed(ImGuiKey_O))
                 ui_toolbar_open_dialog();
+
 
             // Ctrl+Z → undo
             if (ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_Z))
@@ -369,6 +403,13 @@ int main(int argc, char** argv) {
         ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
 
         glfwSwapBuffers(window);
+    }
+
+    // Save window size so the next launch restores it.
+    {
+        int fw, fh;
+        glfwGetWindowSize(window, &fw, &fh);
+        window_size_save(fw, fh);
     }
 
     // Cleanup
