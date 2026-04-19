@@ -214,7 +214,7 @@ void spectrogram_compute(SpectrogramState* s,
 
 void spectrogram_render(SpectrogramState* s, ImDrawList* dl,
                         float x, float y, float width, float height,
-                        double view_start, double view_end)
+                        double view_start, double view_end, float max_freq)
 {
     if (width <= 0.0f || height <= 0.0f) return;
 
@@ -238,8 +238,13 @@ void spectrogram_render(SpectrogramState* s, ImDrawList* dl,
     if (u1 > 1.0f) u1 = 1.0f;
     if (u1 <= u0) return;
 
-    // UV-Y: row 0 in texture = high frequencies (Nyquist) = top of display
+    // UV-Y: v=0 = Nyquist (top row in texture), v=1 = 0 Hz (bottom row).
+    // Crop to [0, max_freq] by raising v0 away from 0.
+    float nyquist = s->sample_rate > 0 ? (float)(s->sample_rate / 2) : 22050.0f;
+    if (max_freq <= 0.0f || max_freq > nyquist) max_freq = nyquist;
+    float v0 = 1.0f - max_freq / nyquist;
+    if (v0 < 0.0f) v0 = 0.0f;
     dl->AddImage((ImTextureID)(intptr_t)s->texture,
                  ImVec2(x, y), ImVec2(x + width, y + height),
-                 ImVec2(u0, 0.0f), ImVec2(u1, 1.0f));
+                 ImVec2(u0, v0), ImVec2(u1, 1.0f));
 }

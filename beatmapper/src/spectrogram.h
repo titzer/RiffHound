@@ -27,6 +27,8 @@ void spectrogram_compute(SpectrogramState* s,
 // Draws in the rect [x, y, x+width, y+height].
 // view_start/view_end are the visible time range in seconds.
 struct ImDrawList;
+// max_freq: highest frequency (Hz) to display; clamped to [0, Nyquist].
+// Pass 0 to show the full range up to Nyquist.
 void spectrogram_render(SpectrogramState* s, ImDrawList* dl,
                         float x, float y, float width, float height,
-                        double view_start, double view_end);
+                        double view_start, double view_end, float max_freq);

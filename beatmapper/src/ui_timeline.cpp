@@ -237,7 +237,8 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
 {
     ImGuiIO& io = ImGui::GetIO();
 
-    static bool s_beats_collapsed = false;  // beat editor collapsed to slim display strip
+    static bool s_beats_collapsed = false;   // beat editor collapsed to slim display strip
+    static int  s_spectro_max_khz = 22;      // max displayed frequency [2, 22] kHz
 
     // Pre-compute contextual panel visibility (needs beatmap state, but before BeginChild
     // so we can set the correct child height).
@@ -358,6 +359,9 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
     }
 
     // --- Single InvisibleButton covering the timeline (not the ctx panel) ---
+    // AllowOverlap so that sidebar widgets (frequency +/- buttons, collapse triangle)
+    // added later in the frame can still receive hover and clicks.
+    ImGui::SetNextItemAllowOverlap();
     ImGui::SetCursorScreenPos(ImVec2(rx, ry));
     ImGui::InvisibleButton("##timeline_input",
                            ImVec2(rw, total_h - ctx_h - EDIT_PANEL_H),
@@ -404,7 +408,7 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
         if (click_x < cx && click_y >= ps_y && click_y < ps_y + PLACE_STRIP_H)
             s_beats_collapsed = !s_beats_collapsed;
 
-        s_drag_in_spectro = (click_y >= ty      && click_y < ty + th);
+        s_drag_in_spectro = (click_x >= cx && click_y >= ty && click_y < ty + th);
         s_drag_in_ruler   = (click_y >= ruler_y && click_y < ty);
         s_mm_seeking      = (click_y >= mm_y    && click_y < ruler_y);
         // Beat placement: only in content area, only when expanded
@@ -876,9 +880,37 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
         }
     }
 
+    // Max-frequency +/- buttons in left sidebar at top of spectrogram (stacked vertically)
+    {
+        bool at_max = (s_spectro_max_khz >= 22);
+        bool at_min = (s_spectro_max_khz <= 2);
+        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(1.0f, 3.0f));
+        float bw  = sidebar_w - 4.0f;
+        float bh  = ImGui::GetFrameHeight();
+        float bx  = rx + 2.0f;
+
+        ImGui::SetCursorScreenPos(ImVec2(bx, ty + 2.0f));
+        if (at_max) ImGui::BeginDisabled();
+        if (ImGui::Button("+##mfp", ImVec2(bw, 0))) s_spectro_max_khz++;
+        bool ph = ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled);
+        if (at_max) ImGui::EndDisabled();
+        if (ph) ImGui::SetTooltip("Max freq +1 kHz (now %d kHz)", s_spectro_max_khz);
+
+        ImGui::SetCursorScreenPos(ImVec2(bx, ty + 2.0f + bh + 2.0f));
+        if (at_min) ImGui::BeginDisabled();
+        if (ImGui::Button("-##mfm", ImVec2(bw, 0))) s_spectro_max_khz--;
+        bool mh = ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled);
+        if (at_min) ImGui::EndDisabled();
+        if (mh) ImGui::SetTooltip("Max freq -1 kHz (now %d kHz)", s_spectro_max_khz);
+
+        ImGui::PopStyleVar();
+    }
+
     // Frequency axis labels aligned to the spectrogram row
     if (spectro->computed && spectro->sample_rate > 0 && th > 0.0f) {
         float nyquist = (float)(spectro->sample_rate / 2);
+        float max_freq_hz = (float)(s_spectro_max_khz * 1000);
+        if (max_freq_hz > nyquist) max_freq_hz = nyquist;
         static const int   sb_freqs[] = {
             1000, 2000, 3000, 4000, 5000, 6000, 7000, 8000, 10000, 12000, 16000, 20000 };
         static const char* sb_names[] = {
@@ -887,8 +919,8 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
         float lh      = ImGui::GetTextLineHeight();
         float last_bot = ty - lh - 2.0f;  // primed so the first label always passes
         for (int i = n_sb - 1; i >= 0; i--) {  // high-freq → low-freq  (top → bottom)
-            if (sb_freqs[i] >= (int)nyquist) continue;
-            float frac    = 1.0f - (float)sb_freqs[i] / nyquist;
+            if (sb_freqs[i] >= (int)max_freq_hz) continue;
+            float frac    = 1.0f - (float)sb_freqs[i] / max_freq_hz;
             float cy_freq = ty + frac * th;
             float label_y = cy_freq - lh * 0.5f;
             if (label_y < ty) continue;
@@ -914,7 +946,8 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
                editor->view_start, editor->view_end);
 
     spectrogram_render(spectro, dl, tx, ty, tw, th,
-                       editor->view_start, editor->view_end);
+                       editor->view_start, editor->view_end,
+                       (float)(s_spectro_max_khz * 1000));
 
     // Region selection highlight
     if (editor->has_region) {
