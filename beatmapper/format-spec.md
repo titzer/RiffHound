@@ -36,7 +36,7 @@ beatmap2.txt has five beats at B1=3.010, B2=3.510, B3=4.010, B4=4.510, and B5=5.
 
 Note that each of these has a calculated average BPM of 120 over the span from the first beat to the last.
 
-### Section File Format
+### Section Format
 The format of a section file consists of section ranges as events as a timeseries file with times in either seconds or beats.
 If stored as beats, then an external beatmap is needed to map beats to seconds.
 Sections are recognized as events that start with the given keywords:
@@ -69,3 +69,12 @@ sectionmap1.txt has two sections, with a verse from beat 45 to 64 and a chorus f
 Timeseries files can be merged together, in which case all events are sorted together and duplicate events can either be preserved or discarded according to application.
 For example, beat map files and section map files can be combined for easier file management.
 Events whose times are expressed in beats must follow the definitions of those beats from the beatmap.
+
+### Lyric Format
+The format of lyrics are simple timeseries entries starting with "lyric:"
+Lyrics typically are divided into musical lines.
+---lyricmap1.txt------
+# Lyrics
+53.544372	59.576257	lyric: There's a lady who's sure all that glitters is gold
+59.633291	63.157361	lyric: And she's buying a stairway to Heaven
+------------------------

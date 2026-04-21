@@ -138,6 +138,8 @@ with overlaid beat markers and section regions.
 |   |--- insertion strip ---------------------------------------------------------|
 |   ◇beat ◇beat    ◇beat         ◇beat                                            |
 |   [========= section: verse 1 =========]  [=== chorus ===]                      |
+|   [Lyrics]           [Lyrics]                                                   |
+|   section or lyric editor                                                       |
 +---------------------------------------------------------------------------------+
 ```
 
@@ -206,7 +208,7 @@ A zoomed-out view of the track extending from left to right, above main spectrog
 - section information in another panel
 - Start/end beats are editable numeric fields
 - Section type is a dropdown of the keywords from format-spec
-- Saved to `<trackname>.sections.txt` when beatmap is saved
+- Saved to `<trackname>.txt` when beatmap is saved
 
 ---
 
@@ -215,9 +217,12 @@ A zoomed-out view of the track extending from left to right, above main spectrog
 - **Play/Pause** (Space)
 - **Stop** (Space)
 - **Loop toggle** — (Loop) loops the current visible window
+- **Follow toggle** — Playhead automatically scrolls timeline when activated
 - **Current position**: `mm:ss.sss` and `B<N>` (beat number from beatmap)
 - **Local BPM**: computed from the two beats surrounding the playhead
-- **Speed**: 0.5×, 0.75×, 1×, 1.25×, 1.5× via miniaudio resampler
+- **Speed**: 0.5×, to 2.0x in .05x increments via miniaudio resampler
+- **Cents**: 0 to 100 for pitch fine-tuning
+- **Semitones**: -12 to +12 for transposition
 
 ---
 
@@ -321,11 +326,9 @@ Consistent with the project's line-oriented text-file philosophy. Fields can be
 - Full-track beat finder: run on entire track, present results for acceptance
 
 ### Deferred
-- Playback speed control (miniaudio resampler integration is straightforward, low priority)
 - Waveform view as alternative to spectrogram
 - ID3 tag embedding for beatmap/section map
 - Library indexing and fuzzy search
 - Time signature display and measure grid
 - WASM build of `beatdetect`
 - Windows support (miniaudio and ImGui both support it; just needs Makefile target)
-- Lyrics view

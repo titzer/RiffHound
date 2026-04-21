@@ -6,27 +6,31 @@ Here, a track will mean a single .mp3 (or other format, as specified below) file
 A *beatmap* stores the time offset (in seconds) of every downbeat (typically quarter note) from the beginning of the track.
 Beats correspond to events in the physical timeline of the track, not specific sounds, drum hits, voices, or rhythm patterns.
 Instead, musical elements are mapped to track time indirectly via the beatmap, and depending on artist expression, can be early or late relative to a beat's track time.
-From the beatmap, the average beats per minute (BPM) of the whole track, section, or run can be computed.
-The beatmap and BPM indicator allow playback tools that increase or decrease speed for practice, study, performance, mixing, etc to do so mostly independently of the underlying physical time.
+From the beatmap, the average beats per minute (BPM) of the whole track, section, or run can be computed, as well as the instantaneous BPM of two adjacent beats.
+The beatmap and BPM indicator allow playback tools that increase or decrease speed for practice, study, performance, mixing, etc.
+This allows most tools to use logical time rather than physical time.
 The *section map* stores the start and end of every song section, such as verse, chorus, bridge, etc.
-The section map simplifies mapping musical elements to parts of a song and is intended to allow a multiple of tools.
+The section map simplifies mapping musical elements to parts of a song and allows further tools to be built.
 E.g. other tools create and use metadata such as a chord chart, sheet music, guitar tablature, etc.
 These tools can directly synchronize to track time or use the beat map and section map to denote beat numbers, or sections.
 The beat map and section map therefore serve as guides for higher-level applications to express musical information that is relative to sections or beats decoupled from a track.
+The *lyric map* stores the start and end times of lyrics, typically split per musical line.
 
 ## Formats And Storage
 
 ### Input
-The beatmap editor can load audio files in .mp3 and .wav format, with modularity to support other formats in the future.
+The beatmap editor can load audio files in .mp3 and .m4a format, with modularity to support other formats in the future.
 
 ### Output
-The beatmap and section map will be stored as timeseries text files (see: format-spec.md).
-Normally, these will be stored as separate files, but it is possible to also store them in metadata tags in the track itself (e.g. ID3).
+The beatmap, section map, lyric map, and others will be stored as timeseries text files (see: format-spec.md).
+Normally, these will be stored in a single combined file but it is possible to also store them in separate files or as metadata tags in the track itself (e.g. ID3).
 
 ### Storage
 For local-first applications, tracks, beatmaps, section maps, and other metadata will be stored in per-song directories.
 Directories will have relatively short, lower-case names separated by underscores, such as "hey_jude/" and "stairway/" that are sufficient to disambiguate them from other tracks.
-Directory names are not primarily used for organization of tracks, but separation of tracks.
+Directory names are not primarily used for *organization* of tracks, but only for unique storage locations for different tracks.
+A track in a directory might be a symbolic link to a file somewhere else in the filesystem.
+Tracks can be organized with additional indexes such as per-artist, album, recents, musically-related, etc.
 The metadata (i.e. tags) of mp3 files in directories will serve as the canonical source of artist, album, track number, track name, cover art, etc information.
 
 ### Indexing
@@ -35,17 +39,17 @@ For example, to support fuzzy search, search by artist, track name, or to naviga
 
 ## GUI Beatmap Editor
 
-The GUI beatmap editor allows a user to easily load a track as well as any pre-existing beatmap or section map.
+The GUI beatmap editor allows a user to easily load a track as well as any pre-existing beatmap, section map, or lyric map.
 It then includes a main display of the track's audio data (e.g. a spectrogram, waveform, etc), plus visual representations of beats and sections.
 The user can add, move or otherwise edit both the beat and section map by directly selecting and dragging either beats or the start and end of sections.
-In the editor, sections will always be delimited in terms of beats (though the section map format allows seconds).
-The editor includes a beat finder tool that, given a selection of the track's audio, will perform audio analysis to determine suggested beats.
+In the editor, sections will preferrably be delimited in terms of beats, with snap-to-beat behavior during editing.
+The editor includes various tools, such as a beat finder that, given a selection of the track's audio, will perform audio analysis to determine suggested beats.
 The beat finder's suggested beats can be selected independently and then committed to the main working beatmap.
 The editor includes several useful tools for bulk-placing beats, such as selecting the beginning and end beat and then interpolating.
 Simple interpolation is based on dividing the interval into evenly-sized sub-intervals based on the instantaneous BPM of one of the endpoints, calculated by the difference between the endpoint and the nearest beat outside the interval.
 A beat-finder-assisted interpolation examines candidate beats within the interval and suggests evenly-spaced splits that minimize error.
 The editor allows zooming and panning. 
-The editor uses the beatmap to show appropriate grids at each zoom level, and a time signature for different sections (default 4/4, with easy way to get to 3/4 6/8, etc) makes measures visually distinguishable.
+The editor uses the beatmap to show appropriate grids according to zoom, and a time signature for different sections (default 4/4, with easy way to get to 3/4 6/8, etc) makes measures visually distinguishable.
 Mouseover adds subtle highlights to measures / beats to emphasize the underlying measure and section.
 The editor can optimize the in-memory representation of the beatmap to use repeated beats in order to compress the stored representation.
 Optimization of the beatmap can be to improve its regularity, reduce mean-squared error with detected beats, or other criteria.
@@ -70,4 +74,4 @@ TODO: think of additional tools, like quantization, rulers, etc, and form implem
 - Analyze multiple repeats of a section to extract differences or pick the best take
   - e.g. variation of a main drum pattern, or detect melody as diff
   - e.g. running jam session; pick the best take or small number of takes
-  
+- Timing trainer: play track or loop with beatmap and analyze+score rhythm matching of user in real-time
