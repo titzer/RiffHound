@@ -1,3 +1,13 @@
+- Hardware ideas
+  - Older chromebook(s) 4gb, 16gb easy to find
+  - USB keypad
+  - footswitches
+  - large touchscreen / tablet
+  - tabernacle / juke box avatar
+  - LED marquee
+  - mini projector
+  - guitar pedal case
+
 - Spectrograph
   - Linux port
   - Piano / Guitar / mel scale
