@@ -230,6 +230,11 @@ RiffHound Piano (TODO):
 
 User stories:
 
+- Warm up
+  - Drums, chords
+  - finger exercises
+  - notation quiz
+
 - Casually learn the basic structure of a simple song, e.g. Hey Jude
   - user searches "Hey Jude" in the RiffHound search
   - goal: start playing along to song in < 10s
@@ -245,7 +250,7 @@ User stories:
       - live performance
       - cover
     - Guitar site hits => scrape
-      - Guitarpro, songsterr
+      - Ultimate Guitar, songsterr
 
 - Play some Bluegrass
   - user searches / selects "Bluegrass" in the RiffHound search
@@ -256,11 +261,26 @@ User stories:
     - know well
     - new
 
+- Play some Blues
+  - user searches / selects "Blues", a key, adjusts tempo, style
+  - variables
+    - key
+    - drum style
+    - backing instruments (rhythm guitar, bass, backing singers)
+    - voice track
+    - generative lyrics, singer
+    - call / response
+    - riffing
+
+- Learn some Christmas songs
+
+- Learn some classical passages
+
+- Learn some popular songs
+
 - Learn some licks
 
 - Learn some solos
-
-- Warm up
 
 - Work on song parts: e.g. guitar solo in "Don't look back"
   - (a song they've been working on for a while)
