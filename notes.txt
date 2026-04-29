@@ -1,21 +1,39 @@
 - Hardware ideas
   - Older chromebook(s) 4gb, 16gb easy to find
   - USB keypad
+  - MIDI keypad
   - footswitches
   - large touchscreen / tablet
   - tabernacle / juke box avatar
   - LED marquee
   - mini projector
-  - guitar pedal case
+  - guitar pedal box
+
+- What is the RiffHound Jam Buddy Hardware?
+  - 1/4 guitar, bass, mic input
+  - USB midi pickup input
+  - USB out to PC
+  - onboard processing: Jetson, Milk-V
+  - can pick up tempo or rhythm pattern from almost anything
+    - foot tap
+    - percussive guitar noise
+    - buttons on guitar
+  - beat tracker
+  - score following
+  - smart loop station
+  - feeds into generative AI jam buddy
+  - approximate size of a large guitar pedal?
 
 - Spectrograph
   - Linux port
   - Piano / Guitar / mel scale
-  - Overlay midi inputs
-  - Modular timing windows
-  - Improve flickering
-  - shared memory buffer for drawing?
-  - Wasm extension
+  - Reduce flickering
+  - Extensibility for real-time processing
+    - annotations (e.g. note detector)
+    - Overlay midi inputs
+    - additional timeline panes
+    - shared memory buffer for drawing?
+    - Wasm extension
 
 - Idea: lean into dictation mode
   - "Load whole Lotta love"
@@ -30,10 +48,20 @@
   - "no CFGB flat B flat"
 - Idea: foot pedal to start dictation
 
-- Trying to get pipeline for beatmap generation
-  - want: `beatextract song.mp3 > song.beats.txt` which dumps beats as textual labels (1.8723487)
-  - want: `beatcompine song.mp3 song.beats.txt` which adds beatmap as IDv4 tag to mp3
-  - want: loading a track with a beatmap automatically puts into transport
+- Pipeline for beatmap / songmap generation
+  - want: `songmap ThisOneSong.mp3 > song.txt`
+    - produces beatmap timeline from audio analysis
+    - determines sections from audio analysis
+    - searches the internet for ThisOneSong
+      - lyrics (text)
+      - instructional videos
+      - sheet music
+      - guitar tab
+  - want: cut&paste YouTube URL feeds it into songmap
+    - download mp3 / mp4 video
+    - run annotation pipeline
+  - want: find songs similar to this in
+    - key, chord progression, tempo, genre, riff structure, artist, time period
 
 - Tried BTrack, but it's just a C++ library where samples are fed
 https://github.com/adamstark/BTrack

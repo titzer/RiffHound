@@ -227,3 +227,51 @@ RiffHound Piano (TODO):
  - visual display: animated sheet music, piano roll
  - sensors: digital audio in, MIDI
  - creative generators: create drills
+
+User stories:
+
+- Casually learn the basic structure of a simple song, e.g. Hey Jude
+  - user searches "Hey Jude" in the RiffHound search
+  - goal: start playing along to song in < 10s
+  - possible search results:
+    - RiffHound track from library => launch rhythm, track buddy
+      - beatmap, sections, chords, riffs
+      - sheet music for vocals or piano
+      - tab for guitar parts
+      - MIDI play along
+    - YouTube videos: => pull up video, download mp3, start songmap pipeline
+      - chords/lyrics playalong
+      - guitar lesson / tutorial
+      - live performance
+      - cover
+    - Guitar site hits => scrape
+      - Guitarpro, songsterr
+
+- Play some Bluegrass
+  - user searches / selects "Bluegrass" in the RiffHound search
+  - goal: play old favorite, slight variation, or new song in genre
+  - possible choices:
+    - Recently played
+    - highly rated
+    - know well
+    - new
+
+- Learn some licks
+
+- Learn some solos
+
+- Warm up
+
+- Work on song parts: e.g. guitar solo in "Don't look back"
+  - (a song they've been working on for a while)
+  - user searches "Boston" or "Don't look back" or "projects"
+  - or user finds through current projects, spaced repetition
+    - RiffHound loads track, songmap, lyricmap, guitar tab
+    - song has 2D heatmap / colormap of different parts
+    - pull up tab and passages in trainer
+
+- Challenge me!
+  - can't think of anything to play right now, suggest something
+  - could be something I've played before and know well
+  - could be easy to hard
+  - Riff, chords, song, solo passage, exercise, recall
