@@ -33,8 +33,7 @@ INCLUDES := \
     -I$(SRC_DIR) \
     -I$(IMGUI_DIR) \
     -I$(IMGUI_DIR)/backends \
-    -I$(VENDOR_DIR)/miniaudio \
-    $(shell pkg-config --cflags gtk+-3.0)
+    -I$(VENDOR_DIR)/miniaudio
 
 ifeq ($(UNAME), Darwin)
     CXX      := clang++
@@ -50,8 +49,9 @@ else
     CXX      := g++
     CXXFLAGS := -std=c++17 -O2 -Wall
     GLFW_FLAGS := $(shell pkg-config --cflags --libs glfw3 2>/dev/null || echo "-lglfw")
-		GTK_FLAGS  := $(shell pkg-config --cflags --libs gtk+-3.0)
-		LDFLAGS    := $(GLFW_FLAGS) $(GTK_FLAGS) -lGL -ldl -lpthread
+    GTK_FLAGS  := $(shell pkg-config --cflags --libs gtk+-3.0)
+    LDFLAGS    := $(GLFW_FLAGS) $(GTK_FLAGS) -lGL -ldl -lpthread
+    INCLUDES   += $(shell pkg-config --cflags gtk+-3.0)
     PLATFORM_OBJ := $(SRC_DIR)/platform_linux.o
 endif
 
