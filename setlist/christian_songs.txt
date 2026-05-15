@@ -1,3 +1,19 @@
 How Great Thou Art
+    .verse = [7e,7e,7e,4qe,                             // Oh lord my god
+              7e,7e,7e,9e,9e,5q,9qe,                    // When I in awesome wonder
+              9e,9e,9e,7qe,4e,7e,7e,5e,5e,4he] x 2      // Consider all the worlds thy hands have made
+                                                        // I see the stars
+                                                        // I hear the rolling thunder
+                                                        // Thy power throughout the universe displayed
+    .chorus = [
+            7e,7e,12e,16qe,                             // Then sings my soul
+            14e,12e,11e,12e,9e,7he,                     // My savior god to thee
+            12e,12e,11e,2he,                            // How great thou art
+            5e,9e,7e,4he,                               // How great thou art
+            7e,7e,12e,16qe,             // (repeat)     // Then sings my soul
+            14e,12e,11e,12e,9e,7he,     // (repeat)     // My savior god to thee
+            12e,11e,12e,14he,                           // How great thou art
+            14e,16e,11e,12he                            // How great thou art
+    ]
 Amazing Grace
 Just a Little Talk with Jesus

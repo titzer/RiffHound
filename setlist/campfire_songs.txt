@@ -1,0 +1,105 @@
+|  # | Song                            | Artist / common version           | Bucket                      |
+| -: | ------------------------------- | --------------------------------- | --------------------------- |
+|  1 | Take Me Home, Country Roads     | John Denver                       | folk/country                |
+|  2 | Blowin’ in the Wind             | Bob Dylan / Peter, Paul & Mary    | folk                        |
+|  3 | Knockin’ on Heaven’s Door       | Bob Dylan                         | folk-rock                   |
+|  4 | The Times They Are A-Changin’   | Bob Dylan                         | folk                        |
+|  5 | Mr. Tambourine Man              | Bob Dylan / The Byrds             | folk-rock                   |
+|  6 | Leaving on a Jet Plane          | John Denver / Peter, Paul & Mary  | folk-pop                    |
+|  7 | Sunshine on My Shoulders        | John Denver                       | folk-pop                    |
+|  8 | Rocky Mountain High             | John Denver                       | folk                        |
+|  9 | Sweet Baby James                | James Taylor                      | singer-songwriter           |
+| 10 | Fire and Rain                   | James Taylor                      | singer-songwriter           |
+| 11 | You’ve Got a Friend             | Carole King / James Taylor        | singer-songwriter           |
+| 12 | Teach Your Children             | Crosby, Stills, Nash & Young      | folk-rock                   |
+| 13 | Our House                       | Crosby, Stills, Nash & Young      | folk-rock                   |
+| 14 | Helplessly Hoping               | Crosby, Stills & Nash             | harmony folk                |
+| 15 | Heart of Gold                   | Neil Young                        | folk-rock                   |
+| 16 | Old Man                         | Neil Young                        | folk-rock                   |
+| 17 | Harvest Moon                    | Neil Young                        | late-night campfire         |
+| 18 | The Weight                      | The Band                          | roots rock                  |
+| 19 | Up on Cripple Creek             | The Band                          | roots rock                  |
+| 20 | Friend of the Devil             | Grateful Dead                     | folk-rock                   |
+| 21 | Ripple                          | Grateful Dead                     | folk-rock                   |
+| 22 | Uncle John’s Band               | Grateful Dead                     | folk-rock                   |
+| 23 | Have You Ever Seen the Rain?    | Creedence Clearwater Revival      | rock                        |
+| 24 | Bad Moon Rising                 | Creedence Clearwater Revival      | rock                        |
+| 25 | Proud Mary                      | Creedence Clearwater Revival      | rock                        |
+| 26 | Down on the Corner              | Creedence Clearwater Revival      | rock                        |
+| 27 | Brown Eyed Girl                 | Van Morrison                      | pop-rock                    |
+| 28 | Into the Mystic                 | Van Morrison                      | mellow rock                 |
+| 29 | American Pie                    | Don McLean                        | long singalong              |
+| 30 | Vincent                         | Don McLean                        | fingerpicky                 |
+| 31 | Me and Bobby McGee              | Kris Kristofferson / Janis Joplin | country/folk                |
+| 32 | City of New Orleans             | Steve Goodman / Arlo Guthrie      | folk                        |
+| 33 | Alice’s Restaurant              | Arlo Guthrie                      | novelty/epic                |
+| 34 | This Land Is Your Land          | Woody Guthrie                     | folk standard               |
+| 35 | If I Had a Hammer               | Pete Seeger / Peter, Paul & Mary  | folk standard               |
+| 36 | Where Have All the Flowers Gone | Pete Seeger                       | folk standard               |
+| 37 | Puff the Magic Dragon           | Peter, Paul & Mary                | folk standard               |
+| 38 | House of the Rising Sun         | The Animals / traditional         | folk-rock                   |
+| 39 | I Walk the Line                 | Johnny Cash                       | country                     |
+| 40 | Ring of Fire                    | Johnny Cash                       | country                     |
+| 41 | Folsom Prison Blues             | Johnny Cash                       | country                     |
+| 42 | On the Road Again               | Willie Nelson                     | country                     |
+| 43 | Blue Eyes Crying in the Rain    | Willie Nelson                     | country                     |
+| 44 | Pancho and Lefty                | Townes Van Zandt / Willie & Merle | country/folk                |
+| 45 | Jolene                          | Dolly Parton                      | country                     |
+| 46 | Angel from Montgomery           | John Prine / Bonnie Raitt         | country-folk                |
+| 47 | Paradise                        | John Prine                        | folk/country                |
+| 48 | Take It Easy                    | Eagles                            | country-rock                |
+| 49 | Peaceful Easy Feeling           | Eagles                            | country-rock                |
+| 50 | Hotel California                | Eagles                            | campfire cliché, but useful |
+
+|   # | Song                                | Artist / common version  | Bucket            |
+| --: | ----------------------------------- | ------------------------ | ----------------- |
+|  51 | Desperado                           | Eagles                   | country-rock      |
+|  52 | Lyin’ Eyes                          | Eagles                   | country-rock      |
+|  53 | Tequila Sunrise                     | Eagles                   | country-rock      |
+|  54 | Sister Golden Hair                  | America                  | soft rock         |
+|  55 | A Horse with No Name                | America                  | easy strum        |
+|  56 | Ventura Highway                     | America                  | soft rock         |
+|  57 | Southern Cross                      | Crosby, Stills & Nash    | yacht/campfire    |
+|  58 | Landslide                           | Fleetwood Mac            | fingerpicky       |
+|  59 | Rhiannon                            | Fleetwood Mac            | pop-rock          |
+|  60 | Dreams                              | Fleetwood Mac            | pop-rock          |
+|  61 | Blackbird                           | The Beatles              | fingerpicky       |
+|  62 | Let It Be                           | The Beatles              | singalong         |
+|  63 | Hey Jude                            | The Beatles              | singalong         |
+|  64 | Here Comes the Sun                  | The Beatles              | fingerpicky/pop   |
+|  65 | In My Life                          | The Beatles              | mellow            |
+|  66 | Norwegian Wood                      | The Beatles              | folk-pop          |
+|  67 | Ob-La-Di, Ob-La-Da                  | The Beatles              | silly singalong   |
+|  68 | Imagine                             | John Lennon              | piano-to-guitar   |
+|  69 | Father and Son                      | Cat Stevens              | singer-songwriter |
+|  70 | Wild World                          | Cat Stevens              | singer-songwriter |
+|  71 | Peace Train                         | Cat Stevens              | singer-songwriter |
+|  72 | Moonshadow                          | Cat Stevens              | singer-songwriter |
+|  73 | Kodachrome                          | Paul Simon               | pop-folk          |
+|  74 | Me and Julio Down by the Schoolyard | Paul Simon               | pop-folk          |
+|  75 | The Boxer                           | Simon & Garfunkel        | folk              |
+|  76 | Mrs. Robinson                       | Simon & Garfunkel        | folk-rock         |
+|  77 | Cecilia                             | Simon & Garfunkel        | clap-along        |
+|  78 | Sound of Silence                    | Simon & Garfunkel        | folk              |
+|  79 | Homeward Bound                      | Simon & Garfunkel        | folk              |
+|  80 | Sloop John B                        | Beach Boys / traditional | singalong         |
+|  81 | Margaritaville                      | Jimmy Buffett            | beach/campfire    |
+|  82 | Come Monday                         | Jimmy Buffett            | mellow            |
+|  83 | Cheeseburger in Paradise            | Jimmy Buffett            | novelty/crowd     |
+|  84 | Sweet Caroline                      | Neil Diamond             | crowd yell-along  |
+|  85 | Cracklin’ Rosie                     | Neil Diamond             | pop               |
+|  86 | Solitary Man                        | Neil Diamond             | pop/folk          |
+|  87 | Drift Away                          | Dobie Gray               | soul/pop          |
+|  88 | Lean on Me                          | Bill Withers             | soul singalong    |
+|  89 | Ain’t No Sunshine                   | Bill Withers             | soul              |
+|  90 | Stand by Me                         | Ben E. King              | standard          |
+|  91 | Sitting on the Dock of the Bay      | Otis Redding             | soul              |
+|  92 | Redemption Song                     | Bob Marley               | reggae/folk       |
+|  93 | Three Little Birds                  | Bob Marley               | reggae            |
+|  94 | No Woman, No Cry                    | Bob Marley               | reggae            |
+|  95 | Free Fallin’                        | Tom Petty                | 80s acoustic rock |
+|  96 | I Won’t Back Down                   | Tom Petty                | rock              |
+|  97 | Learning to Fly                     | Tom Petty                | rock              |
+|  98 | Wonderwall                          | Oasis                    | 90s unavoidable   |
+|  99 | Good Riddance / Time of Your Life   | Green Day                | 90s acoustic      |
+| 100 | Losing My Religion                  | R.E.M.                   | 90s alt-rock      |
