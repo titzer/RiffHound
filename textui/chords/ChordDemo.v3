@@ -1,0 +1,202 @@
+// ChordDemo.v3
+// A textui animation demo: four chords with a moving highlight.
+// Chords: D C G G (two sections of four beats each).
+// Highlight steps left-to-right, wrapping every two sections (8 beats).
+
+def T: Vt100;  // alias for the Vt100 terminal component
+
+// ── Layout constants (terminal columns / rows) ───────────────────────
+def GLYPH_W = 6;   // glyph display width in columns
+def GLYPH_H = 4;   // glyph height in rows
+def PAD_H   = 1;   // horizontal padding (cols) per side inside box
+def PAD_V   = 1;   // vertical padding (rows) per side inside box
+
+def INNER_W = PAD_H + GLYPH_W + PAD_H;           // 8 cols
+def BOX_W   = 1 + INNER_W + 1;                    // 10 cols  (borders)
+def BOX_H   = 1 + PAD_V + GLYPH_H + PAD_V + 1;   // 8 rows
+
+def BOX_GAP   = 3;   // columns between adjacent chord boxes
+def START_ROW = 4;   // first row of the chord display
+def START_COL = 2;   // left column of the first box
+
+// ── Animation timing ─────────────────────────────────────────────────
+def NUM_CHORDS = 4;
+def BEAT_CYCLE = 8;          // 2 sections × 4 chords
+def BEAT_US: u32 = 600000u;  // 600 ms per beat ≈ 100 bpm
+
+// ── Box-drawing characters (UTF-8 byte strings) ───────────────────────
+// Single-line (inactive chords)
+def BOX_TL = "\xe2\x94\x8c";  // ┌
+def BOX_TR = "\xe2\x94\x90";  // ┐
+def BOX_BL = "\xe2\x94\x94";  // └
+def BOX_BR = "\xe2\x94\x98";  // ┘
+def BOX_HZ = "\xe2\x94\x80";  // ─
+def BOX_VT = "\xe2\x94\x82";  // │
+
+// Double-line (highlighted chord)
+def DBX_TL = "\xe2\x95\x94";  // ╔
+def DBX_TR = "\xe2\x95\x97";  // ╗
+def DBX_BL = "\xe2\x95\x9a";  // ╚
+def DBX_BR = "\xe2\x95\x9d";  // ╝
+def DBX_HZ = "\xe2\x95\x90";  // ═
+def DBX_VT = "\xe2\x95\x91";  // ║
+
+// ── Block-art font glyphs, 4 rows × 6 display columns each ───────────
+// Each Unicode block element (▗ ▄ ▌ ▐ █ ▙ ▛ ▀ ▝ ▚ ▖ ▘) is
+// 3 UTF-8 bytes but renders as exactly 1 terminal column.
+
+// D  (from the block font in fonts.txt, "vii" glyph in C major)
+def GLYPH_D: Array<string> = [
+    "\xe2\x96\x97\xe2\x96\x84\xe2\x96\x84\xe2\x96\x84  ",   // ▗▄▄▄
+    "\xe2\x96\x90\xe2\x96\x8c  \xe2\x96\x88 ",               // ▐▌  █
+    "\xe2\x96\x90\xe2\x96\x8c  \xe2\x96\x88 ",               // ▐▌  █
+    "\xe2\x96\x90\xe2\x96\x99\xe2\x96\x84\xe2\x96\x84\xe2\x96\x80 "  // ▐▙▄▄▀
+];
+
+// C  (from the block font, "I" glyph in C major)
+def GLYPH_C: Array<string> = [
+    " \xe2\x96\x97\xe2\x96\x84\xe2\x96\x84\xe2\x96\x96 ",   //  ▗▄▄▖
+    "\xe2\x96\x90\xe2\x96\x8c    ",                           // ▐▌
+    "\xe2\x96\x90\xe2\x96\x8c    ",                           // ▐▌
+    "\xe2\x96\x9d\xe2\x96\x9a\xe2\x96\x84\xe2\x96\x84\xe2\x96\x96 "  // ▝▚▄▄▖
+];
+
+// G  (from the block font, "V" glyph in C major)
+def GLYPH_G: Array<string> = [
+    "\xe2\x96\x97\xe2\x96\x84\xe2\x96\x84\xe2\x96\x84\xe2\x96\x96 ", // ▗▄▄▄▖
+    "\xe2\x96\x90\xe2\x96\x8c    ",                                     // ▐▌
+    "\xe2\x96\x90\xe2\x96\x9b\xe2\x96\x80\xe2\x96\x80\xe2\x96\x98 ", // ▐▛▀▀▘
+    "\xe2\x96\x90\xe2\x96\x99\xe2\x96\x84\xe2\x96\x84\xe2\x96\x96 "  // ▐▙▄▄▖
+];
+
+// The four chords: D  C  G  G
+def CHORD_GLYPHS: Array<Array<string>> = [GLYPH_D, GLYPH_C, GLYPH_G, GLYPH_G];
+
+// ── Animation state ───────────────────────────────────────────────────
+var beat: int = 0;
+var elapsed_us: u32 = 0;
+
+// ── Drawing ───────────────────────────────────────────────────────────
+
+// Draw a single chord box.  {lit} = this chord is the active beat.
+// Lit chords use double-line borders; inactive chords use single-line.
+def drawChord(row: int, col: int, idx: int, lit: bool) {
+    var glyphs = CHORD_GLYPHS[idx];
+    var tl = if(lit, DBX_TL, BOX_TL);
+    var tr = if(lit, DBX_TR, BOX_TR);
+    var bl = if(lit, DBX_BL, BOX_BL);
+    var br = if(lit, DBX_BR, BOX_BR);
+    var hz = if(lit, DBX_HZ, BOX_HZ);
+    var vt = if(lit, DBX_VT, BOX_VT);
+
+    // Border colour: bright yellow when lit, dark grey otherwise.
+    if (lit) T.fgYellow();
+    else     T.fgDarkgray();
+
+    // Top border  ╔════════╗  or  ┌────────┐
+    T.moveCursor(row, col);
+    T.puts(tl);
+    for (i < INNER_W) T.puts(hz);
+    T.puts(tr);
+
+    // Top padding row  ║        ║  or  │        │
+    T.moveCursor(row + 1, col);
+    T.puts(vt);
+    for (i < INNER_W) T.putc(' ');
+    T.puts(vt);
+
+    // Four glyph rows
+    for (r < GLYPH_H) {
+        T.moveCursor(row + 2 + r, col);
+        T.puts(vt);
+        T.putc(' ');                    // left padding
+        if (lit) T.fgWhite();
+        else     T.fgLightGray();
+        T.puts(glyphs[r]);
+        if (lit) T.fgYellow();
+        else     T.fgDarkgray();
+        T.putc(' ');                    // right padding
+        T.puts(vt);
+    }
+
+    // Bottom padding row
+    T.moveCursor(row + 2 + GLYPH_H, col);
+    T.puts(vt);
+    for (i < INNER_W) T.putc(' ');
+    T.puts(vt);
+
+    // Bottom border  ╚════════╝  or  └────────┘
+    T.moveCursor(row + 3 + GLYPH_H, col);
+    T.puts(bl);
+    for (i < INNER_W) T.puts(hz);
+    T.puts(br);
+
+    T.fgNorm();
+}
+
+// Redraw all four chord boxes and the status line.
+def drawAll() {
+    var cur     = beat % NUM_CHORDS;
+    var section = beat / NUM_CHORDS;
+    for (i < NUM_CHORDS) {
+        drawChord(START_ROW, START_COL + i * (BOX_W + BOX_GAP), i, i == cur);
+    }
+    // Status line below the boxes
+    T.moveCursor(START_ROW + BOX_H + 1, START_COL);
+    T.fgDarkgray();
+    T.puts("beat ");
+    T.puti(cur + 1);
+    T.puts(" / 4    section ");
+    T.puti(section + 1);
+    T.puts(" / 2   ");
+    T.fgNorm();
+}
+
+// ── Animator callbacks ────────────────────────────────────────────────
+
+def onAnimate(us: u32) {
+    elapsed_us = elapsed_us + us;
+    if (elapsed_us >= BEAT_US) {
+        elapsed_us = elapsed_us - BEAT_US;
+        beat = (beat + 1) % BEAT_CYCLE;
+        drawAll();
+    }
+}
+
+def onKey(ch: int) {
+    // Ctrl-C (0x03) is already handled by Animator to stop the loop.
+    // Nothing else needed here.
+}
+
+// ── Entry point ───────────────────────────────────────────────────────
+
+def main(args: Array<string>) {
+    RawStdin.enable();
+    T.eraseScreen();
+
+    // Title
+    T.moveCursor(1, START_COL);
+    T.fgBrightCyan();
+    T.puts("ChordDemo");
+    T.fgDarkgray();
+    T.puts("   D  C  G  G   two sections, four beats each");
+    T.fgNorm();
+
+    T.moveCursor(2, START_COL);
+    T.fgDarkgray();
+    T.puts("highlight steps left\xe2\x86\x92right, wraps every two sections   (Ctrl-C to quit)");
+    T.fgNorm();
+
+    // Draw initial state (beat 0 = chord D highlighted)
+    drawAll();
+
+    // Run the animation at 30 fps
+    var anim = Animator.new(onAnimate, onKey);
+    anim.setFPS(30u);
+    anim.run();
+
+    // Cleanup after Ctrl-C
+    RawStdin.restore();
+    T.fgNorm();
+    T.moveCursor(START_ROW + BOX_H + 3, 0);
+}

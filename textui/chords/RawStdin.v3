@@ -1,0 +1,85 @@
+// RawStdin.v3  --  stub for x86-64-darwin
+//
+// The x86-64-darwin Virgil runtime does not ship a RawStdin component, so
+// we provide one here.  This version uses a busy-wait loop for timing, which
+// is perfectly acceptable for a short demo.
+//
+// Because cooked-mode Ctrl-C sends SIGINT (killing the process), the Animator
+// uses raw-terminal mode so that Ctrl-C arrives as the byte 0x03.  We put the
+// terminal into raw mode using the macOS TIOCGETA / TIOCSETA ioctls.
+//
+// macOS 64-bit termios layout (72 bytes):
+//   offset  0: c_iflag  (u64)
+//   offset  8: c_oflag  (u64)
+//   offset 16: c_cflag  (u64)
+//   offset 24: c_lflag  (u64)   ← we clear ICANON and ECHO here
+//   offset 32: c_cc[20] (bytes)
+//   offset 56: c_ispeed (u64)   (32+20 = 52, rounded up to 56)
+//   offset 64: c_ospeed (u64)
+//   total: 72 bytes
+
+def TIOCGETA: int = 0x40487413;  // get termios struct (72-byte)
+def TIOCSETA: int = 0x80487414;  // set termios struct immediately
+
+def LFLAG_OFF  = 24;          // byte offset of c_lflag in the 72-byte struct
+def MASK_ICANON: long = 0x100; // canonical-mode flag in c_lflag
+def MASK_ECHO:   long = 0x8;   // echo flag in c_lflag
+
+// Two 72-byte buffers: saved state and our modified copy.
+def saved_t = Array<byte>.new(72);
+def raw_t   = Array<byte>.new(72);
+var rawmode = false;
+
+// pollfd for stdin: { fd = 0, events = POLLRDNORM (0x40), revents = 0 }
+// Stored as two ints in a flat int array so we can take its address.
+def pfds = Array<int>.new(2);   // pfds[0] = fd, pfds[1] = events|revents
+
+component RawStdin {
+    def fd = 0;
+
+    // Wait up to {timeout_ms} ms for a byte on stdin; return it or -1.
+    def poll(timeout_ms: int) -> int {
+        pfds[0] = 0;       // stdin fd
+        pfds[1] = 0x0040;  // POLLRDNORM
+        var r = Darwin.syscall(DarwinConst.SYS_poll,
+            (Pointer.atContents(pfds), 1, timeout_ms));
+        if (r.0 > 0) return System.fileRead(fd);
+        return -1;
+    }
+
+    // Put the terminal into raw mode (no echo, no line buffering).
+    def enable() {
+        if (rawmode) return;
+        // Read current settings into saved_t.
+        Darwin.syscall(DarwinConst.SYS_ioctl,
+            (fd, TIOCGETA, Pointer.atContents(saved_t)));
+        // Copy to raw_t, then clear ICANON and ECHO from c_lflag.
+        for (i < 72) raw_t[i] = saved_t[i];
+        var lflag = rdU64(raw_t, LFLAG_OFF);
+        lflag = lflag & (~MASK_ICANON) & (~MASK_ECHO);
+        wrU64(raw_t, LFLAG_OFF, lflag);
+        Darwin.syscall(DarwinConst.SYS_ioctl,
+            (fd, TIOCSETA, Pointer.atContents(raw_t)));
+        rawmode = true;
+    }
+
+    // Restore the terminal to its original settings.
+    def restore() {
+        if (!rawmode) return;
+        Darwin.syscall(DarwinConst.SYS_ioctl,
+            (fd, TIOCSETA, Pointer.atContents(saved_t)));
+        rawmode = false;
+    }
+
+    // Read a little-endian u64 from {buf} at byte offset {off}.
+    private def rdU64(buf: Array<byte>, off: int) -> long {
+        var v: long = 0;
+        for (i < 8) v = v | (long.!(buf[off + i]) << byte.!(i * 8));
+        return v;
+    }
+
+    // Write a little-endian u64 to {buf} at byte offset {off}.
+    private def wrU64(buf: Array<byte>, off: int, val: long) {
+        for (i < 8) buf[off + i] = byte.!(val >> byte.!(i * 8));
+    }
+}
