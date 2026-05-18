@@ -18,9 +18,7 @@ type GpxDuration(value: GpxNoteValue, dotted: bool, tuplet: int) {}
 type GpxBendPoint(position: int, value: int) {}
 
 // A bend or tremolo bar envelope (array of control points).
-class GpxBend {
-	var points: Array<GpxBendPoint>;
-	new(points) {}
+class GpxBend(var points: Array<GpxBendPoint>) {
 }
 
 // Harmonic type from note effects.
