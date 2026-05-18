@@ -1,12 +1,14 @@
 // Entry point: load a Guitar Pro file, parse it, and print a summary.
-def main(args: Array<string>) -> int {
-	if (args.length < 1) {
-		System.puts("Usage: gpxparser [<file.gp3|gp4|gp5>]\n");
-		return 1;
+component Main {
+	def main(args: Array<string>) -> int {
+		if (args.length < 1) {
+			System.puts("Usage: gpxparser [<file.gp3|gp4|gp5>]\n");
+			return 1;
+		}
+		var ok = true;
+		for (n in args) ok &= parseAndDump(n);
+		return if(ok, 0, 1);
 	}
-	var ok = true;
-	for (n in args) ok &= parseAndDump(n);
-	return if(ok, 0, 1);
 }
 def parseAndDump(name: string) -> bool {
 	var data = System.fileLoad(name);
