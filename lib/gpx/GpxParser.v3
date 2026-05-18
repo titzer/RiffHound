@@ -1,0 +1,781 @@
+// Guitar Pro file parser (GP3, GP4, GP5).
+// Based on TuxGuitar's GP3InputStream, GP4InputStream, GP5InputStream.
+
+// Tick resolution: a quarter note = 960 ticks (same as TuxGuitar's QUARTER_TIME).
+def QUARTER_TIME: long = 960L;
+
+class GpxParser {
+	var r: DataReader;
+	var format: GpxFormat;
+	var versionCode: int;
+	var currentTempo: int = 120;
+	var curNumerator: u8 = 4;
+	var curDenominator: u8 = 4;
+	var keySignatures: Array<int>;   // per-measure key signature (propagated)
+	var tripletFeel: u8;             // GP3/4 global triplet feel (0=none,1=eighth)
+
+	new(data: Array<byte>) {
+		r = DataReader.new(data);
+	}
+
+	// ---- Entry point ----
+
+	def parse() -> GpxSong {
+		if (!readVersion()) return null;
+
+		var song = GpxSong.new();
+		song.format = format;
+		song.versionCode = versionCode;
+
+		readInfo(song);
+
+		var lyricTrack = 0;
+		var lyrics: Array<GpxLyricLine> = null;
+
+		if (format == GpxFormat.GP3) {
+			if (rdBool()) tripletFeel = 1;
+		} else if (format == GpxFormat.GP4) {
+			if (rdBool()) tripletFeel = 1;
+			lyricTrack = readI32();
+			lyrics = readLyrics();
+		} else {
+			// GP5: no triplet feel boolean; lyrics before page setup
+			lyricTrack = readI32();
+			lyrics = readLyrics();
+			song.pageSetup = readPageSetup();
+		}
+
+		currentTempo = readI32();
+		if (format == GpxFormat.GP5 && versionCode > 0) r.skipN(1);
+
+		var keySig = readKeySignature();
+		r.skipN(3);
+		if (format != GpxFormat.GP3) r.skipN(1);  // octave byte (GP4+)
+
+		// Channels block (64 × 12 bytes)
+		var channels = readChannels();
+		song.channels = channels;
+
+		if (format == GpxFormat.GP5) r.skipN(42);  // GP5 extra skip after channels
+
+		var measureCount = readI32();
+		var trackCount  = readI32();
+
+		keySignatures = Array<int>.new(measureCount);
+		if (measureCount > 0) keySignatures[0] = keySig;
+
+		song.headers = readMeasureHeaders(measureCount);
+		song.tracks  = readTracks(trackCount, measureCount, channels, lyricTrack, lyrics);
+
+		readMeasures(song, measureCount, trackCount);
+
+		return song;
+	}
+
+	// ---- Version detection ----
+
+	def readVersion() -> bool {
+		var hdr = r.readN(31);
+		if (hdr == null || hdr.length < 31) return false;
+		var len = int.!(hdr[0]);
+		if (len > 30) return false;
+		if (matchVer(hdr, len, "FICHIER GUITAR PRO v3.00")) { format = GpxFormat.GP3; versionCode = 0; return true; }
+		if (matchVer(hdr, len, "FICHIER GUITAR PRO v4.00")) { format = GpxFormat.GP4; versionCode = 0; return true; }
+		if (matchVer(hdr, len, "FICHIER GUITAR PRO v4.06")) { format = GpxFormat.GP4; versionCode = 1; return true; }
+		if (matchVer(hdr, len, "FICHIER GUITAR PRO L4.06")) { format = GpxFormat.GP4; versionCode = 2; return true; }
+		if (matchVer(hdr, len, "FICHIER GUITAR PRO v5.00")) { format = GpxFormat.GP5; versionCode = 0; return true; }
+		if (matchVer(hdr, len, "FICHIER GUITAR PRO v5.10")) { format = GpxFormat.GP5; versionCode = 1; return true; }
+		return false;
+	}
+
+	private def matchVer(hdr: Array<byte>, len: int, s: string) -> bool {
+		if (len != s.length) return false;
+		for (i < len) if (hdr[i + 1] != s[i]) return false;
+		return true;
+	}
+
+	// ---- Song info ----
+
+	private def readInfo(song: GpxSong) {
+		song.title    = readStrBSoI();
+		readStrBSoI();                   // subtitle (discard)
+		song.artist   = readStrBSoI();
+		song.album    = readStrBSoI();
+		song.author   = readStrBSoI();
+		if (format == GpxFormat.GP5) readStrBSoI();  // extra "words" field in GP5
+		song.copyright = readStrBSoI();
+		song.writer   = readStrBSoI();
+		readStrBSoI();                   // transcription (discard)
+		var numComments = readI32();
+		var buf = Vector<byte>.new();
+		for (i < numComments) buf.puta(readStrBSoI());
+		song.comments = buf.extract();
+	}
+
+	// ---- Lyrics (GP4+): 5 lines of (measure-from, text) ----
+
+	private def readLyrics() -> Array<GpxLyricLine> {
+		var lines = Array<GpxLyricLine>.new(5);
+		for (i < 5) lines[i] = GpxLyricLine(readI32(), readStrInt());
+		return lines;
+	}
+
+	// ---- Page setup (GP5 only): captured as raw bytes for round-trip ----
+
+	private def readPageSetup() -> Array<byte> {
+		var headerLen = if(versionCode > 0, 49, 30);
+		var buf = Vector<byte>.new();
+		buf.puta(r.readN(headerLen));
+		for (i < 11) {
+			buf.puta(r.readN(4));
+			var lenByte = r.read1();
+			buf.put(lenByte);
+			buf.puta(r.readN(int.!(lenByte)));
+		}
+		return buf.extract();
+	}
+
+	// ---- Channel block (64 × 12 bytes, using layout ref) ----
+
+	private def readChannels() -> Array<GpxChannel> {
+		var channels = Array<GpxChannel>.new(64);
+		var chanBase = r.pos;
+		r.skipN(64 * 12);
+		for (i < 64) {
+			var ch = Ref<GpxChannelEntry>.of(r.data[chanBase + i * 12 ..+ 12]);
+			var c = GpxChannel.new();
+			c.program    = int.view(ch.program);
+			c.volume     = ch.volume;
+			c.balance    = ch.balance;
+			c.chorus     = ch.chorus;
+			c.reverb     = ch.reverb;
+			c.phaser     = ch.phaser;
+			c.tremolo    = ch.tremolo;
+			c.percussion = (i == 9);
+			channels[i]  = c;
+		}
+		return channels;
+	}
+
+	// ---- Measure headers ----
+
+	private def readMeasureHeaders(count: int) -> Array<GpxMeasureHeader> {
+		var headers = Array<GpxMeasureHeader>.new(count);
+		for (i < count) {
+			if (format == GpxFormat.GP5 && i > 0) r.skipN(1);
+			headers[i] = readMeasureHeader(i, headers);
+			if (i + 1 < count) keySignatures[i + 1] = keySignatures[i];
+		}
+		return headers;
+	}
+
+	private def readMeasureHeader(idx: int, prev: Array<GpxMeasureHeader>) -> GpxMeasureHeader {
+		var flags = rdU8();
+		var h = GpxMeasureHeader.new();
+		h.number = idx + 1;
+		h.repeatOpen = (flags & 0x04) != 0;
+		if ((flags & 0x01) != 0) curNumerator   = r.read1();
+		if ((flags & 0x02) != 0) curDenominator = r.read1();
+		h.numerator   = curNumerator;
+		h.denominator = curDenominator;
+		h.tripletFeel = tripletFeel;
+
+		if (format == GpxFormat.GP5) {
+			if ((flags & 0x08) != 0) h.repeatClose = rdU8() - 1;
+			if ((flags & 0x20) != 0) h.marker = readMarker(h.number);
+			if ((flags & 0x40) != 0) {
+				keySignatures[idx] = readKeySignature();
+				r.skipN(1);
+			}
+			if ((flags & 0x01) != 0 || (flags & 0x02) != 0) r.skipN(4);
+			if ((flags & 0x10) != 0) {
+				h.repeatAlternative = rdU8();
+			} else {
+				r.skipN(1);
+			}
+			var tf = rdS8();
+			if (tf == 1)      h.tripletFeel = 1;
+			else if (tf == 2) h.tripletFeel = 2;
+			else              h.tripletFeel = 0;
+		} else {
+			// GP3/GP4: flags in this order
+			if ((flags & 0x08) != 0) h.repeatClose = rdU8();
+			if ((flags & 0x10) != 0) h.repeatAlternative = parseRepeatAlt(h.number, rdU8(), prev);
+			if ((flags & 0x20) != 0) h.marker = readMarker(h.number);
+			if ((flags & 0x40) != 0) {
+				keySignatures[idx] = readKeySignature();
+				r.skipN(1);
+			}
+		}
+		h.keySignature = keySignatures[idx];
+		h.tempo = currentTempo;
+		return h;
+	}
+
+	private def parseRepeatAlt(measure: int, value: int, prev: Array<GpxMeasureHeader>) -> int {
+		var repeatAlt: int = 0;
+		var existing:  int = 0;
+		for (i < prev.length) {
+			var h = prev[i];
+			if (h == null) break;          // stop at unset entries
+			if (h.number == measure) break;
+			if (h.repeatOpen) existing = 0;
+			existing |= h.repeatAlternative;
+		}
+		for (i < 8) {
+			if (value > i && (existing & (1 << byte.!(i))) == 0) repeatAlt |= (1 << byte.!(i));
+		}
+		return repeatAlt;
+	}
+
+	private def readMarker(measureNum: int) -> GpxMarker {
+		var title = readStrBSoI();
+		var rb = r.read1(); var gb = r.read1(); var bb = r.read1(); r.skipN(1);
+		return GpxMarker.new(measureNum, title, rb, gb, bb);
+	}
+
+	private def readKeySignature() -> int {
+		var k = rdS8();
+		if (k < 0) k = 7 - k;  // translate -1→8, -2→9, etc.
+		return k;
+	}
+
+	// ---- Tracks ----
+
+	private def readTracks(count: int, measureCount: int, channels: Array<GpxChannel>,
+	                        lyricTrack: int, allLyrics: Array<GpxLyricLine>) -> Array<GpxTrack> {
+		var tracks = Array<GpxTrack>.new(count);
+		for (i < count) {
+			var number = i + 1;
+			var trackLyrics: Array<GpxLyricLine> = null;
+			if (allLyrics != null && number == lyricTrack) trackLyrics = allLyrics;
+			tracks[i] = readTrack(number, measureCount, channels, trackLyrics);
+		}
+		if (format == GpxFormat.GP5) r.skipN(if(versionCode == 0, 2, 1));
+		return tracks;
+	}
+
+	private def readTrack(number: int, measureCount: int, channels: Array<GpxChannel>,
+	                       lyrics: Array<GpxLyricLine>) -> GpxTrack {
+		var t = GpxTrack.new();
+		t.number = number;
+		t.lyrics = lyrics;
+		t.measures = Array<GpxMeasure>.new(measureCount);
+
+		if (format == GpxFormat.GP5) {
+			r.skipN(1);  // flags
+			if (number == 1 || versionCode == 0) r.skipN(1);
+		} else {
+			r.skipN(1);  // flags
+		}
+
+		t.name = readStrByte(40);
+
+		var stringCount = readI32();
+		var strings = Array<GpxString>.new(stringCount);
+		for (i < 7) {
+			var tuning = readI32();
+			if (i < stringCount) strings[i] = GpxString(u8.!(i + 1), tuning);
+		}
+		t.strings = strings;
+
+		r.skipN(4);  // MIDI port (skip)
+
+		// Channel indices: 1-indexed in file → 0-indexed
+		var ch1 = readI32() - 1;
+		var ch2 = readI32() - 1;
+		if (ch1 < 0 || ch1 >= channels.length) ch1 = 0;
+		if (ch2 < 0 || ch2 >= channels.length) ch2 = ch1;
+		t.channel1 = u8.!(ch1);
+		t.channel2 = u8.!(ch2);
+
+		r.skipN(4);   // frets (skip)
+		t.offset = readI32();
+
+		// Color: R G B pad
+		var rb = r.read1(); var gb = r.read1(); var bb = r.read1(); r.skipN(1);
+		t.color = (rb, gb, bb);
+
+		if (format == GpxFormat.GP5) {
+			r.skipN(if(versionCode > 0, 49, 44));
+			if (versionCode > 0) {
+				readStrBSoI();
+				readStrBSoI();
+			}
+		}
+
+		return t;
+	}
+
+	// ---- Measures ----
+
+	private def readMeasures(song: GpxSong, measureCount: int, trackCount: int) {
+		var start: long = QUARTER_TIME;
+		for (i < measureCount) {
+			var h = song.headers[i];
+			for (j < trackCount) {
+				song.tracks[j].measures[i] = readMeasure(start, song.tracks[j]);
+				if (format == GpxFormat.GP5) r.skipN(1);
+			}
+			h.tempo = currentTempo;
+			start += measureLength(h);
+		}
+	}
+
+	private def measureLength(h: GpxMeasureHeader) -> long {
+		return long.!(h.numerator) * denomToTicks(h.denominator);
+	}
+
+	private def denomToTicks(denom: u8) -> long {
+		var d = int.!(denom);
+		if (d <= 1)  return QUARTER_TIME * 4L;
+		if (d == 2)  return QUARTER_TIME * 2L;
+		if (d == 4)  return QUARTER_TIME;
+		if (d == 8)  return QUARTER_TIME / 2L;
+		if (d == 16) return QUARTER_TIME / 4L;
+		if (d == 32) return QUARTER_TIME / 8L;
+		return QUARTER_TIME;
+	}
+
+	private def readMeasure(measureStart: long, track: GpxTrack) -> GpxMeasure {
+		var m = GpxMeasure.new();
+		var ns = track.strings.length;
+		if (format == GpxFormat.GP5) {
+			m.voice0 = readVoice(measureStart, ns, true);
+			m.voice1 = readVoice(measureStart, ns, true);
+		} else {
+			m.voice0 = readVoice(measureStart, ns, false);
+		}
+		return m;
+	}
+
+	private def readVoice(measureStart: long, numStrings: int, isGP5: bool) -> Array<GpxBeat> {
+		var numBeats = readI32();
+		var beats = Array<GpxBeat>.new(numBeats);
+		var start = measureStart;
+		for (i < numBeats) {
+			var beat = readBeat(start, numStrings, isGP5);
+			beats[i] = beat;
+			if (!isGP5 || !beat.empty) {
+				start += durationTicks(beat.duration.value.raw,
+				                       beat.duration.dotted,
+				                       beat.duration.tuplet);
+			}
+		}
+		return beats;
+	}
+
+	// ---- Beats ----
+
+	private def readBeat(start: long, numStrings: int, isGP5: bool) -> GpxBeat {
+		var flags = rdU8();
+		var beat = GpxBeat.new();
+		beat.start = start;
+
+		if ((flags & 0x40) != 0) {
+			var beatType = rdU8();
+			if (isGP5) beat.empty = (beatType & 0x02) == 0;
+		}
+
+		beat.duration = readDuration(flags);
+
+		if ((flags & 0x02) != 0) beat.chord     = readChord(numStrings);
+		if ((flags & 0x04) != 0) beat.text      = readStrBSoI();
+		if ((flags & 0x08) != 0) beat.effect    = readBeatEffects();
+		if ((flags & 0x10) != 0) beat.mixChange = readMixChange();
+
+		var strFlags = rdU8();
+		var noteVec = Vector<GpxNote>.new();
+		for (i < 7) {
+			if ((strFlags & (1 << byte.!(6 - i))) != 0 && i < numStrings) {
+				noteVec.put(readNote(u8.!(i + 1)));
+			}
+		}
+		beat.notes = noteVec.extract();
+
+		if (isGP5) {
+			r.skipN(1);
+			if ((rdU8() & 0x08) != 0) r.skipN(1);
+		}
+
+		return beat;
+	}
+
+	private def readDuration(flags: int) -> GpxDuration {
+		var rawByte = i8.view(r.read1());
+		var dotted  = (flags & 0x01) != 0;
+		var tuplet  = 0;
+		if ((flags & 0x20) != 0) tuplet = readI32();
+		return GpxDuration(noteValueFromRaw(rawByte), dotted, tuplet);
+	}
+
+	private def noteValueFromRaw(raw: i8) -> GpxNoteValue {
+		var n = int.view(raw);
+		if (n <= -2) return GpxNoteValue.WHOLE;
+		if (n == -1) return GpxNoteValue.HALF;
+		if (n == 0)  return GpxNoteValue.QUARTER;
+		if (n == 1)  return GpxNoteValue.EIGHTH;
+		if (n == 2)  return GpxNoteValue.SIXTEENTH;
+		if (n == 3)  return GpxNoteValue.THIRTY_SECOND;
+		return GpxNoteValue.SIXTY_FOURTH;
+	}
+
+	private def durationTicks(raw: i8, dotted: bool, tuplet: int) -> long {
+		var shift = byte.!(int.view(raw) + 4);  // raw: -2..4 → shift: 2..8
+		var ticks = long.!(15360 >> shift);
+		if (dotted)        ticks = ticks + ticks / 2L;
+		if (tuplet == 3)   ticks = ticks * 2L / 3L;
+		else if (tuplet == 5)  ticks = ticks * 4L / 5L;
+		else if (tuplet == 6)  ticks = ticks * 2L / 3L;
+		else if (tuplet == 7)  ticks = ticks * 4L / 7L;
+		else if (tuplet == 9)  ticks = ticks * 8L / 9L;
+		else if (tuplet == 10) ticks = ticks * 4L / 5L;
+		else if (tuplet == 11) ticks = ticks * 8L / 11L;
+		else if (tuplet == 12) ticks = ticks * 2L / 3L;
+		else if (tuplet == 13) ticks = ticks * 8L / 13L;
+		return ticks;
+	}
+
+	// ---- Notes ----
+
+	private def readNote(strNum: u8) -> GpxNote {
+		var flags = rdU8();
+		var note = GpxNote.new();
+		note.strNum = strNum;
+		note.effect = GpxNoteEffect.new();
+		note.effect.ghost       = (flags & 0x04) != 0;
+		note.effect.accentuated = (flags & 0x40) != 0;
+		if (format == GpxFormat.GP5) note.effect.heavyAccent = (flags & 0x02) != 0;
+
+		if ((flags & 0x20) != 0) {
+			var noteType = rdU8();
+			note.tied        = (noteType == 2);
+			note.effect.dead = (noteType == 3);
+		}
+		// Duration/tuplet skip
+		if (format == GpxFormat.GP5) {
+			if ((flags & 0x01) != 0) r.skipN(8);
+		} else {
+			if ((flags & 0x01) != 0) r.skipN(2);
+		}
+		if ((flags & 0x10) != 0) note.velocity = r.read1();
+		if ((flags & 0x20) != 0) note.value    = r.read1();
+		if ((flags & 0x80) != 0) r.skipN(2);   // fingering
+
+		if (format == GpxFormat.GP5) r.skipN(1);  // always skip 1 before effects in GP5
+
+		if ((flags & 0x08) != 0) readNoteEffects(note.effect, int.!(note.value));
+
+		return note;
+	}
+
+	// ---- Note effects ----
+
+	private def readNoteEffects(effect: GpxNoteEffect, noteFret: int) {
+		if (format == GpxFormat.GP3) {
+			var flags = rdU8();
+			effect.hammer  = (flags & 0x02) != 0;
+			effect.slide   = (flags & 0x04) != 0;
+			effect.letRing = (flags & 0x08) != 0;
+			if ((flags & 0x01) != 0) effect.bend  = readBend();
+			if ((flags & 0x10) != 0) effect.grace = readGrace();
+		} else {
+			var flags1 = rdU8();
+			var flags2 = rdU8();
+			effect.hammer   = (flags1 & 0x02) != 0;
+			effect.letRing  = (flags1 & 0x08) != 0;
+			effect.vibrato  = (flags2 & 0x40) != 0;
+			effect.palmMute = (flags2 & 0x02) != 0;
+			effect.staccato = (flags2 & 0x01) != 0;
+			if ((flags1 & 0x01) != 0) effect.bend  = readBend();
+			if ((flags1 & 0x10) != 0) effect.grace = readGrace();
+			if ((flags2 & 0x04) != 0) effect.tremoloPickRaw = u8.!(rdU8());
+			if ((flags2 & 0x08) != 0) {
+				effect.slide     = true;
+				effect.slideType = r.read1();
+			}
+			if ((flags2 & 0x10) != 0) readHarmonic(effect, noteFret);
+			if ((flags2 & 0x20) != 0) {
+				effect.trillFret   = i8.view(r.read1());
+				effect.trillPeriod = r.read1();
+			}
+		}
+	}
+
+	private def readHarmonic(effect: GpxNoteEffect, noteFret: int) {
+		var htype = rdU8();
+		if (format == GpxFormat.GP4) {
+			// GP4: single type byte maps to harmonic type
+			if      (htype == 1)  effect.harmonicType = GpxHarmonicType.NATURAL;
+			else if (htype == 3)  effect.harmonicType = GpxHarmonicType.TAPPED;
+			else if (htype == 4)  effect.harmonicType = GpxHarmonicType.PINCH;
+			else if (htype == 5)  effect.harmonicType = GpxHarmonicType.SEMI;
+			else if (htype == 15) { effect.harmonicType = GpxHarmonicType.ARTIFICIAL; effect.harmonicData = 2; }
+			else if (htype == 17) { effect.harmonicType = GpxHarmonicType.ARTIFICIAL; effect.harmonicData = 3; }
+			else if (htype == 22) { effect.harmonicType = GpxHarmonicType.ARTIFICIAL; effect.harmonicData = 0; }
+		} else {
+			// GP5: type determines how many more bytes follow
+			if (htype == 1) {
+				effect.harmonicType = GpxHarmonicType.NATURAL;
+			} else if (htype == 2) {
+				r.skipN(3);  // Note, Accidental, Octave bytes
+				effect.harmonicType = GpxHarmonicType.ARTIFICIAL;
+			} else if (htype == 3) {
+				var rhFret = rdU8();
+				effect.harmonicData = findNatFreq(rhFret - noteFret);
+				effect.harmonicType = GpxHarmonicType.TAPPED;
+			} else if (htype == 4) {
+				effect.harmonicType = GpxHarmonicType.PINCH;
+			} else if (htype == 5) {
+				effect.harmonicType = GpxHarmonicType.SEMI;
+			}
+		}
+	}
+
+	// Natural harmonics: interval → index (matches TuxGuitar's NATURAL_FREQUENCIES).
+	private def findNatFreq(interval: int) -> u8 {
+		var freqs = [12, 7, 5, 4, 3, 12, 7, 5, 4, 3];
+		for (i < freqs.length) if (freqs[i] == interval) return u8.!(i);
+		return 0;
+	}
+
+	// ---- Bend (note bend or GP4/GP5 tremolo bar) ----
+
+	private def readBend() -> GpxBend {
+		r.skipN(5);
+		var n = readI32();
+		var pts = Array<GpxBendPoint>.new(n);
+		for (i < n) {
+			var pos = readI32();
+			var val = readI32();
+			r.skipN(1);  // vibrato byte (skip)
+			pts[i] = GpxBendPoint(pos, val);
+		}
+		return GpxBend.new(pts);
+	}
+
+	// GP4/GP5 tremolo bar (same structure as bend).
+	private def readTremoloBar() -> GpxBend {
+		r.skipN(5);
+		var n = readI32();
+		var pts = Array<GpxBendPoint>.new(n);
+		for (i < n) {
+			var pos = readI32();
+			var val = readI32();
+			r.skipN(1);
+			pts[i] = GpxBendPoint(pos, val);
+		}
+		return GpxBend.new(pts);
+	}
+
+	// ---- Grace note ----
+
+	private def readGrace() -> GpxGrace {
+		var g = GpxGrace.new();
+		var fret  = rdU8();
+		g.dynamic  = r.read1();
+		var trans  = rdU8();
+		g.duration = r.read1();
+		if      (trans == 1) g.transition = GpxGraceTransition.SLIDE;
+		else if (trans == 2) g.transition = GpxGraceTransition.BEND;
+		else if (trans == 3) g.transition = GpxGraceTransition.HAMMER;
+		else                 g.transition = GpxGraceTransition.NONE;
+		if (format == GpxFormat.GP5) {
+			var flags5 = rdU8();
+			g.dead   = (flags5 & 0x01) != 0;
+			g.onBeat = (flags5 & 0x02) != 0;
+			g.fret   = u8.!(fret);
+		} else {
+			g.dead = (fret == 255);
+			g.fret = if(g.dead, u8.!(0), u8.!(fret));
+		}
+		return g;
+	}
+
+	// ---- Beat effects ----
+
+	private def readBeatEffects() -> GpxBeatEffect {
+		var be = GpxBeatEffect.new();
+		if (format == GpxFormat.GP3) {
+			var flags = rdU8();
+			be.vibrato = (flags & 0x01) != 0 || (flags & 0x02) != 0;
+			be.fadeIn  = (flags & 0x10) != 0;
+			if ((flags & 0x20) != 0) {
+				var typ = rdU8();
+				if (typ == 0) {
+					// GP3: 1 raw int stored as single-point bend (for round-trip)
+					var rawVal = readI32();
+					be.tremoloBar = GpxBend.new([GpxBendPoint(0, rawVal)]);
+				} else {
+					be.slapEffect = u8.!(typ);
+					readI32();  // value (discard)
+				}
+			}
+			if ((flags & 0x40) != 0) {
+				be.strokeDown = r.read1();
+				be.strokeUp   = r.read1();
+			}
+			be.naturalHarmonic    = (flags & 0x04) != 0;
+			be.artificialHarmonic = (flags & 0x08) != 0;
+		} else {
+			// GP4 and GP5 both use 2 flag bytes
+			var flags1 = rdU8();
+			var flags2 = rdU8();
+			be.fadeIn  = (flags1 & 0x10) != 0;
+			be.vibrato = (flags1 & 0x02) != 0;
+			if ((flags1 & 0x20) != 0) be.slapEffect = u8.!(rdU8());
+			if ((flags2 & 0x04) != 0) be.tremoloBar = readTremoloBar();
+			if ((flags1 & 0x40) != 0) {
+				if (format == GpxFormat.GP5) {
+					// GP5: up first, then down
+					be.strokeUp   = r.read1();
+					be.strokeDown = r.read1();
+				} else {
+					// GP4: down first, then up
+					be.strokeDown = r.read1();
+					be.strokeUp   = r.read1();
+				}
+			}
+			if ((flags2 & 0x02) != 0) {
+				var dir = rdU8();
+				if      ((dir & 0x01) != 0) be.pickStroke = 1;
+				else if ((dir & 0x02) != 0) be.pickStroke = 2;
+			}
+		}
+		return be;
+	}
+
+	// ---- Chord diagram ----
+
+	private def readChord(numStrings: int) -> GpxChord {
+		var c = GpxChord.new();
+		if (format == GpxFormat.GP5) {
+			// GP5: always the 107-byte new format (no header byte)
+			r.skipN(17);
+			c.name = readStrByte(21);
+			r.skipN(4);
+			c.firstFret = readI32();
+			c.frets = Array<int>.new(7);
+			for (i < 7) c.frets[i] = readI32();
+			r.skipN(32);
+			c.oldFormat = false;
+		} else {
+			var header = rdU8();
+			if ((header & 0x01) == 0) {
+				// Old (short) format: variable length
+				c.name = readStrBSoI();
+				c.firstFret = readI32();
+				if (c.firstFret != 0) {
+					c.frets = Array<int>.new(6);
+					for (i < 6) c.frets[i] = readI32();
+				} else {
+					c.frets = [];
+				}
+				c.oldFormat = true;
+			} else if (format == GpxFormat.GP3) {
+				// GP3 new format
+				r.skipN(25);
+				c.name = readStrByte(34);
+				c.firstFret = readI32();
+				c.frets = Array<int>.new(6);
+				for (i < 6) c.frets[i] = readI32();
+				r.skipN(36);
+				c.oldFormat = false;
+			} else {
+				// GP4 new format
+				r.skipN(16);
+				c.name = readStrByte(21);
+				r.skipN(4);
+				c.firstFret = readI32();
+				c.frets = Array<int>.new(7);
+				for (i < 7) c.frets[i] = readI32();
+				r.skipN(32);
+				c.oldFormat = false;
+			}
+		}
+		return c;
+	}
+
+	// ---- Mix change ----
+
+	private def readMixChange() -> GpxMixChange {
+		var mc = GpxMixChange.new();
+		mc.instrument = i8.view(r.read1());
+
+		if (format == GpxFormat.GP5) r.skipN(16);
+
+		mc.volume  = i8.view(r.read1());
+		mc.pan     = i8.view(r.read1());
+		mc.chorus  = i8.view(r.read1());
+		mc.reverb  = i8.view(r.read1());
+		mc.phaser  = i8.view(r.read1());
+		mc.tremolo = i8.view(r.read1());
+
+		if (format == GpxFormat.GP5) mc.tempoName = readStrBSoI();
+
+		mc.tempo = readI32();
+
+		// Skip 1 transition byte for each non-negative field
+		if (int.view(mc.volume)  >= 0) r.skipN(1);
+		if (int.view(mc.pan)     >= 0) r.skipN(1);
+		if (int.view(mc.chorus)  >= 0) r.skipN(1);
+		if (int.view(mc.reverb)  >= 0) r.skipN(1);
+		if (int.view(mc.phaser)  >= 0) r.skipN(1);
+		if (int.view(mc.tremolo) >= 0) r.skipN(1);
+
+		if (mc.tempo >= 0) {
+			currentTempo = mc.tempo;
+			r.skipN(1);
+			if (format == GpxFormat.GP5 && versionCode > 0) r.skipN(1);
+		}
+
+		// GP4: 1 extra trailing byte; GP5: 2 extra bytes + optional strings
+		if (format == GpxFormat.GP4) {
+			r.skipN(1);
+		} else if (format == GpxFormat.GP5) {
+			r.skipN(2);
+			if (versionCode > 0) {
+				readStrBSoI();
+				readStrBSoI();
+			}
+		}
+
+		return mc;
+	}
+
+	// ---- String reading helpers ----
+
+	// "ByteSizeOfInteger": 4-byte block size N, then 1-byte length L, then N-1 content bytes.
+	// Returns the first L bytes as a string.
+	private def readStrBSoI() -> string {
+		var n = readI32();
+		if (n <= 0) return [];
+		var len  = rdU8();
+		var avail = n - 1;
+		if (len > avail) len = avail;
+		var s = r.readN(len);
+		if (avail > len) r.skipN(avail - len);
+		return s;
+	}
+
+	// "StringByte(N)": 1-byte length L, then N bytes total. Returns first L bytes.
+	private def readStrByte(n: int) -> string {
+		var len = rdU8();
+		if (len > n) len = n;
+		var s = r.readN(len);
+		if (n > len) r.skipN(n - len);
+		return s;
+	}
+
+	// "StringInteger": 4-byte length N, then N bytes (the whole string).
+	private def readStrInt() -> string {
+		return r.readN(readI32());
+	}
+
+	// ---- Primitive reading helpers ----
+
+	private def readI32() -> int  { return int.view(r.read_u32()); }
+	private def rdU8()    -> int  { return int.!(r.read1()); }
+	private def rdS8()    -> int  { return int.view(i8.view(r.read1())); }
+	private def rdBool()  -> bool { return int.!(r.read1()) != 0; }
+}

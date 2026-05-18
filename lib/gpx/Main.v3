@@ -1,0 +1,49 @@
+// Entry point: load a Guitar Pro file, parse it, and print a summary.
+component Main {
+	def main(args: Array<string>) -> int {
+		if (args.length < 1) {
+			System.puts("Usage: gpxparser <file.gp3|gp4|gp5>\n");
+			return 1;
+		}
+		var data = System.fileLoad(args[0]);
+		if (data == null) {
+			System.puts("Error: cannot open file: ");
+			System.puts(args[0]);
+			System.ln();
+			return 1;
+		}
+		var song = GpxParser.new(data).parse();
+		if (song == null) {
+			System.puts("Error: unrecognized Guitar Pro version\n");
+			return 1;
+		}
+		// Print summary
+		var fmt = song.format;
+		System.puts("Format:   GP");
+		if (fmt == GpxFormat.GP3) System.puts("3");
+		else if (fmt == GpxFormat.GP4) System.puts("4");
+		else System.puts("5");
+		if (song.versionCode > 0) { System.puts("."); System.puti(song.versionCode); }
+		System.ln();
+		System.puts("Title:    "); printStr(song.title);   System.ln();
+		System.puts("Artist:   "); printStr(song.artist);  System.ln();
+		System.puts("Album:    "); printStr(song.album);   System.ln();
+		System.puts("Author:   "); printStr(song.author);  System.ln();
+		System.puts("Tempo:    "); System.puti(song.headers[0].tempo); System.puts(" BPM"); System.ln();
+		System.puts("Tracks:   "); System.puti(song.tracks.length); System.ln();
+		System.puts("Measures: "); System.puti(song.headers.length); System.ln();
+		for (i < song.tracks.length) {
+			var t = song.tracks[i];
+			System.puts("  Track "); System.puti(t.number);
+			System.puts(": "); printStr(t.name);
+			System.puts(" ("); System.puti(t.strings.length); System.puts(" strings)");
+			System.ln();
+		}
+		return 0;
+	}
+
+	private def printStr(s: string) {
+		if (s == null || s.length == 0) return;
+		System.puts(s);
+	}
+}

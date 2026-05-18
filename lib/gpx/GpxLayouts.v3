@@ -1,0 +1,34 @@
+// Binary layouts for fixed-size Guitar Pro file structures.
+
+// The 31-byte version header at the start of every GP file.
+layout GpxVersionHeader {
+	+0	len: u8;
+	+1	str: u8[30];
+	=31;
+}
+
+// One entry in the 64-entry channel block (12 bytes each).
+layout GpxChannelEntry {
+	+0	program: i32;
+	+4	volume:  i8;
+	+5	balance: i8;
+	+6	chorus:  i8;
+	+7	reverb:  i8;
+	+8	phaser:  i8;
+	+9	tremolo: i8;
+	=12;
+}
+
+// A 4-byte RGBA color (the 4th byte is padding).
+layout GpxColor {
+	+0	r: u8;
+	+1	g: u8;
+	+2	b: u8;
+	=4;
+}
+
+// A 4-byte MIDI string tuning value.
+layout GpxStringTuning {
+	+0	value: i32;
+	=4;
+}

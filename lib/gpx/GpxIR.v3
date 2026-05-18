@@ -1,0 +1,194 @@
+// Intermediate representation for Guitar Pro files (GP3, GP4, GP5).
+
+// Guitar Pro file format variant.
+enum GpxFormat { GP3, GP4, GP5 }
+
+// Note duration raw value from file.
+// raw: -2=whole, -1=half, 0=quarter, 1=8th, 2=16th, 3=32nd, 4=64th
+enum GpxNoteValue(raw: i8) {
+	WHOLE(-2), HALF(-1), QUARTER(0), EIGHTH(1), SIXTEENTH(2), THIRTY_SECOND(3), SIXTY_FOURTH(4)
+}
+
+// Beat duration: note value + optional dotted flag + optional tuplet divisor.
+// tuplet: 0=none; 3,5,6,7,9,10,11,12,13=divisor read from file.
+type GpxDuration(value: GpxNoteValue, dotted: bool, tuplet: int) {}
+
+// A single bend/tremolo-bar control point.
+// position: raw 0..60 from file; value: raw semitones×25 from file.
+type GpxBendPoint(position: int, value: int) {}
+
+// A bend or tremolo bar envelope (array of control points).
+class GpxBend {
+	var points: Array<GpxBendPoint>;
+	new(points) {}
+}
+
+// Harmonic type from note effects.
+enum GpxHarmonicType { NONE, NATURAL, ARTIFICIAL, TAPPED, PINCH, SEMI }
+
+// Grace note transition type.
+enum GpxGraceTransition { NONE, SLIDE, BEND, HAMMER }
+
+// A grace note. dead/onBeat flags from GP5 flags byte; inferred for GP3/4.
+class GpxGrace {
+	var fret: u8;
+	var dynamic: u8;
+	var transition: GpxGraceTransition;
+	var duration: u8;
+	var dead: bool;
+	var onBeat: bool;
+}
+
+// Note-level effects section. null means absent from file.
+class GpxNoteEffect {
+	var bend: GpxBend;           // null = no bend
+	var grace: GpxGrace;         // null = no grace note
+	var harmonicType: GpxHarmonicType;
+	var harmonicData: u8;        // TAPPED: natural-freq index; others: 0
+	var trillFret: i8;
+	var trillPeriod: u8;         // 0=none; 1=16th, 2=32nd, 3=64th (raw from file)
+	var tremoloPickRaw: u8;      // 0=none; 1=8th, 2=16th, 3=32nd (raw from file)
+	var hammer: bool;
+	var letRing: bool;
+	var vibrato: bool;
+	var slide: bool;
+	var slideType: u8;           // GP4+ only: type byte following slide flag
+	var palmMute: bool;
+	var staccato: bool;
+	var ghost: bool;
+	var dead: bool;
+	var accentuated: bool;
+	var heavyAccent: bool;       // GP5 only
+}
+
+// Beat-level effects section. null means absent from file.
+class GpxBeatEffect {
+	var fadeIn: bool;
+	var vibrato: bool;
+	var slapEffect: u8;          // 0=none, 1=tapping, 2=slapping, 3=popping
+	var tremoloBar: GpxBend;     // null = none
+	var strokeDown: u8;          // raw stroke byte (1-6), 0=none
+	var strokeUp: u8;            // raw stroke byte (1-6), 0=none
+	var pickStroke: u8;          // 0=none, 1=up, 2=down (GP4+ only)
+	// GP3 puts harmonics in beat effects, GP4+ puts them in note effects
+	var naturalHarmonic: bool;
+	var artificialHarmonic: bool;
+}
+
+// A chord diagram.
+class GpxChord {
+	var name: string;
+	var firstFret: int;
+	var frets: Array<int>;
+	var oldFormat: bool;         // true if read from old (short) chord format
+}
+
+// A mid-measure mix change. -1 in any signed field = no change for that parameter.
+class GpxMixChange {
+	var instrument: i8;
+	var volume: i8;
+	var pan: i8;
+	var chorus: i8;
+	var reverb: i8;
+	var phaser: i8;
+	var tremolo: i8;
+	var tempo: int;              // -1 = no change
+	var tempoName: string;       // GP5 only, null otherwise
+}
+
+// A single note on a guitar string.
+class GpxNote {
+	var strNum: u8;              // 1-indexed (as in file)
+	var value: u8;               // fret number 0..99
+	var tied: bool;
+	var velocity: u8;            // raw byte from file (0 if not present)
+	var effect: GpxNoteEffect;   // null = no effects section
+}
+
+// One beat in a voice.
+class GpxBeat {
+	var start: long;             // tick position (QUARTER_TIME=960 per quarter note)
+	var duration: GpxDuration;
+	var notes: Array<GpxNote>;
+	var empty: bool;             // GP5: explicitly marked as rest
+	var text: string;            // null = none
+	var chord: GpxChord;         // null = none
+	var effect: GpxBeatEffect;   // null = no beat-effects section
+	var mixChange: GpxMixChange; // null = none
+}
+
+// Per-track data for one measure. voice1 is null for GP3/4 (single-voice).
+class GpxMeasure {
+	var voice0: Array<GpxBeat>;
+	var voice1: Array<GpxBeat>;  // null for GP3/4
+}
+
+// A rehearsal marker.
+class GpxMarker {
+	var measure: int;
+	var title: string;
+	var r: u8; var g: u8; var b: u8;
+	new(measure, title, r, g, b) {}
+}
+
+// Global header for one measure (shared across all tracks).
+class GpxMeasureHeader {
+	var number: int;
+	var numerator: u8;
+	var denominator: u8;         // raw denominator byte (2=half, 4=quarter, 8=eighth)
+	var tempo: int;              // BPM at this measure (updated by mix changes)
+	var repeatOpen: bool;
+	var repeatClose: int;        // 0 = none
+	var repeatAlternative: int;  // bitmask
+	var marker: GpxMarker;       // null = none
+	var keySignature: int;       // 0=C, 1=G, -1=F, etc.
+	var tripletFeel: u8;         // 0=none, 1=eighth, 2=sixteenth
+}
+
+// A guitar string with its open MIDI tuning value (1-indexed number as in file).
+type GpxString(number: u8, value: int) {}
+
+// A MIDI channel entry (one of the 64 in the file).
+class GpxChannel {
+	var program: int;
+	var volume: i8;
+	var balance: i8;
+	var chorus: i8;
+	var reverb: i8;
+	var phaser: i8;
+	var tremolo: i8;
+	var percussion: bool;
+}
+
+// One lyric line (GP4+). Five stored per song.
+type GpxLyricLine(from: int, text: string) {}
+
+// A track.
+class GpxTrack {
+	var number: int;
+	var name: string;
+	var strings: Array<GpxString>;     // up to 7 strings, 1-indexed
+	var channel1: u8;                  // 0-indexed into song.channels
+	var channel2: u8;
+	var offset: int;
+	var color: (u8, u8, u8);
+	var lyrics: Array<GpxLyricLine>;   // null for GP3; 5 entries for GP4+
+	var measures: Array<GpxMeasure>;
+}
+
+// Top-level song.
+class GpxSong {
+	var format: GpxFormat;
+	var versionCode: int;              // sub-version (0 or 1)
+	var title: string;
+	var artist: string;
+	var album: string;
+	var author: string;
+	var copyright: string;
+	var writer: string;
+	var comments: string;
+	var channels: Array<GpxChannel>;   // always 64 entries
+	var headers: Array<GpxMeasureHeader>;
+	var tracks: Array<GpxTrack>;
+	var pageSetup: Array<byte>;        // GP5 only: raw page setup bytes; null otherwise
+}
