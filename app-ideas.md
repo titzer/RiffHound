@@ -127,3 +127,14 @@ Visualizations of VPs can be completely customized.
   AI has been trained on thousands or millions of instructional videos and is ready to teach a player any instrument in any notation at any time.
   It can point to specific source materials and tabs and frictionlessly display them (e.g. show a YouTube video of someone teaching a technique).
   
+## Ear training app
+
+Trains ear, sight reading, and singing / instrument.
+Quiz note is chosen, and then shown in sheet music (or tab), played (sine wave or instrument sound), or spelled (note name and octave).
+The player must fill in the missing modalities, e.g. put the note on the sheet music (click/touch), play the note (sing, hum, play instrument), or type/say the answer.
+Can do this for single notes in a key, for intervals, melodies, riffs (repeating in a loop), passages, etc.
+E.g. one exercise is to find a note on the fretboard by ear; a note is played and keeps repeating until the player finds and plays it on their instrument.
+That teaches quick finding and associations.
+Then it can be extended to two notes (intervals), small passages, etc.
+It's when there all 3 modalities present.
+Mix it up to make the player build sight reading skills, ear skills, and also note mapping.
