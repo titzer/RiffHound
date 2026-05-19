@@ -113,10 +113,21 @@
       padding: 14px 14px;
       text-align: left;
       transition: transform .05s ease;
+      position: relative;
     }
     .choice:hover { transform: translateY(-1px); }
     .choice.correct { outline: 2px solid var(--accent); }
     .choice.wrong { outline: 2px solid var(--danger); }
+    .choice-num {
+      position: absolute;
+      top: 8px;
+      left: 10px;
+      font-size: 11px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      color: var(--muted);
+      opacity: 0.6;
+      line-height: 1;
+    }
     .pill {
       display: inline-block; padding: 4px 8px; border-radius: 999px;
       font-size: 12px; border: 1px solid #1f2937; background: #0b1220; color: var(--muted);
@@ -128,6 +139,16 @@
     #btn-play {
 	height: 38px;      /* whatever looks right in your design */
 	line-height: 1.2;  /* control vertical centering */
+    }
+    .ladder {
+      width: 100%;
+      height: 80px;
+      display: block;
+    }
+    .ladder .step {
+      stroke: #6366f1;
+      stroke-width: 2;
+      fill: none;
     }
   </style>
 </head>
@@ -185,6 +206,12 @@
             <div>
               <label for="maxStep">Max step (scale degrees)</label>
               <input id="maxStep" type="number" min="1" max="4" value="2" />
+            </div>
+          </div>
+          <div class="row" style="margin-top:8px">
+            <div>
+              <label for="numChoices"># of choices</label>
+              <input id="numChoices" type="number" min="3" max="6" value="4" />
             </div>
           </div>
           <div style="margin-top:8px">
@@ -268,7 +295,7 @@
     }
 
     // Create distractor sequences by subtle edits
-    function makeDistractors(correctDegrees) {
+    function makeDistractors(correctDegrees, count) {
       const out = new Set();
       const key = (arr)=>arr.join("-");
       out.add(key(correctDegrees));
@@ -294,17 +321,27 @@
           tryPush(alt);
         }
       }
-      // 3) Reverse sequence (excluding first tonic) if different
+      // 3) Nudge two notes simultaneously
+      for (let i=1;i<n;i++){
+        for (let j=i+1;j<n;j++){
+          for (const di of [-1,+1]){
+            const alt = correctDegrees.slice();
+            alt[i] = Math.max(0, Math.min(6, alt[i] + di));
+            alt[j] = Math.max(0, Math.min(6, alt[j] - di));
+            tryPush(alt);
+          }
+        }
+      }
+      // 4) Reverse sequence (excluding first tonic) if different
       if (n > 2){
         const alt = [correctDegrees[0], ...correctDegrees.slice(1).reverse()];
         tryPush(alt);
       }
-      // Collect 3 distractors
+      // Collect up to `count` distractors
       const all = [...out].map(s=>s.split('-').map(Number));
       const filtered = all.filter(a => key(a) !== key(correctDegrees));
-      // Shuffle and take first 3
       for (let i=filtered.length-1;i>0;i--){ const j=Math.floor(Math.random()*(i+1)); [filtered[i],filtered[j]]=[filtered[j],filtered[i]]; }
-      return filtered.slice(0,3);
+      return filtered.slice(0, count);
     }
 
     // --- Audio engine (Web Audio API) ----------------------------------------
@@ -361,6 +398,7 @@
     const el = (id)=>document.getElementById(id);
     const $ = {
       key: el('key'), octave: el('octave'), length: el('length'), maxStep: el('maxStep'),
+      numChoices: el('numChoices'),
       allowDown: el('allowDown'), wave: el('wave'), bpm: el('bpm'), sustain: el('sustain'), volume: el('volume'),
       labelKey: el('label-key'), labelLen: el('label-len'), labelBpm: el('label-bpm'),
       btnPlay: el('btn-play'), btnNext: el('btn-next'),
@@ -397,7 +435,8 @@
       const names = degreesToNames(degrees, scaleNames);
 
       // Build options
-      const distractorDegs = makeDistractors(degrees);
+      const numChoices = Math.max(2, Number($.numChoices.value));
+      const distractorDegs = makeDistractors(degrees, numChoices - 1);
       const options = [degrees, ...distractorDegs];
       // Shuffle options
       for (let i=options.length-1;i>0;i--){ const j=Math.floor(Math.random()*(i+1)); [options[i],options[j]]=[options[j],options[i]]; }
@@ -413,12 +452,51 @@
       playCurrent();
     }
 
+    function renderStepLadder(svg, degrees) {
+      const W = 280, H = 80;
+      const pad = {l: 8, r: 8, t: 8, b: 8};
+      while (svg.firstChild) svg.removeChild(svg.firstChild);
+      const plotW = W - pad.l - pad.r;
+      const plotH = H - pad.t - pad.b;
+      const xStep = plotW / degrees.length;
+      const yForDeg = d => pad.t + plotH * (1 - d / 6);
+      const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+      path.setAttribute("class", "step");
+      let dstr = "";
+      degrees.forEach((deg, i) => {
+        const y = yForDeg(deg);
+        const xLeft = pad.l + i * xStep;
+        const xRight = pad.l + (i + 1) * xStep;
+        if (i === 0) dstr += `M${xLeft},${y}`;
+        dstr += ` H${xRight}`;
+        if (i < degrees.length - 1) dstr += ` V${yForDeg(degrees[i + 1])}`;
+      });
+      path.setAttribute("d", dstr);
+      svg.appendChild(path);
+    }
+
     function renderChoices(){
       $.question.innerHTML = '';
+      const n = current.options.length;
+      // Use 3 columns for 3 or 6 choices, else 2 columns
+      $.question.style.gridTemplateColumns = (n === 3 || n === 6) ? '1fr 1fr 1fr' : '1fr 1fr';
       current.options.forEach((opt, idx) => {
         const btn = document.createElement('button');
         btn.className = 'choice';
-        btn.innerHTML = `<div class="seq kbd">${opt.names.join(' – ')}</div>`;
+        const numBadge = document.createElement('span');
+        numBadge.className = 'choice-num';
+        numBadge.textContent = String(idx + 1);
+        btn.appendChild(numBadge);
+        const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+        svg.setAttribute("viewBox", "0 0 280 80");
+        svg.setAttribute("preserveAspectRatio", "xMidYMid meet");
+        svg.classList.add("ladder");
+        renderStepLadder(svg, opt.degrees);
+        btn.appendChild(svg);
+        const nameDiv = document.createElement('div');
+        nameDiv.className = 'seq kbd';
+        nameDiv.textContent = opt.names.join(' – ');
+        btn.appendChild(nameDiv);
         btn.addEventListener('click', () => submitAnswer(idx));
         $.question.appendChild(btn);
       });
@@ -459,7 +537,7 @@
     $.btnPlay.addEventListener('click', playCurrent);
     $.btnNext.addEventListener('click', makeQuestion);
 
-    [$.key, $.octave, $.length, $.maxStep, $.allowDown, $.wave, $.bpm, $.sustain].forEach(ctrl => {
+    [$.key, $.octave, $.length, $.maxStep, $.numChoices, $.allowDown, $.wave, $.bpm, $.sustain].forEach(ctrl => {
       ctrl.addEventListener('change', () => {
         updateLabels();
         makeQuestion();
@@ -471,11 +549,7 @@
     window.addEventListener('keydown', (e) => {
 	if (e.target && ['INPUT','SELECT','TEXTAREA'].includes(e.target.tagName)) return;
 	if (e.code === 'Space') { e.preventDefault(); playCurrent(); }
-	// TODO 1-4 keys should be the choices
-	else if (e.key === '1') { submitAnswer(0); }
-	else if (e.key === '2') { submitAnswer(1); }
-	else if (e.key === '3') { submitAnswer(2); }
-	else if (e.key === '4') { submitAnswer(3); }
+	else if (e.key >= '1' && e.key <= '6') { submitAnswer(Number(e.key) - 1); }
 	else if (e.key === 'r') { playCurrent(); }
 	else if (e.key === 'n') { makeQuestion(); }
     });
@@ -484,122 +558,6 @@
     makeQuestion();
   </script>
 
-<div id="examples" class="examples"></div>
 
-<style>
-  .examples {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(240px, 1fr));
-    gap: 14px;
-    margin: 16px 0;
-  }
-  .ex-card {
-    background: #0b1220;
-    border: 1px solid #1f2937;
-    border-radius: 12px;
-    padding: 10px 12px;
-  }
-  .ex-title {
-    color: #94a3b8;
-    font-size: 12px;
-    margin-bottom: 6px;
-  }
-  .ladder {
-    width: 100%;
-    height: 120px;
-    display: block;
-  }
-  .ladder text {
-    font: 10px ui-monospace, monospace;
-    fill: #e2e8f0;
-    dominant-baseline: middle;
-    text-anchor: start;
-  }
-  .ladder .step {
-    stroke: #6366f1;
-    stroke-width: 2;
-    fill: none;
-  }
-</style>
-
-<script>
-  const NOTE_TO_SEMI = {C:0,"C#":1,Db:1,D:2,"D#":3,Eb:3,E:4,F:5,"F#":6,Gb:6,
-                        G:7,"G#":8,Ab:8,A:9,"A#":10,Bb:10,B:11};
-  const CMAJ = [0,2,4,5,7,9,11];
-
-  function nameToDegreeIdxC(n){ return CMAJ.indexOf(NOTE_TO_SEMI[n]); }
-
-  function renderStepLadder(svg, names){
-    const pad = {l:20, r:12, t:10, b:20};
-    const W = svg.clientWidth || 280;
-    const H = svg.clientHeight || 120;
-    while (svg.firstChild) svg.removeChild(svg.firstChild);
-
-    const plotW = W - pad.l - pad.r;
-    const plotH = H - pad.t - pad.b;
-    const xStep = plotW / names.length;
-
-    const yForDeg = d => pad.t + plotH*(1 - d/6); // 0..6 scale degrees
-
-    // Path of steps
-    const path = document.createElementNS("http://www.w3.org/2000/svg","path");
-    path.setAttribute("class","step");
-
-    let dstr = "";
-    let x = pad.l;
-    let y = yForDeg(nameToDegreeIdxC(names[0]));
-    dstr += `M${x},${y}`;
-    names.forEach((n,i)=>{
-      const deg = nameToDegreeIdxC(n);
-      const yy = yForDeg(deg);
-      const xx = pad.l + (i+1)*xStep;
-      // horizontal segment
-      dstr += ` H${xx}`;
-      // if pitch changes, vertical riser at end of segment
-      if (i < names.length-1){
-        const nextDeg = nameToDegreeIdxC(names[i+1]);
-        const yNext = yForDeg(nextDeg);
-        dstr += ` V${yNext}`;
-      }
-      x = xx; y = yy;
-      // label note
-      const label = document.createElementNS("http://www.w3.org/2000/svg","text");
-      label.textContent = n;
-      label.setAttribute("x", x-4);
-      label.setAttribute("y", y);
-      svg.appendChild(label);
-    });
-    path.setAttribute("d", dstr);
-    svg.appendChild(path);
-  }
-
-  // Example sequences
-  const EXAMPLES = [
-    { title: "C – E – G", names: ["C","E","G"] },
-    { title: "C – D – F", names: ["C","D","F"] },
-    { title: "C – E – D", names: ["C","E","D"] },
-    { title: "C – G – E", names: ["C","G","E"] }
-  ];
-
-  const container = document.getElementById("examples");
-  EXAMPLES.forEach(ex=>{
-    const card = document.createElement("div");
-    card.className = "ex-card";
-    card.innerHTML = `<div class="ex-title">${ex.title}</div>`;
-    const svg = document.createElementNS("http://www.w3.org/2000/svg","svg");
-    svg.classList.add("ladder");
-    card.appendChild(svg);
-    container.appendChild(card);
-    requestAnimationFrame(()=>renderStepLadder(svg, ex.names));
-  });
-
-  // re-render on resize
-  window.addEventListener("resize",()=>{
-    container.querySelectorAll("svg.ladder").forEach((svg,i)=>
-      renderStepLadder(svg, EXAMPLES[i].names));
-  });
-</script>
-
-  
 </body>
 </html>
