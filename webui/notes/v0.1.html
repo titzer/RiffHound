@@ -35,8 +35,14 @@
       <div class="row" style="margin-top: 10px; align-items: center;">
         <div class="big">Answer: <span id="typed" class="mono">_</span></div>
         <div id="feedback" class="big" aria-live="polite"></div>
-        <div style="margin-left:auto" class="hint">
-          Attempts on this note: <span id="tries" class="mono">0</span>
+        <div style="margin-left:auto; display:flex; gap:16px; align-items:center;" class="hint">
+          <label>Seq length: <select id="seqLen" style="padding:2px 4px;font-size:13px;border-radius:4px;border:1px solid #ccc">
+            <option value="1" selected>1</option>
+            <option value="2">2</option>
+            <option value="3">3</option>
+            <option value="4">4</option>
+          </select></label>
+          <span>Attempts: <span id="tries" class="mono">0</span></span>
         </div>
       </div>
     </div>
@@ -143,15 +149,33 @@
     osc.stop(audioCtx.currentTime + duration);
   }
 
-  // Find the octave for `letter` closest to `current.idx`
-  function closestOctave(letter) {
-    const targetIdx = current.idx;
+  // Find the octave for `letter` closest to `idx`
+  function closestOctaveFor(letter, idx) {
     let bestOct = 2, bestDist = Infinity;
     for (let oct = 1; oct <= 7; oct++) {
-      const d = Math.abs(diatonicIndex(letter, oct) - targetIdx);
+      const d = Math.abs(diatonicIndex(letter, oct) - idx);
       if (d < bestDist) { bestDist = d; bestOct = oct; }
     }
     return bestOct;
+  }
+
+  function playSequence(seqNotes) {
+    audioCtx.resume();
+    const noteDur = 0.5, gap = 0.65;
+    seqNotes.forEach(({note}, i) => {
+      const t = audioCtx.currentTime + 0.05 + i * gap;
+      const freq = freqForMidi(midiForNote(note.letter, note.octave));
+      const osc = audioCtx.createOscillator();
+      osc.type = "sine";
+      osc.frequency.value = freq;
+      const g = audioCtx.createGain();
+      g.gain.setValueAtTime(0, t);
+      g.gain.linearRampToValueAtTime(0.35, t + 0.01);
+      g.gain.exponentialRampToValueAtTime(0.001, t + noteDur);
+      osc.connect(g).connect(audioCtx.destination);
+      osc.start(t);
+      osc.stop(t + noteDur + 0.05);
+    });
   }
 
   // ---------- SVG drawing ----------
@@ -203,7 +227,7 @@
   function drawBassClef() {
     const yF3 = yForIndex(diatonicIndex("F", 3));
     const sy = 0.1875;          // 0.25 * 0.75 (25% smaller overall)
-    const sx = sy * 0.8;        // additional 20% narrower horizontally
+    const sx = sy * 0.70;        // additional 20% narrower horizontally
     const origFRefY = 429.745;
     const origRightX = 583.59;
 
@@ -230,8 +254,8 @@
     const clefHeight = 122.88 * scale;
     const clefWidth = 43.52 * scale;
 
-    const yOffset = yG4 - (clefHeight * 0.55);
-    const xOffset = staffX0 + 4 - clefWidth;
+    const yOffset = yG4 - 8 - (clefHeight * 0.55);
+    const xOffset = staffX0 - 12 - clefWidth;
 
     const g = el("g", { transform: `translate(${xOffset}, ${yOffset}) scale(${scale})` });
     g.appendChild(el("path", {
@@ -285,22 +309,23 @@
     }
   }
 
-  const NOTE_X = 720; // fixed note x for simplicity
+  function noteXPositions(n) {
+    if (n === 1) return [720];
+    const lo = 350, hi = 900;
+    return Array.from({length: n}, (_, i) => Math.round(lo + i * (hi - lo) / (n - 1)));
+  }
 
-  function drawNote(idx, color = "#111", label = null) {
-    const x = NOTE_X;
+  function drawNote(idx, x, color = "#111", label = null) {
     const y = yForIndex(idx);
 
     drawLedgerLinesFor(idx, x);
 
-    // Notehead (quarter note: filled)
     svg.appendChild(el("ellipse", {
       cx: x, cy: y, rx: 16, ry: 12,
       fill: color,
       transform: `rotate(-18 ${x} ${y})`
     }));
 
-    // Stem direction: up below middle line of the staff, down above.
     const midTreble = diatonicIndex("B", 4);
     const midBass   = diatonicIndex("D", 3);
     const inTreble = idx >= MID_C_IDX;
@@ -313,10 +338,8 @@
       svg.appendChild(el("line", { x1: x + 14, y1: y, x2: x + 14, y2: y - stemH, stroke: color, "stroke-width": 4, "stroke-linecap": "round" }));
     }
 
-    // Optional text label next to the note
     if (label) {
-      const labelX = x + 30;
-      const t = el("text", { x: labelX, y: y + 6, fill: color, "font-size": 22, "font-weight": "bold" });
+      const t = el("text", { x: x + 30, y: y + 6, fill: color, "font-size": 22, "font-weight": "bold" });
       t.textContent = label;
       svg.appendChild(t);
     }
@@ -362,14 +385,13 @@
   function renderBoard() {
     clearSvg();
     drawStaff();
-    drawNote(current.idx);
-  }
-
-  // Redraw the note with a specific color and optional label (for correct/hint)
-  function redrawNoteAs(color, label) {
-    clearSvg();
-    drawStaff();
-    drawNote(current.idx, color, label);
+    const xPos = noteXPositions(current.seqNotes.length);
+    current.seqNotes.forEach(({idx}, i) => {
+      const color = i < current.seqPos ? "#0a7a2f"
+                  : i === current.seqPos ? "#111"
+                  : "#aaa";
+      drawNote(idx, xPos[i], color);
+    });
   }
 
   // ---------- Quiz flow ----------
@@ -405,25 +427,40 @@
     return pool;
   }
 
+  function updateTypedDisplay() {
+    const parts = current.seqNotes.map((_, i) => current.answered[i] || "_");
+    document.getElementById("typed").textContent =
+      current.seqNotes.length === 1 ? parts[0] : parts.join(" ");
+  }
+
   function newQuestion() {
     const pool = buildNotePool();
-    const idx = pool[randomInt(0, pool.length - 1)];
-    const note = noteFromIndex(idx);
+    const seqLen = Number(document.getElementById("seqLen").value) || 1;
 
-    const clef = (idx >= MID_C_IDX) ? "treble" : "bass";
+    // Pick first note, then constrain remaining notes to within one octave (6 diatonic steps)
+    const firstIdx = pool[randomInt(0, pool.length - 1)];
+    let octPool = pool.filter(i => i >= firstIdx && i <= firstIdx + 6);
+    if (octPool.length < 2) octPool = pool.filter(i => Math.abs(i - firstIdx) <= 6);
 
-    current = { idx, note, clef, tries: 0, hintUsed: false, startedAt: Date.now() };
+    const seqNotes = [{
+      idx: firstIdx, note: noteFromIndex(firstIdx),
+      clef: firstIdx >= MID_C_IDX ? "treble" : "bass"
+    }];
+    for (let i = 1; i < seqLen; i++) {
+      const idx = octPool[randomInt(0, octPool.length - 1)];
+      seqNotes.push({ idx, note: noteFromIndex(idx), clef: idx >= MID_C_IDX ? "treble" : "bass" });
+    }
+
+    current = { seqNotes, seqPos: 0, answered: [], tries: 0, totalTries: 0, hintUsed: false, startedAt: Date.now() };
     waitingForNext = false;
 
-    document.getElementById("typed").textContent = "_";
+    updateTypedDisplay();
     document.getElementById("feedback").textContent = "";
     document.getElementById("feedback").className = "big";
     document.getElementById("tries").textContent = "0";
 
     renderBoard();
-
-    // Play the correct pitch
-    playNote(note.letter, note.octave, 0.6);
+    playSequence(seqNotes);
   }
 
   function updateStats() {
@@ -457,69 +494,76 @@
   }
 
   function handleGuess(letter) {
-    if (waitingForNext) return; // Ignore input while showing correct answer
+    if (waitingForNext) return;
 
-    const typedEl = document.getElementById("typed");
     const fb = document.getElementById("feedback");
+    const {idx, note} = current.seqNotes[current.seqPos];
 
-    typedEl.textContent = letter;
-
-    // Play the pitch of the guessed letter (closest octave to correct answer)
-    const guessOct = closestOctave(letter);
+    const guessOct = closestOctaveFor(letter, idx);
     playNote(letter, guessOct, 0.4);
 
     current.tries++;
+    current.totalTries++;
     document.getElementById("tries").textContent = String(current.tries);
 
-    if (letter === current.note.letter) {
-      fb.textContent = "✓";
-      fb.className = "big good";
+    if (letter === note.letter) {
+      current.answered.push(letter);
+      updateTypedDisplay();
 
-      done++;
-      if (current.tries === 1 && !current.hintUsed) firstTry++;
+      if (current.seqPos + 1 < current.seqNotes.length) {
+        // Advance to next note in sequence
+        current.seqPos++;
+        current.tries = 0;
+        document.getElementById("tries").textContent = "0";
+        fb.textContent = "✓";
+        fb.className = "big good";
+        renderBoard();
+        setTimeout(() => { if (!waitingForNext) { fb.textContent = ""; fb.className = "big"; } }, 500);
+      } else {
+        // Sequence complete
+        fb.textContent = "✓";
+        fb.className = "big good";
 
-      const entry = {
-        noteName: noteName(current.note),
-        clef: current.clef,
-        tries: current.tries
-      };
-      history.push(entry);
-      addHistoryRow(entry);
+        done++;
+        if (current.totalTries === current.seqNotes.length && !current.hintUsed) firstTry++;
 
-      updateStats();
+        const entry = {
+          noteName: current.seqNotes.map(({note: n}) => noteName(n)).join(" "),
+          clef: current.seqNotes.map(({clef: c}) => c).join("/"),
+          tries: current.totalTries
+        };
+        history.push(entry);
+        addHistoryRow(entry);
+        updateStats();
 
-      // Show note in green with its name
-      redrawNoteAs("#0a7a2f", noteName(current.note));
-      waitingForNext = true;
-
-      // Next question after a pause to see the green note
-      setTimeout(newQuestion, 1200);
+        // Show all notes green with labels
+        clearSvg();
+        drawStaff();
+        const xPos = noteXPositions(current.seqNotes.length);
+        current.seqNotes.forEach(({idx: nidx, note: nn}, i) => {
+          drawNote(nidx, xPos[i], "#0a7a2f", noteName(nn));
+        });
+        waitingForNext = true;
+        setTimeout(newQuestion, 1500);
+      }
     } else {
       fb.textContent = "✗";
       fb.className = "big bad";
     }
   }
 
-  // Show hint: label all line notes or all space notes in the current clef
   function showClefHint() {
-    const idx = current.idx;
+    const {idx} = current.seqNotes[current.seqPos];
     const lineIdxs = (idx >= MID_C_IDX) ? trebleLineIdx : bassLineIdx;
-    // A note is "on a line" if its index matches a staff line index,
-    // or is on a ledger line (even offset from the staff's bottom line).
     const bottomLine = lineIdxs[0];
     const onLine = (idx - bottomLine) % 2 === 0;
+    const lo = Math.max(MIN_IDX, lineIdxs[0] - 4);
+    const hi = Math.min(MAX_IDX, lineIdxs[4] + 4);
 
-    // Collect all notes on lines or spaces within the clef range (including middle zone)
-    const staffTop = lineIdxs[4];
-    const staffBot = lineIdxs[0];
-    // Extend range slightly beyond staff for common ledger line notes
-    const lo = Math.max(MIN_IDX, staffBot - 4);
-    const hi = Math.min(MAX_IDX, staffTop + 4);
+    const xPos = noteXPositions(current.seqNotes.length);
+    const noteX = xPos[current.seqPos];
 
-    // Redraw board first, then overlay labels
-    clearSvg();
-    drawStaff();
-    drawNote(current.idx);
+    renderBoard();
 
     const hintColor = "#cc8800";
     for (let i = lo; i <= hi; i++) {
@@ -527,17 +571,14 @@
       if (isLine !== onLine) continue;
       const n = noteFromIndex(i);
       const y = yForIndex(i);
-      // Place labels to the right of the note area
-      const x = NOTE_X + 50 + ((i - lo) % 2) * 30; // stagger to avoid overlap
-      const t = el("text", { x: x, y: y + 6, fill: hintColor, "font-size": 18, "font-weight": "bold" });
+      const x = noteX + 50 + ((i - lo) % 2) * 30;
+      const t = el("text", { x, y: y + 6, fill: hintColor, "font-size": 18, "font-weight": "bold" });
       t.textContent = n.letter;
       svg.appendChild(t);
-      // Also draw a small dot on the staff at the note position
-      svg.appendChild(el("circle", { cx: NOTE_X - 40, cy: y, r: 4, fill: hintColor, opacity: 0.5 }));
+      svg.appendChild(el("circle", { cx: noteX - 40, cy: y, r: 4, fill: hintColor, opacity: 0.5 }));
     }
   }
 
-  // Keyboard: A–G to answer, H for hint
   window.addEventListener("keydown", (e) => {
     if (waitingForNext) return;
     const k = e.key.toUpperCase();
@@ -546,15 +587,10 @@
       handleGuess(k);
     } else if (k === "H" || e.key === "?") {
       e.preventDefault();
-      if (current && !waitingForNext) {
-        current.hintUsed = true;
-        showClefHint();
-      }
-    } else if (k === "R" && !e.metaKey && !e.ctrlKey) {
+      if (current) { current.hintUsed = true; showClefHint(); }
+    } else if (e.code === "Space" && !e.metaKey && !e.ctrlKey) {
       e.preventDefault();
-      if (current && !waitingForNext) {
-        playNote(current.note.letter, current.note.octave, 0.6);
-      }
+      if (current) playSequence(current.seqNotes);
     }
   });
 
@@ -567,6 +603,8 @@
     newQuestion();
   });
 
+  document.getElementById("seqLen").addEventListener("change", newQuestion);
+
   // Init
   updateStats();
   newQuestion();
@@ -577,7 +615,7 @@ Key bindings:
 <ul>
   <li><b>A</b>–<b>G</b>: answer with that note letter</li>
   <li><b>H</b>: show hint (note name next to the note)</li>
-  <li><b>R</b>: replay the current note's pitch</li>
+  <li><b>Space</b>: replay the current note(s)</li>
 </ul>
 
 Tips:
