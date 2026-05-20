@@ -22,10 +22,16 @@
     th, td { border-bottom: 1px solid #eee; padding: 6px 8px; text-align: left; font-size: 13px; }
     th { position: sticky; top: 0; background: #fff; }
     .kbd { border: 1px solid #ccc; border-bottom-width: 2px; border-radius: 6px; padding: 1px 6px; background: #fafafa; }
+    .active-mode { background: #d0e8ff; border-color: #4a90d9; }
   </style>
 </head>
 <body>
   <h2 style="margin: 0 0 6px 0;">Treble + Bass Note Quiz</h2>
+  <div style="margin-bottom: 10px; display:flex; gap: 10px; align-items: center;">
+    <strong>Mode:</strong>
+    <button id="noteQuizBtn" class="mode-btn active-mode">Note Quiz</button>
+    <button id="keyQuizBtn" class="mode-btn">Key Quiz</button>
+  </div>
 
   <div class="row">
     <div class="card" id="boardWrap">
@@ -130,6 +136,9 @@
   let waitingForNext = false; // true while showing green note before advancing
   let trebleEnabled = true;
   let bassEnabled = true;
+  let quizMode = "note"; // "note" | "key"
+  let currentKeyQuiz = null; // {key, answered, tries}
+  let keyBuf = ""; // key quiz input buffer
 
   // ---------- Audio ----------
   const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
@@ -348,7 +357,12 @@
     }
 
     if (label) {
-      const t = el("text", { x: x + 30, y: y + 6, fill: color, "font-size": 22, "font-weight": "bold" });
+      const lx = x + 30, ly = y + 6;
+      svg.appendChild(el("rect", {
+        x: lx - 3, y: ly - 18, width: label.length * 13 + 6, height: 24,
+        fill: "white", rx: 2
+      }));
+      const t = el("text", { x: lx, y: ly, fill: color, "font-size": 22, "font-weight": "bold" });
       t.textContent = label;
       svg.appendChild(t);
     }
@@ -588,13 +602,239 @@
     }
   }
 
+  // ---------- Key Quiz data ----------
+  // Standard treble clef positions (diatonic index) for key signature accidentals.
+  // Sharps order: F C G D A E B
+  const TREBLE_SHARP_POS = [38, 35, 39, 36, 33, 37, 34]; // F5 C5 G5 D5 A4 E5 B4
+  // Flats order: B E A D G C F
+  const TREBLE_FLAT_POS  = [34, 37, 33, 36, 32, 35, 31]; // B4 E5 A4 D5 G4 C5 F4
+
+  // Root diatonic index for each letter (octave chosen to keep triad within treble staff).
+  // D uses octave 4 (D4=29) so the triad D4-F4-A4 stays on the staff.
+  // C uses octave 5 (C5=35) so the triad C5-E5-G5 fits (G5 is one space above top line).
+  const KEY_ROOT_IDX = {C:35, D:29, E:30, F:31, G:32, A:33, B:34};
+
+  // acc: "" = natural, "#" = sharp, "-" = flat (displayed as "b")
+  const KEY_SIGNATURES = [
+    // Major keys — sharps
+    {letter:"C", acc:"",  quality:"major", sharps:0, flats:0},
+    {letter:"G", acc:"",  quality:"major", sharps:1, flats:0},
+    {letter:"D", acc:"",  quality:"major", sharps:2, flats:0},
+    {letter:"A", acc:"",  quality:"major", sharps:3, flats:0},
+    {letter:"E", acc:"",  quality:"major", sharps:4, flats:0},
+    {letter:"B", acc:"",  quality:"major", sharps:5, flats:0},
+    {letter:"F", acc:"#", quality:"major", sharps:6, flats:0},
+    // Major keys — flats
+    {letter:"F", acc:"",  quality:"major", sharps:0, flats:1},
+    {letter:"B", acc:"-", quality:"major", sharps:0, flats:2},
+    {letter:"E", acc:"-", quality:"major", sharps:0, flats:3},
+    {letter:"A", acc:"-", quality:"major", sharps:0, flats:4},
+    {letter:"D", acc:"-", quality:"major", sharps:0, flats:5},
+    {letter:"G", acc:"-", quality:"major", sharps:0, flats:6},
+    // Minor keys — sharps
+    {letter:"A", acc:"",  quality:"minor", sharps:0, flats:0},
+    {letter:"E", acc:"",  quality:"minor", sharps:1, flats:0},
+    {letter:"B", acc:"",  quality:"minor", sharps:2, flats:0},
+    {letter:"F", acc:"#", quality:"minor", sharps:3, flats:0},
+    {letter:"C", acc:"#", quality:"minor", sharps:4, flats:0},
+    {letter:"G", acc:"#", quality:"minor", sharps:5, flats:0},
+    {letter:"D", acc:"#", quality:"minor", sharps:6, flats:0},
+    // Minor keys — flats
+    {letter:"D", acc:"",  quality:"minor", sharps:0, flats:1},
+    {letter:"G", acc:"",  quality:"minor", sharps:0, flats:2},
+    {letter:"C", acc:"",  quality:"minor", sharps:0, flats:3},
+    {letter:"F", acc:"",  quality:"minor", sharps:0, flats:4},
+    {letter:"B", acc:"-", quality:"minor", sharps:0, flats:5},
+    {letter:"E", acc:"-", quality:"minor", sharps:0, flats:6},
+  ];
+
+  // ---------- Key Quiz drawing ----------
+  function drawKeySignatureOnStaff(sharps, flats, xStart) {
+    if (sharps === 0 && flats === 0) return;
+    const fs = 36;
+    const [count, positions, char] = sharps > 0
+      ? [sharps, TREBLE_SHARP_POS, "\u266F"]
+      : [flats,  TREBLE_FLAT_POS,  "\u266D"];
+    for (let i = 0; i < count; i++) {
+      const x = xStart + i * 22;
+      const y = yForIndex(positions[i]) + fs * 0.38;
+      const t = el("text", {x, y, fill:"#111", "font-size": fs, "font-family":"serif"});
+      t.textContent = char;
+      svg.appendChild(t);
+    }
+  }
+
+  function drawChordNotehead(idx, x, color) {
+    drawLedgerLinesFor(idx, x);
+    const y = yForIndex(idx);
+    svg.appendChild(el("ellipse", {
+      cx: x, cy: y, rx: 16, ry: 12, fill: color,
+      transform: `rotate(-18 ${x} ${y})`
+    }));
+  }
+
+  // Draw a triad: root, root+2, root+4 (diatonic). Stem up from the 5th.
+  function drawTriad(rootIdx, x, color) {
+    const fifth = rootIdx + 4;
+    drawChordNotehead(rootIdx,     x, color);
+    drawChordNotehead(rootIdx + 2, x, color);
+    drawChordNotehead(fifth,       x, color);
+    const yTop = yForIndex(fifth);
+    svg.appendChild(el("line", {
+      x1: x + 14, y1: yTop, x2: x + 14, y2: yTop - 80,
+      stroke: color, "stroke-width": 4, "stroke-linecap": "round"
+    }));
+  }
+
+  function renderKeyBoard() {
+    clearSvg();
+    const title = el("text", {x: marginL, y: 40, fill:"#111", "font-size":18, "font-weight":"600"});
+    title.textContent = "Type: letter + #/- (if needed) + M or m  \u2192  e.g. F#M, B-m, CM, Am";
+    svg.appendChild(title);
+
+    drawStaffLines(trebleLineIdx);
+    drawTrebleClef();
+
+    if (!currentKeyQuiz) return;
+    const {key, answered} = currentKeyQuiz;
+    const numSigns = key.sharps || key.flats;
+    const sigX = staffX0 + 4;
+    drawKeySignatureOnStaff(key.sharps, key.flats, sigX);
+
+    const triadX = sigX + numSigns * 22 + 130;
+    const rootIdx = KEY_ROOT_IDX[key.letter];
+    const color = answered ? "#0a7a2f" : "#111";
+    drawTriad(rootIdx, triadX, color);
+
+    if (answered) {
+      const displayAcc = key.acc === "-" ? "b" : key.acc;
+      const label = key.letter + displayAcc + " " + (key.quality === "major" ? "Major" : "minor");
+      const lx = triadX + 34, ly = yForIndex(rootIdx) + 6;
+      svg.appendChild(el("rect", {
+        x: lx - 3, y: ly - 18, width: label.length * 13 + 6, height: 24,
+        fill: "white", rx: 2
+      }));
+      const t = el("text", {x: lx, y: ly, fill:"#0a7a2f", "font-size":22, "font-weight":"bold"});
+      t.textContent = label;
+      svg.appendChild(t);
+    }
+  }
+
+  function updateKeyTypedDisplay() {
+    const display = keyBuf.length === 0 ? "_" : keyBuf.replace("-", "b") + (keyBuf.length < 3 ? "_" : "");
+    document.getElementById("typed").textContent = display;
+  }
+
+  function newKeyQuestion() {
+    currentKeyQuiz = {
+      key: KEY_SIGNATURES[randomInt(0, KEY_SIGNATURES.length - 1)],
+      answered: false,
+      tries: 0
+    };
+    keyBuf = "";
+    waitingForNext = false;
+    updateKeyTypedDisplay();
+    document.getElementById("feedback").textContent = "";
+    document.getElementById("feedback").className = "big";
+    document.getElementById("tries").textContent = "0";
+    renderKeyBoard();
+  }
+
+  function handleKeyGuess() {
+    if (waitingForNext || !currentKeyQuiz) return;
+    const {key} = currentKeyQuiz;
+
+    // Parse buffer: letter [acc] quality
+    let i = 0;
+    const letter = keyBuf[i++] || "";
+    let acc = "";
+    if (keyBuf[i] === "#" || keyBuf[i] === "-") acc = keyBuf[i++];
+    const quality = keyBuf[i] || "";
+
+    currentKeyQuiz.tries++;
+    document.getElementById("tries").textContent = String(currentKeyQuiz.tries);
+
+    const fb = document.getElementById("feedback");
+    const correct =
+      letter === key.letter && acc === key.acc &&
+      ((quality === "M" && key.quality === "major") ||
+       (quality === "m" && key.quality === "minor"));
+
+    if (correct) {
+      currentKeyQuiz.answered = true;
+      fb.textContent = "\u2713";
+      fb.className = "big good";
+
+      done++;
+      if (currentKeyQuiz.tries === 1) firstTry++;
+      const displayAcc = key.acc === "-" ? "b" : key.acc;
+      const entry = {
+        noteName: key.letter + displayAcc + " " + (key.quality === "major" ? "Major" : "minor"),
+        clef: "treble",
+        tries: currentKeyQuiz.tries
+      };
+      history.push(entry);
+      addHistoryRow(entry);
+      updateStats();
+      renderKeyBoard();
+      waitingForNext = true;
+      setTimeout(newKeyQuestion, 1800);
+    } else {
+      fb.textContent = "\u2717";
+      fb.className = "big bad";
+      keyBuf = "";
+      updateKeyTypedDisplay();
+    }
+  }
+
+  function switchMode(mode) {
+    quizMode = mode;
+    document.getElementById("noteQuizBtn").classList.toggle("active-mode", mode === "note");
+    document.getElementById("keyQuizBtn").classList.toggle("active-mode", mode === "key");
+    waitingForNext = false;
+    keyBuf = "";
+    document.getElementById("feedback").textContent = "";
+    document.getElementById("feedback").className = "big";
+    if (mode === "note") {
+      newQuestion();
+    } else {
+      newKeyQuestion();
+    }
+  }
+
   window.addEventListener("keydown", (e) => {
     if (waitingForNext) return;
-    const k = e.key.toUpperCase();
-    if (k.length === 1 && k >= "A" && k <= "G") {
+
+    if (quizMode === "key") {
+      const key = e.key;
+      const ku = key.toUpperCase();
+      if (ku.length === 1 && ku >= "A" && ku <= "G") {
+        e.preventDefault();
+        keyBuf = ku;
+        updateKeyTypedDisplay();
+      } else if (key === "#" && keyBuf.length === 1) {
+        e.preventDefault();
+        keyBuf += "#";
+        updateKeyTypedDisplay();
+      } else if (key === "-" && keyBuf.length === 1) {
+        e.preventDefault();
+        keyBuf += "-";
+        updateKeyTypedDisplay();
+      } else if ((key === "M" || key === "m") && keyBuf.length >= 1) {
+        e.preventDefault();
+        keyBuf += key;
+        updateKeyTypedDisplay();
+        handleKeyGuess();
+      }
+      return;
+    }
+
+    // Note quiz mode
+    const kUp = e.key.toUpperCase();
+    if (kUp.length === 1 && kUp >= "A" && kUp <= "G") {
       e.preventDefault();
-      handleGuess(k);
-    } else if (k === "H" || e.key === "?") {
+      handleGuess(kUp);
+    } else if (kUp === "H" || e.key === "?") {
       e.preventDefault();
       if (current) { current.hintUsed = true; showClefHint(); }
     } else if (e.code === "Space" && !e.metaKey && !e.ctrlKey) {
@@ -605,7 +845,12 @@
 
   document.querySelectorAll(".note-btn").forEach(btn => {
     btn.addEventListener("click", () => {
-      if (current) handleGuess(btn.dataset.note);
+      if (quizMode === "note") {
+        if (current) handleGuess(btn.dataset.note);
+      } else if (quizMode === "key" && !waitingForNext) {
+        keyBuf = btn.dataset.note;
+        updateKeyTypedDisplay();
+      }
     });
   });
 
@@ -619,6 +864,9 @@
   });
 
   document.getElementById("seqLen").addEventListener("change", newQuestion);
+
+  document.getElementById("noteQuizBtn").addEventListener("click", () => switchMode("note"));
+  document.getElementById("keyQuizBtn").addEventListener("click", () => switchMode("key"));
 
   // Init
   updateStats();
