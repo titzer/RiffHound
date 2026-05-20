@@ -1,0 +1,986 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Music Quiz</title>
+  <style>
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 14px; }
+    .row { display: flex; gap: 10px; align-items: flex-start; flex-wrap: wrap; }
+    .card { border: 1px solid #ddd; border-radius: 10px; padding: 12px 14px; }
+    .big { font-size: 18px; }
+    button { padding: 8px 10px; border-radius: 8px; border: 1px solid #ccc; background: #f7f7f7; cursor: pointer; font-size: 14px; }
+    button:hover:not(:disabled) { background: #f0f0f0; }
+    button:disabled { cursor: default; opacity: 0.75; }
+    .hint { color: #666; font-size: 13px; }
+    .good { color: #0a7a2f; font-weight: 600; }
+    .bad  { color: #b32020; font-weight: 600; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
+    #boardWrap { width: min(980px, 98vw); }
+    #board { width: 100%; height: auto; display: block; }
+    #history { max-height: 360px; overflow: auto; }
+    table { border-collapse: collapse; width: 100%; }
+    th, td { border-bottom: 1px solid #eee; padding: 6px 8px; text-align: left; font-size: 13px; }
+    th { position: sticky; top: 0; background: #fff; }
+    .active-mode { background: #d0e8ff; border-color: #4a90d9; }
+    .selected-btn { background: #d0e8ff; border-color: #4a90d9; }
+    .choice-btn {
+      display: flex; flex-direction: column; align-items: center; gap: 4px;
+      padding: 8px; flex: 1; min-width: 90px;
+      border: 1px solid #ccc; border-radius: 10px; background: #f7f7f7; cursor: pointer;
+    }
+    .choice-btn:hover:not(:disabled) { background: #e8f0ff; border-color: #aac; }
+    .choice-btn.correct { border-color: #0a7a2f; background: #e6f4ec; }
+    .choice-btn.wrong   { border-color: #b32020; background: #fde8e8; }
+    .ladder { width: 100%; height: 52px; display: block; }
+    .ladder .step { stroke: #4a90d9; stroke-width: 2; fill: none; }
+  </style>
+</head>
+<body>
+
+<!-- ===== HEADER: title + mode + modality ===== -->
+<div style="margin-bottom:10px; display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+  <h2 style="margin:0;">Music Quiz</h2>
+  <button id="noteQuizBtn" class="mode-btn active-mode">Note Quiz</button>
+  <button id="keyQuizBtn"  class="mode-btn">Key Quiz</button>
+  <span style="color:#bbb; margin:0 2px;">|</span>
+  <button id="sheetBtn" class="modality-btn active-mode">Sheet Music</button>
+  <button id="earBtn"   class="modality-btn">Ear</button>
+</div>
+
+<!-- Key filter (key quiz only) -->
+<div id="keyOpts" style="display:none; margin-bottom:8px; gap:14px; align-items:center; flex-wrap:wrap;" class="hint">
+  <strong>Keys:</strong>
+  <label><input type="checkbox" id="cbKeySharps" checked> Sharps</label>
+  <label><input type="checkbox" id="cbKeyFlats"  checked> Flats</label>
+  <label><input type="checkbox" id="cbKeyMinor"  checked> Minor</label>
+</div>
+
+<!-- Ear-note options (ear + note only) -->
+<div id="earOpts" style="display:none; margin-bottom:8px; gap:10px; align-items:center; flex-wrap:wrap;" class="hint">
+  <label>Key: <select id="earKey" style="padding:2px 4px;font-size:13px;border-radius:4px;border:1px solid #ccc">
+    <option>C</option><option>G</option><option>D</option><option>A</option>
+    <option>E</option><option>F</option><option>Bb</option>
+  </select> major</label>
+  <label style="margin-left:4px;">Octave: <input id="earOctave" type="number" min="3" max="5" value="4"
+    style="width:46px;padding:2px 4px;font-size:13px;border-radius:4px;border:1px solid #ccc"></label>
+  <label style="margin-left:4px;">Length: <input id="earLen" type="number" min="2" max="5" value="3"
+    style="width:46px;padding:2px 4px;font-size:13px;border-radius:4px;border:1px solid #ccc"></label>
+  <label style="margin-left:4px;">Choices: <input id="earChoices" type="number" min="2" max="6" value="4"
+    style="width:46px;padding:2px 4px;font-size:13px;border-radius:4px;border:1px solid #ccc"></label>
+</div>
+
+<div class="row">
+  <!-- ===== MAIN QUIZ CARD ===== -->
+  <div class="card" id="mainArea" style="flex:2; min-width:280px;">
+
+    <!-- Sheet music SVG -->
+    <div id="boardWrap">
+      <svg id="board" viewBox="0 20 1000 450" xmlns="http://www.w3.org/2000/svg" aria-label="Music staff"></svg>
+    </div>
+
+    <!-- Ear training area -->
+    <div id="earArea" style="display:none;">
+      <div style="display:flex; gap:8px; align-items:center; margin-bottom:10px; flex-wrap:wrap;">
+        <button id="playBtn" style="font-size:16px;min-width:80px;min-height:44px;background:#4a90d9;color:#fff;border-color:#357ab8;">&#9654; Play</button>
+        <button id="skipBtn" style="min-height:44px;">Skip</button>
+        <span class="hint" id="earLabel"></span>
+      </div>
+      <div id="choicesArea" style="display:flex; gap:8px; flex-wrap:wrap;"></div>
+    </div>
+
+    <!-- Note letter buttons A-G (sheet mode only) -->
+    <div id="noteBtns" style="display:flex; gap:6px; margin-top:6px; flex-wrap:wrap;">
+      <button class="note-btn" data-note="A" style="font-size:20px;font-weight:600;min-width:44px;min-height:44px;">A</button>
+      <button class="note-btn" data-note="B" style="font-size:20px;font-weight:600;min-width:44px;min-height:44px;">B</button>
+      <button class="note-btn" data-note="C" style="font-size:20px;font-weight:600;min-width:44px;min-height:44px;">C</button>
+      <button class="note-btn" data-note="D" style="font-size:20px;font-weight:600;min-width:44px;min-height:44px;">D</button>
+      <button class="note-btn" data-note="E" style="font-size:20px;font-weight:600;min-width:44px;min-height:44px;">E</button>
+      <button class="note-btn" data-note="F" style="font-size:20px;font-weight:600;min-width:44px;min-height:44px;">F</button>
+      <button class="note-btn" data-note="G" style="font-size:20px;font-weight:600;min-width:44px;min-height:44px;">G</button>
+    </div>
+
+    <!-- Key quiz extra buttons (sheet + key only) -->
+    <div id="keyBtns" style="display:none;">
+      <div style="display:flex; gap:6px; margin-top:4px; flex-wrap:wrap;">
+        <button class="acc-btn" data-acc=""  style="font-size:20px;min-width:44px;min-height:44px;">&#9838;</button>
+        <button class="acc-btn" data-acc="-" style="font-size:20px;min-width:44px;min-height:44px;">&#9837;</button>
+        <button class="acc-btn" data-acc="#" style="font-size:20px;min-width:44px;min-height:44px;">&#9839;</button>
+      </div>
+      <div style="display:flex; gap:6px; margin-top:4px; flex-wrap:wrap;">
+        <button class="qual-btn" data-quality="M" style="font-size:16px;min-width:80px;min-height:44px;">Major</button>
+        <button class="qual-btn" data-quality="m" style="font-size:16px;min-width:80px;min-height:44px;">minor</button>
+        <button id="submitKeyBtn" style="font-size:16px;min-width:80px;min-height:44px;background:#4a90d9;color:#fff;border-color:#357ab8;">Submit</button>
+      </div>
+    </div>
+
+    <!-- Answer + feedback row -->
+    <div style="display:flex; margin-top:8px; align-items:center; flex-wrap:wrap; gap:8px;">
+      <div class="big" id="answerRow">Answer: <span id="typed" class="mono">_</span></div>
+      <div id="feedback" class="big" aria-live="polite"></div>
+      <div style="margin-left:auto; display:flex; gap:16px; align-items:center;" class="hint">
+        <span id="seqLenWrap"><label>Seq: <select id="seqLen"
+          style="padding:2px 4px;font-size:13px;border-radius:4px;border:1px solid #ccc">
+          <option value="1" selected>1</option>
+          <option value="2">2</option>
+          <option value="3">3</option>
+          <option value="4">4</option>
+        </select></label></span>
+        <span>Tries: <span id="tries" class="mono">0</span></span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== STATS + HISTORY CARD ===== -->
+  <div class="card" style="min-width:250px; flex:1;">
+    <div class="row" style="align-items:center;">
+      <div class="big">Stats</div>
+      <button id="resetBtn">Reset</button>
+    </div>
+    <div style="margin-top:8px;">
+      <div>Completed: <span id="done" class="mono">0</span></div>
+      <div>First try: <span id="firstTryEl" class="mono">0</span></div>
+      <div>Pass rate: <span id="rate" class="mono">0%</span></div>
+    </div>
+    <div class="big" style="margin-top:14px;">History</div>
+    <div id="history" style="margin-top:6px;">
+      <table>
+        <thead><tr><th>#</th><th>Question</th><th>Mode</th><th>Tries</th></tr></thead>
+        <tbody id="histBody"></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<script>
+(() => {
+// =====================================================================
+// SHARED STATE
+// =====================================================================
+let quizMode  = "note";  // "note" | "key"
+let modality  = "sheet"; // "sheet" | "ear"
+
+let done = 0, firstTryCount = 0;
+let historyLog = [];
+let waitingForNext = false;
+
+// Sheet + Note
+let sheetNoteCurrent = null;
+let trebleEnabled = true, bassEnabled = true;
+
+// Sheet + Key
+let sheetKeyCurrent = null;
+let keyBuf = "";
+let keySharpsEnabled = true, keyFlatsEnabled = true, keyMinorEnabled = true;
+
+// Ear (shared between ear+note and ear+key, different shapes)
+let earCurrent = null;
+
+// =====================================================================
+// MUSIC THEORY
+// =====================================================================
+const LETTERS = ["C","D","E","F","G","A","B"];
+const letterToStep = new Map(LETTERS.map((L,i) => [L,i]));
+function diatonicIndex(letter, octave) { return octave * 7 + letterToStep.get(letter); }
+function noteFromIndex(idx) { return { letter: LETTERS[idx % 7], octave: Math.floor(idx / 7) }; }
+function noteName(n) { return `${n.letter}${n.octave}`; }
+function parseNoteName(s) { return { letter: s[0], octave: Number(s.slice(1)) }; }
+
+const MID_C_IDX   = diatonicIndex("C", 4);
+const trebleLineIdx = ["E4","G4","B4","D5","F5"].map(parseNoteName).map(n => diatonicIndex(n.letter, n.octave));
+const bassLineIdx   = ["G2","B2","D3","F3","A3"].map(parseNoteName).map(n => diatonicIndex(n.letter, n.octave));
+
+// Semitone offsets from C for each letter (natural)
+const SEMI = { C:0, D:2, E:4, F:5, G:7, A:9, B:11 };
+
+// Ear training helpers
+const MAJOR_SCALE_ST = [0,2,4,5,7,9,11];
+const KEY_TO_SEMITONES = { C:0, G:7, D:2, A:9, E:4, F:5, Bb:10 };
+const NOTE_ORDER = ["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"];
+function midiToFreq(midi) { return 440 * Math.pow(2, (midi - 69) / 12); }
+
+function buildMajorScale(keyName, octave) {
+  const ts = KEY_TO_SEMITONES[keyName];
+  const tonicMidi = 12 * (octave + 1) + ts;
+  return {
+    scaleMidi:  MAJOR_SCALE_ST.map(st => tonicMidi + st),
+    scaleNames: MAJOR_SCALE_ST.map(st => NOTE_ORDER[(ts + st) % 12])
+  };
+}
+
+function generateSequence(len, maxStep, allowDown) {
+  const degrees = [0];
+  while (degrees.length < len) {
+    const step = Math.ceil(Math.random() * maxStep);
+    const dir  = allowDown ? (Math.random() < 0.5 ? -1 : 1) : 1;
+    let next = degrees[degrees.length - 1] + dir * step;
+    next = Math.max(0, Math.min(6, next));
+    if (next === degrees[degrees.length - 1]) continue;
+    degrees.push(next);
+  }
+  return degrees;
+}
+
+function makeDistractors(correct, count) {
+  const out = new Set();
+  const key = arr => arr.join("-");
+  out.add(key(correct));
+  const n = correct.length;
+  const tryPush = arr => { const k = key(arr); if (!out.has(k)) out.add(k); };
+  for (let i = 1; i < n; i++) {
+    const delta = correct[i] - correct[i-1];
+    if (delta !== 0) { const a = correct.slice(); a[i] = correct[i-1] - delta; if (a[i] >= 0 && a[i] <= 6) tryPush(a); }
+  }
+  for (let i = 1; i < n; i++) for (const d of [-1,+1]) {
+    const a = correct.slice(); a[i] = Math.max(0, Math.min(6, a[i] + d)); tryPush(a);
+  }
+  for (let i = 1; i < n; i++) for (let j = i+1; j < n; j++) for (const di of [-1,+1]) {
+    const a = correct.slice();
+    a[i] = Math.max(0, Math.min(6, a[i] + di));
+    a[j] = Math.max(0, Math.min(6, a[j] - di));
+    tryPush(a);
+  }
+  if (n > 2) tryPush([correct[0], ...correct.slice(1).reverse()]);
+  const all = [...out].map(s => s.split("-").map(Number)).filter(a => key(a) !== key(correct));
+  for (let i = all.length-1; i > 0; i--) { const j = Math.floor(Math.random()*(i+1)); [all[i],all[j]] = [all[j],all[i]]; }
+  return all.slice(0, count);
+}
+
+// Key signatures
+const KEY_SIGNATURES = [
+  {letter:"C",acc:"", quality:"major",sharps:0,flats:0},
+  {letter:"G",acc:"", quality:"major",sharps:1,flats:0},
+  {letter:"D",acc:"", quality:"major",sharps:2,flats:0},
+  {letter:"A",acc:"", quality:"major",sharps:3,flats:0},
+  {letter:"E",acc:"", quality:"major",sharps:4,flats:0},
+  {letter:"B",acc:"", quality:"major",sharps:5,flats:0},
+  {letter:"F",acc:"#",quality:"major",sharps:6,flats:0},
+  {letter:"F",acc:"", quality:"major",sharps:0,flats:1},
+  {letter:"B",acc:"-",quality:"major",sharps:0,flats:2},
+  {letter:"E",acc:"-",quality:"major",sharps:0,flats:3},
+  {letter:"A",acc:"-",quality:"major",sharps:0,flats:4},
+  {letter:"D",acc:"-",quality:"major",sharps:0,flats:5},
+  {letter:"G",acc:"-",quality:"major",sharps:0,flats:6},
+  {letter:"A",acc:"", quality:"minor",sharps:0,flats:0},
+  {letter:"E",acc:"", quality:"minor",sharps:1,flats:0},
+  {letter:"B",acc:"", quality:"minor",sharps:2,flats:0},
+  {letter:"F",acc:"#",quality:"minor",sharps:3,flats:0},
+  {letter:"C",acc:"#",quality:"minor",sharps:4,flats:0},
+  {letter:"G",acc:"#",quality:"minor",sharps:5,flats:0},
+  {letter:"D",acc:"#",quality:"minor",sharps:6,flats:0},
+  {letter:"D",acc:"", quality:"minor",sharps:0,flats:1},
+  {letter:"G",acc:"", quality:"minor",sharps:0,flats:2},
+  {letter:"C",acc:"", quality:"minor",sharps:0,flats:3},
+  {letter:"F",acc:"", quality:"minor",sharps:0,flats:4},
+  {letter:"B",acc:"-",quality:"minor",sharps:0,flats:5},
+  {letter:"E",acc:"-",quality:"minor",sharps:0,flats:6},
+];
+const TREBLE_SHARP_POS = [38,35,39,36,33,37,34];
+const TREBLE_FLAT_POS  = [34,37,33,36,32,35,31];
+const KEY_ROOT_IDX     = {C:35,D:29,E:30,F:31,G:32,A:33,B:34};
+
+function keyDisplayName(k) {
+  const dispAcc = k.acc === "-" ? "b" : k.acc;
+  return k.letter + dispAcc + " " + (k.quality === "major" ? "Major" : "minor");
+}
+
+function buildKeyPool() {
+  const pool = KEY_SIGNATURES.filter(k => {
+    if (!keySharpsEnabled && k.sharps > 0) return false;
+    if (!keyFlatsEnabled  && k.flats  > 0) return false;
+    if (!keyMinorEnabled  && k.quality === "minor") return false;
+    return true;
+  });
+  return pool.length > 0 ? pool : KEY_SIGNATURES;
+}
+
+// =====================================================================
+// AUDIO
+// =====================================================================
+class Synth {
+  constructor() { this.ctx = null; this.master = null; this.wave = "sine"; this.vol = 0.25; }
+  ensure() {
+    if (!this.ctx) {
+      const ctx = new (window.AudioContext || window.webkitAudioContext)();
+      const m = ctx.createGain(); m.gain.value = this.vol; m.connect(ctx.destination);
+      this.ctx = ctx; this.master = m;
+    }
+  }
+  get now() { this.ensure(); return this.ctx.currentTime; }
+  playNote(freq, start, dur, sustain = 0.6) {
+    this.ensure();
+    const ctx = this.ctx;
+    const osc = ctx.createOscillator(), gain = ctx.createGain();
+    osc.type = this.wave; osc.frequency.value = freq;
+    osc.connect(gain); gain.connect(this.master);
+    const a = 0.01, d = 0.05, r = 0.1;
+    gain.gain.setValueAtTime(0.0001, start);
+    gain.gain.exponentialRampToValueAtTime(1.0, start + a);
+    gain.gain.exponentialRampToValueAtTime(sustain, start + a + d);
+    gain.gain.setValueAtTime(sustain, start + dur);
+    gain.gain.exponentialRampToValueAtTime(0.0001, start + dur + r);
+    osc.start(start); osc.stop(start + dur + r + 0.05);
+  }
+  playMidi(midiNotes, bpm = 90, sustainRatio = 0.6) {
+    this.ensure();
+    const beatSec = 60 / bpm;
+    const t0 = this.now + 0.05;
+    midiNotes.forEach((m, i) => this.playNote(midiToFreq(m), t0 + i * beatSec, beatSec, sustainRatio));
+  }
+  playByLetter(letter, octave, dur = 0.45) {
+    this.ensure();
+    const midi = 12 + octave * 12 + SEMI[letter];
+    this.playNote(midiToFreq(midi), this.now + 0.02, dur, 0.6);
+  }
+  playNoteSeq(seqNotes) {
+    this.ensure();
+    const noteDur = 0.5, gap = 0.65;
+    const t0 = this.now;
+    seqNotes.forEach(({note}, i) => {
+      const midi = 12 + note.octave * 12 + SEMI[note.letter];
+      this.playNote(midiToFreq(midi), t0 + 0.05 + i * gap, noteDur, 0.6);
+    });
+  }
+}
+const synth = new Synth();
+
+// =====================================================================
+// SVG DRAWING
+// =====================================================================
+const svg = document.getElementById("board");
+const staffX0 = 140, staffX1 = 960;
+const lineSpacing = 26, step = lineSpacing / 2;
+const yMidC = 260;
+
+function yForIndex(idx) { return yMidC - (idx - MID_C_IDX) * step; }
+function clearSvg() { while (svg.firstChild) svg.removeChild(svg.firstChild); }
+function el(name, attrs) {
+  const n = document.createElementNS("http://www.w3.org/2000/svg", name);
+  for (const [k,v] of Object.entries(attrs)) n.setAttribute(k, String(v));
+  return n;
+}
+function drawStaffLines(lineIdxs) {
+  for (const idx of lineIdxs) {
+    const y = yForIndex(idx);
+    svg.appendChild(el("line", {x1:staffX0,y1:y,x2:staffX1,y2:y,stroke:"#111","stroke-width":2}));
+  }
+}
+function drawTrebleClef() {
+  const yG4 = yForIndex(diatonicIndex("G",4));
+  const scale = 1.1, clefH = 122.88 * scale;
+  const g = el("g", {transform:`translate(${staffX0-12-43.52*scale},${yG4-8-clefH*0.55}) scale(${scale})`});
+  g.appendChild(el("path",{d:"M11.35,45.61q3.72-4.22,7.69-8a45.71,45.71,0,0,1-2.19-12c-.23-7.24.88-14.93,5-21C23,2.79,25-.25,27.17,0,29,.24,30,2.83,30.72,4.32c4.92,10,5.93,20.54.25,31.93a46,46,0,0,1-7.84,10.8l2.38,12.12a8.74,8.74,0,0,1,.87-.14,14.2,14.2,0,0,1,8.56,1.41c5.6,3,9.08,10.57,8.52,16.83-.5,5.5-3,9.3-7.15,12.63a23.92,23.92,0,0,1-4.24,2.78l2.87,14.62a28.07,28.07,0,0,1,.12,3.74c-.35,7.71-6.35,12.16-13.78,11.82-5.72-.36-11.67-4.9-11.7-10.64-.06-11.13,15-10.6,13.9-.42-.32,3-2.51,5.65-7.21,5.82,3.79,6.28,15.51,1.79,16.31-6.44a17.52,17.52,0,0,0-.69-6.24L29.72,93.65a17.7,17.7,0,0,1-3.07.67A23.71,23.71,0,0,1,8.5,88.66a26,26,0,0,1-8-24.34C2,56.69,6.39,51.26,11.35,45.61Zm9.81-9.53C19.09,28.55,19.4,19,24.73,12.76S35.94,15,28.18,27.42a48.8,48.8,0,0,1-7,8.66Zm0,13c-.67.67-1.36,1.34-2.06,2-4,3.85-8,7.52-11,13a20.65,20.65,0,0,0-1.5,17.23c2.4,7.49,14,12.21,22.65,9.94L24.72,67.63a9.82,9.82,0,0,0-7.09,8,8.7,8.7,0,0,0,3.08,7.81,16.74,16.74,0,0,0,1.81,1.36c1.24.82.63,1.41-.53,1.06-3.87-1.3-6.19-3.44-7.43-6.17-3.67-8.08.83-17.08,8.66-19.92L21.16,49.07ZM31.63,90.43,27.09,67.24a9,9,0,0,1,4.53,1,12,12,0,0,1,6.62,8.23c1.2,5.57-1.7,11.72-6.49,13.94l-.12.05Z",fill:"#111","fill-rule":"evenodd"}));
+  svg.appendChild(g);
+}
+function drawBassClef() {
+  const yF3 = yForIndex(diatonicIndex("F",3));
+  const sy = 0.1875, sx = sy * 0.70;
+  const xT = (staffX0-4) - 583.59*sx, yT = yF3 - 429.745*sy;
+  const g = el("g", {transform:`translate(${xT.toFixed(1)},${yT.toFixed(1)}) scale(${sx},${sy})`});
+  g.appendChild(el("path",{d:"m190.85 451.25c11.661 14.719 32.323 24.491 55.844 24.491 36.401 0 65.889-23.372 65.889-52.214s-29.488-52.214-65.889-52.214c-20.314 4.1522-28.593 9.0007-33.143-2.9091 17.976-54.327 46.918-66.709 96.546-66.709 65.914 0 96.969 59.897 96.969 142.97-18.225 190.63-205.95 286.75-246.57 316.19 5.6938 13.103 5.3954 12.631 5.3954 12.009 189.78-86.203 330.69-204.43 330.69-320.74 0-92.419-58.579-175.59-187.72-172.8-77.575 0-170.32 86.203-118 171.93zm328.1-89.88c0 17.852 14.471 32.323 32.323 32.323s32.323-14.471 32.323-32.323-14.471-32.323-32.323-32.323-32.323 14.471-32.323 32.323zm0 136.75c0 17.852 14.471 32.323 32.323 32.323s32.323-14.471 32.323-32.323-14.471-32.323-32.323-32.323-32.323 14.471-32.323 32.323z",fill:"#111","fill-rule":"evenodd"}));
+  svg.appendChild(g);
+}
+function drawLedgerLinesFor(idx, xC) {
+  const [tt,tb,bt,bb] = [trebleLineIdx[4],trebleLineIdx[0],bassLineIdx[4],bassLineIdx[0]];
+  const x0 = xC-22, x1 = xC+22;
+  const useTreble = idx >= MID_C_IDX;
+  const ref = useTreble ? [tt,tb] : [bt,bb];
+  if (idx > ref[0]) for (let k=ref[0]+2; k<=idx; k+=2)
+    svg.appendChild(el("line",{x1:x0,y1:yForIndex(k),x2:x1,y2:yForIndex(k),stroke:"#111","stroke-width":2}));
+  else if (idx < ref[1]) for (let k=ref[1]-2; k>=idx; k-=2)
+    svg.appendChild(el("line",{x1:x0,y1:yForIndex(k),x2:x1,y2:yForIndex(k),stroke:"#111","stroke-width":2}));
+  if (idx === MID_C_IDX)
+    svg.appendChild(el("line",{x1:x0,y1:yMidC,x2:x1,y2:yMidC,stroke:"#111","stroke-width":2}));
+}
+function noteXPositions(n) {
+  if (n === 1) return [720];
+  return Array.from({length:n}, (_,i) => Math.round(350 + i * 550 / (n-1)));
+}
+function drawNote(idx, x, color, label) {
+  const y = yForIndex(idx);
+  drawLedgerLinesFor(idx, x);
+  svg.appendChild(el("ellipse",{cx:x,cy:y,rx:16,ry:12,fill:color,transform:`rotate(-18 ${x} ${y})`}));
+  const midTreble = diatonicIndex("B",4), midBass = diatonicIndex("D",3);
+  const stemDown = (idx >= MID_C_IDX) ? (idx >= midTreble) : (idx >= midBass);
+  if (stemDown) svg.appendChild(el("line",{x1:x-14,y1:y,x2:x-14,y2:y+74,stroke:color,"stroke-width":4,"stroke-linecap":"round"}));
+  else          svg.appendChild(el("line",{x1:x+14,y1:y,x2:x+14,y2:y-74,stroke:color,"stroke-width":4,"stroke-linecap":"round"}));
+  if (label) {
+    const lx = x+30, ly = y+6;
+    svg.appendChild(el("rect",{x:lx-3,y:ly-18,width:label.length*13+6,height:24,fill:"white",rx:2}));
+    const t = el("text",{x:lx,y:ly,fill:color,"font-size":22,"font-weight":"bold"});
+    t.textContent = label; svg.appendChild(t);
+  }
+}
+function drawBothStaves() {
+  drawStaffLines(trebleLineIdx); drawStaffLines(bassLineIdx);
+  drawTrebleClef(); drawBassClef();
+  const trebleMidY = (yForIndex(trebleLineIdx[0]) + yForIndex(trebleLineIdx[4])) / 2;
+  const bassMidY   = (yForIndex(bassLineIdx[0])   + yForIndex(bassLineIdx[4]))   / 2;
+  const foT = el("foreignObject",{x:2,y:trebleMidY-14,width:82,height:28});
+  foT.innerHTML = `<label xmlns="http://www.w3.org/1999/xhtml" style="font:13px system-ui;cursor:pointer;display:flex;align-items:center;gap:3px;"><input type="checkbox" id="cbTreble"${trebleEnabled?" checked":""}>Treble</label>`;
+  svg.appendChild(foT);
+  const foB = el("foreignObject",{x:2,y:bassMidY-14,width:82,height:28});
+  foB.innerHTML = `<label xmlns="http://www.w3.org/1999/xhtml" style="font:13px system-ui;cursor:pointer;display:flex;align-items:center;gap:3px;"><input type="checkbox" id="cbBass"${bassEnabled?" checked":""}>Bass</label>`;
+  svg.appendChild(foB);
+  setTimeout(() => {
+    const cbT = document.getElementById("cbTreble"), cbB = document.getElementById("cbBass");
+    if (cbT) cbT.addEventListener("change", () => { trebleEnabled = cbT.checked; });
+    if (cbB) cbB.addEventListener("change", () => { bassEnabled   = cbB.checked; });
+  }, 0);
+}
+function drawKeySignatureOnStaff(sharps, flats, xStart) {
+  if (!sharps && !flats) return;
+  const [count, positions, char] = sharps > 0
+    ? [sharps, TREBLE_SHARP_POS, "\u266F"]
+    : [flats,  TREBLE_FLAT_POS,  "\u266D"];
+  for (let i = 0; i < count; i++) {
+    const x = xStart + i*22, y = yForIndex(positions[i]) + 36*0.38;
+    const t = el("text",{x,y,fill:"#111","font-size":36,"font-family":"serif"});
+    t.textContent = char; svg.appendChild(t);
+  }
+}
+function drawChordNotehead(idx, x, color) {
+  drawLedgerLinesFor(idx, x);
+  const y = yForIndex(idx);
+  svg.appendChild(el("ellipse",{cx:x,cy:y,rx:16,ry:12,fill:color,transform:`rotate(-18 ${x} ${y})`}));
+}
+function drawTriad(rootIdx, x, color) {
+  const fifth = rootIdx + 4;
+  drawChordNotehead(rootIdx,   x, color);
+  drawChordNotehead(rootIdx+2, x, color);
+  drawChordNotehead(fifth,     x, color);
+  const yTop = yForIndex(fifth);
+  svg.appendChild(el("line",{x1:x+14,y1:yTop,x2:x+14,y2:yTop-80,stroke:color,"stroke-width":4,"stroke-linecap":"round"}));
+}
+
+// =====================================================================
+// SHEET + NOTE QUIZ
+// =====================================================================
+const MIDDLE_LO = diatonicIndex("B",3), MIDDLE_HI = diatonicIndex("D",4);
+const TREBLE_LO = diatonicIndex("E",4), TREBLE_HI = diatonicIndex("E",6);
+const BASS_LO   = diatonicIndex("C",2), BASS_HI   = diatonicIndex("A",3);
+
+function buildNotePool() {
+  const pool = [];
+  for (let i = MIDDLE_LO; i <= MIDDLE_HI; i++) pool.push(i);
+  if (trebleEnabled) for (let i = TREBLE_LO; i <= TREBLE_HI; i++) pool.push(i);
+  if (bassEnabled)   for (let i = BASS_LO;   i <= BASS_HI;   i++) pool.push(i);
+  return pool;
+}
+
+function randomInt(lo, hi) { return lo + Math.floor(Math.random() * (hi - lo + 1)); }
+
+function renderSheetNoteBoard() {
+  clearSvg(); svg.setAttribute("viewBox","0 20 1000 450");
+  drawBothStaves();
+  const c = sheetNoteCurrent, xPos = noteXPositions(c.seqNotes.length);
+  c.seqNotes.forEach(({idx}, i) => {
+    const color = i < c.seqPos ? "#0a7a2f" : i === c.seqPos ? "#111" : "#aaa";
+    drawNote(idx, xPos[i], color);
+  });
+}
+
+function newSheetNoteQuestion() {
+  const pool = buildNotePool();
+  const seqLen = Number(document.getElementById("seqLen").value) || 1;
+  const firstIdx = pool[randomInt(0, pool.length-1)];
+  let octPool = pool.filter(i => i >= firstIdx && i <= firstIdx+6);
+  if (octPool.length < 2) octPool = pool.filter(i => Math.abs(i-firstIdx) <= 6);
+  const seqNotes = [{idx:firstIdx,note:noteFromIndex(firstIdx),clef:firstIdx>=MID_C_IDX?"treble":"bass"}];
+  for (let i = 1; i < seqLen; i++) {
+    const idx = octPool[randomInt(0, octPool.length-1)];
+    seqNotes.push({idx, note:noteFromIndex(idx), clef:idx>=MID_C_IDX?"treble":"bass"});
+  }
+  sheetNoteCurrent = {seqNotes, seqPos:0, answered:[], tries:0, totalTries:0, hintUsed:false};
+  waitingForNext = false;
+  updateTypedDisplay(); clearFeedback(); resetTries();
+  renderSheetNoteBoard();
+  synth.playNoteSeq(seqNotes);
+}
+
+function updateTypedDisplay() {
+  const c = sheetNoteCurrent;
+  const parts = c.seqNotes.map((_, i) => c.answered[i] || "_");
+  document.getElementById("typed").textContent = c.seqNotes.length === 1 ? parts[0] : parts.join(" ");
+}
+
+function closestOctaveFor(letter, idx) {
+  let bestOct = 2, bestDist = Infinity;
+  for (let oct = 1; oct <= 7; oct++) {
+    const d = Math.abs(diatonicIndex(letter, oct) - idx);
+    if (d < bestDist) { bestDist = d; bestOct = oct; }
+  }
+  return bestOct;
+}
+
+function handleSheetNoteGuess(letter) {
+  if (waitingForNext || !sheetNoteCurrent) return;
+  const c = sheetNoteCurrent;
+  const {idx, note} = c.seqNotes[c.seqPos];
+  synth.playByLetter(letter, closestOctaveFor(letter, idx), 0.4);
+  c.tries++; c.totalTries++;
+  document.getElementById("tries").textContent = String(c.tries);
+  if (letter === note.letter) {
+    c.answered.push(letter); updateTypedDisplay();
+    if (c.seqPos + 1 < c.seqNotes.length) {
+      c.seqPos++; c.tries = 0; document.getElementById("tries").textContent = "0";
+      setFeedback("✓","good"); renderSheetNoteBoard();
+      setTimeout(() => { if (!waitingForNext) clearFeedback(); }, 500);
+    } else {
+      setFeedback("✓","good");
+      recordResult(
+        c.seqNotes.map(({note:n}) => noteName(n)).join(" "),
+        "note/sheet", c.totalTries,
+        c.totalTries === c.seqNotes.length && !c.hintUsed
+      );
+      clearSvg(); svg.setAttribute("viewBox","0 20 1000 450"); drawBothStaves();
+      const xPos = noteXPositions(c.seqNotes.length);
+      c.seqNotes.forEach(({idx:ni,note:nn},i) => drawNote(ni,xPos[i],"#0a7a2f",noteName(nn)));
+      waitingForNext = true;
+      setTimeout(newSheetNoteQuestion, 1500);
+    }
+  } else {
+    setFeedback("✗","bad");
+  }
+}
+
+// =====================================================================
+// SHEET + KEY QUIZ
+// =====================================================================
+function renderSheetKeyBoard() {
+  clearSvg(); svg.setAttribute("viewBox","0 90 1000 210");
+  drawStaffLines(trebleLineIdx); drawTrebleClef();
+  if (!sheetKeyCurrent) return;
+  const {key, answered} = sheetKeyCurrent;
+  const numSigns = key.sharps || key.flats;
+  const sigX = staffX0 + 4;
+  drawKeySignatureOnStaff(key.sharps, key.flats, sigX);
+  const triadX = sigX + numSigns*22 + 130;
+  const rootIdx = KEY_ROOT_IDX[key.letter];
+  const color = answered ? "#0a7a2f" : "#111";
+  drawTriad(rootIdx, triadX, color);
+  if (answered) {
+    const label = keyDisplayName(key);
+    const lx = triadX+34, ly = yForIndex(rootIdx)+6;
+    svg.appendChild(el("rect",{x:lx-3,y:ly-18,width:label.length*13+6,height:24,fill:"white",rx:2}));
+    const t = el("text",{x:lx,y:ly,fill:"#0a7a2f","font-size":22,"font-weight":"bold"});
+    t.textContent = label; svg.appendChild(t);
+  }
+}
+
+function newSheetKeyQuestion() {
+  const pool = buildKeyPool();
+  sheetKeyCurrent = {key:pool[randomInt(0,pool.length-1)], answered:false, tries:0};
+  keyBuf = ""; waitingForNext = false;
+  updateKeyTypedDisplay(); updateKeyBtnHighlights(); clearFeedback(); resetTries();
+  renderSheetKeyBoard();
+}
+
+function getKeyBufParts() {
+  let i = 0;
+  const letter = keyBuf[i++] || "";
+  let acc = "";
+  if (keyBuf[i] === "#" || keyBuf[i] === "-") acc = keyBuf[i++];
+  const quality = keyBuf[i] || "";
+  return {letter, acc, quality};
+}
+
+function updateKeyTypedDisplay() {
+  const d = keyBuf.length === 0 ? "_" : keyBuf.replace("-","b") + (keyBuf.length < 3 ? "_" : "");
+  document.getElementById("typed").textContent = d;
+}
+
+function updateKeyBtnHighlights() {
+  const {letter, acc, quality} = getKeyBufParts();
+  document.querySelectorAll(".note-btn").forEach(btn =>
+    btn.classList.toggle("selected-btn", quizMode === "key" && btn.dataset.note === letter));
+  document.querySelectorAll(".acc-btn").forEach(btn =>
+    btn.classList.toggle("selected-btn", btn.dataset.acc === acc && letter !== ""));
+  document.querySelectorAll(".qual-btn").forEach(btn =>
+    btn.classList.toggle("selected-btn", btn.dataset.quality === quality && quality !== ""));
+}
+
+function handleSheetKeyGuess() {
+  if (waitingForNext || !sheetKeyCurrent) return;
+  const {key} = sheetKeyCurrent;
+  let i = 0;
+  const letter = keyBuf[i++] || "";
+  let acc = ""; if (keyBuf[i]=== "#" || keyBuf[i] === "-") acc = keyBuf[i++];
+  const quality = keyBuf[i] || "";
+  sheetKeyCurrent.tries++;
+  document.getElementById("tries").textContent = String(sheetKeyCurrent.tries);
+  const correct = letter === key.letter && acc === key.acc &&
+    ((quality === "M" && key.quality === "major") || (quality === "m" && key.quality === "minor"));
+  if (correct) {
+    sheetKeyCurrent.answered = true;
+    setFeedback("✓","good");
+    recordResult(keyDisplayName(key), "key/sheet", sheetKeyCurrent.tries, sheetKeyCurrent.tries === 1);
+    renderSheetKeyBoard();
+    waitingForNext = true;
+    setTimeout(newSheetKeyQuestion, 1800);
+  } else {
+    setFeedback("✗","bad");
+    keyBuf = ""; updateKeyTypedDisplay(); updateKeyBtnHighlights();
+  }
+}
+
+// =====================================================================
+// EAR + NOTE QUIZ
+// =====================================================================
+function newEarNoteQuestion() {
+  const keyName = document.getElementById("earKey").value;
+  const octave  = Number(document.getElementById("earOctave").value);
+  const len     = Number(document.getElementById("earLen").value) || 3;
+  const numCh   = Math.max(2, Number(document.getElementById("earChoices").value));
+  const {scaleMidi, scaleNames} = buildMajorScale(keyName, octave);
+  const degrees = generateSequence(len, 2, true);
+  const midi    = degrees.map(d => scaleMidi[d]);
+  const names   = degrees.map(d => scaleNames[d]);
+  const distractors = makeDistractors(degrees, numCh - 1);
+  const options = [degrees, ...distractors];
+  for (let i = options.length-1; i > 0; i--) {
+    const j = Math.floor(Math.random()*(i+1)); [options[i],options[j]] = [options[j],options[i]];
+  }
+  const correctIndex = options.findIndex(o => o.join("-") === degrees.join("-"));
+  earCurrent = {
+    kind:"note", degrees, midi, names, scaleNames,
+    options: options.map(dd => ({degrees:dd, names:dd.map(d => scaleNames[d])})),
+    correctIndex, answered:false
+  };
+  waitingForNext = false;
+  document.getElementById("earLabel").textContent = `Key: ${keyName} major`;
+  renderEarNoteChoices();
+  clearFeedback(); resetTries();
+  synth.playMidi(midi, 90, 0.6);
+}
+
+function renderEarNoteChoices() {
+  const area = document.getElementById("choicesArea");
+  area.innerHTML = "";
+  earCurrent.options.forEach((opt, idx) => {
+    const btn = document.createElement("button");
+    btn.className = "choice-btn";
+    const svgEl = document.createElementNS("http://www.w3.org/2000/svg","svg");
+    svgEl.setAttribute("viewBox","0 0 200 52");
+    svgEl.setAttribute("preserveAspectRatio","xMidYMid meet");
+    svgEl.classList.add("ladder");
+    renderStepLadder(svgEl, opt.degrees);
+    btn.appendChild(svgEl);
+    const nameDiv = document.createElement("div");
+    nameDiv.style.cssText = "font-size:11px;color:#444;margin-top:2px;";
+    nameDiv.textContent = opt.names.join(" – ");
+    btn.appendChild(nameDiv);
+    btn.addEventListener("click", () => handleEarNoteAnswer(idx));
+    area.appendChild(btn);
+  });
+}
+
+function renderStepLadder(svgEl, degrees) {
+  while (svgEl.firstChild) svgEl.removeChild(svgEl.firstChild);
+  const W=200, H=52, pl=6, pr=6, pt=6, pb=6;
+  const plotW=W-pl-pr, plotH=H-pt-pb;
+  const xStep = plotW / degrees.length;
+  const yForDeg = d => pt + plotH * (1 - d/6);
+  const path = document.createElementNS("http://www.w3.org/2000/svg","path");
+  path.setAttribute("class","step");
+  let d = "";
+  degrees.forEach((deg, i) => {
+    const y=yForDeg(deg), xL=pl+i*xStep, xR=pl+(i+1)*xStep;
+    if (i===0) d += `M${xL},${y}`;
+    d += ` H${xR}`;
+    if (i < degrees.length-1) d += ` V${yForDeg(degrees[i+1])}`;
+  });
+  path.setAttribute("d", d);
+  svgEl.appendChild(path);
+}
+
+function handleEarNoteAnswer(idx) {
+  if (!earCurrent || earCurrent.answered) return;
+  earCurrent.answered = true;
+  const correct = idx === earCurrent.correctIndex;
+  lockChoiceButtons(idx, earCurrent.correctIndex);
+  document.getElementById("tries").textContent = "1";
+  if (correct) {
+    setFeedback("✓  " + earCurrent.names.join(" – "), "good");
+    recordResult(earCurrent.names.join(" – "), "note/ear", 1, true);
+  } else {
+    setFeedback("✗  " + earCurrent.names.join(" – "), "bad");
+    recordResult(earCurrent.names.join(" – "), "note/ear", 1, false);
+  }
+  setTimeout(newEarNoteQuestion, 2000);
+}
+
+// =====================================================================
+// EAR + KEY QUIZ
+// =====================================================================
+function keyToMidi(letter, acc, octave) {
+  let semi = SEMI[letter];
+  if (acc === "#") semi++;
+  else if (acc === "-") semi--;
+  return 12 + octave * 12 + semi;
+}
+
+function playEarKeySequence(key) {
+  const root = keyToMidi(key.letter, key.acc, 4);
+  const third = key.quality === "minor" ? 3 : 4;
+  synth.playMidi([root, root+third, root+7, root+12], 100, 0.6);
+}
+
+function newEarKeyQuestion() {
+  const pool = buildKeyPool();
+  const key  = pool[randomInt(0, pool.length-1)];
+  const others = pool.filter(k => !(k.letter===key.letter && k.acc===key.acc && k.quality===key.quality));
+  for (let i = others.length-1; i > 0; i--) {
+    const j = Math.floor(Math.random()*(i+1)); [others[i],others[j]] = [others[j],others[i]];
+  }
+  const numCh = Math.min(4, pool.length);
+  const distractors = others.slice(0, numCh-1);
+  const options = [key, ...distractors];
+  for (let i = options.length-1; i > 0; i--) {
+    const j = Math.floor(Math.random()*(i+1)); [options[i],options[j]] = [options[j],options[i]];
+  }
+  const correctIndex = options.findIndex(k => k.letter===key.letter && k.acc===key.acc && k.quality===key.quality);
+  earCurrent = {kind:"key", key, options, correctIndex, answered:false};
+  waitingForNext = false;
+  document.getElementById("earLabel").textContent = "Identify the key:";
+  renderEarKeyChoices();
+  clearFeedback(); resetTries();
+  playEarKeySequence(key);
+}
+
+function renderEarKeyChoices() {
+  const area = document.getElementById("choicesArea");
+  area.innerHTML = "";
+  earCurrent.options.forEach((k, idx) => {
+    const btn = document.createElement("button");
+    btn.className = "choice-btn";
+    btn.style.cssText = "font-size:16px;font-weight:600;min-width:90px;min-height:44px;";
+    btn.textContent = keyDisplayName(k);
+    btn.addEventListener("click", () => handleEarKeyAnswer(idx));
+    area.appendChild(btn);
+  });
+}
+
+function handleEarKeyAnswer(idx) {
+  if (!earCurrent || earCurrent.answered) return;
+  earCurrent.answered = true;
+  const correct = idx === earCurrent.correctIndex;
+  lockChoiceButtons(idx, earCurrent.correctIndex);
+  document.getElementById("tries").textContent = "1";
+  const label = keyDisplayName(earCurrent.key);
+  if (correct) {
+    setFeedback("✓  " + label, "good");
+    recordResult(label, "key/ear", 1, true);
+  } else {
+    setFeedback("✗  " + label, "bad");
+    recordResult(label, "key/ear", 1, false);
+  }
+  setTimeout(newEarKeyQuestion, 2000);
+}
+
+function lockChoiceButtons(chosen, correct) {
+  const btns = Array.from(document.getElementById("choicesArea").children);
+  btns.forEach((b, i) => {
+    b.classList.toggle("correct", i === correct);
+    if (i === chosen && i !== correct) b.classList.add("wrong");
+    b.disabled = true;
+  });
+}
+
+// =====================================================================
+// STATS & HISTORY
+// =====================================================================
+function recordResult(questionText, mode, tries, wasFirstTry) {
+  done++;
+  if (wasFirstTry) firstTryCount++;
+  historyLog.push({questionText, mode, tries});
+  updateStats();
+  const tbody = document.getElementById("histBody");
+  const tr = document.createElement("tr");
+  [String(historyLog.length), questionText, mode, String(tries)].forEach(t => {
+    const td = document.createElement("td"); td.textContent = t; tr.appendChild(td);
+  });
+  tbody.prepend(tr);
+}
+
+function updateStats() {
+  document.getElementById("done").textContent = String(done);
+  document.getElementById("firstTryEl").textContent = String(firstTryCount);
+  const rate = done === 0 ? 0 : Math.round((firstTryCount/done)*100);
+  document.getElementById("rate").textContent = `${rate}%`;
+}
+
+// =====================================================================
+// UI HELPERS
+// =====================================================================
+function setFeedback(text, cls) {
+  const fb = document.getElementById("feedback");
+  fb.textContent = text; fb.className = "big " + (cls||"");
+}
+function clearFeedback() { setFeedback(""); }
+function resetTries() { document.getElementById("tries").textContent = "0"; }
+
+function updateUI() {
+  const isSheet = modality === "sheet";
+  const isEar   = modality === "ear";
+  const isNote  = quizMode  === "note";
+  const isKey   = quizMode  === "key";
+
+  document.getElementById("noteQuizBtn").classList.toggle("active-mode", isNote);
+  document.getElementById("keyQuizBtn").classList.toggle("active-mode",  isKey);
+  document.getElementById("sheetBtn").classList.toggle("active-mode", isSheet);
+  document.getElementById("earBtn").classList.toggle("active-mode",   isEar);
+
+  document.getElementById("keyOpts").style.display = isKey ? "flex" : "none";
+  document.getElementById("earOpts").style.display = (isEar && isNote) ? "flex" : "none";
+
+  document.getElementById("boardWrap").style.display = isSheet ? "block" : "none";
+  document.getElementById("earArea").style.display   = isEar   ? "block" : "none";
+  document.getElementById("noteBtns").style.display  = isSheet ? "flex"  : "none";
+  document.getElementById("keyBtns").style.display   = (isSheet && isKey) ? "block" : "none";
+  document.getElementById("answerRow").style.display = isSheet ? "" : "none";
+  document.getElementById("seqLenWrap").style.display = (isSheet && isNote) ? "" : "none";
+}
+
+function startNewQuestion() {
+  waitingForNext = false;
+  resetTries(); clearFeedback();
+  document.querySelectorAll(".note-btn,.acc-btn,.qual-btn").forEach(b => b.classList.remove("selected-btn"));
+  if      (modality==="sheet" && quizMode==="note") newSheetNoteQuestion();
+  else if (modality==="sheet" && quizMode==="key")  newSheetKeyQuestion();
+  else if (modality==="ear"   && quizMode==="note") newEarNoteQuestion();
+  else                                               newEarKeyQuestion();
+}
+
+// =====================================================================
+// EVENT WIRING
+// =====================================================================
+document.getElementById("noteQuizBtn").addEventListener("click", () => { quizMode="note";  updateUI(); startNewQuestion(); });
+document.getElementById("keyQuizBtn").addEventListener("click",  () => { quizMode="key";   updateUI(); startNewQuestion(); });
+document.getElementById("sheetBtn").addEventListener("click",    () => { modality="sheet"; updateUI(); startNewQuestion(); });
+document.getElementById("earBtn").addEventListener("click",      () => { modality="ear";   updateUI(); startNewQuestion(); });
+
+document.getElementById("playBtn").addEventListener("click", () => {
+  if (!earCurrent) return;
+  if (earCurrent.kind === "note" && earCurrent.midi) synth.playMidi(earCurrent.midi, 90, 0.6);
+  else if (earCurrent.kind === "key" && earCurrent.key) playEarKeySequence(earCurrent.key);
+});
+
+document.getElementById("skipBtn").addEventListener("click", startNewQuestion);
+
+document.querySelectorAll(".note-btn").forEach(btn => {
+  btn.addEventListener("click", () => {
+    if (modality !== "sheet") return;
+    if (quizMode === "note") { handleSheetNoteGuess(btn.dataset.note); }
+    else if (!waitingForNext) {
+      const {acc, quality} = getKeyBufParts();
+      keyBuf = btn.dataset.note + acc + quality;
+      updateKeyTypedDisplay(); updateKeyBtnHighlights();
+    }
+  });
+});
+
+document.querySelectorAll(".acc-btn").forEach(btn => {
+  btn.addEventListener("click", () => {
+    if (modality !== "sheet" || quizMode !== "key" || waitingForNext) return;
+    const {letter, quality} = getKeyBufParts();
+    if (!letter) return;
+    keyBuf = letter + btn.dataset.acc + quality;
+    updateKeyTypedDisplay(); updateKeyBtnHighlights();
+  });
+});
+
+document.querySelectorAll(".qual-btn").forEach(btn => {
+  btn.addEventListener("click", () => {
+    if (modality !== "sheet" || quizMode !== "key" || waitingForNext) return;
+    const {letter, acc} = getKeyBufParts();
+    if (!letter) return;
+    keyBuf = letter + acc + btn.dataset.quality;
+    updateKeyTypedDisplay(); updateKeyBtnHighlights();
+  });
+});
+
+document.getElementById("submitKeyBtn").addEventListener("click", () => {
+  if (modality === "sheet" && quizMode === "key" && !waitingForNext) handleSheetKeyGuess();
+});
+
+document.getElementById("resetBtn").addEventListener("click", () => {
+  done = 0; firstTryCount = 0; historyLog = [];
+  document.getElementById("histBody").innerHTML = "";
+  updateStats(); startNewQuestion();
+});
+
+document.getElementById("seqLen").addEventListener("change", () => {
+  if (modality === "sheet" && quizMode === "note") newSheetNoteQuestion();
+});
+
+["earKey","earOctave","earLen","earChoices"].forEach(id => {
+  const e = document.getElementById(id);
+  if (e) e.addEventListener("change", () => {
+    if (modality === "ear" && quizMode === "note") newEarNoteQuestion();
+  });
+});
+
+document.getElementById("cbKeySharps").addEventListener("change", e => { keySharpsEnabled = e.target.checked; });
+document.getElementById("cbKeyFlats").addEventListener("change",  e => { keyFlatsEnabled  = e.target.checked; });
+document.getElementById("cbKeyMinor").addEventListener("change",  e => { keyMinorEnabled  = e.target.checked; });
+
+window.addEventListener("keydown", e => {
+  if (waitingForNext) return;
+  if (modality === "ear") {
+    if (e.code === "Space" && !e.metaKey && !e.ctrlKey) {
+      e.preventDefault();
+      if (!earCurrent) return;
+      if (earCurrent.kind === "note" && earCurrent.midi) synth.playMidi(earCurrent.midi, 90, 0.6);
+      else if (earCurrent.kind === "key" && earCurrent.key) playEarKeySequence(earCurrent.key);
+    } else if (e.key >= "1" && e.key <= "6") {
+      const idx = Number(e.key) - 1;
+      if (quizMode === "note") handleEarNoteAnswer(idx);
+      else handleEarKeyAnswer(idx);
+    } else if (e.key === "n") {
+      e.preventDefault(); startNewQuestion();
+    }
+    return;
+  }
+  // Sheet mode
+  if (quizMode === "key") {
+    const ku = e.key.toUpperCase();
+    if (ku.length===1 && ku>="A" && ku<="G") {
+      e.preventDefault(); keyBuf=ku; updateKeyTypedDisplay(); updateKeyBtnHighlights();
+    } else if (e.key==="#" && keyBuf.length===1) {
+      e.preventDefault(); keyBuf+="#"; updateKeyTypedDisplay(); updateKeyBtnHighlights();
+    } else if (e.key==="-" && keyBuf.length===1) {
+      e.preventDefault(); keyBuf+="-"; updateKeyTypedDisplay(); updateKeyBtnHighlights();
+    } else if ((e.key==="M"||e.key==="m") && keyBuf.length>=1) {
+      e.preventDefault(); keyBuf+=e.key; updateKeyTypedDisplay(); updateKeyBtnHighlights(); handleSheetKeyGuess();
+    }
+    return;
+  }
+  // Sheet + Note
+  const kUp = e.key.toUpperCase();
+  if (kUp.length===1 && kUp>="A" && kUp<="G") {
+    e.preventDefault(); handleSheetNoteGuess(kUp);
+  } else if (e.code==="Space" && !e.metaKey && !e.ctrlKey) {
+    e.preventDefault(); if (sheetNoteCurrent) synth.playNoteSeq(sheetNoteCurrent.seqNotes);
+  } else if (kUp==="H" || e.key==="?") {
+    if (sheetNoteCurrent) sheetNoteCurrent.hintUsed = true;
+  }
+});
+
+// =====================================================================
+// INIT
+// =====================================================================
+updateStats();
+updateUI();
+startNewQuestion();
+
+})();
+</script>
+
+<div style="margin-top:14px;" class="hint">
+  <strong>Keyboard shortcuts:</strong>
+  Sheet Music: <b>A–G</b> answer · <b>Space</b> replay · Key quiz: <b>#/- then M/m</b> ·
+  Ear: <b>Space</b> replay · <b>1–6</b> pick choice · <b>n</b> new question
+</div>
+</body>
+</html>
