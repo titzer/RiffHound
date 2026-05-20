@@ -32,6 +32,12 @@
     <button id="noteQuizBtn" class="mode-btn active-mode">Note Quiz</button>
     <button id="keyQuizBtn" class="mode-btn">Key Quiz</button>
   </div>
+  <div id="keyOpts" style="display:none; margin-bottom:10px; gap:14px; align-items:center;" class="hint">
+    <strong>Include:</strong>
+    <label><input type="checkbox" id="cbKeySharps" checked> Sharp keys</label>
+    <label><input type="checkbox" id="cbKeyFlats"  checked> Flat keys</label>
+    <label><input type="checkbox" id="cbKeyMinor"  checked> Minor keys</label>
+  </div>
 
   <div class="row">
     <div class="card" id="boardWrap">
@@ -139,6 +145,9 @@
   let quizMode = "note"; // "note" | "key"
   let currentKeyQuiz = null; // {key, answered, tries}
   let keyBuf = ""; // key quiz input buffer
+  let keySharpsEnabled = true;
+  let keyFlatsEnabled  = true;
+  let keyMinorEnabled  = true;
 
   // ---------- Audio ----------
   const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
@@ -726,8 +735,15 @@
   }
 
   function newKeyQuestion() {
+    let pool = KEY_SIGNATURES.filter(k => {
+      if (!keySharpsEnabled && k.sharps > 0) return false;
+      if (!keyFlatsEnabled  && k.flats  > 0) return false;
+      if (!keyMinorEnabled  && k.quality === "minor") return false;
+      return true;
+    });
+    if (pool.length === 0) pool = KEY_SIGNATURES; // safety fallback
     currentKeyQuiz = {
-      key: KEY_SIGNATURES[randomInt(0, KEY_SIGNATURES.length - 1)],
+      key: pool[randomInt(0, pool.length - 1)],
       answered: false,
       tries: 0
     };
@@ -791,6 +807,7 @@
     quizMode = mode;
     document.getElementById("noteQuizBtn").classList.toggle("active-mode", mode === "note");
     document.getElementById("keyQuizBtn").classList.toggle("active-mode", mode === "key");
+    document.getElementById("keyOpts").style.display = mode === "key" ? "flex" : "none";
     waitingForNext = false;
     keyBuf = "";
     document.getElementById("feedback").textContent = "";
@@ -867,6 +884,10 @@
 
   document.getElementById("noteQuizBtn").addEventListener("click", () => switchMode("note"));
   document.getElementById("keyQuizBtn").addEventListener("click", () => switchMode("key"));
+
+  document.getElementById("cbKeySharps").addEventListener("change", e => { keySharpsEnabled = e.target.checked; });
+  document.getElementById("cbKeyFlats" ).addEventListener("change", e => { keyFlatsEnabled  = e.target.checked; });
+  document.getElementById("cbKeyMinor" ).addEventListener("change", e => { keyMinorEnabled  = e.target.checked; });
 
   // Init
   updateStats();
