@@ -49,8 +49,16 @@
 </div>
 
 <!-- Key filter (key quiz only) -->
-<div id="keyOpts" style="display:none; margin-bottom:8px; gap:14px; align-items:center; flex-wrap:wrap;" class="hint">
+<div id="keyOpts" style="display:none; margin-bottom:8px; gap:10px; align-items:center; flex-wrap:wrap;" class="hint">
   <strong>Keys:</strong>
+  <label><input type="checkbox" class="letter-cb" data-letter="A" checked> A</label>
+  <label><input type="checkbox" class="letter-cb" data-letter="B" checked> B</label>
+  <label><input type="checkbox" class="letter-cb" data-letter="C" checked> C</label>
+  <label><input type="checkbox" class="letter-cb" data-letter="D" checked> D</label>
+  <label><input type="checkbox" class="letter-cb" data-letter="E" checked> E</label>
+  <label><input type="checkbox" class="letter-cb" data-letter="F" checked> F</label>
+  <label><input type="checkbox" class="letter-cb" data-letter="G" checked> G</label>
+  <span style="color:#bbb; margin:0 2px;">|</span>
   <label><input type="checkbox" id="cbKeySharps" checked> Sharps</label>
   <label><input type="checkbox" id="cbKeyFlats"  checked> Flats</label>
   <label><input type="checkbox" id="cbKeyMinor"  checked> Minor</label>
@@ -172,6 +180,7 @@ let trebleEnabled = true, bassEnabled = true;
 let sheetKeyCurrent = null;
 let keyBuf = "";
 let keySharpsEnabled = true, keyFlatsEnabled = true, keyMinorEnabled = true;
+let keyLettersEnabled = new Set(["A","B","C","D","E","F","G"]);
 
 // Ear (shared between ear+note and ear+key, different shapes)
 let earCurrent = null;
@@ -286,8 +295,9 @@ function keyDisplayName(k) {
 
 function buildKeyPool() {
   const pool = KEY_SIGNATURES.filter(k => {
-    if (!keySharpsEnabled && k.sharps > 0) return false;
-    if (!keyFlatsEnabled  && k.flats  > 0) return false;
+    if (!keyLettersEnabled.has(k.letter))           return false;
+    if (!keySharpsEnabled && k.acc === "#")          return false;
+    if (!keyFlatsEnabled  && k.acc === "-")          return false;
     if (!keyMinorEnabled  && k.quality === "minor") return false;
     return true;
   });
@@ -298,7 +308,7 @@ function buildKeyPool() {
 // AUDIO
 // =====================================================================
 class Synth {
-  constructor() { this.ctx = null; this.master = null; this.wave = "sine"; this.vol = 0.25; }
+  constructor() { this.ctx = null; this.master = null; this.seqGain = null; this.wave = "sine"; this.vol = 0.25; }
   ensure() {
     if (!this.ctx) {
       const ctx = new (window.AudioContext || window.webkitAudioContext)();
@@ -307,12 +317,20 @@ class Synth {
     }
   }
   get now() { this.ensure(); return this.ctx.currentTime; }
-  playNote(freq, start, dur, sustain = 0.6) {
+  // Disconnect the current sequence gain node — instantly silences all routed notes.
+  // New sequences get their own gain node so playByLetter feedback is unaffected.
+  newSeqGain() {
+    if (this.seqGain) { try { this.seqGain.disconnect(); } catch(e) {} }
+    this.seqGain = this.ctx.createGain();
+    this.seqGain.connect(this.master);
+    return this.seqGain;
+  }
+  playNote(freq, start, dur, sustain = 0.6, sink) {
     this.ensure();
     const ctx = this.ctx;
     const osc = ctx.createOscillator(), gain = ctx.createGain();
     osc.type = this.wave; osc.frequency.value = freq;
-    osc.connect(gain); gain.connect(this.master);
+    osc.connect(gain); gain.connect(sink || this.master);
     const a = 0.01, d = 0.05, r = 0.1;
     gain.gain.setValueAtTime(0.0001, start);
     gain.gain.exponentialRampToValueAtTime(1.0, start + a);
@@ -323,23 +341,31 @@ class Synth {
   }
   playMidi(midiNotes, bpm = 90, sustainRatio = 0.6) {
     this.ensure();
+    const sg = this.newSeqGain();
     const beatSec = 60 / bpm;
     const t0 = this.now + 0.05;
-    midiNotes.forEach((m, i) => this.playNote(midiToFreq(m), t0 + i * beatSec, beatSec, sustainRatio));
+    midiNotes.forEach((m, i) => this.playNote(midiToFreq(m), t0 + i * beatSec, beatSec, sustainRatio, sg));
   }
   playByLetter(letter, octave, dur = 0.45) {
     this.ensure();
     const midi = 12 + octave * 12 + SEMI[letter];
-    this.playNote(midiToFreq(midi), this.now + 0.02, dur, 0.6);
+    this.playNote(midiToFreq(midi), this.now + 0.02, dur, 0.6); // goes to master, not seqGain
   }
   playNoteSeq(seqNotes) {
     this.ensure();
+    const sg = this.newSeqGain();
     const noteDur = 0.5, gap = 0.65;
     const t0 = this.now;
     seqNotes.forEach(({note}, i) => {
       const midi = 12 + note.octave * 12 + SEMI[note.letter];
-      this.playNote(midiToFreq(midi), t0 + 0.05 + i * gap, noteDur, 0.6);
+      this.playNote(midiToFreq(midi), t0 + 0.05 + i * gap, noteDur, 0.6, sg);
     });
+  }
+  playChord(midiNotes, dur = 1.5, sustain = 0.4) {
+    this.ensure();
+    const sg = this.newSeqGain();
+    const t0 = this.now + 0.05;
+    midiNotes.forEach(m => this.playNote(midiToFreq(m), t0, dur, sustain, sg));
   }
 }
 const synth = new Synth();
@@ -723,26 +749,28 @@ function keyToMidi(letter, acc, octave) {
 function playEarKeySequence(key) {
   const root = keyToMidi(key.letter, key.acc, 4);
   const third = key.quality === "minor" ? 3 : 4;
-  synth.playMidi([root, root+third, root+7, root+12], 100, 0.6);
+  synth.playChord([root, root+third, root+7, root+12]);
 }
 
 function newEarKeyQuestion() {
   const pool = buildKeyPool();
   const key  = pool[randomInt(0, pool.length-1)];
-  const others = pool.filter(k => !(k.letter===key.letter && k.acc===key.acc && k.quality===key.quality));
-  for (let i = others.length-1; i > 0; i--) {
-    const j = Math.floor(Math.random()*(i+1)); [others[i],others[j]] = [others[j],others[i]];
+  const distPool = pool.filter(k => k !== key);
+  for (let i = distPool.length-1; i > 0; i--) {
+    const j = Math.floor(Math.random()*(i+1)); [distPool[i],distPool[j]] = [distPool[j],distPool[i]];
   }
-  const numCh = Math.min(4, pool.length);
-  const distractors = others.slice(0, numCh-1);
-  const options = [key, ...distractors];
-  for (let i = options.length-1; i > 0; i--) {
-    const j = Math.floor(Math.random()*(i+1)); [options[i],options[j]] = [options[j],options[i]];
+  function chromIdx(k) {
+    let s = SEMI[k.letter];
+    if (k.acc === "#") s++;
+    else if (k.acc === "-") s--;
+    return (s + 12) % 12;
   }
-  const correctIndex = options.findIndex(k => k.letter===key.letter && k.acc===key.acc && k.quality===key.quality);
+  const options = [key, ...distPool.slice(0, 3)].sort((a, b) => chromIdx(a) - chromIdx(b));
+  const correctIndex = options.indexOf(key); // reference equality — always finds the right entry
   earCurrent = {kind:"key", key, options, correctIndex, answered:false};
   waitingForNext = false;
-  document.getElementById("earLabel").textContent = "Identify the key:";
+  document.getElementById("earLabel").textContent =
+    `Identify the key: (pool: ${pool.map(k => keyDisplayName(k)).join(", ")})`;
   renderEarKeyChoices();
   clearFeedback(); resetTries();
   playEarKeySequence(key);
@@ -921,9 +949,19 @@ document.getElementById("seqLen").addEventListener("change", () => {
   });
 });
 
-document.getElementById("cbKeySharps").addEventListener("change", e => { keySharpsEnabled = e.target.checked; });
-document.getElementById("cbKeyFlats").addEventListener("change",  e => { keyFlatsEnabled  = e.target.checked; });
-document.getElementById("cbKeyMinor").addEventListener("change",  e => { keyMinorEnabled  = e.target.checked; });
+function onKeyFilterChange() {
+  if (modality === "ear" && quizMode === "key") newEarKeyQuestion();
+}
+document.getElementById("cbKeySharps").addEventListener("change", e => { keySharpsEnabled = e.target.checked; onKeyFilterChange(); });
+document.getElementById("cbKeyFlats").addEventListener("change",  e => { keyFlatsEnabled  = e.target.checked; onKeyFilterChange(); });
+document.getElementById("cbKeyMinor").addEventListener("change",  e => { keyMinorEnabled  = e.target.checked; onKeyFilterChange(); });
+document.querySelectorAll(".letter-cb").forEach(cb => {
+  cb.addEventListener("change", e => {
+    if (e.target.checked) keyLettersEnabled.add(cb.dataset.letter);
+    else keyLettersEnabled.delete(cb.dataset.letter);
+    onKeyFilterChange();
+  });
+});
 
 window.addEventListener("keydown", e => {
   if (waitingForNext) return;
