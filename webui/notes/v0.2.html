@@ -1,0 +1,644 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Treble + Bass Note Quiz (A–G)</title>
+  <style>
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 18px; }
+    .row { display: flex; gap: 18px; align-items: flex-start; flex-wrap: wrap; }
+    .card { border: 1px solid #ddd; border-radius: 10px; padding: 12px 14px; }
+    .big { font-size: 18px; }
+    button { padding: 8px 10px; border-radius: 8px; border: 1px solid #ccc; background: #f7f7f7; cursor: pointer; }
+    button:hover { background: #f0f0f0; }
+    .hint { color: #666; font-size: 13px; }
+    .good { color: #0a7a2f; font-weight: 600; }
+    .bad  { color: #b32020; font-weight: 600; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
+    #boardWrap { width: min(980px, 98vw); }
+    #board { width: 100%; height: auto; display: block; }
+    #history { max-height: 360px; overflow: auto; }
+    table { border-collapse: collapse; width: 100%; }
+    th, td { border-bottom: 1px solid #eee; padding: 6px 8px; text-align: left; font-size: 13px; }
+    th { position: sticky; top: 0; background: #fff; }
+    .kbd { border: 1px solid #ccc; border-bottom-width: 2px; border-radius: 6px; padding: 1px 6px; background: #fafafa; }
+  </style>
+</head>
+<body>
+  <h2 style="margin: 0 0 6px 0;">Treble + Bass Note Quiz</h2>
+
+  <div class="row">
+    <div class="card" id="boardWrap">
+      <svg id="board" viewBox="0 0 1000 520" xmlns="http://www.w3.org/2000/svg" aria-label="Music staff quiz">
+        <!-- drawn by JS -->
+      </svg>
+      <div class="row" style="margin-top: 10px; align-items: center;">
+        <div class="big">Answer: <span id="typed" class="mono">_</span></div>
+        <div id="feedback" class="big" aria-live="polite"></div>
+        <div style="margin-left:auto; display:flex; gap:16px; align-items:center;" class="hint">
+          <label>Seq length: <select id="seqLen" style="padding:2px 4px;font-size:13px;border-radius:4px;border:1px solid #ccc">
+            <option value="1" selected>1</option>
+            <option value="2">2</option>
+            <option value="3">3</option>
+            <option value="4">4</option>
+          </select></label>
+          <span>Attempts: <span id="tries" class="mono">0</span></span>
+        </div>
+      </div>
+      <div style="display:flex; gap:8px; margin-top:10px; flex-wrap:wrap;">
+        <button class="note-btn" data-note="A" style="font-size:20px; font-weight:600; min-width:44px; min-height:44px;">A</button>
+        <button class="note-btn" data-note="B" style="font-size:20px; font-weight:600; min-width:44px; min-height:44px;">B</button>
+        <button class="note-btn" data-note="C" style="font-size:20px; font-weight:600; min-width:44px; min-height:44px;">C</button>
+        <button class="note-btn" data-note="D" style="font-size:20px; font-weight:600; min-width:44px; min-height:44px;">D</button>
+        <button class="note-btn" data-note="E" style="font-size:20px; font-weight:600; min-width:44px; min-height:44px;">E</button>
+        <button class="note-btn" data-note="F" style="font-size:20px; font-weight:600; min-width:44px; min-height:44px;">F</button>
+        <button class="note-btn" data-note="G" style="font-size:20px; font-weight:600; min-width:44px; min-height:44px;">G</button>
+      </div>
+    </div>
+
+    <div class="card" style="min-width: 280px; flex: 1;">
+      <div class="row" style="align-items: center;">
+        <div class="big">Stats</div>
+        <button id="resetBtn" title="Reset history + stats">Reset</button>
+      </div>
+      <div style="margin-top: 8px;">
+        <div>Total notes completed: <span id="done" class="mono">0</span></div>
+        <div>Correct (first try): <span id="firstTry" class="mono">0</span></div>
+        <div>Pass rate: <span id="rate" class="mono">0%</span></div>
+        <div class="hint" style="margin-top: 8px;">
+          “Pass rate” here = (correct on first try) / (notes completed).
+        </div>
+      </div>
+
+      <div class="big" style="margin-top: 14px;">History</div>
+      <div id="history" style="margin-top: 6px;">
+        <table>
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>Note</th>
+              <th>Clef</th>
+              <th>Tries</th>
+            </tr>
+          </thead>
+          <tbody id="histBody"></tbody>
+        </table>
+      </div>
+
+    </div>
+  </div>
+
+<script>
+(() => {
+  // ---------- Music mapping (diatonic, no sharps/flats) ----------
+  // Represent notes by letter + octave (scientific pitch notation).
+  // diatonicIndex: C0=0, D0=1, ... B0=6, C1=7, ... C4=28, ...
+  const LETTERS = ["C","D","E","F","G","A","B"];
+  const letterToStep = new Map(LETTERS.map((L,i)=>[L,i]));
+
+  function diatonicIndex(letter, octave) {
+    return octave * 7 + letterToStep.get(letter);
+  }
+  function noteFromIndex(idx) {
+    const octave = Math.floor(idx / 7);
+    const letter = LETTERS[idx % 7];
+    return { letter, octave };
+  }
+  function noteName(n) { return `${n.letter}${n.octave}`; }
+
+  // Range: C2 .. E6 inclusive
+  const MIN_IDX = diatonicIndex("C", 2);
+  const MAX_IDX = diatonicIndex("E", 6);
+
+  // Staff reference: Middle C = C4 (between staves)
+  const MID_C_IDX = diatonicIndex("C", 4);
+
+  // Treble lines: E4 G4 B4 D5 F5 (indices: 30,32,34,36,38)
+  // Bass lines:   G2 B2 D3 F3 A3 (indices: 18,20,22,24,26)
+  const trebleLineIdx = ["E4","G4","B4","D5","F5"].map(parseNoteName).map(n => diatonicIndex(n.letter,n.octave));
+  const bassLineIdx   = ["G2","B2","D3","F3","A3"].map(parseNoteName).map(n => diatonicIndex(n.letter,n.octave));
+
+  function parseNoteName(s) {
+    return { letter: s[0], octave: Number(s.slice(1)) };
+  }
+
+  // ---------- UI state ----------
+  let current = null; // { idx, note:{letter,octave}, clef:"treble"|"bass", tries, hintUsed, startedAt }
+  let done = 0;
+  let firstTry = 0;
+  let history = []; // [{noteName, clef, tries}]
+  let waitingForNext = false; // true while showing green note before advancing
+  let trebleEnabled = true;
+  let bassEnabled = true;
+
+  // ---------- Audio ----------
+  const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  // Chromatic semitone offset from C for each letter (no sharps/flats)
+  const SEMI = { C:0, D:2, E:4, F:5, G:7, A:9, B:11 };
+
+  function midiForNote(letter, octave) {
+    return 12 + octave * 12 + SEMI[letter]; // C4 = 60
+  }
+
+  function freqForMidi(midi) {
+    return 440 * Math.pow(2, (midi - 69) / 12);
+  }
+
+  function playNote(letter, octave, duration = 0.5) {
+    audioCtx.resume();
+    const freq = freqForMidi(midiForNote(letter, octave));
+    const osc = audioCtx.createOscillator();
+    osc.type = "sine";
+    osc.frequency.value = freq;
+    const g = audioCtx.createGain();
+    g.gain.setValueAtTime(0.35, audioCtx.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + duration);
+    osc.connect(g).connect(audioCtx.destination);
+    osc.start();
+    osc.stop(audioCtx.currentTime + duration);
+  }
+
+  // Find the octave for `letter` closest to `idx`
+  function closestOctaveFor(letter, idx) {
+    let bestOct = 2, bestDist = Infinity;
+    for (let oct = 1; oct <= 7; oct++) {
+      const d = Math.abs(diatonicIndex(letter, oct) - idx);
+      if (d < bestDist) { bestDist = d; bestOct = oct; }
+    }
+    return bestOct;
+  }
+
+  function playSequence(seqNotes) {
+    audioCtx.resume();
+    const noteDur = 0.5, gap = 0.65;
+    seqNotes.forEach(({note}, i) => {
+      const t = audioCtx.currentTime + 0.05 + i * gap;
+      const freq = freqForMidi(midiForNote(note.letter, note.octave));
+      const osc = audioCtx.createOscillator();
+      osc.type = "sine";
+      osc.frequency.value = freq;
+      const g = audioCtx.createGain();
+      g.gain.setValueAtTime(0, t);
+      g.gain.linearRampToValueAtTime(0.35, t + 0.01);
+      g.gain.exponentialRampToValueAtTime(0.001, t + noteDur);
+      osc.connect(g).connect(audioCtx.destination);
+      osc.start(t);
+      osc.stop(t + noteDur + 0.05);
+    });
+  }
+
+  // ---------- SVG drawing ----------
+  const svg = document.getElementById("board");
+
+  // Layout (big + simple)
+  const W = 1000, H = 520;
+
+  const marginL = 70;
+  const marginR = 40;
+  const staffX0 = 140;
+  const staffX1 = W - marginR;
+
+  const staffGap = 120;           // gap between staves (centered on middle C line)
+  const lineSpacing = 26;         // distance between staff lines
+  const step = lineSpacing / 2;   // distance between adjacent line/space positions
+
+  // Place middle C line between staves
+  const yMidC = 260;
+
+  // Compute Y for a diatonic index: higher notes -> smaller y
+  function yForIndex(idx) {
+    return yMidC - (idx - MID_C_IDX) * step;
+  }
+
+  function clearSvg() {
+    while (svg.firstChild) svg.removeChild(svg.firstChild);
+  }
+
+  function el(name, attrs = {}) {
+    const n = document.createElementNS("http://www.w3.org/2000/svg", name);
+    for (const [k,v] of Object.entries(attrs)) n.setAttribute(k, String(v));
+    return n;
+  }
+
+  function drawStaffLines(lineIdxs) {
+    for (const idx of lineIdxs) {
+      const y = yForIndex(idx);
+      svg.appendChild(el("line", { x1: staffX0, y1: y, x2: staffX1, y2: y, stroke: "#111", "stroke-width": 2 }));
+    }
+  }
+
+  // Middle C line is no longer drawn as a full staff line.
+  // It appears only as a ledger line when a note is on or near it (handled by drawLedgerLinesFor).
+
+  // Bass clef drawing using SVG path (from bassclef.svg, public domain openclipart.org)
+  // Dot centers at (551.27, 361.37) and (551.27, 498.12), r=32.323
+  // F3 reference line = midpoint of dots = y≈429.745; right edge of dots ≈ 583.59
+  function drawBassClef() {
+    const yF3 = yForIndex(diatonicIndex("F", 3));
+    const sy = 0.1875;          // 0.25 * 0.75 (25% smaller overall)
+    const sx = sy * 0.70;        // additional 20% narrower horizontally
+    const origFRefY = 429.745;
+    const origRightX = 583.59;
+
+    const xT = (staffX0 - 4) - origRightX * sx;
+    const yT = yF3 - origFRefY * sy;
+
+    const g = el("g", { transform: `translate(${xT.toFixed(1)},${yT.toFixed(1)}) scale(${sx},${sy})` });
+    g.appendChild(el("path", {
+      d: "m190.85 451.25c11.661 14.719 32.323 24.491 55.844 24.491 36.401 0 65.889-23.372 65.889-52.214s-29.488-52.214-65.889-52.214c-20.314 4.1522-28.593 9.0007-33.143-2.9091 17.976-54.327 46.918-66.709 96.546-66.709 65.914 0 96.969 59.897 96.969 142.97-18.225 190.63-205.95 286.75-246.57 316.19 5.6938 13.103 5.3954 12.631 5.3954 12.009 189.78-86.203 330.69-204.43 330.69-320.74 0-92.419-58.579-175.59-187.72-172.8-77.575 0-170.32 86.203-118 171.93zm328.1-89.88c0 17.852 14.471 32.323 32.323 32.323s32.323-14.471 32.323-32.323-14.471-32.323-32.323-32.323-32.323 14.471-32.323 32.323zm0 136.75c0 17.852 14.471 32.323 32.323 32.323s32.323-14.471 32.323-32.323-14.471-32.323-32.323-32.323-32.323 14.471-32.323 32.323z",
+      fill: "#111",
+      "fill-rule": "evenodd"
+    }));
+    svg.appendChild(g);
+  }
+
+  // Treble clef drawing using SVG path (from UXWing, public domain)
+  // G4 line is the reference (spiral wraps around it)
+  function drawTrebleClef() {
+    const yG4 = yForIndex(diatonicIndex("G", 4));
+
+    // Original viewBox: 0 0 43.52 122.88
+    // The spiral center (G line) is at roughly y=55 in the original, i.e. ~45% from top
+    const scale = 1.1;
+    const clefHeight = 122.88 * scale;
+    const clefWidth = 43.52 * scale;
+
+    const yOffset = yG4 - 8 - (clefHeight * 0.55);
+    const xOffset = staffX0 - 12 - clefWidth;
+
+    const g = el("g", { transform: `translate(${xOffset}, ${yOffset}) scale(${scale})` });
+    g.appendChild(el("path", {
+      d: "M11.35,45.61q3.72-4.22,7.69-8a45.71,45.71,0,0,1-2.19-12c-.23-7.24.88-14.93,5-21C23,2.79,25-.25,27.17,0,29,.24,30,2.83,30.72,4.32c4.92,10,5.93,20.54.25,31.93a46,46,0,0,1-7.84,10.8l2.38,12.12a8.74,8.74,0,0,1,.87-.14,14.2,14.2,0,0,1,8.56,1.41c5.6,3,9.08,10.57,8.52,16.83-.5,5.5-3,9.3-7.15,12.63a23.92,23.92,0,0,1-4.24,2.78l2.87,14.62a28.07,28.07,0,0,1,.12,3.74c-.35,7.71-6.35,12.16-13.78,11.82-5.72-.36-11.67-4.9-11.7-10.64-.06-11.13,15-10.6,13.9-.42-.32,3-2.51,5.65-7.21,5.82,3.79,6.28,15.51,1.79,16.31-6.44a17.52,17.52,0,0,0-.69-6.24L29.72,93.65a17.7,17.7,0,0,1-3.07.67A23.71,23.71,0,0,1,8.5,88.66a26,26,0,0,1-8-24.34C2,56.69,6.39,51.26,11.35,45.61Zm9.81-9.53C19.09,28.55,19.4,19,24.73,12.76S35.94,15,28.18,27.42a48.8,48.8,0,0,1-7,8.66Zm0,13c-.67.67-1.36,1.34-2.06,2-4,3.85-8,7.52-11,13a20.65,20.65,0,0,0-1.5,17.23c2.4,7.49,14,12.21,22.65,9.94L24.72,67.63a9.82,9.82,0,0,0-7.09,8,8.7,8.7,0,0,0,3.08,7.81,16.74,16.74,0,0,0,1.81,1.36c1.24.82.63,1.41-.53,1.06-3.87-1.3-6.19-3.44-7.43-6.17-3.67-8.08.83-17.08,8.66-19.92L21.16,49.07ZM31.63,90.43,27.09,67.24a9,9,0,0,1,4.53,1,12,12,0,0,1,6.62,8.23c1.2,5.57-1.7,11.72-6.49,13.94l-.12.05Z",
+      fill: "#111", "fill-rule": "evenodd"
+    }));
+    svg.appendChild(g);
+  }
+
+
+  function drawLedgerLinesFor(idx, xCenter) {
+    // Draw ledger lines outside the staves as needed.
+    // We draw short lines for every "line" position beyond staff bounds.
+    const trebleTop = trebleLineIdx[4];
+    const trebleBot = trebleLineIdx[0];
+    const bassTop   = bassLineIdx[4];
+    const bassBot   = bassLineIdx[0];
+
+    const x0 = xCenter - 22, x1 = xCenter + 22;
+
+    // Determine which staff region the note is in.
+    // Use the closest staff: if idx >= MID_C_IDX then treble-ish, else bass-ish.
+    const useTreble = idx >= MID_C_IDX;
+
+    if (useTreble) {
+      // Above treble top or below treble bottom => ledger lines at every even offset from staff lines.
+      if (idx > trebleTop) {
+        for (let k = trebleTop + 2; k <= idx; k += 2) {
+          svg.appendChild(el("line", { x1: x0, y1: yForIndex(k), x2: x1, y2: yForIndex(k), stroke: "#111", "stroke-width": 2 }));
+        }
+      } else if (idx < trebleBot) {
+        for (let k = trebleBot - 2; k >= idx; k -= 2) {
+          svg.appendChild(el("line", { x1: x0, y1: yForIndex(k), x2: x1, y2: yForIndex(k), stroke: "#111", "stroke-width": 2 }));
+        }
+      }
+    } else {
+      if (idx > bassTop) {
+        for (let k = bassTop + 2; k <= idx; k += 2) {
+          svg.appendChild(el("line", { x1: x0, y1: yForIndex(k), x2: x1, y2: yForIndex(k), stroke: "#111", "stroke-width": 2 }));
+        }
+      } else if (idx < bassBot) {
+        for (let k = bassBot - 2; k >= idx; k -= 2) {
+          svg.appendChild(el("line", { x1: x0, y1: yForIndex(k), x2: x1, y2: yForIndex(k), stroke: "#111", "stroke-width": 2 }));
+        }
+      }
+    }
+
+    // Always ensure Middle C ledger line is visible when the note is C4.
+    if (idx === MID_C_IDX) {
+      svg.appendChild(el("line", { x1: x0, y1: yMidC, x2: x1, y2: yMidC, stroke: "#111", "stroke-width": 2 }));
+    }
+  }
+
+  function noteXPositions(n) {
+    if (n === 1) return [720];
+    const lo = 350, hi = 900;
+    return Array.from({length: n}, (_, i) => Math.round(lo + i * (hi - lo) / (n - 1)));
+  }
+
+  function drawNote(idx, x, color = "#111", label = null) {
+    const y = yForIndex(idx);
+
+    drawLedgerLinesFor(idx, x);
+
+    svg.appendChild(el("ellipse", {
+      cx: x, cy: y, rx: 16, ry: 12,
+      fill: color,
+      transform: `rotate(-18 ${x} ${y})`
+    }));
+
+    const midTreble = diatonicIndex("B", 4);
+    const midBass   = diatonicIndex("D", 3);
+    const inTreble = idx >= MID_C_IDX;
+    const stemDown = inTreble ? (idx >= midTreble) : (idx >= midBass);
+
+    const stemH = 74;
+    if (stemDown) {
+      svg.appendChild(el("line", { x1: x - 14, y1: y, x2: x - 14, y2: y + stemH, stroke: color, "stroke-width": 4, "stroke-linecap": "round" }));
+    } else {
+      svg.appendChild(el("line", { x1: x + 14, y1: y, x2: x + 14, y2: y - stemH, stroke: color, "stroke-width": 4, "stroke-linecap": "round" }));
+    }
+
+    if (label) {
+      const t = el("text", { x: x + 30, y: y + 6, fill: color, "font-size": 22, "font-weight": "bold" });
+      t.textContent = label;
+      svg.appendChild(t);
+    }
+  }
+
+  function drawStaff() {
+    // Title text
+    const title = el("text", { x: marginL, y: 40, fill: "#111", "font-size": 22, "font-weight": "600" });
+    title.textContent = "Type A–G";
+    svg.appendChild(title);
+
+    // Always draw both staves
+    drawStaffLines(trebleLineIdx);
+    drawStaffLines(bassLineIdx);
+
+    // Treble clef on the upper staff
+    drawTrebleClef();
+
+    // Bass clef on the lower staff
+    drawBassClef();
+
+    // Clef checkboxes to the left of each staff
+    const trebleMidY = (yForIndex(trebleLineIdx[0]) + yForIndex(trebleLineIdx[4])) / 2;
+    const bassMidY = (yForIndex(bassLineIdx[0]) + yForIndex(bassLineIdx[4])) / 2;
+
+    const foTreble = el("foreignObject", { x: 2, y: trebleMidY - 14, width: 82, height: 28 });
+    foTreble.innerHTML = '<label xmlns="http://www.w3.org/1999/xhtml" style="font:13px system-ui;cursor:pointer;display:flex;align-items:center;gap:3px;"><input type="checkbox" id="cbTreble"' + (trebleEnabled ? ' checked' : '') + '> Treble</label>';
+    svg.appendChild(foTreble);
+
+    const foBass = el("foreignObject", { x: 2, y: bassMidY - 14, width: 82, height: 28 });
+    foBass.innerHTML = '<label xmlns="http://www.w3.org/1999/xhtml" style="font:13px system-ui;cursor:pointer;display:flex;align-items:center;gap:3px;"><input type="checkbox" id="cbBass"' + (bassEnabled ? ' checked' : '') + '> Bass</label>';
+    svg.appendChild(foBass);
+
+    // Wire up change listeners after DOM insertion
+    setTimeout(() => {
+      const cbT = document.getElementById("cbTreble");
+      const cbB = document.getElementById("cbBass");
+      if (cbT) cbT.addEventListener("change", () => { trebleEnabled = cbT.checked; });
+      if (cbB) cbB.addEventListener("change", () => { bassEnabled = cbB.checked; });
+    }, 0);
+  }
+
+  function renderBoard() {
+    clearSvg();
+    drawStaff();
+    const xPos = noteXPositions(current.seqNotes.length);
+    current.seqNotes.forEach(({idx}, i) => {
+      const color = i < current.seqPos ? "#0a7a2f"
+                  : i === current.seqPos ? "#111"
+                  : "#aaa";
+      drawNote(idx, xPos[i], color);
+    });
+  }
+
+  // ---------- Quiz flow ----------
+  function randomInt(lo, hi) { return lo + Math.floor(Math.random() * (hi - lo + 1)); }
+
+  // Note ranges for each clef
+  // Treble: E4 (bottom treble line) to E6
+  // Bass: C2 to A3 (top bass line)
+  // Middle zone (always included): B3, C4, D4
+  const MIDDLE_LO = diatonicIndex("B", 3); // 27
+  const MIDDLE_HI = diatonicIndex("D", 4); // 29
+  const TREBLE_LO = diatonicIndex("E", 4); // 30
+  const TREBLE_HI = diatonicIndex("E", 6); // 44
+  const BASS_LO   = diatonicIndex("C", 2); // 14
+  const BASS_HI   = diatonicIndex("A", 3); // 26
+
+  function buildNotePool() {
+    const pool = [];
+
+    // Always include the middle zone (B3, C4, D4)
+    for (let i = MIDDLE_LO; i <= MIDDLE_HI; i++) pool.push(i);
+
+    // Add treble notes (above middle zone)
+    if (trebleEnabled) {
+      for (let i = TREBLE_LO; i <= TREBLE_HI; i++) pool.push(i);
+    }
+
+    // Add bass notes (below middle zone)
+    if (bassEnabled) {
+      for (let i = BASS_LO; i <= BASS_HI; i++) pool.push(i);
+    }
+
+    return pool;
+  }
+
+  function updateTypedDisplay() {
+    const parts = current.seqNotes.map((_, i) => current.answered[i] || "_");
+    document.getElementById("typed").textContent =
+      current.seqNotes.length === 1 ? parts[0] : parts.join(" ");
+  }
+
+  function newQuestion() {
+    const pool = buildNotePool();
+    const seqLen = Number(document.getElementById("seqLen").value) || 1;
+
+    // Pick first note, then constrain remaining notes to within one octave (6 diatonic steps)
+    const firstIdx = pool[randomInt(0, pool.length - 1)];
+    let octPool = pool.filter(i => i >= firstIdx && i <= firstIdx + 6);
+    if (octPool.length < 2) octPool = pool.filter(i => Math.abs(i - firstIdx) <= 6);
+
+    const seqNotes = [{
+      idx: firstIdx, note: noteFromIndex(firstIdx),
+      clef: firstIdx >= MID_C_IDX ? "treble" : "bass"
+    }];
+    for (let i = 1; i < seqLen; i++) {
+      const idx = octPool[randomInt(0, octPool.length - 1)];
+      seqNotes.push({ idx, note: noteFromIndex(idx), clef: idx >= MID_C_IDX ? "treble" : "bass" });
+    }
+
+    current = { seqNotes, seqPos: 0, answered: [], tries: 0, totalTries: 0, hintUsed: false, startedAt: Date.now() };
+    waitingForNext = false;
+
+    updateTypedDisplay();
+    document.getElementById("feedback").textContent = "";
+    document.getElementById("feedback").className = "big";
+    document.getElementById("tries").textContent = "0";
+
+    renderBoard();
+    playSequence(seqNotes);
+  }
+
+  function updateStats() {
+    document.getElementById("done").textContent = String(done);
+    document.getElementById("firstTry").textContent = String(firstTry);
+    const rate = done === 0 ? 0 : Math.round((firstTry / done) * 100);
+    document.getElementById("rate").textContent = `${rate}%`;
+  }
+
+  function addHistoryRow(entry) {
+    const tbody = document.getElementById("histBody");
+    const tr = document.createElement("tr");
+
+    const tdN = document.createElement("td");
+    tdN.textContent = String(history.length);
+    tr.appendChild(tdN);
+
+    const tdNote = document.createElement("td");
+    tdNote.textContent = entry.noteName;
+    tr.appendChild(tdNote);
+
+    const tdClef = document.createElement("td");
+    tdClef.textContent = entry.clef;
+    tr.appendChild(tdClef);
+
+    const tdTries = document.createElement("td");
+    tdTries.textContent = String(entry.tries);
+    tr.appendChild(tdTries);
+
+    tbody.prepend(tr);
+  }
+
+  function handleGuess(letter) {
+    if (waitingForNext) return;
+
+    const fb = document.getElementById("feedback");
+    const {idx, note} = current.seqNotes[current.seqPos];
+
+    const guessOct = closestOctaveFor(letter, idx);
+    playNote(letter, guessOct, 0.4);
+
+    current.tries++;
+    current.totalTries++;
+    document.getElementById("tries").textContent = String(current.tries);
+
+    if (letter === note.letter) {
+      current.answered.push(letter);
+      updateTypedDisplay();
+
+      if (current.seqPos + 1 < current.seqNotes.length) {
+        // Advance to next note in sequence
+        current.seqPos++;
+        current.tries = 0;
+        document.getElementById("tries").textContent = "0";
+        fb.textContent = "✓";
+        fb.className = "big good";
+        renderBoard();
+        setTimeout(() => { if (!waitingForNext) { fb.textContent = ""; fb.className = "big"; } }, 500);
+      } else {
+        // Sequence complete
+        fb.textContent = "✓";
+        fb.className = "big good";
+
+        done++;
+        if (current.totalTries === current.seqNotes.length && !current.hintUsed) firstTry++;
+
+        const entry = {
+          noteName: current.seqNotes.map(({note: n}) => noteName(n)).join(" "),
+          clef: current.seqNotes.map(({clef: c}) => c).join("/"),
+          tries: current.totalTries
+        };
+        history.push(entry);
+        addHistoryRow(entry);
+        updateStats();
+
+        // Show all notes green with labels
+        clearSvg();
+        drawStaff();
+        const xPos = noteXPositions(current.seqNotes.length);
+        current.seqNotes.forEach(({idx: nidx, note: nn}, i) => {
+          drawNote(nidx, xPos[i], "#0a7a2f", noteName(nn));
+        });
+        waitingForNext = true;
+        setTimeout(newQuestion, 1500);
+      }
+    } else {
+      fb.textContent = "✗";
+      fb.className = "big bad";
+    }
+  }
+
+  function showClefHint() {
+    const {idx} = current.seqNotes[current.seqPos];
+    const lineIdxs = (idx >= MID_C_IDX) ? trebleLineIdx : bassLineIdx;
+    const bottomLine = lineIdxs[0];
+    const onLine = (idx - bottomLine) % 2 === 0;
+    const lo = Math.max(MIN_IDX, lineIdxs[0] - 4);
+    const hi = Math.min(MAX_IDX, lineIdxs[4] + 4);
+
+    const xPos = noteXPositions(current.seqNotes.length);
+    const noteX = xPos[current.seqPos];
+
+    renderBoard();
+
+    const hintColor = "#cc8800";
+    for (let i = lo; i <= hi; i++) {
+      const isLine = (i - bottomLine) % 2 === 0;
+      if (isLine !== onLine) continue;
+      const n = noteFromIndex(i);
+      const y = yForIndex(i);
+      const x = noteX + 50 + ((i - lo) % 2) * 30;
+      const t = el("text", { x, y: y + 6, fill: hintColor, "font-size": 18, "font-weight": "bold" });
+      t.textContent = n.letter;
+      svg.appendChild(t);
+      svg.appendChild(el("circle", { cx: noteX - 40, cy: y, r: 4, fill: hintColor, opacity: 0.5 }));
+    }
+  }
+
+  window.addEventListener("keydown", (e) => {
+    if (waitingForNext) return;
+    const k = e.key.toUpperCase();
+    if (k.length === 1 && k >= "A" && k <= "G") {
+      e.preventDefault();
+      handleGuess(k);
+    } else if (k === "H" || e.key === "?") {
+      e.preventDefault();
+      if (current) { current.hintUsed = true; showClefHint(); }
+    } else if (e.code === "Space" && !e.metaKey && !e.ctrlKey) {
+      e.preventDefault();
+      if (current) playSequence(current.seqNotes);
+    }
+  });
+
+  document.querySelectorAll(".note-btn").forEach(btn => {
+    btn.addEventListener("click", () => {
+      if (current) handleGuess(btn.dataset.note);
+    });
+  });
+
+  document.getElementById("resetBtn").addEventListener("click", () => {
+    done = 0;
+    firstTry = 0;
+    history = [];
+    document.getElementById("histBody").innerHTML = "";
+    updateStats();
+    newQuestion();
+  });
+
+  document.getElementById("seqLen").addEventListener("change", newQuestion);
+
+  // Init
+  updateStats();
+  newQuestion();
+})();
+</script>
+
+Key bindings:
+<ul>
+  <li><b>A</b>–<b>G</b>: answer with that note letter</li>
+  <li><b>H</b>: show hint (note name next to the note)</li>
+  <li><b>Space</b>: replay the current note(s)</li>
+</ul>
+
+Tips:
+<ul>
+  <li>Multiple tries are allowed per note. Only first-try correct answers (without hints) count toward the pass rate.</li>
+  <li>Middle C is on the ledger line between the two staves.</li>
+  <li>Range is limited to C2..E6.</li>
+</ul>
+
+</body>
+</html>
