@@ -23,12 +23,12 @@
     th { position: sticky; top: 0; background: #fff; }
     .kbd { border: 1px solid #ccc; border-bottom-width: 2px; border-radius: 6px; padding: 1px 6px; background: #fafafa; }
     .active-mode { background: #d0e8ff; border-color: #4a90d9; }
+    .selected-btn { background: #d0e8ff; border-color: #4a90d9; }
   </style>
 </head>
 <body>
-  <h2 style="margin: 0 0 6px 0;">Treble + Bass Note Quiz</h2>
   <div style="margin-bottom: 10px; display:flex; gap: 10px; align-items: center;">
-    <strong>Mode:</strong>
+    <h2 style="margin: 0;">Treble + Bass Note Quiz</h2>
     <button id="noteQuizBtn" class="mode-btn active-mode">Note Quiz</button>
     <button id="keyQuizBtn" class="mode-btn">Key Quiz</button>
   </div>
@@ -41,23 +41,10 @@
 
   <div class="row">
     <div class="card" id="boardWrap">
-      <svg id="board" viewBox="0 0 1000 520" xmlns="http://www.w3.org/2000/svg" aria-label="Music staff quiz">
+      <svg id="board" viewBox="0 20 1000 450" xmlns="http://www.w3.org/2000/svg" aria-label="Music staff quiz">
         <!-- drawn by JS -->
       </svg>
-      <div class="row" style="margin-top: 10px; align-items: center;">
-        <div class="big">Answer: <span id="typed" class="mono">_</span></div>
-        <div id="feedback" class="big" aria-live="polite"></div>
-        <div style="margin-left:auto; display:flex; gap:16px; align-items:center;" class="hint">
-          <label>Seq length: <select id="seqLen" style="padding:2px 4px;font-size:13px;border-radius:4px;border:1px solid #ccc">
-            <option value="1" selected>1</option>
-            <option value="2">2</option>
-            <option value="3">3</option>
-            <option value="4">4</option>
-          </select></label>
-          <span>Attempts: <span id="tries" class="mono">0</span></span>
-        </div>
-      </div>
-      <div style="display:flex; gap:8px; margin-top:10px; flex-wrap:wrap;">
+      <div style="display:flex; gap:6px; margin-top:4px; flex-wrap:wrap;">
         <button class="note-btn" data-note="A" style="font-size:20px; font-weight:600; min-width:44px; min-height:44px;">A</button>
         <button class="note-btn" data-note="B" style="font-size:20px; font-weight:600; min-width:44px; min-height:44px;">B</button>
         <button class="note-btn" data-note="C" style="font-size:20px; font-weight:600; min-width:44px; min-height:44px;">C</button>
@@ -65,6 +52,31 @@
         <button class="note-btn" data-note="E" style="font-size:20px; font-weight:600; min-width:44px; min-height:44px;">E</button>
         <button class="note-btn" data-note="F" style="font-size:20px; font-weight:600; min-width:44px; min-height:44px;">F</button>
         <button class="note-btn" data-note="G" style="font-size:20px; font-weight:600; min-width:44px; min-height:44px;">G</button>
+      </div>
+      <div id="keyBtns" style="display:none;">
+        <div style="display:flex; gap:6px; margin-top:4px; flex-wrap:wrap;">
+          <button class="acc-btn" data-acc="" style="font-size:20px; min-width:44px; min-height:44px;">&#9838;</button>
+          <button class="acc-btn" data-acc="-" style="font-size:20px; min-width:44px; min-height:44px;">&#9837;</button>
+          <button class="acc-btn" data-acc="#" style="font-size:20px; min-width:44px; min-height:44px;">&#9839;</button>
+        </div>
+        <div style="display:flex; gap:6px; margin-top:4px; flex-wrap:wrap;">
+          <button class="qual-btn" data-quality="M" style="font-size:16px; min-width:80px; min-height:44px;">Major</button>
+          <button class="qual-btn" data-quality="m" style="font-size:16px; min-width:80px; min-height:44px;">minor</button>
+          <button id="submitKeyBtn" style="font-size:16px; min-width:80px; min-height:44px; background:#4a90d9; color:#fff; border-color:#357ab8;">Submit</button>
+        </div>
+      </div>
+      <div style="display:flex; margin-top:8px; align-items:center; flex-wrap:wrap; gap:8px;">
+        <div class="big">Answer: <span id="typed" class="mono">_</span></div>
+        <div id="feedback" class="big" aria-live="polite"></div>
+        <div style="margin-left:auto; display:flex; gap:16px; align-items:center;" class="hint">
+          <span id="seqLenWrap"><label>Seq length: <select id="seqLen" style="padding:2px 4px;font-size:13px;border-radius:4px;border:1px solid #ccc">
+            <option value="1" selected>1</option>
+            <option value="2">2</option>
+            <option value="3">3</option>
+            <option value="4">4</option>
+          </select></label></span>
+          <span>Attempts: <span id="tries" class="mono">0</span></span>
+        </div>
       </div>
     </div>
 
@@ -378,11 +390,6 @@
   }
 
   function drawStaff() {
-    // Title text
-    const title = el("text", { x: marginL, y: 40, fill: "#111", "font-size": 22, "font-weight": "600" });
-    title.textContent = "Type A–G";
-    svg.appendChild(title);
-
     // Always draw both staves
     drawStaffLines(trebleLineIdx);
     drawStaffLines(bassLineIdx);
@@ -697,9 +704,6 @@
 
   function renderKeyBoard() {
     clearSvg();
-    const title = el("text", {x: marginL, y: 40, fill:"#111", "font-size":18, "font-weight":"600"});
-    title.textContent = "Type: letter + #/- (if needed) + M or m  \u2192  e.g. F#M, B-m, CM, Am";
-    svg.appendChild(title);
 
     drawStaffLines(trebleLineIdx);
     drawTrebleClef();
@@ -734,6 +738,25 @@
     document.getElementById("typed").textContent = display;
   }
 
+  function getKeyBufParts() {
+    let i = 0;
+    const letter = keyBuf[i++] || "";
+    let acc = "";
+    if (keyBuf[i] === "#" || keyBuf[i] === "-") acc = keyBuf[i++];
+    const quality = keyBuf[i] || "";
+    return { letter, acc, quality };
+  }
+
+  function updateKeyBtnHighlights() {
+    const { letter, acc, quality } = getKeyBufParts();
+    document.querySelectorAll(".note-btn").forEach(btn =>
+      btn.classList.toggle("selected-btn", quizMode === "key" && btn.dataset.note === letter));
+    document.querySelectorAll(".acc-btn").forEach(btn =>
+      btn.classList.toggle("selected-btn", btn.dataset.acc === acc && letter !== ""));
+    document.querySelectorAll(".qual-btn").forEach(btn =>
+      btn.classList.toggle("selected-btn", btn.dataset.quality === quality && quality !== ""));
+  }
+
   function newKeyQuestion() {
     let pool = KEY_SIGNATURES.filter(k => {
       if (!keySharpsEnabled && k.sharps > 0) return false;
@@ -750,6 +773,7 @@
     keyBuf = "";
     waitingForNext = false;
     updateKeyTypedDisplay();
+    updateKeyBtnHighlights();
     document.getElementById("feedback").textContent = "";
     document.getElementById("feedback").className = "big";
     document.getElementById("tries").textContent = "0";
@@ -800,6 +824,7 @@
       fb.className = "big bad";
       keyBuf = "";
       updateKeyTypedDisplay();
+      updateKeyBtnHighlights();
     }
   }
 
@@ -808,8 +833,11 @@
     document.getElementById("noteQuizBtn").classList.toggle("active-mode", mode === "note");
     document.getElementById("keyQuizBtn").classList.toggle("active-mode", mode === "key");
     document.getElementById("keyOpts").style.display = mode === "key" ? "flex" : "none";
+    document.getElementById("keyBtns").style.display = mode === "key" ? "block" : "none";
+    document.getElementById("seqLenWrap").style.display = mode === "note" ? "" : "none";
     waitingForNext = false;
     keyBuf = "";
+    document.querySelectorAll(".note-btn, .acc-btn, .qual-btn").forEach(b => b.classList.remove("selected-btn"));
     document.getElementById("feedback").textContent = "";
     document.getElementById("feedback").className = "big";
     if (mode === "note") {
@@ -829,18 +857,22 @@
         e.preventDefault();
         keyBuf = ku;
         updateKeyTypedDisplay();
+        updateKeyBtnHighlights();
       } else if (key === "#" && keyBuf.length === 1) {
         e.preventDefault();
         keyBuf += "#";
         updateKeyTypedDisplay();
+        updateKeyBtnHighlights();
       } else if (key === "-" && keyBuf.length === 1) {
         e.preventDefault();
         keyBuf += "-";
         updateKeyTypedDisplay();
+        updateKeyBtnHighlights();
       } else if ((key === "M" || key === "m") && keyBuf.length >= 1) {
         e.preventDefault();
         keyBuf += key;
         updateKeyTypedDisplay();
+        updateKeyBtnHighlights();
         handleKeyGuess();
       }
       return;
@@ -865,10 +897,38 @@
       if (quizMode === "note") {
         if (current) handleGuess(btn.dataset.note);
       } else if (quizMode === "key" && !waitingForNext) {
-        keyBuf = btn.dataset.note;
+        const { acc, quality } = getKeyBufParts();
+        keyBuf = btn.dataset.note + acc + quality;
         updateKeyTypedDisplay();
+        updateKeyBtnHighlights();
       }
     });
+  });
+
+  document.querySelectorAll(".acc-btn").forEach(btn => {
+    btn.addEventListener("click", () => {
+      if (quizMode !== "key" || waitingForNext) return;
+      const { letter, quality } = getKeyBufParts();
+      if (!letter) return;
+      keyBuf = letter + btn.dataset.acc + quality;
+      updateKeyTypedDisplay();
+      updateKeyBtnHighlights();
+    });
+  });
+
+  document.querySelectorAll(".qual-btn").forEach(btn => {
+    btn.addEventListener("click", () => {
+      if (quizMode !== "key" || waitingForNext) return;
+      const { letter, acc } = getKeyBufParts();
+      if (!letter) return;
+      keyBuf = letter + acc + btn.dataset.quality;
+      updateKeyTypedDisplay();
+      updateKeyBtnHighlights();
+    });
+  });
+
+  document.getElementById("submitKeyBtn").addEventListener("click", () => {
+    if (quizMode === "key" && !waitingForNext) handleKeyGuess();
   });
 
   document.getElementById("resetBtn").addEventListener("click", () => {
