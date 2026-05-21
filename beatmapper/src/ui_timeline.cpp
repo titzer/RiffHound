@@ -392,6 +392,11 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
     static bool   s_lyr_hdrag       = false;   // handle resize drag in progress
     static int    s_lyr_hdrag_idx   = -1;
     static int    s_lyr_hdrag_end   = 0;
+    static bool   s_lyr_body_drag     = false; // whole-lyric translate drag
+    static int    s_lyr_body_drag_idx = -1;
+    static double s_lyr_body_drag_dt  = 0.0;   // cursor_t - t_start at drag start
+    static double s_lyr_body_drag_dur = 0.0;   // lyric duration preserved during drag
+    static double s_lyr_body_new_t0   = 0.0;   // virtual t_start while dragging
     static bool   s_rect_sel        = false;  // rect selection in progress
     static float  s_rect_x0         = 0.0f, s_rect_y0 = 0.0f;
     static double s_anchor          = 0.0;
@@ -559,26 +564,50 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
 
             const float HANDLE_PX = 6.0f;
             int hit = -1, hit_end = 0;
-            for (int i = 0; i < lyricmap->count; i++) {
-                float lx0 = time_to_x(lyricmap->lyrics[i].t_start,
+            float mx = io.MousePos.x;
+
+            // Pass 1: selected lyric's handles have priority so they remain clickable
+            // even when another lyric abuts or overlaps at the same screen position.
+            if (s_lyr_selected >= 0 && s_lyr_selected < lyricmap->count) {
+                float lx0 = time_to_x(lyricmap->lyrics[s_lyr_selected].t_start,
                                        editor->view_start, editor->view_end, la_x, la_w);
-                float lx1 = time_to_x(lyricmap->lyrics[i].t_end,
+                float lx1 = time_to_x(lyricmap->lyrics[s_lyr_selected].t_end,
                                        editor->view_start, editor->view_end, la_x, la_w);
-                float mx = io.MousePos.x;
-                if (fabsf(mx - lx0) <= HANDLE_PX) { hit = i; hit_end = 0; break; }
-                if (fabsf(mx - lx1) <= HANDLE_PX) { hit = i; hit_end = 1; break; }
-                if (mx > lx0 && mx < lx1)          { hit = i; hit_end = 2; break; }
+                if      (fabsf(mx - lx0) <= HANDLE_PX) { hit = s_lyr_selected; hit_end = 0; }
+                else if (fabsf(mx - lx1) <= HANDLE_PX) { hit = s_lyr_selected; hit_end = 1; }
+            }
+            // Pass 2: no priority handle hit — scan all lyrics (handles then bodies)
+            if (hit < 0) {
+                for (int i = 0; i < lyricmap->count; i++) {
+                    float lx0 = time_to_x(lyricmap->lyrics[i].t_start,
+                                           editor->view_start, editor->view_end, la_x, la_w);
+                    float lx1 = time_to_x(lyricmap->lyrics[i].t_end,
+                                           editor->view_start, editor->view_end, la_x, la_w);
+                    if (fabsf(mx - lx0) <= HANDLE_PX) { hit = i; hit_end = 0; break; }
+                    if (fabsf(mx - lx1) <= HANDLE_PX) { hit = i; hit_end = 1; break; }
+                    if (mx > lx0 && mx < lx1)          { hit = i; hit_end = 2; break; }
+                }
             }
 
             if (hit >= 0) {
                 s_lyr_selected = hit;
                 s_lyr_drag     = false;
                 if (hit_end < 2) {
-                    s_lyr_hdrag     = true;
-                    s_lyr_hdrag_idx = hit;
-                    s_lyr_hdrag_end = hit_end;
+                    // Handle drag (resize)
+                    s_lyr_hdrag         = true;
+                    s_lyr_hdrag_idx     = hit;
+                    s_lyr_hdrag_end     = hit_end;
+                    s_lyr_body_drag     = false;
+                    s_lyr_body_drag_idx = -1;
                 } else {
-                    s_lyr_hdrag = false;
+                    // Body drag (translate whole segment)
+                    s_lyr_hdrag             = false;
+                    s_lyr_body_drag         = true;
+                    s_lyr_body_drag_idx     = hit;
+                    s_lyr_body_drag_dur     = lyricmap->lyrics[hit].t_end
+                                             - lyricmap->lyrics[hit].t_start;
+                    s_lyr_body_drag_dt      = t_raw - lyricmap->lyrics[hit].t_start;
+                    s_lyr_body_new_t0       = lyricmap->lyrics[hit].t_start;
                     if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
                         editor->has_region   = true;
                         editor->region_start = lyricmap->lyrics[hit].t_start;
@@ -586,11 +615,13 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
                     }
                 }
             } else {
-                s_lyr_selected = -1;
-                s_lyr_drag     = true;
-                s_lyr_drag_t0  = t_snap;
-                s_lyr_drag_t1  = t_snap;
-                s_lyr_hdrag    = false;
+                s_lyr_selected      = -1;
+                s_lyr_drag          = true;
+                s_lyr_drag_t0       = t_snap;
+                s_lyr_drag_t1       = t_snap;
+                s_lyr_hdrag         = false;
+                s_lyr_body_drag     = false;
+                s_lyr_body_drag_idx = -1;
             }
         }
 
@@ -756,6 +787,39 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
     if (s_lyr_hdrag && !ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
         s_lyr_hdrag     = false;
         s_lyr_hdrag_idx = -1;
+    }
+
+    // Lyric body drag: translate the whole segment while mouse is held
+    if (s_lyr_body_drag && s_drag_in_lyr &&
+        ImGui::IsMouseDragging(ImGuiMouseButton_Left)) {
+        double span     = editor->view_end - editor->view_start;
+        double t_cursor = (la_w > 0 && span > 0)
+            ? editor->view_start + (double)(io.MousePos.x - la_x) / la_w * span
+            : editor->view_start;
+        double new_t0 = t_cursor - s_lyr_body_drag_dt;
+        if (new_t0 < 0.0) new_t0 = 0.0;
+        if (new_t0 + s_lyr_body_drag_dur > editor->duration)
+            new_t0 = editor->duration - s_lyr_body_drag_dur;
+        s_lyr_body_new_t0 = new_t0;
+    }
+
+    // Lyric body drag release: re-sort at new position
+    if (s_lyr_body_drag && !ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+        int i = s_lyr_body_drag_idx;
+        if (i >= 0 && i < lyricmap->count &&
+            fabs(s_lyr_body_new_t0 - lyricmap->lyrics[i].t_start) > 1e-6) {
+            double t0 = s_lyr_body_new_t0;
+            double t1 = t0 + s_lyr_body_drag_dur;
+            char   saved[128];
+            strncpy(saved, lyricmap->lyrics[i].text, sizeof(saved) - 1);
+            saved[sizeof(saved) - 1] = '\0';
+            lyricmap_remove(lyricmap, i);
+            int ni = lyricmap_add(lyricmap, t0, t1, saved);
+            s_lyr_selected         = ni;
+            lyricmap->selected_idx = ni;
+        }
+        s_lyr_body_drag     = false;
+        s_lyr_body_drag_idx = -1;
     }
 
     // Rect selection release: select all visible beats whose centre falls inside the rect
@@ -1427,14 +1491,18 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
     dl->PushClipRect(ImVec2(la_x, la_y), ImVec2(la_x + la_w, la_y + la_h), true);
     for (int i = 0; i < lyricmap->count; i++) {
         const Lyric& ly = lyricmap->lyrics[i];
-        float lx0 = time_to_x(ly.t_start, editor->view_start, editor->view_end, la_x, la_w);
-        float lx1 = time_to_x(ly.t_end,   editor->view_start, editor->view_end, la_x, la_w);
+        // Use virtual position while this lyric is being body-dragged
+        bool   bdrag = (s_lyr_body_drag && s_lyr_body_drag_idx == i);
+        double vis_t0 = bdrag ? s_lyr_body_new_t0                        : ly.t_start;
+        double vis_t1 = bdrag ? s_lyr_body_new_t0 + s_lyr_body_drag_dur : ly.t_end;
+        float lx0 = time_to_x(vis_t0, editor->view_start, editor->view_end, la_x, la_w);
+        float lx1 = time_to_x(vis_t1, editor->view_start, editor->view_end, la_x, la_w);
         if (lx1 <= la_x || lx0 >= la_x + la_w) continue;
         bool  sel = (i == s_lyr_selected);
         float y0  = la_y + 3.0f, y1 = la_y + la_h - 3.0f;
 
         dl->AddRectFilled(ImVec2(lx0, y0), ImVec2(lx1, y1),
-                          IM_COL32(45, 95, 130, 160));
+                          bdrag ? IM_COL32(70, 150, 200, 200) : IM_COL32(45, 95, 130, 160));
         dl->AddRect(ImVec2(lx0, y0), ImVec2(lx1, y1),
                     sel ? IM_COL32(90, 180, 220, 230) : IM_COL32(0, 0, 0, 120),
                     0.0f, 0, sel ? 2.0f : 1.0f);
@@ -1917,11 +1985,14 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
                 }
 
                 // Try 2 s window, fall back to 1 s, then fill whatever space exists
-                double avail   = next_start - prev_end;
+                // Small gap after the previous lyric so both handles are easy to grab
+                const double GAP = 0.25;
+                double t0    = prev_end + GAP;
+                double avail = next_start - t0;
+                if (avail < 0.05) { t0 = prev_end; avail = next_start - prev_end; }
                 double lyr_dur = (avail >= 2.0) ? 2.0 :
                                  (avail >= 1.0) ? 1.0 :
                                  (avail >= 0.05) ? avail : 0.05;
-                double t0 = prev_end;
                 double t1 = t0 + lyr_dur;
 
                 char saved[128];
