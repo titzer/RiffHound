@@ -5,6 +5,7 @@
 #include "imgui.h"
 #include <math.h>
 #include <stdio.h>
+#include <string.h>
 
 // --- helpers -----------------------------------------------------------
 
@@ -237,8 +238,9 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
 {
     ImGuiIO& io = ImGui::GetIO();
 
-    static bool s_beats_collapsed = false;   // beat editor collapsed to slim display strip
-    static int  s_spectro_max_khz = 22;      // max displayed frequency [2, 22] kHz
+    static bool s_beats_collapsed   = false;  // beat editor collapsed to slim display strip
+    static int  s_spectro_max_khz  = 22;     // max displayed frequency [2, 22] kHz
+    static bool s_lyric_index_open = false;  // lyric index floating window visible
 
     // Pre-compute contextual panel visibility (needs beatmap state, but before BeginChild
     // so we can set the correct child height).
@@ -1478,6 +1480,40 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
     }
     dl->PopClipRect();
 
+    // --- Lyric Index toggle button (right end of lyric strip) ---
+    {
+        const float BTN_W = 26.0f;
+        const float BTN_H = LYRIC_H - 4.0f;
+        float bx = la_x + la_w - BTN_W - 2.0f;
+        float by = la_y + 2.0f;
+
+        ImGui::SetCursorScreenPos(ImVec2(bx, by));
+        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(0.0f, 0.0f));
+        ImGui::PushStyleColor(ImGuiCol_Button,
+            s_lyric_index_open ? IM_COL32(55, 95, 160, 210) : IM_COL32(28, 28, 50, 180));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, IM_COL32(70, 120, 190, 230));
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive,  IM_COL32(90, 150, 220, 255));
+        if (ImGui::Button("##lyridx_tog", ImVec2(BTN_W, BTN_H)))
+            s_lyric_index_open = !s_lyric_index_open;
+        ImGui::PopStyleColor(3);
+        ImGui::PopStyleVar();
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Lyric Index");
+
+        // Draw icon: ≡ when closed, × when open
+        float icx = bx + BTN_W * 0.5f;
+        float icy = by + BTN_H * 0.5f;
+        ImU32 ico = s_lyric_index_open ? IM_COL32(220, 190, 120, 230)
+                                       : IM_COL32(160, 160, 195, 220);
+        if (s_lyric_index_open) {
+            dl->AddLine(ImVec2(icx - 5.0f, icy - 5.0f), ImVec2(icx + 5.0f, icy + 5.0f), ico, 1.5f);
+            dl->AddLine(ImVec2(icx + 5.0f, icy - 5.0f), ImVec2(icx - 5.0f, icy + 5.0f), ico, 1.5f);
+        } else {
+            dl->AddLine(ImVec2(icx - 6.0f, icy - 3.5f), ImVec2(icx + 6.0f, icy - 3.5f), ico, 1.5f);
+            dl->AddLine(ImVec2(icx - 6.0f, icy),        ImVec2(icx + 6.0f, icy),        ico, 1.5f);
+            dl->AddLine(ImVec2(icx - 6.0f, icy + 3.5f), ImVec2(icx + 6.0f, icy + 3.5f), ico, 1.5f);
+        }
+    }
+
     // --- Unified edit panel background --- always drawn to keep layout stable.
     dl->AddRectFilled(ImVec2(cx, ep_y), ImVec2(cx + cw, ep_y + EDIT_PANEL_H),
                       IM_COL32(10, 10, 18, 255));
@@ -1718,4 +1754,199 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
     }
 
     ImGui::EndChild();
+
+    // --- Lyric Index floating window ---
+    if (s_lyric_index_open) {
+        ImGui::SetNextWindowSize(ImVec2(420.0f, 260.0f), ImGuiCond_FirstUseEver);
+        bool wvis = ImGui::Begin("Lyric Index", &s_lyric_index_open);
+        if (wvis) {
+            double dur      = audio->duration;
+            bool   has_audio = (dur > 0.0);
+
+            // Paste button: split clipboard by newlines, add each as an unplaced lyric
+            if (ImGui::Button("Paste")) {
+                const char* clip = ImGui::GetClipboardText();
+                if (clip && clip[0]) {
+                    // Find next available unplaced slot index to avoid t_start collisions
+                    double base_t = has_audio ? dur : 0.0;
+                    int n_unplaced = 0;
+                    for (int k = 0; k < lyricmap->count; k++)
+                        if (lyricmap->lyrics[k].t_start >= base_t - 1e-9)
+                            n_unplaced++;
+
+                    const char* p = clip;
+                    int added = 0;
+                    while (*p) {
+                        const char* le = p;
+                        while (*le && *le != '\n' && *le != '\r') le++;
+                        // Trim whitespace from both ends of the line
+                        const char* ts = p, *te = le;
+                        while (ts < te && (*ts == ' ' || *ts == '\t')) ts++;
+                        while (te > ts && (*(te-1) == ' ' || *(te-1) == '\t')) te--;
+                        if (te > ts) {
+                            char buf[128] = {};
+                            int  len = (int)(te - ts);
+                            if (len > 127) len = 127;
+                            strncpy(buf, ts, (size_t)len);
+                            // Place after dur, 1 ms apart, to preserve paste order
+                            double t = base_t + (n_unplaced + added) * 0.001;
+                            lyricmap_add(lyricmap, t, t + 0.001, buf);
+                            added++;
+                        }
+                        p = le;
+                        if (*p == '\r') p++;
+                        if (*p == '\n') p++;
+                    }
+                }
+            }
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Add each clipboard line as a new unplaced lyric");
+            ImGui::SameLine();
+            ImGui::TextDisabled("(%d)", lyricmap->count);
+
+            ImGui::Separator();
+
+            // Deferred auto-place: collect index during loop, act on it after EndChild
+            int pending_place = -1;
+
+            ImGui::BeginChild("##li_rows", ImVec2(0, 0), false);
+            ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing,  ImVec2(2.0f, 2.0f));
+            ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(3.0f, 2.0f));
+
+            const float GW = 22.0f;  // gutter column width
+
+            for (int i = 0; i < lyricmap->count; i++) {
+                Lyric& ly     = lyricmap->lyrics[i];
+                // A lyric is "placed" when its start time is before audio end.
+                // Unplaced lyrics are stored with t_start >= dur (in paste order).
+                bool placed   = has_audio && (ly.t_start < dur - 1e-9);
+                bool selected = (i == s_lyr_selected);
+
+                ImGui::PushID(i);
+
+                // Highlight row for the currently selected lyric
+                if (selected) {
+                    ImVec2 rp = ImGui::GetCursorScreenPos();
+                    float  rw = ImGui::GetContentRegionAvail().x;
+                    float  rh = ImGui::GetFrameHeight() + ImGui::GetStyle().ItemSpacing.y;
+                    ImGui::GetWindowDrawList()->AddRectFilled(
+                        rp, ImVec2(rp.x + rw, rp.y + rh),
+                        IM_COL32(40, 80, 145, 88));
+                }
+
+                // Gutter button: blue=placed(▶), green=unplaced(+)
+                ImVec4 btn_n = placed
+                    ? (selected ? ImVec4(0.24f,0.47f,0.78f,0.82f) : ImVec4(0.16f,0.31f,0.55f,0.76f))
+                    : (selected ? ImVec4(0.24f,0.51f,0.24f,0.82f) : ImVec4(0.16f,0.35f,0.16f,0.68f));
+                ImVec4 btn_h = placed ? ImVec4(0.28f,0.55f,0.86f,0.90f)
+                                      : ImVec4(0.27f,0.59f,0.27f,0.90f);
+                ImVec4 btn_a = placed ? ImVec4(0.39f,0.67f,1.00f,1.00f)
+                                      : ImVec4(0.35f,0.70f,0.35f,1.00f);
+                ImGui::PushStyleColor(ImGuiCol_Button,        btn_n);
+                ImGui::PushStyleColor(ImGuiCol_ButtonHovered, btn_h);
+                ImGui::PushStyleColor(ImGuiCol_ButtonActive,  btn_a);
+                bool hit = ImGui::Button(placed ? ">" : "+", ImVec2(GW, 0));
+                ImGui::PopStyleColor(3);
+
+                if (hit) {
+                    s_lyr_selected = i;
+                    if (placed) {
+                        // Scroll timeline so this lyric is visible
+                        double span = editor->view_end - editor->view_start;
+                        if (span > 0.0) {
+                            bool in_view = (ly.t_start >= editor->view_start &&
+                                            ly.t_end   <= editor->view_end + 1e-6);
+                            if (!in_view) {
+                                double vs = ly.t_start - span * 0.25;
+                                if (vs < 0.0)                    vs = 0.0;
+                                if (vs + span > editor->duration) vs = editor->duration - span;
+                                if (vs < 0.0)                    vs = 0.0;
+                                editor->view_start = vs;
+                                editor->view_end   = vs + span;
+                            }
+                        }
+                    } else if (has_audio) {
+                        pending_place = i;
+                    }
+                }
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip(placed ? "Scroll to lyric" : "Auto-place on timeline");
+
+                // Lyric text input (fills remaining row width)
+                ImGui::SameLine(0, 2.0f);
+                ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x);
+                // Dim unplaced lyrics so placed ones stand out
+                if (!placed)
+                    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.62f,0.59f,0.49f,0.76f));
+                if (ImGui::InputText("##t", ly.text, sizeof(ly.text)))
+                    lyricmap->dirty = true;
+                if (!placed)
+                    ImGui::PopStyleColor();
+                // Typing in the text field selects the lyric in the strip too
+                if (ImGui::IsItemActive()) s_lyr_selected = i;
+
+                ImGui::PopID();
+            }
+
+            if (lyricmap->count == 0)
+                ImGui::TextDisabled("No lyrics yet. Drag on the lyric strip or paste from clipboard.");
+
+            ImGui::PopStyleVar(2);
+            ImGui::EndChild();
+
+            // ---- Auto-place deferred action ----
+            // Find a gap in the timeline for this lyric and re-insert with real timestamps.
+            if (pending_place >= 0 && pending_place < lyricmap->count) {
+                int i = pending_place;
+
+                // prev_end: t_end of last placed lyric before index i (0 if none)
+                double prev_end = 0.0;
+                for (int j = i - 1; j >= 0; j--) {
+                    if (lyricmap->lyrics[j].t_start < dur - 1e-9) {
+                        prev_end = lyricmap->lyrics[j].t_end;
+                        break;
+                    }
+                }
+                // next_start: t_start of first placed lyric after index i (dur if none)
+                double next_start = dur;
+                for (int j = i + 1; j < lyricmap->count; j++) {
+                    if (lyricmap->lyrics[j].t_start < dur - 1e-9) {
+                        next_start = lyricmap->lyrics[j].t_start;
+                        break;
+                    }
+                }
+
+                // Try 2 s window, fall back to 1 s, then fill whatever space exists
+                double avail   = next_start - prev_end;
+                double lyr_dur = (avail >= 2.0) ? 2.0 :
+                                 (avail >= 1.0) ? 1.0 :
+                                 (avail >= 0.05) ? avail : 0.05;
+                double t0 = prev_end;
+                double t1 = t0 + lyr_dur;
+
+                char saved[128];
+                strncpy(saved, lyricmap->lyrics[i].text, sizeof(saved) - 1);
+                saved[sizeof(saved) - 1] = '\0';
+
+                lyricmap_remove(lyricmap, i);
+                int ni = lyricmap_add(lyricmap, t0, t1, saved);
+                s_lyr_selected             = ni;
+                lyricmap->selected_idx     = ni;
+
+                // Scroll to the newly placed lyric
+                if (ni >= 0 && editor->duration > 0.0) {
+                    double span = editor->view_end - editor->view_start;
+                    if (span > 0.0) {
+                        double vs = t0 - span * 0.25;
+                        if (vs < 0.0)                    vs = 0.0;
+                        if (vs + span > editor->duration) vs = editor->duration - span;
+                        if (vs < 0.0)                    vs = 0.0;
+                        editor->view_start = vs;
+                        editor->view_end   = vs + span;
+                    }
+                }
+            }
+        }
+        ImGui::End();
+    }
 }
