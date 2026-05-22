@@ -46,6 +46,7 @@
   <span style="color:#bbb; margin:0 2px;">|</span>
   <button id="sheetBtn" class="modality-btn active-mode">Sheet Music</button>
   <button id="earBtn"   class="modality-btn">Ear</button>
+  <button id="tabBtn"   class="modality-btn">Tab</button>
 </div>
 
 <!-- Key filter (key quiz only) -->
@@ -62,6 +63,16 @@
   <label><input type="checkbox" id="cbKeySharps" checked> Sharps</label>
   <label><input type="checkbox" id="cbKeyFlats"  checked> Flats</label>
   <label><input type="checkbox" id="cbKeyMinor"  checked> Minor</label>
+</div>
+
+<!-- Tab position selector (tab mode only) -->
+<div id="tabOpts" style="display:none; margin-bottom:8px; gap:6px; align-items:center; flex-wrap:wrap;" class="hint">
+  <strong>Position:</strong>
+  <button class="tabpos-btn selected-btn" data-pos="0">Open</button>
+  <button class="tabpos-btn" data-pos="1">3–6</button>
+  <button class="tabpos-btn" data-pos="2">6–10</button>
+  <button class="tabpos-btn" data-pos="3">10–14</button>
+  <button class="tabpos-btn" data-pos="4">12–17</button>
 </div>
 
 <!-- Ear-note options (ear + note only) -->
@@ -186,6 +197,29 @@ let keyLettersEnabled = new Set(["A","B","C","D","E","F","G"]);
 let earCurrent = null;
 
 // =====================================================================
+// GUITAR TAB STATE
+// =====================================================================
+const GUITAR_STRINGS = [
+  { stringNum:1, letter:'E', octave:4, openMidi:64 },  // high e
+  { stringNum:2, letter:'B', octave:3, openMidi:59 },
+  { stringNum:3, letter:'G', octave:3, openMidi:55 },
+  { stringNum:4, letter:'D', octave:3, openMidi:50 },
+  { stringNum:5, letter:'A', octave:2, openMidi:45 },
+  { stringNum:6, letter:'E', octave:2, openMidi:40 },  // low E
+];
+const TAB_POSITIONS = [
+  { label:'Open',  minFret:0,  maxFret:4  },
+  { label:'3–6',   minFret:3,  maxFret:6  },
+  { label:'6–10',  minFret:6,  maxFret:10 },
+  { label:'10–14', minFret:10, maxFret:14 },
+  { label:'12–17', minFret:12, maxFret:17 },
+];
+let tabPositionIdx = 0;
+let tabCurrent = null;
+const TAB_STR_Y = [80, 143, 206, 269, 332, 395]; // y per string, index 0 = high e
+const TAB_LEFT = 90, TAB_RIGHT = 950;
+
+// =====================================================================
 // MUSIC THEORY
 // =====================================================================
 const LETTERS = ["C","D","E","F","G","A","B"];
@@ -201,6 +235,7 @@ const bassLineIdx   = ["G2","B2","D3","F3","A3"].map(parseNoteName).map(n => dia
 
 // Semitone offsets from C for each letter (natural)
 const SEMI = { C:0, D:2, E:4, F:5, G:7, A:9, B:11 };
+const SEMI_INV = new Map(Object.entries(SEMI).map(([l,s]) => [s,l])); // semitone → letter
 
 // Ear training helpers
 const MAJOR_SCALE_ST = [0,2,4,5,7,9,11];
@@ -816,6 +851,155 @@ function lockChoiceButtons(chosen, correct) {
 }
 
 // =====================================================================
+// GUITAR TAB QUIZ
+// =====================================================================
+function noteToMidi(letter, octave) { return 12 + octave * 12 + SEMI[letter]; }
+
+function findTabPlacement(letter, octave) {
+  const midi = noteToMidi(letter, octave);
+  const pos  = TAB_POSITIONS[tabPositionIdx];
+  let best = null, bestScore = Infinity;
+  for (const str of GUITAR_STRINGS) {
+    const fret = midi - str.openMidi;
+    if (fret < 0 || fret > 24) continue;
+    const score = fret < pos.minFret ? pos.minFret - fret
+                : fret > pos.maxFret ? fret - pos.maxFret : 0;
+    if (score < bestScore) { bestScore = score; best = { stringNum: str.stringNum, fret }; }
+  }
+  return best;
+}
+
+function buildTabNotePool() {
+  const pos = TAB_POSITIONS[tabPositionIdx];
+  const seen = new Set();
+  const pool = [];
+  for (const str of GUITAR_STRINGS) {
+    for (let fret = pos.minFret; fret <= pos.maxFret; fret++) {
+      const midi = str.openMidi + fret;
+      const semi = (midi - 12) % 12;
+      if (!SEMI_INV.has(semi)) continue;
+      const letter = SEMI_INV.get(semi);
+      const octave = Math.floor((midi - 12) / 12);
+      const dIdx = diatonicIndex(letter, octave);
+      if (!seen.has(dIdx)) { seen.add(dIdx); pool.push(dIdx); }
+    }
+  }
+  return pool.sort((a, b) => a - b);
+}
+
+function newTabNoteQuestion() {
+  const pool = buildTabNotePool();
+  if (!pool.length) return;
+  const seqLen = Number(document.getElementById("seqLen").value) || 1;
+  const seqNotes = [];
+  let attempts = 0;
+  while (seqNotes.length < seqLen && attempts < 200) {
+    attempts++;
+    const idx = pool[randomInt(0, pool.length - 1)];
+    if (seqNotes.length > 0 && seqNotes[seqNotes.length - 1].idx === idx) continue;
+    const note = noteFromIndex(idx);
+    const placement = findTabPlacement(note.letter, note.octave);
+    if (placement) seqNotes.push({ idx, note, placement });
+  }
+  if (!seqNotes.length) return;
+  tabCurrent = { seqNotes, seqPos: 0, answered: [], tries: 0, totalTries: 0 };
+  waitingForNext = false;
+  updateTabTypedDisplay(); clearFeedback(); resetTries();
+  renderTabBoard();
+  synth.playNoteSeq(seqNotes);
+}
+
+function updateTabTypedDisplay() {
+  const c = tabCurrent;
+  const parts = c.seqNotes.map((_, i) => c.answered[i] || "_");
+  document.getElementById("typed").textContent = c.seqNotes.length === 1 ? parts[0] : parts.join(" ");
+}
+
+function renderTabBoard() {
+  clearSvg(); svg.setAttribute("viewBox","0 0 1000 450");
+  const pos = TAB_POSITIONS[tabPositionIdx];
+
+  // Position label
+  const posT = el("text",{x:500,y:38,"text-anchor":"middle",fill:"#555","font-size":17,"font-family":"system-ui"});
+  posT.textContent = "Position: " + pos.label; svg.appendChild(posT);
+
+  // String labels (high e → low E)
+  const strLabels = ["e","B","G","D","A","E"];
+  TAB_STR_Y.forEach((y, i) => {
+    const t = el("text",{x:TAB_LEFT-10,y:y+8,"text-anchor":"end",fill:"#333","font-size":20,"font-weight":"bold","font-family":"monospace"});
+    t.textContent = strLabels[i]; svg.appendChild(t);
+  });
+
+  // Nut / position marker
+  if (pos.minFret === 0) {
+    svg.appendChild(el("rect",{x:TAB_LEFT,y:TAB_STR_Y[0]-15,width:8,height:TAB_STR_Y[5]-TAB_STR_Y[0]+30,fill:"#222",rx:2}));
+  } else {
+    svg.appendChild(el("line",{x1:TAB_LEFT,y1:TAB_STR_Y[0]-12,x2:TAB_LEFT,y2:TAB_STR_Y[5]+12,stroke:"#555","stroke-width":3}));
+    const frT = el("text",{x:TAB_LEFT+4,y:TAB_STR_Y[5]+32,fill:"#666","font-size":14,"font-style":"italic"});
+    frT.textContent = pos.minFret + "fr"; svg.appendChild(frT);
+  }
+
+  // String lines
+  TAB_STR_Y.forEach(y => {
+    svg.appendChild(el("line",{x1:TAB_LEFT,y1:y,x2:TAB_RIGHT,y2:y,stroke:"#444","stroke-width":2.5}));
+  });
+
+  if (!tabCurrent) return;
+  const c = tabCurrent;
+  const xPos = noteXPositions(c.seqNotes.length);
+
+  c.seqNotes.forEach(({note, placement}, i) => {
+    const answered = i < c.seqPos;
+    const current  = i === c.seqPos;
+    const color = answered ? "#0a7a2f" : current ? "#111" : "#aaa";
+    const x = xPos[i];
+    const y = TAB_STR_Y[placement.stringNum - 1];
+    const fStr = String(placement.fret);
+    const bw = fStr.length === 1 ? 32 : 44;
+
+    svg.appendChild(el("rect",{x:x-bw/2,y:y-14,width:bw,height:28,fill:"white",stroke:color,"stroke-width":2.5,rx:5}));
+    const nt = el("text",{x,y:y+8,"text-anchor":"middle",fill:color,"font-size":20,"font-weight":"bold","font-family":"monospace"});
+    nt.textContent = fStr; svg.appendChild(nt);
+
+    // Show note letter above when answered (or all done)
+    if (answered) {
+      const lt = el("text",{x,y:y-20,"text-anchor":"middle",fill:"#0a7a2f","font-size":15,"font-weight":"bold"});
+      lt.textContent = note.letter; svg.appendChild(lt);
+    }
+  });
+}
+
+function handleTabNoteGuess(letter) {
+  if (waitingForNext || !tabCurrent) return;
+  const c = tabCurrent;
+  const {idx, note} = c.seqNotes[c.seqPos];
+  synth.playByLetter(letter, closestOctaveFor(letter, idx), 0.4);
+  c.tries++; c.totalTries++;
+  document.getElementById("tries").textContent = String(c.tries);
+  if (letter === note.letter) {
+    c.answered.push(letter); updateTabTypedDisplay();
+    if (c.seqPos + 1 < c.seqNotes.length) {
+      c.seqPos++; c.tries = 0; document.getElementById("tries").textContent = "0";
+      setFeedback("✓","good"); renderTabBoard();
+      setTimeout(() => { if (!waitingForNext) clearFeedback(); }, 500);
+    } else {
+      setFeedback("✓","good");
+      recordResult(
+        c.seqNotes.map(({note:n}) => noteName(n)).join(" "),
+        "note/tab", c.totalTries,
+        c.totalTries === c.seqNotes.length
+      );
+      c.seqPos = c.seqNotes.length; // mark all answered
+      waitingForNext = true;
+      renderTabBoard();
+      setTimeout(newTabNoteQuestion, 1500);
+    }
+  } else {
+    setFeedback("✗","bad");
+  }
+}
+
+// =====================================================================
 // STATS & HISTORY
 // =====================================================================
 function recordResult(questionText, mode, tries, wasFirstTry) {
@@ -851,6 +1035,7 @@ function resetTries() { document.getElementById("tries").textContent = "0"; }
 function updateUI() {
   const isSheet = modality === "sheet";
   const isEar   = modality === "ear";
+  const isTab   = modality === "tab";
   const isNote  = quizMode  === "note";
   const isKey   = quizMode  === "key";
 
@@ -858,16 +1043,18 @@ function updateUI() {
   document.getElementById("keyQuizBtn").classList.toggle("active-mode",  isKey);
   document.getElementById("sheetBtn").classList.toggle("active-mode", isSheet);
   document.getElementById("earBtn").classList.toggle("active-mode",   isEar);
+  document.getElementById("tabBtn").classList.toggle("active-mode",   isTab);
 
-  document.getElementById("keyOpts").style.display = isKey ? "flex" : "none";
-  document.getElementById("earOpts").style.display = (isEar && isNote) ? "flex" : "none";
+  document.getElementById("keyOpts").style.display  = isKey ? "flex" : "none";
+  document.getElementById("earOpts").style.display  = (isEar && isNote) ? "flex" : "none";
+  document.getElementById("tabOpts").style.display  = isTab ? "flex" : "none";
 
-  document.getElementById("boardWrap").style.display = isSheet ? "block" : "none";
-  document.getElementById("earArea").style.display   = isEar   ? "block" : "none";
-  document.getElementById("noteBtns").style.display  = isSheet ? "flex"  : "none";
+  document.getElementById("boardWrap").style.display = (isSheet || isTab) ? "block" : "none";
+  document.getElementById("earArea").style.display   = isEar ? "block" : "none";
+  document.getElementById("noteBtns").style.display  = (isSheet || isTab) ? "flex" : "none";
   document.getElementById("keyBtns").style.display   = (isSheet && isKey) ? "block" : "none";
-  document.getElementById("answerRow").style.display = isSheet ? "" : "none";
-  document.getElementById("seqLenWrap").style.display = (isSheet && isNote) ? "" : "none";
+  document.getElementById("answerRow").style.display = (isSheet || isTab) ? "" : "none";
+  document.getElementById("seqLenWrap").style.display = ((isSheet || isTab) && isNote) ? "" : "none";
 }
 
 function startNewQuestion() {
@@ -876,6 +1063,7 @@ function startNewQuestion() {
   document.querySelectorAll(".note-btn,.acc-btn,.qual-btn").forEach(b => b.classList.remove("selected-btn"));
   if      (modality==="sheet" && quizMode==="note") newSheetNoteQuestion();
   else if (modality==="sheet" && quizMode==="key")  newSheetKeyQuestion();
+  else if (modality==="tab")                         newTabNoteQuestion();
   else if (modality==="ear"   && quizMode==="note") newEarNoteQuestion();
   else                                               newEarKeyQuestion();
 }
@@ -884,9 +1072,14 @@ function startNewQuestion() {
 // EVENT WIRING
 // =====================================================================
 document.getElementById("noteQuizBtn").addEventListener("click", () => { quizMode="note";  updateUI(); startNewQuestion(); });
-document.getElementById("keyQuizBtn").addEventListener("click",  () => { quizMode="key";   updateUI(); startNewQuestion(); });
-document.getElementById("sheetBtn").addEventListener("click",    () => { modality="sheet"; updateUI(); startNewQuestion(); });
-document.getElementById("earBtn").addEventListener("click",      () => { modality="ear";   updateUI(); startNewQuestion(); });
+document.getElementById("keyQuizBtn").addEventListener("click",  () => {
+  quizMode="key";
+  if (modality === "tab") modality = "sheet"; // tab doesn't support key quiz
+  updateUI(); startNewQuestion();
+});
+document.getElementById("sheetBtn").addEventListener("click", () => { modality="sheet"; updateUI(); startNewQuestion(); });
+document.getElementById("earBtn").addEventListener("click",   () => { modality="ear";   updateUI(); startNewQuestion(); });
+document.getElementById("tabBtn").addEventListener("click",   () => { modality="tab"; quizMode="note"; updateUI(); startNewQuestion(); });
 
 document.getElementById("playBtn").addEventListener("click", () => {
   if (!earCurrent) return;
@@ -898,6 +1091,7 @@ document.getElementById("skipBtn").addEventListener("click", startNewQuestion);
 
 document.querySelectorAll(".note-btn").forEach(btn => {
   btn.addEventListener("click", () => {
+    if (modality === "tab") { handleTabNoteGuess(btn.dataset.note); return; }
     if (modality !== "sheet") return;
     if (quizMode === "note") { handleSheetNoteGuess(btn.dataset.note); }
     else if (!waitingForNext) {
@@ -939,7 +1133,16 @@ document.getElementById("resetBtn").addEventListener("click", () => {
 });
 
 document.getElementById("seqLen").addEventListener("change", () => {
-  if (modality === "sheet" && quizMode === "note") newSheetNoteQuestion();
+  if (modality === "tab") newTabNoteQuestion();
+  else if (modality === "sheet" && quizMode === "note") newSheetNoteQuestion();
+});
+
+document.querySelectorAll(".tabpos-btn").forEach(btn => {
+  btn.addEventListener("click", () => {
+    tabPositionIdx = Number(btn.dataset.pos);
+    document.querySelectorAll(".tabpos-btn").forEach((b, i) => b.classList.toggle("selected-btn", i === tabPositionIdx));
+    if (modality === "tab") newTabNoteQuestion();
+  });
 });
 
 ["earKey","earOctave","earLen","earChoices"].forEach(id => {
@@ -965,6 +1168,15 @@ document.querySelectorAll(".letter-cb").forEach(cb => {
 
 window.addEventListener("keydown", e => {
   if (waitingForNext) return;
+  if (modality === "tab") {
+    const kUp = e.key.toUpperCase();
+    if (kUp.length===1 && kUp>="A" && kUp<="G") {
+      e.preventDefault(); handleTabNoteGuess(kUp);
+    } else if (e.code==="Space" && !e.metaKey && !e.ctrlKey) {
+      e.preventDefault(); if (tabCurrent) synth.playNoteSeq(tabCurrent.seqNotes);
+    }
+    return;
+  }
   if (modality === "ear") {
     if (e.code === "Space" && !e.metaKey && !e.ctrlKey) {
       e.preventDefault();
@@ -1017,7 +1229,7 @@ startNewQuestion();
 
 <div style="margin-top:14px;" class="hint">
   <strong>Keyboard shortcuts:</strong>
-  Sheet Music: <b>A–G</b> answer · <b>Space</b> replay · Key quiz: <b>#/- then M/m</b> ·
+  Sheet/Tab: <b>A–G</b> answer · <b>Space</b> replay · Key quiz: <b>#/- then M/m</b> ·
   Ear: <b>Space</b> replay · <b>1–6</b> pick choice · <b>n</b> new question
 </div>
 </body>
