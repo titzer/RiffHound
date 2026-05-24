@@ -12,6 +12,7 @@ struct EditorState {
     double region_end;    // seconds
 
     bool   autoscroll;    // scroll timeline to follow playhead during playback
+    bool   lyric_index_open;  // true while the Lyric Index floating window is visible
 
     // Playback parameters – reset to defaults on each new file load.
     float  speed;         // playback speed [0.25, 2.0], default 1.0

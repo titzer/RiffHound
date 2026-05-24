@@ -1824,6 +1824,7 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
     ImGui::EndChild();
 
     // --- Lyric Index floating window ---
+    editor->lyric_index_open = s_lyric_index_open;
     if (s_lyric_index_open) {
         ImGui::SetNextWindowSize(ImVec2(420.0f, 260.0f), ImGuiCond_FirstUseEver);
         bool wvis = ImGui::Begin("Lyric Index", &s_lyric_index_open);
@@ -1874,8 +1875,25 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
 
             ImGui::Separator();
 
+            // First unplaced lyric = most likely candidate for the 'L' shortcut
+            int first_unplaced_idx = -1;
+            if (has_audio) {
+                for (int k = 0; k < lyricmap->count; k++) {
+                    if (lyricmap->lyrics[k].t_start >= dur - 1e-9) {
+                        first_unplaced_idx = k;
+                        break;
+                    }
+                }
+            }
+
             // Deferred auto-place: collect index during loop, act on it after EndChild
-            int pending_place = -1;
+            int pending_place        = -1;
+            int pending_region_place = -1;
+
+            // 'L' shortcut: place the first unplaced lyric at the current region
+            if (first_unplaced_idx >= 0 && editor->has_region &&
+                    ImGui::IsKeyPressed(ImGuiKey_L) && !ImGui::IsAnyItemActive())
+                pending_region_place = first_unplaced_idx;
 
             ImGui::BeginChild("##li_rows", ImVec2(0, 0), false);
             ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing,  ImVec2(2.0f, 2.0f));
@@ -1939,6 +1957,26 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
                 }
                 if (ImGui::IsItemHovered())
                     ImGui::SetTooltip(placed ? "Scroll to lyric" : "Auto-place on timeline");
+
+                // "Place at region" button – active only for unplaced lyrics when a region exists
+                ImGui::SameLine(0, 2.0f);
+                {
+                    bool can_snap = !placed && editor->has_region;
+                    if (!can_snap) ImGui::BeginDisabled();
+                    ImGui::PushStyleColor(ImGuiCol_Button,
+                        can_snap ? ImVec4(0.45f,0.33f,0.06f,0.82f) : ImVec4(0.22f,0.22f,0.22f,0.40f));
+                    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.60f,0.46f,0.10f,0.92f));
+                    ImGui::PushStyleColor(ImGuiCol_ButtonActive,  ImVec4(0.74f,0.58f,0.16f,1.00f));
+                    bool is_next  = (i == first_unplaced_idx) && editor->has_region;
+                    bool snap_hit = ImGui::Button(is_next ? "L" : "\xe2\x86\x94", ImVec2(GW, 0));
+                    ImGui::PopStyleColor(3);
+                    if (!can_snap) ImGui::EndDisabled();
+                    if (snap_hit) { s_lyr_selected = i; pending_region_place = i; }
+                    if (ImGui::IsItemHovered())
+                        ImGui::SetTooltip(!placed && !editor->has_region
+                            ? "Select a region on the spectrogram first"
+                            : placed ? "Already placed" : "Place at selected region");
+                }
 
                 // Lyric text input (fills remaining row width)
                 ImGui::SameLine(0, 2.0f);
@@ -2012,6 +2050,37 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
                         if (vs < 0.0)                    vs = 0.0;
                         if (vs + span > editor->duration) vs = editor->duration - span;
                         if (vs < 0.0)                    vs = 0.0;
+                        editor->view_start = vs;
+                        editor->view_end   = vs + span;
+                    }
+                }
+            }
+
+            // ---- Place-at-region deferred action ----
+            if (pending_region_place >= 0 && pending_region_place < lyricmap->count
+                    && editor->has_region) {
+                int    i  = pending_region_place;
+                double t0 = editor->region_start;
+                double t1 = editor->region_end;
+
+                char saved[128];
+                strncpy(saved, lyricmap->lyrics[i].text, sizeof(saved) - 1);
+                saved[sizeof(saved) - 1] = '\0';
+
+                lyricmap_remove(lyricmap, i);
+                int ni = lyricmap_add(lyricmap, t0, t1, saved);
+                s_lyr_selected         = ni;
+                lyricmap->selected_idx = ni;
+                lyricmap->dirty        = true;
+
+                // Scroll so the newly placed lyric is visible
+                if (ni >= 0 && editor->duration > 0.0) {
+                    double span = editor->view_end - editor->view_start;
+                    if (span > 0.0) {
+                        double vs = t0 - span * 0.25;
+                        if (vs < 0.0)                     vs = 0.0;
+                        if (vs + span > editor->duration)  vs = editor->duration - span;
+                        if (vs < 0.0)                     vs = 0.0;
                         editor->view_start = vs;
                         editor->view_end   = vs + span;
                     }

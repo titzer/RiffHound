@@ -11,7 +11,8 @@ void editor_init(EditorState* e) {
     e->has_region   = false;
     e->region_start = 0.0;
     e->region_end   = 0.0;
-    e->autoscroll   = false;
+    e->autoscroll        = false;
+    e->lyric_index_open  = false;
     e->speed        = 1.0f;
     e->semitones    = 0;
     e->cents        = 0;

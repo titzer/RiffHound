@@ -229,8 +229,12 @@ int main(int argc, char** argv) {
                 audio_seek(&audio, audio_get_position(&audio) - 5.0);
             if (ImGui::IsKeyPressed(ImGuiKey_RightArrow, true))
                 audio_seek(&audio, audio_get_position(&audio) + 5.0);
-            if (ImGui::IsKeyPressed(ImGuiKey_L))
-                audio.loop = !audio.loop;
+            if (ImGui::IsKeyPressed(ImGuiKey_L)) {
+                // When the Lyric Index is open and a region exists, 'L' places the
+                // next unplaced lyric at that region (handled in ui_timeline_render).
+                if (!editor.lyric_index_open || !editor.has_region)
+                    audio.loop = !audio.loop;
+            }
 
 
             // Delete / Backspace → selected beats take priority; fall back to
