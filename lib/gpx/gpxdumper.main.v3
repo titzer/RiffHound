@@ -11,6 +11,7 @@ var opt_track   = -1;     // -1 = all tracks
 var opt_mfrom   = 1;      // first measure (1-indexed, inclusive)
 var opt_mto     = 999999; // last measure (inclusive)
 var opt_voice   = -1;     // -1 = both voices
+var opt_tab     = false;
 
 component Main {
 	def main(args: Array<string>) -> int {
@@ -43,6 +44,8 @@ component Main {
 				i = i + 1;
 				if (i >= args.length) { errMissing(a); return 1; }
 				opt_voice = parseUint(args[i]);
+			} else if (strEq(a, "--tab")) {
+				opt_tab = true;
 			} else if (a.length > 0 && a[0] == '-') {
 				System.puts("gpxdumper: unknown option: "); System.puts(a); System.ln();
 				return 1;
@@ -54,7 +57,7 @@ component Main {
 		}
 		if (nf == 0) { usage(); return 1; }
 		// Default to info if no dump mode selected
-		if (!opt_tracks && !opt_markers && !opt_beats && !opt_notes) opt_info = true;
+		if (!opt_tracks && !opt_markers && !opt_beats && !opt_notes && !opt_tab) opt_info = true;
 		var ok = true;
 		for (j < nf) ok &= processFile(files[j]);
 		return if(ok, 0, 1);
@@ -73,6 +76,7 @@ def usage() {
 	System.puts("  -t N, --track N          Filter to track N (1-indexed)\n");
 	System.puts("  -m M[-N], --measures     Select measure range (e.g. 5 or 3-10)\n");
 	System.puts("  -v 0|1, --voice 0|1      Select voice (default: both)\n");
+	System.puts("  --tab                    Print ASCII tab for guitar/bass tracks\n");
 }
 
 def errMissing(flag: string) {
@@ -94,6 +98,7 @@ def processFile(name: string) -> bool {
 	if (opt_tracks)            dumpTrackList(song);
 	if (opt_markers)           dumpMarkers(song);
 	if (opt_beats || opt_notes) dumpBeats(song);
+	if (opt_tab)               dumpTab(song);
 	return true;
 }
 
@@ -343,4 +348,160 @@ def parseMRange(s: string) {
 	}
 	if (opt_mfrom < 1) opt_mfrom = 1;
 	if (opt_mto < opt_mfrom) opt_mto = opt_mfrom;
+}
+
+// ---- ASCII tab ----
+
+def dumpTab(song: GpxSong) {
+	for (i < song.tracks.length) {
+		var t = song.tracks[i];
+		if (opt_track >= 0 && t.number != opt_track) continue;
+		if (song.channels[int.!(t.channel1)].percussion) continue;
+		printTabTrack(song, t);
+	}
+}
+
+def printTabTrack(song: GpxSong, t: GpxTrack) {
+	var ns = t.strings.length;
+	var LINE_WIDTH = 80;
+
+	System.puts("=== Track "); System.puti(t.number); System.puts(": \"");
+	pstr(t.name); System.puts("\" ===\n");
+
+	// Per-string row buffers (each includes label + content for the current line)
+	var bufs = Array<Vector<byte>>.new(ns);
+	for (s < ns) bufs[s] = Vector<byte>.new();
+	var lineWidth = 0;
+	var mFirst = -1;
+	var mLast  = -1;
+
+	for (j < t.measures.length) {
+		var h = song.headers[j];
+		if (h.number < opt_mfrom || h.number > opt_mto) continue;
+		var m = t.measures[j];
+		var beats = tabVoice(m);
+		if (beats == null) continue;
+
+		var mw = measureTabWidth(beats);
+
+		// Flush line if this measure won't fit
+		if (lineWidth > 0 && lineWidth + mw > LINE_WIDTH) {
+			flushTabLine(bufs, ns, mFirst, mLast);
+			lineWidth = 0;
+			mFirst = -1;
+		}
+
+		// Start a new line: prepend label + opening bar to each string buffer
+		if (lineWidth == 0) {
+			for (s < ns) { bufs[s].put(stringLabel(t, s)); bufs[s].put('|'); }
+			lineWidth = 2;
+			mFirst = h.number;
+		}
+		mLast = h.number;
+
+		appendMeasureTab(bufs, beats, ns);
+		lineWidth = lineWidth + mw;
+	}
+
+	if (lineWidth > 0) flushTabLine(bufs, ns, mFirst, mLast);
+}
+
+// Select voice for tab display (voice1 only if -v 1 and present, otherwise voice0).
+def tabVoice(m: GpxMeasure) -> Array<GpxBeat> {
+	if (opt_voice == 1 && m.voice1 != null) return m.voice1;
+	return m.voice0;
+}
+
+// Width in chars that this beat occupies on all string rows:
+//   2 for frets 0-9 (digit + trailing dash), 3 for frets 10-99.
+def tabColWidth(b: GpxBeat) -> int {
+	if (b.empty || b.notes.length == 0) return 2;
+	var maxFret = 0;
+	for (k < b.notes.length) {
+		var f = int.!(b.notes[k].value);
+		if (f > maxFret) maxFret = f;
+	}
+	return if(maxFret >= 10, 3, 2);
+}
+
+// Total chars a measure occupies: sum of beat column widths + 1 for the closing bar.
+def measureTabWidth(beats: Array<GpxBeat>) -> int {
+	var w = 1;
+	for (i < beats.length) w = w + tabColWidth(beats[i]);
+	return w;
+}
+
+// Append all beats of a measure to the per-string buffers, then the closing bar.
+def appendMeasureTab(bufs: Array<Vector<byte>>, beats: Array<GpxBeat>, ns: int) {
+	for (i < beats.length) {
+		var b = beats[i];
+		var cw = tabColWidth(b);
+		for (s < ns) appendStringCell(bufs[s], b, s + 1, cw);
+	}
+	for (s < ns) bufs[s].put('|');
+}
+
+// Append the content for string strNum (1-indexed) in beat b to buf.
+// cw is the column width (2 or 3).
+def appendStringCell(buf: Vector<byte>, b: GpxBeat, strNum: int, cw: int) {
+	for (k < b.notes.length) {
+		var n = b.notes[k];
+		if (int.!(n.strNum) != strNum) continue;
+		// Found a note on this string
+		if (n.effect != null && n.effect.dead) {
+			if (cw >= 3) buf.put('-');
+			buf.put('x');
+		} else {
+			var f = int.!(n.value);
+			if (f >= 10) {
+				buf.put(byte.!(48 + f / 10));
+				buf.put(byte.!(48 + f % 10));
+			} else {
+				if (cw >= 3) buf.put('-');
+				buf.put(byte.!(48 + f));
+			}
+		}
+		buf.put('-');
+		return;
+	}
+	// No note on this string: dashes
+	for (d < cw) buf.put('-');
+}
+
+// Print the accumulated tab line (measure label, then one row per string).
+def flushTabLine(bufs: Array<Vector<byte>>, ns: int, mFrom: int, mTo: int) {
+	System.puts("  M"); pintW(mFrom, 3);
+	if (mTo > mFrom) { System.puts("-"); pintW(mTo, 3); }
+	System.ln();
+	for (s < ns) { System.puts(bufs[s].extract()); System.ln(); }
+	System.ln();
+}
+
+// Single-character string label for display (e.g. 'E', 'A', 'e').
+// The highest string (index 0) is lowercased if its letter would otherwise
+// duplicate a lower string's label (standard tab convention: e vs E).
+def stringLabel(t: GpxTrack, s: int) -> byte {
+	var midi  = t.strings[s].value;
+	var label = noteLetter(midi);
+	if (s == 0 && midi >= 60) {
+		// Check for a duplicate label on any lower string
+		for (k = 1; k < t.strings.length; k = k + 1) {
+			if (noteLetter(t.strings[k].value) == label) {
+				return byte.!(int.!(label) + 32);  // to lowercase
+			}
+		}
+	}
+	return label;
+}
+
+// Return the uppercase pitch-class letter for a MIDI note.
+def noteLetter(midi: int) -> byte {
+	var pc = midi % 12;
+	if (pc == 0 || pc == 1) return 'C';
+	if (pc == 2 || pc == 3) return 'D';
+	if (pc == 4)             return 'E';
+	if (pc == 5 || pc == 6) return 'F';
+	if (pc == 7 || pc == 8) return 'G';
+	if (pc == 9 || pc == 10) return 'A';
+	return 'B';
 }
