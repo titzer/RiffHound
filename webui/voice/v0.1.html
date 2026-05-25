@@ -151,7 +151,7 @@
 	/* Main layout */
 	.main {
 		display: grid;
-		grid-template-columns: minmax(220px, 340px) 1fr;
+		grid-template-columns: 1fr minmax(220px, 340px);
 		gap: 10px;
 		padding: 10px;
 		height: calc(100vh - 56px);
@@ -293,6 +293,11 @@
 </div>
 
 <div class="main">
+	<div class="panel plotWrap">
+		<div class="plot-spacer"></div>
+		<canvas id="historyPlot"></canvas>
+	</div>
+
 	<div class="panel side">
 		<div class="panelTitle">
 			<span>Piano Roll</span>
@@ -303,11 +308,6 @@
 			</div>
 		</div>
 		<div class="pianoWrap"><canvas id="pianoRoll"></canvas></div>
-	</div>
-
-	<div class="panel plotWrap">
-		<div class="plot-spacer"></div>
-		<canvas id="historyPlot"></canvas>
 	</div>
 </div>
 
@@ -810,85 +810,78 @@
 	function drawPiano() {
 		var s = setupCanvas(app.els.piano);
 		var ctx = s.ctx, w = s.w, h = s.h;
-		ctx.clearRect(0, 0, w, h);
 		var b = pianoBounds();
 		var minMidi = b.minMidi, maxMidi = b.maxMidi;
-		var count = maxMidi - minMidi + 1;
-		var keyH = h / count;
 		var blackPcs = [1, 3, 6, 8, 10];
-		var blackW = Math.round(w * 0.54); // black keys extend ~54% from left
+
+		function isBlack(m) { return blackPcs.indexOf(((m % 12) + 12) % 12) >= 0; }
 
 		var currentMidi = null;
 		for (var i = app.history.length - 1; i >= 0; i--) {
 			if (app.history[i].midi !== null) { currentMidi = app.history[i].midi; break; }
 		}
 
-		// Pass 1: fill key backgrounds.
-		// The right portion (blackW..w) is always white-key color.
-		// The left portion (0..blackW) is black-key color for black keys, white-key color for white keys.
+		// Build white-key index: 0 = top of panel (maxMidi side), increases downward.
+		// minMidi and maxMidi are both C (white), so all black keys have white neighbours
+		// in range.
+		var wkIdx = {};
+		var numWhite = 0;
 		for (var m = maxMidi; m >= minMidi; m--) {
-			var pc = ((m % 12) + 12) % 12;
-			var isBlack = blackPcs.indexOf(pc) >= 0;
-			var isActive = (m === currentMidi);
-			var y = (maxMidi - m) * keyH;
-			var rh = Math.ceil(keyH) + 1; // +1 closes sub-pixel gaps
-
-			// Right portion: white-key face
-			ctx.fillStyle = isActive ? "#1a5f7a" : "#27303f";
-			ctx.fillRect(blackW, y, w - blackW, rh);
-
-			// Left portion: black key body, or white key continuation
-			if (isBlack) {
-				ctx.fillStyle = isActive ? "#164e63" : "#0d1117";
-				ctx.fillRect(0, y, blackW, rh);
-			} else {
-				ctx.fillStyle = isActive ? "#1a5f7a" : "#27303f";
-				ctx.fillRect(0, y, blackW, rh);
-			}
+			if (!isBlack(m)) wkIdx[m] = numWhite++;
 		}
 
-		// Pass 2: horizontal separators only between white keys
-		ctx.strokeStyle = "#3d4f63";
-		ctx.lineWidth = 1;
-		for (m = maxMidi; m >= minMidi; m--) {
-			var pc2 = ((m % 12) + 12) % 12;
-			if (blackPcs.indexOf(pc2) >= 0) continue;
-			var yLine = Math.round((maxMidi - m) * keyH);
-			ctx.beginPath();
-			ctx.moveTo(0, yLine + 0.5);
-			ctx.lineTo(w, yLine + 0.5);
-			ctx.stroke();
+		var wkH  = h / numWhite;           // height of each white-key band
+		var bkH  = Math.round(wkH * 0.60); // black key height ≈ 60% of white key (13.7/22.5mm)
+		var bkW  = Math.round(w * 0.62);   // black key depth ≈ 62% of panel (102/165mm)
+
+		// ── Background ──
+		ctx.fillStyle = "#0f1319";
+		ctx.fillRect(0, 0, w, h);
+
+		// ── Pass 1: white key bands (full panel width) ──
+		for (var m = maxMidi; m >= minMidi; m--) {
+			if (isBlack(m)) continue;
+			var ky = Math.round(wkIdx[m] * wkH);
+			var kh = Math.round((wkIdx[m] + 1) * wkH) - ky;
+			ctx.fillStyle = (m === currentMidi) ? "#1a8fb5" : "#c8d4e0";
+			ctx.fillRect(0, ky, w, kh);
 		}
 
-		// Pass 3: vertical divider at the end of the black keys
-		ctx.strokeStyle = "#1e2835";
-		ctx.lineWidth = 1;
-		ctx.beginPath();
-		ctx.moveTo(blackW + 0.5, 0);
-		ctx.lineTo(blackW + 0.5, h);
-		ctx.stroke();
+		// ── Pass 2: 1px dividers between every pair of adjacent white key bands ──
+		ctx.fillStyle = "#0f1319";
+		for (var n = 1; n < numWhite; n++) {
+			ctx.fillRect(0, Math.round(n * wkH), w, 1);
+		}
 
-		// Pass 4: note labels on white-key face (C notes + active note)
-		var fontSize = Math.max(9, Math.min(13, keyH * 0.62));
-		ctx.font = fontSize + "px system-ui";
+		// ── Pass 3: black key bands overlaid on the white bands ──
+		for (var m = maxMidi; m >= minMidi; m--) {
+			if (!isBlack(m)) continue;
+			// Black key is centred at the boundary between its two adjacent white keys.
+			var above = m + 1; while (isBlack(above)) above++;  // next white up (higher midi)
+			var below = m - 1; while (isBlack(below)) below--;  // next white down (lower midi)
+			var yc = (wkIdx[above] + 1) * wkH;                  // = wkIdx[below] * wkH
+			var ky = Math.round(yc - bkH / 2);
+			ctx.fillStyle = (m === currentMidi) ? "#1060a0" : "#1c2435";
+			ctx.fillRect(0, ky, bkW, bkH);
+		}
+
+		// ── Pass 4: labels (white keys + any active note) ──
 		ctx.textBaseline = "middle";
-		for (m = maxMidi; m >= minMidi; m--) {
-			var pc3 = ((m % 12) + 12) % 12;
-			var isActive3 = (m === currentMidi);
-			if (pc3 !== 0 && !isActive3) continue;
-			var yLabel = (maxMidi - m) * keyH + keyH / 2;
-			ctx.fillStyle = isActive3 ? "#7dd3fc" : "#7a8fa8";
-			ctx.fillText(midiToName(m), blackW + 5, yLabel);
-		}
-
-		// Pass 5: passage markers on white-key face
-		var passage = [60, 62, 64, 65, 67, 69, 71, 72];
-		for (i = 0; i < passage.length; i++) {
-			m = passage[i];
-			if (m < minMidi || m > maxMidi) continue;
-			var yp = (maxMidi - m) * keyH + keyH * 0.15;
-			ctx.fillStyle = "rgba(134, 239, 172, 0.2)";
-			ctx.fillRect(blackW + 1, yp, w - blackW - 2, keyH * 0.7);
+		ctx.textAlign = "right";
+		ctx.font = Math.max(7, Math.min(13, Math.round(wkH * 0.7))) + "px system-ui";
+		for (var m = maxMidi; m >= minMidi; m--) {
+			var pc  = ((m % 12) + 12) % 12;
+			var act = (m === currentMidi);
+			if (isBlack(m) && !act) continue;
+			var yc;
+			if (!isBlack(m)) {
+				yc = (Math.round(wkIdx[m] * wkH) + Math.round((wkIdx[m] + 1) * wkH)) / 2;
+			} else {
+				var above = m + 1; while (isBlack(above)) above++;
+				yc = (wkIdx[above] + 1) * wkH;
+			}
+			ctx.fillStyle = act ? "#7dd3fc" : (pc === 0 ? "#7a8fa8" : "#647a8f");
+			ctx.fillText(midiToName(m), w - 4, yc);
 		}
 	}
 
