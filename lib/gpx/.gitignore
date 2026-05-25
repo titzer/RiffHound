@@ -1,3 +1,4 @@
 gpxparser
-gpxparser.jar
-gpxparser.wasm
+gpxdumper
+*.jar
+*.wasm

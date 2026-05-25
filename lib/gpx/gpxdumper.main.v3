@@ -1,0 +1,346 @@
+// gpxdumper.main.v3 — load, parse, and selectively dump Guitar Pro files.
+// Usage: gpxdumper [options] <file.gp3|gp4|gp5> ...
+
+// ---- Global options ----
+var opt_info    = false;
+var opt_tracks  = false;
+var opt_markers = false;
+var opt_beats   = false;
+var opt_notes   = false;
+var opt_track   = -1;     // -1 = all tracks
+var opt_mfrom   = 1;      // first measure (1-indexed, inclusive)
+var opt_mto     = 999999; // last measure (inclusive)
+var opt_voice   = -1;     // -1 = both voices
+
+component Main {
+	def main(args: Array<string>) -> int {
+		var files = Array<string>.new(args.length + 1);
+		var nf = 0;
+		var i = 0;
+		while (i < args.length) {
+			var a = args[i];
+			if (strEq(a, "--help") || strEq(a, "-h")) {
+				usage(); return 0;
+			} else if (strEq(a, "--info")) {
+				opt_info = true;
+			} else if (strEq(a, "--list-tracks") || strEq(a, "-lt")) {
+				opt_tracks = true;
+			} else if (strEq(a, "--markers")) {
+				opt_markers = true;
+			} else if (strEq(a, "--beats")) {
+				opt_beats = true;
+			} else if (strEq(a, "--notes")) {
+				opt_notes = true;
+			} else if (strEq(a, "-t") || strEq(a, "--track")) {
+				i = i + 1;
+				if (i >= args.length) { errMissing(a); return 1; }
+				opt_track = parseUint(args[i]);
+			} else if (strEq(a, "-m") || strEq(a, "--measures")) {
+				i = i + 1;
+				if (i >= args.length) { errMissing(a); return 1; }
+				parseMRange(args[i]);
+			} else if (strEq(a, "-v") || strEq(a, "--voice")) {
+				i = i + 1;
+				if (i >= args.length) { errMissing(a); return 1; }
+				opt_voice = parseUint(args[i]);
+			} else if (a.length > 0 && a[0] == '-') {
+				System.puts("gpxdumper: unknown option: "); System.puts(a); System.ln();
+				return 1;
+			} else {
+				files[nf] = a;
+				nf = nf + 1;
+			}
+			i = i + 1;
+		}
+		if (nf == 0) { usage(); return 1; }
+		// Default to info if no dump mode selected
+		if (!opt_tracks && !opt_markers && !opt_beats && !opt_notes) opt_info = true;
+		var ok = true;
+		for (j < nf) ok &= processFile(files[j]);
+		return if(ok, 0, 1);
+	}
+}
+
+def usage() {
+	System.puts("Usage: gpxdumper [options] <file.gp3|gp4|gp5> ...\n");
+	System.puts("Options:\n");
+	System.puts("  -h, --help               Print this help\n");
+	System.puts("  --info                   Print song info (default)\n");
+	System.puts("  --list-tracks, -lt       List all tracks\n");
+	System.puts("  --markers                List rehearsal markers\n");
+	System.puts("  --beats                  Dump beats per track/measure\n");
+	System.puts("  --notes                  Add per-note detail (with --beats)\n");
+	System.puts("  -t N, --track N          Filter to track N (1-indexed)\n");
+	System.puts("  -m M[-N], --measures     Select measure range (e.g. 5 or 3-10)\n");
+	System.puts("  -v 0|1, --voice 0|1      Select voice (default: both)\n");
+}
+
+def errMissing(flag: string) {
+	System.puts("gpxdumper: "); System.puts(flag); System.puts(" requires an argument\n");
+}
+
+def processFile(name: string) -> bool {
+	var data = System.fileLoad(name);
+	if (data == null) {
+		System.puts("gpxdumper: cannot open: "); System.puts(name); System.ln();
+		return false;
+	}
+	var song = GpxParser.new(data).parse();
+	if (song == null) {
+		System.puts("gpxdumper: unrecognized format: "); System.puts(name); System.ln();
+		return false;
+	}
+	if (opt_info)              dumpInfo(name, song);
+	if (opt_tracks)            dumpTrackList(song);
+	if (opt_markers)           dumpMarkers(song);
+	if (opt_beats || opt_notes) dumpBeats(song);
+	return true;
+}
+
+// ---- Song info ----
+def dumpInfo(name: string, song: GpxSong) {
+	System.puts("File:     "); System.puts(name); System.ln();
+	System.puts("Format:   GP");
+	if (song.format == GpxFormat.GP3)      System.puts("3");
+	else if (song.format == GpxFormat.GP4) System.puts("4");
+	else                                    System.puts("5");
+	if (song.versionCode > 0) { System.puts("."); System.puti(song.versionCode); }
+	System.ln();
+	System.puts("Title:    "); pstr(song.title);   System.ln();
+	System.puts("Artist:   "); pstr(song.artist);  System.ln();
+	System.puts("Album:    "); pstr(song.album);   System.ln();
+	System.puts("Author:   "); pstr(song.author);  System.ln();
+	System.puts("Tempo:    "); System.puti(song.headers[0].tempo); System.puts(" BPM\n");
+	System.puts("Tracks:   "); System.puti(song.tracks.length);   System.ln();
+	System.puts("Measures: "); System.puti(song.headers.length);  System.ln();
+}
+
+// ---- Track list ----
+def dumpTrackList(song: GpxSong) {
+	System.puts("Tracks:\n");
+	for (i < song.tracks.length) {
+		var t = song.tracks[i];
+		if (opt_track >= 0 && t.number != opt_track) continue;
+		System.puts("  ");
+		if (t.number < 10)  System.puts("  ");
+		else if (t.number < 100) System.puts(" ");
+		System.puti(t.number); System.puts(": ");
+		pstrPad(t.name, 24);
+		System.puts("  "); System.puti(t.strings.length); System.puts(" str");
+		System.puts("  ch "); System.puti(int.!(t.channel1) + 1);
+		System.puts("/"); System.puti(int.!(t.channel2) + 1);
+		var ch = song.channels[int.!(t.channel1)];
+		if (ch.percussion) System.puts(" [perc]");
+		System.ln();
+	}
+}
+
+// ---- Markers ----
+def dumpMarkers(song: GpxSong) {
+	var found = false;
+	for (i < song.headers.length) {
+		var h = song.headers[i];
+		if (h.marker != null) {
+			if (!found) { System.puts("Markers:\n"); found = true; }
+			System.puts("  M"); pintW(h.number, 3); System.puts(": ");
+			pstr(h.marker.title); System.ln();
+		}
+	}
+	if (!found) System.puts("Markers: (none)\n");
+}
+
+// ---- Beats ----
+def dumpBeats(song: GpxSong) {
+	for (i < song.tracks.length) {
+		var t = song.tracks[i];
+		if (opt_track >= 0 && t.number != opt_track) continue;
+		System.puts("=== Track "); System.puti(t.number); System.puts(": \"");
+		pstr(t.name); System.puts("\" ("); System.puti(t.strings.length);
+		System.puts(" strings) ===\n");
+		for (j < t.measures.length) {
+			var h = song.headers[j];
+			if (h.number < opt_mfrom || h.number > opt_mto) continue;
+			var m = t.measures[j];
+			System.puts("  M"); pintW(h.number, 3);
+			System.puts(" ["); System.puti(int.!(h.numerator));
+			System.puts("/"); System.puti(int.!(h.denominator));
+			System.puts(" q="); System.puti(h.tempo); System.puts("]");
+			if (h.repeatOpen)        System.puts(" |:");
+			if (h.repeatClose > 0)   { System.puts(" :|x"); System.puti(h.repeatClose); }
+			if (h.marker != null)    { System.puts(" <"); pstr(h.marker.title); System.puts(">"); }
+			System.ln();
+			if (opt_voice != 1) dumpVoice(m.voice0, 0);
+			if (opt_voice != 0 && m.voice1 != null) dumpVoice(m.voice1, 1);
+		}
+	}
+}
+
+def dumpVoice(beats: Array<GpxBeat>, voice: int) {
+	if (beats == null) return;
+	for (i < beats.length) {
+		var b = beats[i];
+		System.puts("    V"); System.puti(voice); System.puts(" B");
+		pintW(i + 1, 2); System.puts(" [");
+		pintW(int.!(b.start), 6); System.puts("]: ");
+		printDur(b.duration);
+		if (b.empty || b.notes.length == 0) {
+			System.puts("  rest");
+		} else {
+			System.puts("  ");
+			for (k < b.notes.length) {
+				if (k > 0) System.puts(" ");
+				printNote(b.notes[k]);
+			}
+		}
+		if (b.text != null && b.text.length > 0) {
+			System.puts(" \""); pstr(b.text); System.puts("\"");
+		}
+		if (b.effect != null) printBeatEffectSummary(b.effect);
+		System.ln();
+		if (opt_notes) dumpNoteDetails(b.notes);
+	}
+}
+
+def dumpNoteDetails(notes: Array<GpxNote>) {
+	if (notes == null) return;
+	for (i < notes.length) {
+		var n = notes[i];
+		System.puts("      str="); System.puti(int.!(n.strNum));
+		System.puts(" fret="); System.puti(int.!(n.value));
+		if (n.tied) System.puts(" tied");
+		if (n.velocity > 0) { System.puts(" vel="); System.puti(int.!(n.velocity)); }
+		if (n.effect != null) printNoteEffectDetail(n.effect);
+		System.ln();
+	}
+}
+
+// ---- Effect summaries ----
+
+def printBeatEffectSummary(be: GpxBeatEffect) {
+	if (be.fadeIn)             System.puts(" fade-in");
+	if (be.vibrato)            System.puts(" vib");
+	if (be.slapEffect == 1)    System.puts(" tap");
+	if (be.slapEffect == 2)    System.puts(" slap");
+	if (be.slapEffect == 3)    System.puts(" pop");
+	if (be.tremoloBar != null) System.puts(" trem-bar");
+	if (be.strokeDown > 0)     System.puts(" stroke-dn");
+	if (be.strokeUp > 0)       System.puts(" stroke-up");
+	if (be.naturalHarmonic)    System.puts(" harm-nat");
+	if (be.artificialHarmonic) System.puts(" harm-art");
+}
+
+def printNoteEffectDetail(e: GpxNoteEffect) {
+	if (e.bend != null)   System.puts(" bend");
+	if (e.grace != null)  System.puts(" grace");
+	if (e.hammer)         System.puts(" h-on");
+	if (e.letRing)        System.puts(" let-ring");
+	if (e.vibrato)        System.puts(" vib");
+	if (e.slide)          System.puts(" slide");
+	if (e.palmMute)       System.puts(" pm");
+	if (e.staccato)       System.puts(" stacc");
+	if (e.dead)           System.puts(" dead");
+	if (e.accentuated)    System.puts(" accent");
+	if (e.heavyAccent)    System.puts(" h-accent");
+	if (e.harmonicType != GpxHarmonicType.NONE) {
+		System.puts(" harm=");
+		if      (e.harmonicType == GpxHarmonicType.NATURAL)    System.puts("nat");
+		else if (e.harmonicType == GpxHarmonicType.ARTIFICIAL) System.puts("art");
+		else if (e.harmonicType == GpxHarmonicType.TAPPED)     System.puts("tap");
+		else if (e.harmonicType == GpxHarmonicType.PINCH)      System.puts("pinch");
+		else if (e.harmonicType == GpxHarmonicType.SEMI)       System.puts("semi");
+	}
+}
+
+// ---- Note / duration printing ----
+
+def printNote(n: GpxNote) {
+	System.puts("s"); System.puti(int.!(n.strNum));
+	System.puts("f"); System.puti(int.!(n.value));
+	if (n.tied) System.puts("(t)");
+	if (n.effect != null && n.effect.dead) System.puts("(x)");
+}
+
+def printDur(d: GpxDuration) {
+	var v = d.value;
+	if      (v == GpxNoteValue.WHOLE)         System.puts("w");
+	else if (v == GpxNoteValue.HALF)          System.puts("h");
+	else if (v == GpxNoteValue.QUARTER)       System.puts("q");
+	else if (v == GpxNoteValue.EIGHTH)        System.puts("e");
+	else if (v == GpxNoteValue.SIXTEENTH)     System.puts("s");
+	else if (v == GpxNoteValue.THIRTY_SECOND) System.puts("t");
+	else                                       System.puts("x");
+	if (d.dotted) System.puts(".");
+	if (d.tuplet > 0) { System.puts("["); System.puti(d.tuplet); System.puts("]"); }
+}
+
+// ---- Output helpers ----
+
+def pstr(s: string) {
+	if (s != null && s.length > 0) System.puts(s);
+}
+
+def pstrPad(s: string, width: int) {
+	var len = if(s != null, s.length, 0);
+	if (len > 0) System.puts(s);
+	for (i < width - len) System.puts(" ");
+}
+
+// Print n right-aligned in `width` columns (pads with spaces on the left).
+def pintW(n: int, width: int) {
+	for (i < width - ndigits(n)) System.puts(" ");
+	System.puti(n);
+}
+
+def ndigits(n: int) -> int {
+	if (n <= 0) return 1;
+	var d = 0;
+	var v = n;
+	while (v > 0) { d = d + 1; v = v / 10; }
+	return d;
+}
+
+// ---- Argument parsing helpers ----
+
+def strEq(a: string, b: string) -> bool {
+	if (a.length != b.length) return false;
+	for (i < a.length) if (a[i] != b[i]) return false;
+	return true;
+}
+
+def parseUint(s: string) -> int {
+	var v = 0;
+	for (i < s.length) {
+		var c = s[i];
+		if (c < '0' || c > '9') return v;
+		v = v * 10 + (int.!(c) - 48);
+	}
+	return v;
+}
+
+def parseUintN(s: string, from: int, to: int) -> int {
+	var v = 0;
+	var i = from;
+	while (i < to) {
+		var c = s[i];
+		if (c < '0' || c > '9') return v;
+		v = v * 10 + (int.!(c) - 48);
+		i = i + 1;
+	}
+	return v;
+}
+
+def parseMRange(s: string) {
+	var dash = -1;
+	for (i < s.length) {
+		if (s[i] == '-') { dash = i; break; }
+	}
+	if (dash < 0) {
+		opt_mfrom = parseUint(s);
+		opt_mto   = opt_mfrom;
+	} else {
+		opt_mfrom = parseUintN(s, 0, dash);
+		opt_mto   = parseUintN(s, dash + 1, s.length);
+	}
+	if (opt_mfrom < 1) opt_mfrom = 1;
+	if (opt_mto < opt_mfrom) opt_mto = opt_mfrom;
+}
