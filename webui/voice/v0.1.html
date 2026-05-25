@@ -830,27 +830,28 @@
 			if (!isBlack(m)) wkIdx[m] = numWhite++;
 		}
 
-		var wkH  = h / numWhite;           // height of each white-key band
-		var bkH  = Math.round(wkH * 0.60); // black key height ≈ 60% of white key (13.7/22.5mm)
-		var bkW  = Math.round(w * 0.62);   // black key depth ≈ 62% of panel (102/165mm)
+		var wkH  = h / numWhite;                    // height of each white-key band
+		var wEnd = Math.round(5.0 * wkH);           // key depth = 2.5× key width (matches diagram)
+		var bkH  = Math.round(wkH * 0.62);          // black key height ≈ 60% of white key
+		var bkW  = Math.round(wEnd * 0.65);         // black key depth ≈ 62% of white key depth
 
 		// ── Background ──
 		ctx.fillStyle = "#0f1319";
 		ctx.fillRect(0, 0, w, h);
 
-		// ── Pass 1: white key bands (full panel width) ──
+		// ── Pass 1: white key bands ──
 		for (var m = maxMidi; m >= minMidi; m--) {
 			if (isBlack(m)) continue;
 			var ky = Math.round(wkIdx[m] * wkH);
 			var kh = Math.round((wkIdx[m] + 1) * wkH) - ky;
 			ctx.fillStyle = (m === currentMidi) ? "#1a8fb5" : "#c8d4e0";
-			ctx.fillRect(0, ky, w, kh);
+			ctx.fillRect(0, ky, wEnd, kh);
 		}
 
 		// ── Pass 2: 1px dividers between every pair of adjacent white key bands ──
 		ctx.fillStyle = "#0f1319";
 		for (var n = 1; n < numWhite; n++) {
-			ctx.fillRect(0, Math.round(n * wkH), w, 1);
+			ctx.fillRect(0, Math.round(n * wkH), wEnd, 1);
 		}
 
 		// ── Pass 3: black key bands overlaid on the white bands ──
@@ -867,7 +868,7 @@
 
 		// ── Pass 4: labels (white keys + any active note) ──
 		ctx.textBaseline = "middle";
-		ctx.textAlign = "right";
+		ctx.textAlign = "left";
 		ctx.font = Math.max(7, Math.min(13, Math.round(wkH * 0.7))) + "px system-ui";
 		for (var m = maxMidi; m >= minMidi; m--) {
 			var pc  = ((m % 12) + 12) % 12;
@@ -881,7 +882,7 @@
 				yc = (wkIdx[above] + 1) * wkH;
 			}
 			ctx.fillStyle = act ? "#7dd3fc" : (pc === 0 ? "#7a8fa8" : "#647a8f");
-			ctx.fillText(midiToName(m), w - 4, yc);
+			ctx.fillText(midiToName(m), wEnd + 4, yc);
 		}
 	}
 
