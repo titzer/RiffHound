@@ -130,7 +130,10 @@
         <button class="qual-btn" data-quality="M" style="font-size:16px;min-width:80px;min-height:44px;">Major</button>
         <button class="qual-btn" data-quality="m" style="font-size:16px;min-width:80px;min-height:44px;">minor</button>
         <button id="submitKeyBtn" style="font-size:16px;min-width:80px;min-height:44px;background:#4a90d9;color:#fff;border-color:#357ab8;">Submit</button>
+        <button id="keySkipBtn" style="font-size:16px;min-width:80px;min-height:44px;">Skip</button>
+        <button id="keyHintBtn" style="font-size:16px;min-width:80px;min-height:44px;">Hint</button>
       </div>
+      <div id="keyHintText" class="hint" style="display:none; margin-top:6px; font-size:15px;"></div>
     </div>
 
     <!-- Answer + feedback row -->
@@ -631,8 +634,10 @@ function renderSheetKeyBoard() {
 
 function newSheetKeyQuestion() {
   const pool = buildKeyPool();
-  sheetKeyCurrent = {key:pool[randomInt(0,pool.length-1)], answered:false, tries:0};
+  sheetKeyCurrent = {key:pool[randomInt(0,pool.length-1)], answered:false, tries:0, hintUsed:false};
   keyBuf = ""; waitingForNext = false;
+  const hintEl = document.getElementById("keyHintText");
+  if (hintEl) { hintEl.textContent = ""; hintEl.style.display = "none"; }
   updateKeyTypedDisplay(); updateKeyBtnHighlights(); clearFeedback(); resetTries();
   renderSheetKeyBoard();
 }
@@ -675,7 +680,7 @@ function handleSheetKeyGuess() {
   if (correct) {
     sheetKeyCurrent.answered = true;
     setFeedback("✓","good");
-    recordResult(keyDisplayName(key), "key/sheet", sheetKeyCurrent.tries, sheetKeyCurrent.tries === 1);
+    recordResult(keyDisplayName(key), "key/sheet", sheetKeyCurrent.tries, sheetKeyCurrent.tries === 1 && !sheetKeyCurrent.hintUsed);
     renderSheetKeyBoard();
     waitingForNext = true;
     setTimeout(newSheetKeyQuestion, 1800);
@@ -1126,6 +1131,20 @@ document.getElementById("submitKeyBtn").addEventListener("click", () => {
   if (modality === "sheet" && quizMode === "key" && !waitingForNext) handleSheetKeyGuess();
 });
 
+document.getElementById("keySkipBtn").addEventListener("click", () => {
+  if (modality === "sheet" && quizMode === "key") startNewQuestion();
+});
+
+document.getElementById("keyHintBtn").addEventListener("click", () => {
+  if (modality !== "sheet" || quizMode !== "key" || !sheetKeyCurrent || waitingForNext) return;
+  sheetKeyCurrent.hintUsed = true;
+  const {key} = sheetKeyCurrent;
+  const dispAcc = key.acc === "-" ? "b" : key.acc;
+  const hintEl = document.getElementById("keyHintText");
+  hintEl.textContent = "Hint: root = " + key.letter + dispAcc;
+  hintEl.style.display = "block";
+});
+
 document.getElementById("resetBtn").addEventListener("click", () => {
   done = 0; firstTryCount = 0; historyLog = [];
   document.getElementById("histBody").innerHTML = "";
@@ -1229,7 +1248,7 @@ startNewQuestion();
 
 <div style="margin-top:14px;" class="hint">
   <strong>Keyboard shortcuts:</strong>
-  Sheet/Tab: <b>A–G</b> answer · <b>Space</b> replay · Key quiz: <b>#/- then M/m</b> ·
+  Sheet/Tab: <b>A–G</b> answer · <b>Space</b> replay · Key quiz: <b>#/- then M/m</b> · <b>Skip</b> next question · <b>Hint</b> shows root note ·
   Ear: <b>Space</b> replay · <b>1–6</b> pick choice · <b>n</b> new question
 </div>
 </body>
