@@ -1,0 +1,401 @@
+// mp3dumper.main.v3 — load, parse, and selectively dump MP3 files.
+// Usage: mp3dumper [options] <file.mp3> ...
+
+// ---- Global options ----
+var opt_info   = false;
+var opt_frames = false;
+var opt_text   = false;
+var opt_audio  = false;
+var opt_id3v1  = false;
+
+component Main {
+	def main(args: Array<string>) -> int {
+		var files = Array<string>.new(args.length + 1);
+		var nf = 0;
+		var i = 0;
+		while (i < args.length) {
+			var a = args[i];
+			if (strEq(a, "--help") || strEq(a, "-h")) {
+				usage(); return 0;
+			} else if (strEq(a, "--info")) {
+				opt_info = true;
+			} else if (strEq(a, "--frames") || strEq(a, "-f")) {
+				opt_frames = true;
+			} else if (strEq(a, "--text") || strEq(a, "-t")) {
+				opt_text = true;
+			} else if (strEq(a, "--audio") || strEq(a, "-a")) {
+				opt_audio = true;
+			} else if (strEq(a, "--id3v1")) {
+				opt_id3v1 = true;
+			} else if (a.length > 0 && a[0] == '-') {
+				System.puts("mp3dumper: unknown option: ");
+				System.puts(a); System.ln();
+				return 1;
+			} else {
+				files[nf] = a;
+				nf = nf + 1;
+			}
+			i = i + 1;
+		}
+		if (nf == 0) { usage(); return 1; }
+		// Default: show info.
+		if (!opt_frames && !opt_audio && !opt_id3v1) opt_info = true;
+		var ok = true;
+		for (j < nf) ok &= processFile(files[j]);
+		return if(ok, 0, 1);
+	}
+}
+
+def usage() {
+	System.puts("Usage: mp3dumper [options] <file.mp3> ...\n");
+	System.puts("Options:\n");
+	System.puts("  -h, --help     Print this help\n");
+	System.puts("  --info         Print file summary (default)\n");
+	System.puts("  -f, --frames   List all ID3v2 frames\n");
+	System.puts("  -t, --text     Decode text frames (with --frames)\n");
+	System.puts("  -a, --audio    Show MPEG audio frame details\n");
+	System.puts("  --id3v1        Show ID3v1 tag (if present)\n");
+}
+
+def processFile(name: string) -> bool {
+	var data = System.fileLoad(name);
+	if (data == null) {
+		System.puts("mp3dumper: cannot open: "); System.puts(name); System.ln();
+		return false;
+	}
+	var file = Mp3Parser.new(data).parse();
+	if (opt_info)            dumpInfo(name, file);
+	if (opt_frames)          dumpId3v2(file.id3v2);
+	if (opt_audio)           dumpAudio(file.audio);
+	if (opt_id3v1)           dumpId3v1(file.id3v1);
+	return true;
+}
+
+// ---- Info summary ----
+
+def dumpInfo(name: string, file: Mp3File) {
+	System.puts("File:   "); System.puts(name); System.ln();
+
+	if (file.id3v2 != null) {
+		var tag = file.id3v2;
+		System.puts("ID3v2:  ");
+		printId3Version(tag.version);
+		System.puts("  ("); System.puti(tag.tagSize); System.puts(" bytes, ");
+		System.puti(tag.frames.length); System.puts(" frames)\n");
+
+		// Print common text fields
+		printTagField("Title",   findFrameText(tag, "TIT2", "TT2"));
+		printTagField("Artist",  findFrameText(tag, "TPE1", "TP1"));
+		printTagField("Album",   findFrameText(tag, "TALB", "TAL"));
+		printTagField("Track",   findFrameText(tag, "TRCK", "TRK"));
+		printTagField("Year",    findFrameText(tag, "TYER", "TYE"));
+		printTagField("Genre",   findFrameText(tag, "TCON", "TCO"));
+	} else {
+		System.puts("ID3v2:  (none)\n");
+	}
+
+	if (file.audio != null) {
+		var ai = file.audio.firstFrame;
+		System.puts("Audio:  ");
+		printMpegVersion(ai.mpegVersion);
+		System.puts(" ");
+		printLayer(ai.layer);
+		System.puts(", ");
+		System.puti(ai.bitrateKbps);
+		System.puts(" kbps, ");
+		System.puti(ai.sampleRateHz);
+		System.puts(" Hz, ");
+		printChannelMode(ai.channelMode);
+		System.ln();
+
+		if (file.audio.xing != null) {
+			var xi = file.audio.xing;
+			System.puts("        ");
+			System.puts(if(xi.isVbr, "VBR (Xing)", "CBR (Info)"));
+			if (xi.frameCount > 0) {
+				System.puts(", ");
+				System.puti(xi.frameCount);
+				System.puts(" frames");
+				// Estimated duration
+				var secs = xi.frameCount * ai.samplesPerFrame / ai.sampleRateHz;
+				System.puts(", ~");
+				System.puti(secs / 60);
+				System.puts("m");
+				System.puti(secs % 60);
+				System.puts("s");
+			}
+			if (xi.streamSize > 0) {
+				System.puts(", ");
+				System.puti(xi.streamSize);
+				System.puts(" bytes");
+			}
+			System.ln();
+			if (xi.lameVersion != null) {
+				System.puts("        encoder: "); System.puts(xi.lameVersion); System.ln();
+			}
+		} else {
+			System.puts("        no VBR header\n");
+		}
+	} else {
+		System.puts("Audio:  (none found)\n");
+	}
+
+	if (file.id3v1 != null) {
+		System.puts("ID3v1:  present\n");
+	}
+}
+
+def printTagField(label: string, value: string) {
+	if (value == null || value.length == 0) return;
+	System.puts("        "); pstrPad(label, 7); System.puts(": ");
+	System.puts(value); System.ln();
+}
+
+// ---- ID3v2 frame list ----
+
+def dumpId3v2(tag: Mp3Id3v2Tag) {
+	if (tag == null) { System.puts("ID3v2: (none)\n"); return; }
+	System.puts("ID3v2 ");
+	printId3Version(tag.version);
+	System.puts(":\n");
+	for (i < tag.frames.length) {
+		var fr = tag.frames[i];
+		System.puts("  ");
+		pstrPad(fr.id, 5);
+		System.puts("[");
+		pintW(fr.data.length, 6);
+		System.puts(" bytes]");
+		if (opt_text && isTextFrame(fr.id)) {
+			var text = decodeFrameText(fr);
+			if (text != null && text.length > 0) {
+				System.puts(" \""); pstrTrunc(text, 60); System.puts("\"");
+			}
+		}
+		System.ln();
+	}
+}
+
+// ---- Audio frame details ----
+
+def dumpAudio(audio: Mp3AudioData) {
+	if (audio == null) { System.puts("Audio: (none)\n"); return; }
+	System.puts("Audio frames:\n");
+	var ai = audio.firstFrame;
+	System.puts("  MPEG version:  "); printMpegVersion(ai.mpegVersion); System.ln();
+	System.puts("  Layer:         "); printLayer(ai.layer); System.ln();
+	System.puts("  Bitrate:       "); System.puti(ai.bitrateKbps); System.puts(" kbps\n");
+	System.puts("  Sample rate:   "); System.puti(ai.sampleRateHz); System.puts(" Hz\n");
+	System.puts("  Channel mode:  "); printChannelMode(ai.channelMode); System.ln();
+	System.puts("  Frame size:    "); System.puti(ai.frameSize); System.puts(" bytes\n");
+	System.puts("  Samples/frame: "); System.puti(ai.samplesPerFrame); System.ln();
+	System.puts("  CRC:           "); System.puts(if(ai.hasCrc, "yes", "no")); System.ln();
+	System.puts("  Audio offset:  "); System.puti(audio.offset); System.puts(" bytes\n");
+	System.puts("  Audio size:    "); System.puti(audio.data.length); System.puts(" bytes\n");
+
+	if (audio.xing != null) {
+		var xi = audio.xing;
+		System.puts("  Xing/Info:     ");
+		System.puts(if(xi.isVbr, "Xing (VBR)", "Info (CBR)")); System.ln();
+		if (xi.frameCount > 0) {
+			System.puts("  Frame count:   "); System.puti(xi.frameCount); System.ln();
+		}
+		if (xi.streamSize > 0) {
+			System.puts("  Stream size:   "); System.puti(xi.streamSize); System.puts(" bytes\n");
+		}
+		if (xi.quality >= 0) {
+			System.puts("  VBR quality:   "); System.puti(xi.quality); System.ln();
+		}
+		System.puts("  TOC present:   "); System.puts(if(xi.hasToc, "yes", "no")); System.ln();
+		if (xi.lameVersion != null) {
+			System.puts("  LAME version:  "); System.puts(xi.lameVersion); System.ln();
+		}
+	}
+}
+
+// ---- ID3v1 tag ----
+
+def dumpId3v1(v1: Mp3Id3v1) {
+	if (v1 == null) { System.puts("ID3v1: (none)\n"); return; }
+	System.puts("ID3v1:\n");
+	if (v1.title.length  > 0) { System.puts("  Title:   "); System.puts(v1.title);  System.ln(); }
+	if (v1.artist.length > 0) { System.puts("  Artist:  "); System.puts(v1.artist); System.ln(); }
+	if (v1.album.length  > 0) { System.puts("  Album:   "); System.puts(v1.album);  System.ln(); }
+	if (v1.year.length   > 0) { System.puts("  Year:    "); System.puts(v1.year);   System.ln(); }
+	if (v1.comment.length > 0){ System.puts("  Comment: "); System.puts(v1.comment);System.ln(); }
+	if (v1.track > 0)         { System.puts("  Track:   "); System.puti(v1.track);  System.ln(); }
+	System.puts("  Genre:   "); System.puti(v1.genre);
+	var gname = genreName(v1.genre);
+	if (gname != null) { System.puts(" ("); System.puts(gname); System.puts(")"); }
+	System.ln();
+}
+
+// ---- Frame text decoding ----
+
+// Find the first frame matching either id4 (v2.3/v2.4) or id3 (v2.2) and decode its text.
+def findFrameText(tag: Mp3Id3v2Tag, id4: string, id3: string) -> string {
+	for (i < tag.frames.length) {
+		var fr = tag.frames[i];
+		if (strEq(fr.id, id4) || strEq(fr.id, id3)) return decodeFrameText(fr);
+	}
+	return null;
+}
+
+// Decode a text frame's body to a displayable string.
+// Text frames: encoding byte (0-3) followed by text data.
+def decodeFrameText(fr: Mp3Frame) -> string {
+	if (fr.data.length < 1) return null;
+	var enc = int.!(fr.data[0]);
+	var start = 1;
+	var end = fr.data.length;
+
+	if (enc == 0 || enc == 3) {
+		// ISO-8859-1 or UTF-8: trim trailing null terminators, return bytes directly.
+		while (end > start && int.!(fr.data[end-1]) == 0) end = end - 1;
+		if (end <= start) return null;
+		return rangeToStr(fr.data, start, end);
+	}
+	// UTF-16 (enc==1 with BOM, enc==2 BE without BOM): extract printable ASCII chars
+	// from each 2-byte code unit.  Do NOT pre-trim: the trailing 0x00 is the high
+	// byte of the last ASCII character in UTF-16LE, not a null terminator.
+	if (enc == 1 && start + 2 <= end) {
+		// Determine byte order from BOM (FF FE = LE, FE FF = BE).
+		var bom0 = int.!(fr.data[start]);
+		var sig = if(bom0 == 0xFF, 0, 1); // sig=0: low byte first (LE), sig=1: BE
+		var v = Vector<byte>.new();
+		var p = start + 2;
+		while (p + 1 <= end) {
+			var lo = int.!(fr.data[p + sig]);
+			var hi = int.!(fr.data[p + (1 - sig)]);
+			if (hi == 0 && lo >= 32 && lo < 127) v.put(byte.!(lo));
+			else if (hi == 0 && lo == 0) break; // null terminator pair
+			p = p + 2;
+		}
+		return v.extract();
+	}
+	if (enc == 2 && start + 1 <= end) {
+		// UTF-16BE: high byte first.
+		var v = Vector<byte>.new();
+		var p = start;
+		while (p + 1 <= end) {
+			var hi = int.!(fr.data[p]);
+			var lo = int.!(fr.data[p+1]);
+			if (hi == 0 && lo >= 32 && lo < 127) v.put(byte.!(lo));
+			else if (hi == 0 && lo == 0) break;
+			p = p + 2;
+		}
+		return v.extract();
+	}
+	return null;
+}
+
+// Return true if a frame ID corresponds to a text information frame.
+def isTextFrame(id: string) -> bool {
+	if (id.length == 0) return false;
+	// All T-frames, plus COMM and USLT, contain text we can decode.
+	return id[0] == 'T';
+}
+
+// ---- Genre table (ID3v1 genres 0-147) ----
+
+def genreName(genre: int) -> string {
+	if (genre < 0 || genre >= GENRE_NAMES.length) return null;
+	return GENRE_NAMES[genre];
+}
+
+def GENRE_NAMES: Array<string> = [
+	"Blues","Classic Rock","Country","Dance","Disco","Funk","Grunge","Hip-Hop",
+	"Jazz","Metal","New Age","Oldies","Other","Pop","R&B","Rap","Reggae","Rock",
+	"Techno","Industrial","Alternative","Ska","Death Metal","Pranks","Soundtrack",
+	"Euro-Techno","Ambient","Trip-Hop","Vocal","Jazz+Funk","Fusion","Trance",
+	"Classical","Instrumental","Acid","House","Game","Sound Clip","Gospel","Noise",
+	"Alt. Rock","Bass","Soul","Punk","Space","Meditative","Instrumental Pop",
+	"Instrumental Rock","Ethnic","Gothic","Darkwave","Techno-Industrial",
+	"Electronic","Pop-Folk","Eurodance","Dream","Southern Rock","Comedy","Cult",
+	"Gangsta","Top 40","Christian Rap","Pop/Funk","Jungle","Native American",
+	"Cabaret","New Wave","Psychedelic","Rave","Showtunes","Trailer","Lo-Fi",
+	"Tribal","Acid Punk","Acid Jazz","Polka","Retro","Musical","Rock & Roll",
+	"Hard Rock","Folk","Folk-Rock","National Folk","Swing","Fast Fusion","Bebob",
+	"Latin","Revival","Celtic","Bluegrass","Avantgarde","Gothic Rock",
+	"Progressive Rock","Psychedelic Rock","Silence","Space Rock","Bubblegum",
+	"Punk Rock","Drum Solo","A Cappella","Humour","Speech","Chanson","Opera",
+	"Chamber Music","Sonata","Symphony","Booty Brass","Primus","Porn Groove",
+	"Satire","Slow Jam","Club","Tango","Samba","Folklore","Ballad",
+	"Power Ballad","Rhythmic Soul","Freestyle","Duet","Punk Rock","Drum Solo",
+	"A Cappella","Humour","Speech","Chanson","Opera","Chamber Music","Sonata",
+	"Symphony","Booty Brass","Primus","Porn Groove","Satire","Slow Jam","Club",
+	"Tango","Samba","Folklore","Ballad","Power Ballad","Rhythmic Soul",
+	"Freestyle","Duet","Punk Rock","Drum Solo","A Cappella","Humour"
+];
+
+// ---- Printing helpers ----
+
+def printId3Version(v: Mp3Id3Version) {
+	if      (v == Mp3Id3Version.V2_2) System.puts("v2.2");
+	else if (v == Mp3Id3Version.V2_3) System.puts("v2.3");
+	else                               System.puts("v2.4");
+}
+
+def printMpegVersion(v: Mp3MpegVersion) {
+	if      (v == Mp3MpegVersion.MPEG1)  System.puts("MPEG-1");
+	else if (v == Mp3MpegVersion.MPEG2)  System.puts("MPEG-2");
+	else                                  System.puts("MPEG-2.5");
+}
+
+def printLayer(l: Mp3Layer) {
+	if      (l == Mp3Layer.LAYER1) System.puts("Layer I");
+	else if (l == Mp3Layer.LAYER2) System.puts("Layer II");
+	else                            System.puts("Layer III");
+}
+
+def printChannelMode(m: Mp3ChannelMode) {
+	if      (m == Mp3ChannelMode.STEREO)       System.puts("Stereo");
+	else if (m == Mp3ChannelMode.JOINT_STEREO) System.puts("Joint Stereo");
+	else if (m == Mp3ChannelMode.DUAL_CHANNEL) System.puts("Dual Channel");
+	else                                        System.puts("Mono");
+}
+
+def pstr(s: string) {
+	if (s != null && s.length > 0) System.puts(s);
+}
+
+def pstrPad(s: string, width: int) {
+	var len = if(s != null, s.length, 0);
+	if (len > 0) System.puts(s);
+	for (i < width - len) System.puts(" ");
+}
+
+def pstrTrunc(s: string, maxLen: int) {
+	if (s == null) return;
+	if (s.length <= maxLen) { System.puts(s); return; }
+	var v = Vector<byte>.new();
+	for (i < maxLen - 3) v.put(s[i]);
+	v.put('.'); v.put('.'); v.put('.');
+	System.puts(v.extract());
+}
+
+def pintW(n: int, width: int) {
+	for (i < width - ndigits(n)) System.puts(" ");
+	System.puti(n);
+}
+
+def ndigits(n: int) -> int {
+	if (n <= 0) return 1;
+	var d = 0; var v = n;
+	while (v > 0) { d = d + 1; v = v / 10; }
+	return d;
+}
+
+def strEq(a: string, b: string) -> bool {
+	if (a.length != b.length) return false;
+	for (i < a.length) if (a[i] != b[i]) return false;
+	return true;
+}
+
+// Copy a sub-range of bytes to a new string.
+def rangeToStr(r: Range<byte>, start: int, end: int) -> string {
+	var n = end - start;
+	if (n <= 0) return "";
+	var buf = Array<byte>.new(n);
+	for (i < n) buf[i] = r[start + i];
+	return buf;
+}

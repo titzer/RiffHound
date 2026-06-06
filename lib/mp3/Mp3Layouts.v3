@@ -1,0 +1,42 @@
+// Binary layouts for fixed-size MP3/ID3 file structures.
+
+// The 10-byte ID3v2 tag header at the start of an MP3 file.
+layout Mp3Id3v2Header {
+	+0  magic:    u8[3];   // "ID3"
+	+3  version:  u8;      // major version: 2, 3, or 4
+	+4  revision: u8;      // always 0
+	+5  flags:    u8;      // tag-level flags
+	+6  size:     u8[4];   // synchsafe 28-bit integer (excludes this 10-byte header)
+	=10;
+}
+
+// The 10-byte frame header for each ID3v2.3/v2.4 frame.
+// (ID3v2.2 uses a 6-byte frame header; handled in parser logic.)
+layout Mp3Id3v2FrameHeader {
+	+0  id:     u8[4];   // frame identifier (e.g. "TIT2")
+	+4  size:   u8[4];   // body size: plain big-endian u32 (v2.3) or synchsafe (v2.4)
+	+8  flags0: u8;      // status flags
+	+9  flags1: u8;      // format flags
+	=10;
+}
+
+// The 4-byte MPEG audio frame sync header.
+layout Mp3AudioFrameHeader {
+	+0  b0: u8;   // sync (8 MSBs of 11-bit sync word)
+	+1  b1: u8;   // sync(3) | mpeg_version(2) | layer(2) | protection(1)
+	+2  b2: u8;   // bitrate_idx(4) | sample_rate_idx(2) | padding(1) | private(1)
+	+3  b3: u8;   // channel_mode(2) | mode_ext(2) | copyright(1) | original(1) | emphasis(2)
+	=4;
+}
+
+// The 128-byte ID3v1 tag anchored at the last 128 bytes of the file.
+layout Mp3Id3v1Tag {
+	+0   magic:   u8[3];   // "TAG"
+	+3   title:   u8[30];  // ISO-8859-1, zero-padded
+	+33  artist:  u8[30];
+	+63  album:   u8[30];
+	+93  year:    u8[4];   // ASCII digits, e.g. "1971"
+	+97  comment: u8[30];  // bytes 125-126 are track# in v1.1
+	+127 genre:   u8;      // raw genre index
+	=128;
+}

@@ -1,0 +1,405 @@
+// MP3 file parser: ID3v2/v1 metadata and MPEG audio frame detection.
+// Handles ID3v2.2, ID3v2.3, and ID3v2.4 tags plus MPEG-1/2/2.5 Layer I/II/III frames.
+
+// ---- Bitrate lookup tables (kbps), indexed 0..15; 0=free,-1=invalid ----
+def MP3_BR_V1_L1: Array<int> = [0,32,64,96,128,160,192,224,256,288,320,352,384,416,448,-1];
+def MP3_BR_V1_L2: Array<int> = [0,32,48,56, 64, 80, 96,112,128,160,192,224,256,320,384,-1];
+def MP3_BR_V1_L3: Array<int> = [0,32,40,48, 56, 64, 80, 96,112,128,160,192,224,256,320,-1];
+def MP3_BR_V2_L1: Array<int> = [0,32,48,56, 64, 80, 96,112,128,144,160,176,192,224,256,-1];
+def MP3_BR_V2_L23: Array<int> = [0, 8,16,24, 32, 40, 48, 56, 64, 80, 96,112,128,144,160,-1];
+
+// ---- Sample rate lookup tables (Hz), indexed 0..3; 3=reserved ----
+def MP3_SR_MPEG1:  Array<int> = [44100, 48000, 32000, 0];
+def MP3_SR_MPEG2:  Array<int> = [22050, 24000, 16000, 0];
+def MP3_SR_MPEG25: Array<int> = [11025, 12000,  8000, 0];
+
+class Mp3Parser {
+	var data: Range<byte>;
+	var pos: int;
+
+	new(data: Range<byte>) {
+		this.data = data;
+		this.pos = 0;
+	}
+
+	def parse() -> Mp3File {
+		var file = Mp3File.new();
+
+		// ID3v2 tag at start of file?
+		if (data.length >= 10
+				&& data[0] == 'I' && data[1] == 'D' && data[2] == '3') {
+			file.id3v2 = parseId3v2Tag();
+		}
+
+		// Find MPEG audio frames (starts after ID3v2 tag, or at byte 0).
+		file.audio = parseAudioSection();
+
+		// ID3v1 tag at end of file?
+		var len = data.length;
+		if (len >= 128) {
+			var v1at = len - 128;
+			if (data[v1at] == 'T' && data[v1at+1] == 'A' && data[v1at+2] == 'G') {
+				file.id3v1 = parseId3v1(v1at);
+			}
+		}
+
+		return file;
+	}
+
+	// ---- ID3v2 tag parsing ----
+
+	def parseId3v2Tag() -> Mp3Id3v2Tag {
+		// Header already verified to start with "ID3" at pos 0.
+		var vbyte = int.!(data[3]);
+		var rev   = data[4];
+		var flags = data[5];
+		var tagSize = decodeSynchsafe4(6);
+		pos = 10;
+
+		var version: Mp3Id3Version;
+		if      (vbyte == 2) version = Mp3Id3Version.V2_2;
+		else if (vbyte == 3) version = Mp3Id3Version.V2_3;
+		else if (vbyte == 4) version = Mp3Id3Version.V2_4;
+		else return null;   // unknown major version
+
+		var tag = Mp3Id3v2Tag.new();
+		tag.version  = version;
+		tag.revision = rev;
+		tag.flags    = flags;
+		tag.tagSize  = tagSize;
+
+		// Skip extended header if present (flag bit 6).
+		if ((int.!(flags) & 0x40) != 0) skipExtendedHeader(version);
+
+		var tagEnd = 10 + tagSize;
+		if (tagEnd > data.length) tagEnd = data.length;
+
+		tag.frames = parseFrames(tagEnd, version);
+
+		// Advance pos past entire tag (audio may start here).
+		pos = tagEnd;
+		return tag;
+	}
+
+	def skipExtendedHeader(version: Mp3Id3Version) {
+		if (pos + 4 > data.length) return;
+		if (version == Mp3Id3Version.V2_4) {
+			// v2.4: synchsafe size includes the 4 size bytes themselves.
+			var size = decodeSynchsafe4(pos);
+			pos = pos + size;
+		} else {
+			// v2.3: plain big-endian 32-bit size, does NOT include these 4 bytes.
+			var size = readBE32(pos);
+			pos = pos + 4 + size;
+		}
+	}
+
+	def parseFrames(tagEnd: int, version: Mp3Id3Version) -> Array<Mp3Frame> {
+		var frames = Vector<Mp3Frame>.new();
+		var idLen  = if(version == Mp3Id3Version.V2_2, 3, 4);
+		var hdrLen = if(version == Mp3Id3Version.V2_2, 6, 10);
+
+		while (pos + hdrLen <= tagEnd) {
+			// Zero byte = padding; stop.
+			if (int.!(data[pos]) == 0) break;
+
+			// Frame ID must be uppercase ASCII or digit.
+			var valid = true;
+			for (i < idLen) {
+				var c = int.!(data[pos + i]);
+				if (!((c >= 65 && c <= 90) || (c >= 48 && c <= 57))) {
+					valid = false; break;
+				}
+			}
+			if (!valid) break;
+
+			var id = readFrameId(pos, idLen);
+			pos = pos + idLen;
+
+			// Frame body size (encoding is version-dependent).
+			var frameSize: int;
+			if (version == Mp3Id3Version.V2_2) {
+				frameSize = readBE24(pos);
+				pos = pos + 3;
+			} else if (version == Mp3Id3Version.V2_4) {
+				frameSize = decodeSynchsafe4(pos);
+				pos = pos + 4;
+			} else { // V2_3: plain big-endian u32
+				frameSize = readBE32(pos);
+				pos = pos + 4;
+			}
+
+			var f0: u8 = 0;
+			var f1: u8 = 0;
+			if (version != Mp3Id3Version.V2_2) {
+				f0 = data[pos]; f1 = data[pos+1];
+				pos = pos + 2;
+			}
+
+			if (frameSize < 0 || pos + frameSize > tagEnd) break;
+
+			var frame = Mp3Frame.new();
+			frame.id     = id;
+			frame.flags0 = f0;
+			frame.flags1 = f1;
+			frame.data   = data[pos ..+ frameSize];
+			pos = pos + frameSize;
+			frames.put(frame);
+		}
+
+		return frames.extract();
+	}
+
+	// ---- Audio section ----
+
+	def parseAudioSection() -> Mp3AudioData {
+		var start = pos; // right after ID3v2 tag (or 0 if none)
+		var frameAt = findFirstFrame(start);
+		if (frameAt < 0) return null;
+
+		var hdr = parseAudioFrameHeader(frameAt);
+		if (hdr == null) return null;
+
+		var audio = Mp3AudioData.new();
+		audio.offset     = frameAt;
+		audio.firstFrame = hdr;
+
+		// Look for Xing/Info VBR header embedded in this first frame.
+		audio.xing = parseXingHeader(frameAt, hdr);
+		if (audio.xing != null) audio.frameCount = audio.xing.frameCount;
+
+		// Audio data runs from first frame to end of file (minus ID3v1 if present).
+		var audioEnd = data.length;
+		if (audioEnd >= 128) {
+			var v1at = audioEnd - 128;
+			if (data[v1at] == 'T' && data[v1at+1] == 'A' && data[v1at+2] == 'G') {
+				audioEnd = v1at;
+			}
+		}
+		var audioLen = audioEnd - frameAt;
+		audio.data = data[frameAt ..+ audioLen];
+		return audio;
+	}
+
+	// Scan forward from {start} for a valid MPEG sync word, confirmed by a
+	// second sync word at the expected frame-size distance.
+	def findFirstFrame(start: int) -> int {
+		var len = data.length;
+		var i = start;
+		while (i + 4 <= len) {
+			if (int.!(data[i]) == 0xFF && (int.!(data[i+1]) & 0xE0) == 0xE0) {
+				var h = parseAudioFrameHeader(i);
+				if (h != null && h.frameSize > 0) {
+					var next = i + h.frameSize;
+					if (next >= len - 1) return i;  // near end-of-file: accept
+					if (int.!(data[next]) == 0xFF && (int.!(data[next+1]) & 0xE0) == 0xE0) {
+						return i;
+					}
+				}
+			}
+			i = i + 1;
+		}
+		return -1;
+	}
+
+	// Decode the 4-byte MPEG audio frame header at {at}.  Returns null on error.
+	def parseAudioFrameHeader(at: int) -> Mp3AudioInfo {
+		if (at + 4 > data.length) return null;
+		var b0 = int.!(data[at]);
+		var b1 = int.!(data[at+1]);
+		var b2 = int.!(data[at+2]);
+		var b3 = int.!(data[at+3]);
+
+		// Sync word: 11 high bits must all be 1.
+		if (b0 != 0xFF || (b1 & 0xE0) != 0xE0) return null;
+
+		var mpegBits  = (b1 >> 3) & 0x3;
+		var layerBits = (b1 >> 1) & 0x3;
+		var brIdx     = (b2 >> 4) & 0xF;
+		var srIdx     = (b2 >> 2) & 0x3;
+		var padding   = (b2 >> 1) & 0x1;
+		var chanMode  = (b3 >> 6) & 0x3;
+		var hasCrc    = (b1 & 0x1) == 0;
+
+		if (mpegBits == 1 || layerBits == 0) return null; // reserved / invalid
+
+		var mpegVersion: Mp3MpegVersion;
+		if      (mpegBits == 3) mpegVersion = Mp3MpegVersion.MPEG1;
+		else if (mpegBits == 2) mpegVersion = Mp3MpegVersion.MPEG2;
+		else                    mpegVersion = Mp3MpegVersion.MPEG25;
+
+		var layer: Mp3Layer;
+		if      (layerBits == 3) layer = Mp3Layer.LAYER1;
+		else if (layerBits == 2) layer = Mp3Layer.LAYER2;
+		else                     layer = Mp3Layer.LAYER3;
+
+		var bitrate   = lookupBitrate(mpegVersion, layer, brIdx);
+		var sampleRate = lookupSampleRate(mpegVersion, srIdx);
+		if (bitrate < 0 || sampleRate <= 0) return null;
+
+		var channelMode: Mp3ChannelMode;
+		if      (chanMode == 0) channelMode = Mp3ChannelMode.STEREO;
+		else if (chanMode == 1) channelMode = Mp3ChannelMode.JOINT_STEREO;
+		else if (chanMode == 2) channelMode = Mp3ChannelMode.DUAL_CHANNEL;
+		else                    channelMode = Mp3ChannelMode.MONO;
+
+		var channels = if(chanMode == 3, 1, 2);
+
+		var samplesPerFrame: int;
+		var frameSize: int;
+		if (layer == Mp3Layer.LAYER1) {
+			samplesPerFrame = 384;
+			frameSize = if(bitrate > 0, (12 * bitrate * 1000 / sampleRate + padding) * 4, 0);
+		} else {
+			samplesPerFrame = if(mpegVersion == Mp3MpegVersion.MPEG1, 1152, 576);
+			frameSize = if(bitrate > 0, 144 * bitrate * 1000 / sampleRate + padding, 0);
+		}
+
+		var info = Mp3AudioInfo.new();
+		info.mpegVersion    = mpegVersion;
+		info.layer          = layer;
+		info.bitrateKbps    = bitrate;
+		info.sampleRateHz   = sampleRate;
+		info.channelMode    = channelMode;
+		info.channels       = channels;
+		info.padded         = padding != 0;
+		info.hasCrc         = hasCrc;
+		info.frameSize      = frameSize;
+		info.samplesPerFrame = samplesPerFrame;
+		return info;
+	}
+
+	// Look for a Xing or Info header in the first audio frame's side-info gap.
+	def parseXingHeader(frameAt: int, hdr: Mp3AudioInfo) -> Mp3XingInfo {
+		// Side information size depends on MPEG version and channel count.
+		var sideInfoSize = if(hdr.mpegVersion == Mp3MpegVersion.MPEG1,
+			if(hdr.channels == 1, 17, 32),
+			if(hdr.channels == 1,  9, 17));
+		var xingAt = frameAt + 4 + sideInfoSize;
+		if (xingAt + 8 > data.length) return null;
+
+		var isXing = matchBytes(xingAt, "Xing");
+		var isInfo = matchBytes(xingAt, "Info");
+		if (!isXing && !isInfo) return null;
+
+		var xi = Mp3XingInfo.new();
+		xi.isVbr    = isXing;
+		xi.quality  = -1;
+
+		var flags = readBE32(xingAt + 4);
+		var p = xingAt + 8;
+
+		if ((flags & 0x1) != 0 && p + 4 <= data.length) {
+			xi.frameCount = readBE32(p); p = p + 4;
+		}
+		if ((flags & 0x2) != 0 && p + 4 <= data.length) {
+			xi.streamSize = readBE32(p); p = p + 4;
+		}
+		if ((flags & 0x4) != 0 && p + 100 <= data.length) {
+			xi.hasToc = true; p = p + 100;
+		}
+		if ((flags & 0x8) != 0 && p + 4 <= data.length) {
+			xi.quality = readBE32(p); p = p + 4;
+		}
+
+		// LAME encoder tag immediately follows Xing/Info header.
+		// Detect "LAME" prefix followed by version digits/dots.
+		if (p + 9 <= data.length && matchBytes(p, "LAME")) {
+			var v = Vector<byte>.new();
+			for (i < 9) {
+				var c = int.!(data[p + i]);
+				if (c < 32 || c > 126) break;
+				v.put(data[p + i]);
+			}
+			xi.lameVersion = v.extract();
+		}
+
+		return xi;
+	}
+
+	// ---- ID3v1 tag parsing ----
+
+	def parseId3v1(at: int) -> Mp3Id3v1 {
+		var v1 = Mp3Id3v1.new();
+		v1.title  = trimLatin1(at +  3, 30);
+		v1.artist = trimLatin1(at + 33, 30);
+		v1.album  = trimLatin1(at + 63, 30);
+		v1.year   = trimLatin1(at + 93,  4);
+		// ID3v1.1: zero byte at offset 125 signals track number at offset 126.
+		if (int.!(data[at + 125]) == 0 && int.!(data[at + 126]) != 0) {
+			v1.comment = trimLatin1(at + 97, 28);
+			v1.track   = int.!(data[at + 126]);
+		} else {
+			v1.comment = trimLatin1(at + 97, 30);
+			v1.track   = 0;
+		}
+		v1.genre = int.!(data[at + 127]);
+		return v1;
+	}
+
+	// ---- Bitrate / sample rate lookup ----
+
+	def lookupBitrate(ver: Mp3MpegVersion, layer: Mp3Layer, idx: int) -> int {
+		if (ver == Mp3MpegVersion.MPEG1) {
+			if (layer == Mp3Layer.LAYER1) return MP3_BR_V1_L1[idx];
+			if (layer == Mp3Layer.LAYER2) return MP3_BR_V1_L2[idx];
+			return MP3_BR_V1_L3[idx];
+		}
+		if (layer == Mp3Layer.LAYER1) return MP3_BR_V2_L1[idx];
+		return MP3_BR_V2_L23[idx];
+	}
+
+	def lookupSampleRate(ver: Mp3MpegVersion, idx: int) -> int {
+		if (ver == Mp3MpegVersion.MPEG1)  return MP3_SR_MPEG1[idx];
+		if (ver == Mp3MpegVersion.MPEG2)  return MP3_SR_MPEG2[idx];
+		return MP3_SR_MPEG25[idx];
+	}
+
+	// ---- Low-level helpers ----
+
+	// Decode a 4-byte synchsafe integer at position {p} (7 bits per byte, MSB-first).
+	def decodeSynchsafe4(p: int) -> int {
+		return ((int.!(data[p])   & 0x7F) << 21)
+			 | ((int.!(data[p+1]) & 0x7F) << 14)
+			 | ((int.!(data[p+2]) & 0x7F) <<  7)
+			 |  (int.!(data[p+3]) & 0x7F);
+	}
+
+	// Read a 3-byte big-endian integer at {p}.
+	def readBE24(p: int) -> int {
+		return (int.!(data[p]) << 16) | (int.!(data[p+1]) << 8) | int.!(data[p+2]);
+	}
+
+	// Read a 4-byte big-endian integer at {p} (plain, not synchsafe).
+	def readBE32(p: int) -> int {
+		return int.view((u32.!(data[p]) << 24) | (u32.!(data[p+1]) << 16)
+			          | (u32.!(data[p+2]) <<  8) |  u32.!(data[p+3]));
+	}
+
+	// Read {n} bytes starting at {at} as a string (no trimming).
+	def readFrameId(at: int, n: int) -> string {
+		var buf = Array<byte>.new(n);
+		for (i < n) buf[i] = data[at + i];
+		return buf;
+	}
+
+	// Read a Latin-1 string of at most {n} bytes at {at}, trimming trailing nulls/spaces.
+	def trimLatin1(at: int, n: int) -> string {
+		var end = at + n;
+		while (end > at && (int.!(data[end-1]) == 0 || int.!(data[end-1]) == 32)) {
+			end = end - 1;
+		}
+		var len = end - at;
+		if (len <= 0) return "";
+		var buf = Array<byte>.new(len);
+		for (i < len) buf[i] = data[at + i];
+		return buf;
+	}
+
+	// Return true if {n}-byte tag string {s} matches bytes at {at}.
+	def matchBytes(at: int, s: string) -> bool {
+		if (at + s.length > data.length) return false;
+		for (i < s.length) if (data[at + i] != s[i]) return false;
+		return true;
+	}
+}

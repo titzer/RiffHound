@@ -1,0 +1,89 @@
+// Intermediate representation for MP3 files (ID3v2, MPEG audio, ID3v1).
+
+// ID3v2 major version.
+enum Mp3Id3Version { V2_2, V2_3, V2_4 }
+
+// Text encoding byte in ID3v2 text frames.
+enum Mp3TextEncoding(code: u8) {
+	ISO_8859_1(0), UTF16_BOM(1), UTF16_BE(2), UTF_8(3)
+}
+
+// MPEG audio version bits.
+enum Mp3MpegVersion { MPEG1, MPEG2, MPEG25 }
+
+// MPEG audio layer.
+enum Mp3Layer { LAYER1, LAYER2, LAYER3 }
+
+// Stereo channel mode.
+enum Mp3ChannelMode { STEREO, JOINT_STEREO, DUAL_CHANNEL, MONO }
+
+// A single parsed ID3v2 frame.
+// id: 3-char for v2.2, 4-char for v2.3/v2.4.
+// data: raw frame body bytes (slice of file buffer, excludes the frame header).
+class Mp3Frame {
+	var id:     string;
+	var flags0: u8;          // status flags (0 for v2.2)
+	var flags1: u8;          // format flags (0 for v2.2)
+	var data:   Range<byte>; // frame body in file buffer (after frame header)
+}
+
+// A parsed ID3v2 tag.
+class Mp3Id3v2Tag {
+	var version:  Mp3Id3Version;
+	var revision: u8;
+	var flags:    u8;                // tag header flags byte
+	var tagSize:  int;               // declared tag body size (bytes, excl. 10-byte header)
+	var frames:   Array<Mp3Frame>;
+}
+
+// Decoded information from the first MPEG audio frame header.
+class Mp3AudioInfo {
+	var mpegVersion:    Mp3MpegVersion;
+	var layer:          Mp3Layer;
+	var bitrateKbps:    int;         // 0 = free format
+	var sampleRateHz:   int;
+	var channelMode:    Mp3ChannelMode;
+	var channels:       int;         // 1 = mono, 2 = stereo/dual/joint
+	var padded:         bool;        // frame padding flag
+	var hasCrc:         bool;        // CRC word follows frame header
+	var frameSize:      int;         // total bytes for this frame (incl. 4-byte header)
+	var samplesPerFrame: int;        // 384 / 576 / 1152 depending on version+layer
+}
+
+// VBR/CBR info extracted from a Xing or Info header in the first audio frame.
+class Mp3XingInfo {
+	var isVbr:      bool;    // true = Xing (VBR/ABR), false = Info (CBR)
+	var frameCount: int;     // total frame count; 0 if field absent
+	var streamSize: int;     // total audio stream bytes; 0 if field absent
+	var quality:    int;     // VBR quality 0-100; -1 if field absent
+	var hasToc:     bool;    // 100-byte seek TOC was present
+	var lameVersion: string; // LAME encoder version string; null if not detected
+}
+
+// Container for the raw encoded audio channel data (all MPEG frames).
+// Full MP3 decoding (Huffman, IMDCT, etc.) to be implemented later.
+class Mp3AudioData {
+	var data:       Range<byte>; // raw bytes from first audio frame to end of audio
+	var offset:     int;         // byte offset in file where audio data begins
+	var firstFrame: Mp3AudioInfo; // decoded header of the first MPEG frame
+	var xing:       Mp3XingInfo; // Xing/Info VBR header; null if absent
+	var frameCount: int;         // frame count from Xing if available, else 0
+}
+
+// A parsed ID3v1 tag (128 bytes at end of file).
+class Mp3Id3v1 {
+	var title:   string;
+	var artist:  string;
+	var album:   string;
+	var year:    string;
+	var comment: string;
+	var track:   int;    // 0 if not present (v1.0 only)
+	var genre:   int;    // raw genre byte (0-255)
+}
+
+// Top-level MP3 file representation.
+class Mp3File {
+	var id3v2: Mp3Id3v2Tag;   // null if no ID3v2 tag
+	var audio: Mp3AudioData;  // null if no MPEG frames found
+	var id3v1: Mp3Id3v1;      // null if no ID3v1 tag
+}
