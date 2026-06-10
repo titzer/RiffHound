@@ -1,0 +1,360 @@
+// pngdumper.main.v3 — load, parse, and selectively dump PNG files.
+// Usage: pngdumper [options] <file.png> ...
+
+// ---- Global options ----
+var opt_info    = false;
+var opt_chunks  = false;
+var opt_text    = false;
+var opt_meta    = false;
+var opt_palette = false;
+
+component Main {
+	def main(args: Array<string>) -> int {
+		var files = Array<string>.new(args.length + 1);
+		var nf = 0;
+		var i = 0;
+		while (i < args.length) {
+			var a = args[i];
+			if (strEq(a, "--help") || strEq(a, "-h")) {
+				usage(); return 0;
+			} else if (strEq(a, "--info")) {
+				opt_info = true;
+			} else if (strEq(a, "--chunks") || strEq(a, "-c")) {
+				opt_chunks = true;
+			} else if (strEq(a, "--text") || strEq(a, "-t")) {
+				opt_text = true;
+			} else if (strEq(a, "--meta") || strEq(a, "-m")) {
+				opt_meta = true;
+			} else if (strEq(a, "--palette") || strEq(a, "-p")) {
+				opt_palette = true;
+			} else if (a.length > 0 && a[0] == '-') {
+				System.puts("pngdumper: unknown option: ");
+				System.puts(a); System.ln();
+				return 1;
+			} else {
+				files[nf] = a;
+				nf = nf + 1;
+			}
+			i = i + 1;
+		}
+		if (nf == 0) { usage(); return 1; }
+		// Default: show info summary.
+		if (!opt_chunks && !opt_text && !opt_meta && !opt_palette) opt_info = true;
+		var ok = true;
+		for (j < nf) ok &= processFile(files[j]);
+		return if(ok, 0, 1);
+	}
+}
+
+def usage() {
+	System.puts("Usage: pngdumper [options] <file.png> ...\n");
+	System.puts("Options:\n");
+	System.puts("  -h, --help      Print this help\n");
+	System.puts("  --info          Print image summary (default)\n");
+	System.puts("  -c, --chunks    List all chunks\n");
+	System.puts("  -t, --text      Show text metadata\n");
+	System.puts("  -m, --meta      Show ancillary metadata (gamma, sRGB, phys, time, chrm)\n");
+	System.puts("  -p, --palette   Show palette entries (indexed images)\n");
+}
+
+def processFile(name: string) -> bool {
+	var data = System.fileLoad(name);
+	if (data == null) {
+		System.puts("pngdumper: cannot open: "); System.puts(name); System.ln();
+		return false;
+	}
+	var image = PngParser.new(data).parse();
+	if (opt_info)    dumpInfo(name, image);
+	if (opt_chunks)  dumpChunks(image);
+	if (opt_text)    dumpText(image);
+	if (opt_meta)    dumpMeta(image);
+	if (opt_palette) dumpPalette(image);
+	return true;
+}
+
+// ---- Info summary ----
+
+def dumpInfo(name: string, image: PngImage) {
+	System.puts("File:    "); System.puts(name); System.ln();
+
+	if (image.ihdr == null) {
+		System.puts("Image:   (invalid PNG or missing IHDR)\n");
+		return;
+	}
+
+	var h = image.ihdr;
+	System.puts("Image:   ");
+	System.puti(h.width);
+	System.puts(" x ");
+	System.puti(h.height);
+	System.puts(", ");
+	printColorType(h.colorType);
+	System.puts(", ");
+	System.puti(int.!(h.bitDepth));
+	System.puts("-bit");
+	if (h.interlace == PngInterlace.ADAM7) System.puts(", Adam7");
+	System.ln();
+
+	System.puts("IDAT:    ");
+	System.puti(image.idatSize);
+	System.puts(" bytes");
+	if (image.idatChunks != 1) {
+		System.puts(" (");
+		System.puti(image.idatChunks);
+		System.puts(" chunks)");
+	}
+	System.ln();
+
+	System.puts("Chunks:  "); System.puti(image.chunks.length); System.ln();
+
+	if (image.palette != null) {
+		System.puts("Palette: "); System.puti(image.palette.length); System.puts(" entries\n");
+	}
+
+	if (image.texts.length > 0) {
+		System.puts("Text:    "); System.puti(image.texts.length); System.puts(" entries\n");
+	}
+
+	if (image.gamma >= 0) {
+		System.puts("Gamma:   "); System.puti(image.gamma); System.puts(" (value/100000)\n");
+	}
+
+	if (image.srgbIntent >= 0) {
+		System.puts("sRGB:    "); System.puts(srgbIntentName(image.srgbIntent)); System.ln();
+	}
+
+	if (image.phys != null) {
+		var p = image.phys;
+		System.puts("Phys:    ");
+		System.puti(p.xPpu); System.puts(" x "); System.puti(p.yPpu);
+		if (p.unit == 1) {
+			System.puts(" ppm (~");
+			System.puti(p.xPpu * 254 / 10000);
+			System.puts(" x ");
+			System.puti(p.yPpu * 254 / 10000);
+			System.puts(" dpi)");
+		} else {
+			System.puts(" pixels/unit");
+		}
+		System.ln();
+	}
+
+	if (image.time != null) {
+		var t = image.time;
+		System.puts("Time:    ");
+		System.puti(t.year); System.puts("-");
+		printPadded2(int.!(t.month));  System.puts("-");
+		printPadded2(int.!(t.day));    System.puts(" ");
+		printPadded2(int.!(t.hour));   System.puts(":");
+		printPadded2(int.!(t.minute)); System.puts(":");
+		printPadded2(int.!(t.second));
+		System.ln();
+	}
+}
+
+// ---- Chunk list ----
+
+def dumpChunks(image: PngImage) {
+	if (image.chunks == null) { System.puts("Chunks: (none)\n"); return; }
+	System.puts("Chunks:\n");
+	for (i < image.chunks.length) {
+		var c = image.chunks[i];
+		System.puts("  ");
+		System.puts(c.typeCode);
+		System.puts("  [");
+		pintW(c.data.length, 8);
+		System.puts(" bytes]  @ ");
+		System.puti(c.offset);
+		System.ln();
+	}
+}
+
+// ---- Text metadata ----
+
+def dumpText(image: PngImage) {
+	if (image.texts == null || image.texts.length == 0) {
+		System.puts("Text: (none)\n");
+		return;
+	}
+	System.puts("Text entries:\n");
+	for (i < image.texts.length) {
+		var t = image.texts[i];
+		System.puts("  ");
+		System.puts(t.chunkType);
+		System.puts("  ");
+		pstrPad(t.keyword, 20);
+		if (t.language != null && t.language.length > 0) {
+			System.puts("["); System.puts(t.language); System.puts("] ");
+		}
+		System.puts(": ");
+		if (t.compressed) {
+			System.puts("(compressed)");
+		} else if (t.text != null) {
+			System.puts("\"");
+			pstrTrunc(t.text, 60);
+			System.puts("\"");
+		} else {
+			System.puts("(empty)");
+		}
+		System.ln();
+	}
+}
+
+// ---- Ancillary metadata ----
+
+def dumpMeta(image: PngImage) {
+	var any = false;
+
+	if (image.gamma >= 0) {
+		System.puts("Gamma:   "); System.puti(image.gamma); System.puts(" (gamma * 100000)\n");
+		any = true;
+	}
+
+	if (image.srgbIntent >= 0) {
+		System.puts("sRGB:    ");
+		System.puts(srgbIntentName(image.srgbIntent));
+		System.puts(" (intent ");
+		System.puti(image.srgbIntent);
+		System.puts(")\n");
+		any = true;
+	}
+
+	if (image.phys != null) {
+		var p = image.phys;
+		System.puts("Phys:    ");
+		System.puti(p.xPpu); System.puts(" x "); System.puti(p.yPpu);
+		if (p.unit == 1) {
+			System.puts(" pixels/metre  (~");
+			System.puti(p.xPpu * 254 / 10000);
+			System.puts(" x ");
+			System.puti(p.yPpu * 254 / 10000);
+			System.puts(" dpi)");
+		} else {
+			System.puts(" pixels/unit  (unit unknown)");
+		}
+		System.ln();
+		any = true;
+	}
+
+	if (image.time != null) {
+		var t = image.time;
+		System.puts("Time:    ");
+		System.puti(t.year); System.puts("-");
+		printPadded2(int.!(t.month));  System.puts("-");
+		printPadded2(int.!(t.day));    System.puts(" ");
+		printPadded2(int.!(t.hour));   System.puts(":");
+		printPadded2(int.!(t.minute)); System.puts(":");
+		printPadded2(int.!(t.second));
+		System.ln();
+		any = true;
+	}
+
+	if (image.chrm != null) {
+		var c = image.chrm;
+		System.puts("Chrm:\n");
+		System.puts("  White  ("); System.puti(c.whiteX); System.puts(", "); System.puti(c.whiteY); System.puts(")\n");
+		System.puts("  Red    ("); System.puti(c.redX);   System.puts(", "); System.puti(c.redY);   System.puts(")\n");
+		System.puts("  Green  ("); System.puti(c.greenX); System.puts(", "); System.puti(c.greenY); System.puts(")\n");
+		System.puts("  Blue   ("); System.puti(c.blueX);  System.puts(", "); System.puti(c.blueY);  System.puts(")\n");
+		any = true;
+	}
+
+	if (image.transparency != null) {
+		System.puts("tRNS:    ");
+		System.puti(image.transparency.length);
+		System.puts(" bytes\n");
+		any = true;
+	}
+
+	if (image.sigBits != null) {
+		System.puts("sBIT:    ");
+		for (i < image.sigBits.length) {
+			if (i > 0) System.puts(" ");
+			System.puti(int.!(image.sigBits[i]));
+		}
+		System.ln();
+		any = true;
+	}
+
+	if (!any) System.puts("Meta: (no ancillary metadata chunks found)\n");
+}
+
+// ---- Palette ----
+
+def dumpPalette(image: PngImage) {
+	if (image.palette == null) {
+		System.puts("Palette: (none)\n");
+		return;
+	}
+	System.puts("Palette: ");
+	System.puti(image.palette.length);
+	System.puts(" entries\n");
+	for (i < image.palette.length) {
+		var e = image.palette[i];
+		System.puts("  #");
+		pintW(i, 3);
+		System.puts(":  rgb(");
+		pintW(int.!(e.r), 3); System.puts(", ");
+		pintW(int.!(e.g), 3); System.puts(", ");
+		pintW(int.!(e.b), 3);
+		System.puts(")\n");
+	}
+}
+
+// ---- Printing helpers ----
+
+def printColorType(ct: PngColorType) {
+	if      (ct == PngColorType.GRAYSCALE)       System.puts("Grayscale");
+	else if (ct == PngColorType.TRUECOLOR)        System.puts("RGB");
+	else if (ct == PngColorType.INDEXED)          System.puts("Indexed");
+	else if (ct == PngColorType.GRAYSCALE_ALPHA)  System.puts("Grayscale+Alpha");
+	else                                           System.puts("RGBA");
+}
+
+def srgbIntentName(intent: int) -> string {
+	if (intent == 0) return "Perceptual";
+	if (intent == 1) return "Relative colorimetric";
+	if (intent == 2) return "Saturation";
+	if (intent == 3) return "Absolute colorimetric";
+	return "Unknown";
+}
+
+// Print a decimal integer left-padded with zeros to at least 2 digits.
+def printPadded2(n: int) {
+	if (n < 10) System.puts("0");
+	System.puti(n);
+}
+
+def pstrPad(s: string, width: int) {
+	var len = if(s != null, s.length, 0);
+	if (len > 0) System.puts(s);
+	for (i < width - len) System.puts(" ");
+}
+
+def pstrTrunc(s: string, maxLen: int) {
+	if (s == null) return;
+	if (s.length <= maxLen) { System.puts(s); return; }
+	var v = Vector<byte>.new();
+	for (i < maxLen - 3) v.put(s[i]);
+	v.put('.'); v.put('.'); v.put('.');
+	System.puts(v.extract());
+}
+
+def pintW(n: int, width: int) {
+	for (i < width - ndigits(n)) System.puts(" ");
+	System.puti(n);
+}
+
+def ndigits(n: int) -> int {
+	if (n <= 0) return 1;
+	var d = 0;
+	var v = n;
+	while (v > 0) { d = d + 1; v = v / 10; }
+	return d;
+}
+
+def strEq(a: string, b: string) -> bool {
+	if (a.length != b.length) return false;
+	for (i < a.length) if (a[i] != b[i]) return false;
+	return true;
+}

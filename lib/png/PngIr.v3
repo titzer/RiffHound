@@ -1,0 +1,91 @@
+// Intermediate representation for PNG images.
+
+// PNG colour type (stored in IHDR byte 9).
+enum PngColorType(code: u8) {
+	GRAYSCALE(0),
+	TRUECOLOR(2),
+	INDEXED(3),
+	GRAYSCALE_ALPHA(4),
+	TRUECOLOR_ALPHA(6)
+}
+
+// PNG interlace method (stored in IHDR byte 12).
+enum PngInterlace(code: u8) {
+	NONE(0),
+	ADAM7(1)
+}
+
+// A single raw PNG chunk as read from the file.
+class PngChunk {
+	var typeCode: string;       // 4-byte ASCII type code (e.g. "IHDR", "tEXt")
+	var offset:   int;          // byte offset of the 4-byte length field in the file
+	var data:     Range<byte>;  // raw chunk data body (excludes 8-byte header and 4-byte CRC)
+}
+
+// Decoded IHDR (image header) data.
+class PngIhdr {
+	var width:     int;
+	var height:    int;
+	var bitDepth:  u8;
+	var colorType: PngColorType;
+	var interlace: PngInterlace;
+}
+
+// A single PLTE (palette) entry: red, green, blue each 0–255.
+type PngPaletteEntry(r: u8, g: u8, b: u8) {}
+
+// A decoded text metadata chunk (tEXt, zTXt, or iTXt).
+class PngText {
+	var chunkType:  string;  // "tEXt", "zTXt", or "iTXt"
+	var keyword:    string;
+	var language:   string;  // language tag from iTXt; null for tEXt and zTXt
+	var text:       string;  // decoded text; null when compressed and not decoded
+	var compressed: bool;    // true for zTXt and compressed iTXt
+}
+
+// Decoded pHYs (physical pixel dimensions) data.
+class PngPhys {
+	var xPpu: int;  // pixels per unit, X axis
+	var yPpu: int;  // pixels per unit, Y axis
+	var unit: u8;   // 0 = unit unknown, 1 = metre
+}
+
+// Decoded tIME (last modification time) data.
+class PngTime {
+	var year:   int;
+	var month:  u8;
+	var day:    u8;
+	var hour:   u8;
+	var minute: u8;
+	var second: u8;
+}
+
+// Decoded cHRM (primary chromaticities) data.
+// Values are raw integers; divide by 100000 to obtain CIE xy coordinates.
+class PngChrm {
+	var whiteX: int;
+	var whiteY: int;
+	var redX:   int;
+	var redY:   int;
+	var greenX: int;
+	var greenY: int;
+	var blueX:  int;
+	var blueY:  int;
+}
+
+// Top-level PNG image representation.
+class PngImage {
+	var ihdr:         PngIhdr;                // null if file is not a valid PNG
+	var palette:      Array<PngPaletteEntry>; // null if no PLTE chunk present
+	var idatSize:     int;                    // total compressed image data bytes (all IDAT)
+	var idatChunks:   int;                    // number of IDAT chunks
+	var texts:        Array<PngText>;         // all tEXt / zTXt / iTXt entries
+	var gamma:        int;                    // raw gamma × 100000; -1 if no gAMA chunk
+	var srgbIntent:   int;                    // sRGB rendering intent 0–3; -1 if absent
+	var chrm:         PngChrm;               // null if no cHRM chunk
+	var phys:         PngPhys;               // null if no pHYs chunk
+	var time:         PngTime;               // null if no tIME chunk
+	var transparency: Range<byte>;           // raw tRNS data; null if absent
+	var sigBits:      Range<byte>;           // raw sBIT data; null if absent
+	var chunks:       Array<PngChunk>;       // all chunks in file order
+}

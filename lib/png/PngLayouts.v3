@@ -1,0 +1,75 @@
+// Binary layouts for fixed-size PNG file structures.
+// PNG uses big-endian byte order throughout; multi-byte fields use u8[N] arrays
+// and are read via helper functions rather than raw layout field accesses.
+
+// The 8-byte PNG file signature (must appear at byte 0 of every PNG file).
+layout PngSignature {
+	+0  bytes: u8[8];   // 137 80 78 71 13 10 26 10  ("\x89PNG\r\n\x1a\n")
+	=8;
+}
+
+// The 8-byte header that precedes every PNG chunk.
+// Immediately followed by {length} data bytes then a 4-byte CRC-32.
+layout PngChunkHeader {
+	+0  length:    u8[4];   // big-endian u32: byte count of the data field only
+	+4  typecode:  u8[4];   // chunk type code (ASCII letters, case-sensitive)
+	=8;
+}
+
+// The 13-byte data of the mandatory IHDR (image header) chunk.
+// Always the first chunk in a valid PNG file.
+layout PngIhdrData {
+	+0   width:       u8[4];  // image width in pixels  (big-endian u32, ≥ 1)
+	+4   height:      u8[4];  // image height in pixels (big-endian u32, ≥ 1)
+	+8   bit_depth:   u8;     // bits per channel: 1, 2, 4, 8, or 16
+	+9   color_type:  u8;     // 0=gray, 2=rgb, 3=indexed, 4=gray+alpha, 6=rgba
+	+10  compression: u8;     // compression method (always 0 = deflate/zlib)
+	+11  filter:      u8;     // filter method (always 0 = adaptive filtering)
+	+12  interlace:   u8;     // 0 = none, 1 = Adam7
+	=13;
+}
+
+// The 9-byte pHYs (physical pixel dimensions) chunk data.
+layout PngPhysData {
+	+0  x_ppu: u8[4];   // pixels per unit, X axis (big-endian u32)
+	+4  y_ppu: u8[4];   // pixels per unit, Y axis (big-endian u32)
+	+8  unit:  u8;      // 0 = unit unknown, 1 = metre
+	=9;
+}
+
+// The 7-byte tIME (last modification time) chunk data.
+layout PngTimeData {
+	+0  year:   u8[2];  // year, e.g. 2024 (big-endian u16)
+	+2  month:  u8;     // 1–12
+	+3  day:    u8;     // 1–31
+	+4  hour:   u8;     // 0–23
+	+5  minute: u8;     // 0–59
+	+6  second: u8;     // 0–60 (60 allowed for leap seconds)
+	=7;
+}
+
+// The 4-byte gAMA (image gamma) chunk data.
+layout PngGamaData {
+	+0  gamma: u8[4];   // gamma × 100000 (big-endian u32); 45455 ≈ 1/γ 2.2
+	=4;
+}
+
+// The 32-byte cHRM (primary chromaticities and white point) chunk data.
+// All values are CIE xy coordinates × 100000 (big-endian u32 each).
+layout PngChrmData {
+	+0   white_x: u8[4];
+	+4   white_y: u8[4];
+	+8   red_x:   u8[4];
+	+12  red_y:   u8[4];
+	+16  green_x: u8[4];
+	+20  green_y: u8[4];
+	+24  blue_x:  u8[4];
+	+28  blue_y:  u8[4];
+	=32;
+}
+
+// The 1-byte sRGB (standard RGB colour space indicator) chunk data.
+layout PngSrgbData {
+	+0  rendering_intent: u8;  // 0=perceptual, 1=relative, 2=saturation, 3=absolute
+	=1;
+}

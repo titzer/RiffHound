@@ -1,0 +1,291 @@
+// PNG file parser: validates signature, reads all chunks, decodes known chunk types.
+// Handles critical chunks (IHDR, PLTE, IDAT, IEND) and common ancillary chunks
+// (tEXt, zTXt, iTXt, gAMA, sRGB, cHRM, pHYs, tIME, tRNS, sBIT).
+
+class PngParser {
+	var r: DataReader;
+
+	new(data: Range<byte>) {
+		r = DataReader.new(data);
+	}
+
+	def parse() -> PngImage {
+		var image = PngImage.new();
+		image.gamma = -1;
+		image.srgbIntent = -1;
+
+		// Validate 8-byte PNG signature.
+		if (!checkSignature()) return image;
+		r.skipN(8);
+
+		var chunks = Vector<PngChunk>.new();
+		var texts  = Vector<PngText>.new();
+		var totalIdatSize   = 0;
+		var totalIdatChunks = 0;
+
+		// Read chunks until IEND or end of file.
+		while (r.peekN(8)) {
+			var chunkOffset = r.pos;
+
+			// 4-byte big-endian data length.
+			var length = readBE32();
+			if (length < 0) break;  // high bit set: file is malformed or > 2 GB
+
+			// 4-byte chunk type code.
+			var typeCode = readStr4();
+			// r.pos now points to the first byte of chunk data.
+
+			// Ensure data body + 4-byte CRC fit within the file.
+			if (!r.peekN(length + 4)) break;
+
+			// Alias the chunk data body without copying or advancing r.pos.
+			var chunkData = r.data[r.pos ..+ length];
+
+			// Build and record raw chunk.
+			var chunk = PngChunk.new();
+			chunk.typeCode = typeCode;
+			chunk.offset   = chunkOffset;
+			chunk.data     = chunkData;
+			chunks.put(chunk);
+
+			// Decode known chunk types.
+			if (matchStr(typeCode, "IHDR")) {
+				image.ihdr = parseIhdr(chunkData);
+			} else if (matchStr(typeCode, "PLTE")) {
+				image.palette = parsePlte(chunkData);
+			} else if (matchStr(typeCode, "IDAT")) {
+				totalIdatSize   = totalIdatSize + length;
+				totalIdatChunks = totalIdatChunks + 1;
+			} else if (matchStr(typeCode, "tEXt")) {
+				var t = parseTExt(chunkData);
+				if (t != null) texts.put(t);
+			} else if (matchStr(typeCode, "zTXt")) {
+				var t = parseZTxt(chunkData);
+				if (t != null) texts.put(t);
+			} else if (matchStr(typeCode, "iTXt")) {
+				var t = parseITxt(chunkData);
+				if (t != null) texts.put(t);
+			} else if (matchStr(typeCode, "gAMA") && length >= 4) {
+				image.gamma = getBE32(chunkData, 0);
+			} else if (matchStr(typeCode, "sRGB") && length >= 1) {
+				image.srgbIntent = int.!(chunkData[0]);
+			} else if (matchStr(typeCode, "cHRM") && length >= 32) {
+				image.chrm = parseChrm(chunkData);
+			} else if (matchStr(typeCode, "pHYs") && length >= 9) {
+				image.phys = parsePhys(chunkData);
+			} else if (matchStr(typeCode, "tIME") && length >= 7) {
+				image.time = parseTime(chunkData);
+			} else if (matchStr(typeCode, "tRNS")) {
+				image.transparency = chunkData;
+			} else if (matchStr(typeCode, "sBIT")) {
+				image.sigBits = chunkData;
+			}
+
+			// Advance past data body + 4-byte CRC.
+			r.skipN(length + 4);
+
+			if (matchStr(typeCode, "IEND")) break;
+		}
+
+		image.idatSize   = totalIdatSize;
+		image.idatChunks = totalIdatChunks;
+		image.chunks     = chunks.extract();
+		image.texts      = texts.extract();
+		return image;
+	}
+
+	// ---- Chunk decoders ----
+
+	// Return true iff the next 8 bytes are the PNG signature (does not consume them).
+	def checkSignature() -> bool {
+		if (!r.peekN(8)) return false;
+		var d = r.data;
+		var p = r.pos;
+		return d[p]   == 137 && d[p+1] == 80  && d[p+2] == 78  && d[p+3] == 71
+		    && d[p+4] == 13  && d[p+5] == 10  && d[p+6] == 26  && d[p+7] == 10;
+	}
+
+	// Decode IHDR chunk data (13 bytes).
+	def parseIhdr(d: Range<byte>) -> PngIhdr {
+		if (d.length < 13) return null;
+		var h = PngIhdr.new();
+		h.width     = getBE32(d, 0);
+		h.height    = getBE32(d, 4);
+		h.bitDepth  = d[8];
+		h.colorType = decodeColorType(d[9]);
+		h.interlace = decodeInterlace(d[12]);
+		return h;
+	}
+
+	// Decode PLTE chunk data into an array of palette entries.
+	def parsePlte(d: Range<byte>) -> Array<PngPaletteEntry> {
+		var n = d.length / 3;
+		if (n == 0) return null;
+		var entries = Array<PngPaletteEntry>.new(n);
+		for (i < n) {
+			var p = i * 3;
+			entries[i] = PngPaletteEntry(d[p], d[p+1], d[p+2]);
+		}
+		return entries;
+	}
+
+	// Decode tEXt chunk: keyword + null + Latin-1 text.
+	def parseTExt(d: Range<byte>) -> PngText {
+		var sep = findNull(d, 0, d.length);
+		if (sep < 0) return null;
+		var t = PngText.new();
+		t.chunkType  = "tEXt";
+		t.keyword    = toStr(d[0 ..+ sep]);
+		t.text       = toStr(d[sep+1 ..+ (d.length - sep - 1)]);
+		t.compressed = false;
+		return t;
+	}
+
+	// Decode zTXt chunk: keyword + null + compression_method (1 byte) + compressed text.
+	// The compressed text body is not decompressed here.
+	def parseZTxt(d: Range<byte>) -> PngText {
+		var sep = findNull(d, 0, d.length);
+		if (sep < 0 || sep + 2 > d.length) return null;
+		var t = PngText.new();
+		t.chunkType  = "zTXt";
+		t.keyword    = toStr(d[0 ..+ sep]);
+		t.compressed = true;
+		t.text       = null;  // decompression not implemented
+		return t;
+	}
+
+	// Decode iTXt chunk:
+	//   keyword + null + compression_flag (1) + compression_method (1) +
+	//   language_tag + null + translated_keyword + null + text
+	// Uncompressed text is read directly; compressed text is left null.
+	def parseITxt(d: Range<byte>) -> PngText {
+		// Keyword
+		var kwEnd = findNull(d, 0, d.length);
+		if (kwEnd < 0 || kwEnd + 3 > d.length) return null;
+		var keyword   = toStr(d[0 ..+ kwEnd]);
+		var compFlag  = int.!(d[kwEnd + 1]);
+		// compression_method at kwEnd + 2 (skip)
+		// Language tag
+		var langStart = kwEnd + 3;
+		var langEnd   = findNull(d, langStart, d.length);
+		if (langEnd < 0) return null;
+		var lang = toStr(d[langStart ..+ (langEnd - langStart)]);
+		// Translated keyword (skip over it)
+		var tkwEnd = findNull(d, langEnd + 1, d.length);
+		if (tkwEnd < 0) return null;
+		var textStart = tkwEnd + 1;
+		var t = PngText.new();
+		t.chunkType  = "iTXt";
+		t.keyword    = keyword;
+		t.language   = lang;
+		t.compressed = compFlag != 0;
+		t.text       = if(t.compressed, null, toStr(d[textStart ..+ (d.length - textStart)]));
+		return t;
+	}
+
+	// Decode cHRM chunk (32 bytes): 8 big-endian u32 chromaticity values × 100000.
+	def parseChrm(d: Range<byte>) -> PngChrm {
+		var c = PngChrm.new();
+		c.whiteX = getBE32(d, 0);
+		c.whiteY = getBE32(d, 4);
+		c.redX   = getBE32(d, 8);
+		c.redY   = getBE32(d, 12);
+		c.greenX = getBE32(d, 16);
+		c.greenY = getBE32(d, 20);
+		c.blueX  = getBE32(d, 24);
+		c.blueY  = getBE32(d, 28);
+		return c;
+	}
+
+	// Decode pHYs chunk (9 bytes): pixel density.
+	def parsePhys(d: Range<byte>) -> PngPhys {
+		var p = PngPhys.new();
+		p.xPpu = getBE32(d, 0);
+		p.yPpu = getBE32(d, 4);
+		p.unit = d[8];
+		return p;
+	}
+
+	// Decode tIME chunk (7 bytes): last modification timestamp.
+	def parseTime(d: Range<byte>) -> PngTime {
+		var t = PngTime.new();
+		t.year   = getBE16(d, 0);
+		t.month  = d[2];
+		t.day    = d[3];
+		t.hour   = d[4];
+		t.minute = d[5];
+		t.second = d[6];
+		return t;
+	}
+
+	// ---- Enum decoders ----
+
+	def decodeColorType(code: u8) -> PngColorType {
+		if (code == 0) return PngColorType.GRAYSCALE;
+		if (code == 2) return PngColorType.TRUECOLOR;
+		if (code == 3) return PngColorType.INDEXED;
+		if (code == 4) return PngColorType.GRAYSCALE_ALPHA;
+		return PngColorType.TRUECOLOR_ALPHA;
+	}
+
+	def decodeInterlace(code: u8) -> PngInterlace {
+		if (code == 1) return PngInterlace.ADAM7;
+		return PngInterlace.NONE;
+	}
+
+	// ---- Stream reads (consume bytes from r) ----
+
+	// Read a 4-byte big-endian unsigned integer from the stream.
+	def readBE32() -> int {
+		var b0 = int.!(r.read1());
+		var b1 = int.!(r.read1());
+		var b2 = int.!(r.read1());
+		var b3 = int.!(r.read1());
+		return int.view((u32.!(b0) << 24) | (u32.!(b1) << 16) | (u32.!(b2) << 8) | u32.!(b3));
+	}
+
+	// Read the 4-byte chunk type code from the stream into a string.
+	def readStr4() -> string {
+		var buf = Array<byte>.new(4);
+		for (i < 4) buf[i] = r.read1();
+		return buf;
+	}
+
+	// ---- Range reads (access a Range<byte> at a fixed offset) ----
+
+	// Read a 4-byte big-endian unsigned integer from {d} at byte offset {at}.
+	def getBE32(d: Range<byte>, at: int) -> int {
+		return int.view((u32.!(d[at]) << 24) | (u32.!(d[at+1]) << 16)
+		              | (u32.!(d[at+2]) <<  8) |  u32.!(d[at+3]));
+	}
+
+	// Read a 2-byte big-endian unsigned integer from {d} at byte offset {at}.
+	def getBE16(d: Range<byte>, at: int) -> int {
+		return (int.!(d[at]) << 8) | int.!(d[at+1]);
+	}
+
+	// Copy a Range<byte> into a new string.
+	def toStr(d: Range<byte>) -> string {
+		if (d.length <= 0) return "";
+		var buf = Array<byte>.new(d.length);
+		for (i < d.length) buf[i] = d[i];
+		return buf;
+	}
+
+	// Find the first zero byte in d[start .. end); return -1 if not found.
+	def findNull(d: Range<byte>, start: int, end: int) -> int {
+		var i = start;
+		while (i < end) {
+			if (int.!(d[i]) == 0) return i;
+			i = i + 1;
+		}
+		return -1;
+	}
+
+	// Compare two strings for equality.
+	def matchStr(a: string, b: string) -> bool {
+		if (a.length != b.length) return false;
+		for (i < a.length) if (a[i] != b[i]) return false;
+		return true;
+	}
+}
