@@ -1,0 +1,398 @@
+// GIF file parser: validates header, reads logical screen descriptor, global color table,
+// and all blocks (image frames, graphic control extensions, comments, plain text,
+// application extensions). Handles both GIF87a and GIF89a.
+//
+// Sub-block discipline:
+//   Each extension parser reads its own fixed-size header block (the "block size" byte
+//   and that many bytes of fixed data). Sub-block sequences that follow are always
+//   handled by the caller via collectSubBlocks() / skipSubBlocks().
+//   Exception: GCE has no sub-blocks (only the 4-byte body + one 0x00 terminator).
+
+class GifParser {
+	def var r: DataReader;
+
+	new(data: Range<byte>) {
+		r = DataReader.new(data);
+	}
+
+	def parse() -> GifFile {
+		var file = GifFile.new();
+		file.screen = GifScreen.new();
+
+		// Validate and decode 6-byte header.
+		if (!parseHeader(file)) return file;
+
+		// Decode 7-byte Logical Screen Descriptor.
+		if (!r.peekN(7)) return file;
+		parseScreenDescriptor(file.screen);
+
+		// Read optional Global Color Table.
+		if (file.screen.hasGlobalTable) {
+			file.globalTable = readColorTable(file.screen.globalTableSize);
+		}
+
+		// Accumulate blocks into vectors.
+		var frames     = Vector<GifFrame>.new();
+		var comments   = Vector<GifComment>.new();
+		var plainTexts = Vector<GifPlainText>.new();
+		var appExts    = Vector<GifAppExtension>.new();
+		var exts       = Vector<GifExtension>.new();
+
+		// Pending graphic control extension to attach to the next frame/plain-text.
+		var pendingGCE: GifGraphicControl = null;
+
+		// Main block loop.
+		while (r.peekN(1)) {
+			var blockOffset = r.pos;
+			var intro = int.!(r.read1());
+
+			if (intro == 0x3B) break;  // GIF trailer
+
+			if (intro == 0x2C) {
+				// Image Descriptor: 9-byte header + optional local color table + sub-blocks.
+				var frame = parseImageDescriptor(frames.length, blockOffset, pendingGCE);
+				if (frame != null) frames.put(frame);
+				pendingGCE = null;
+
+			} else if (intro == 0x21) {
+				// Extension block: label byte follows.
+				if (!r.peekN(1)) break;
+				var label  = r.read1();
+				var extOff = blockOffset;
+
+				if (int.!(label) == 0xF9) {
+					// Graphic Control Extension: 4-byte body + 0x00 terminator, no sub-blocks.
+					var raw = GifExtension.new();
+					raw.label  = label;
+					raw.offset = extOff;
+					raw.data   = [];
+					exts.put(raw);
+					pendingGCE = parseGCE();
+
+				} else if (int.!(label) == 0xFE) {
+					// Comment Extension: sub-blocks of text, no fixed header.
+					var rawData = collectSubBlocks();
+					var c = GifComment.new();
+					c.text = toStr(rawData);
+					comments.put(c);
+					var raw = GifExtension.new();
+					raw.label  = label;
+					raw.offset = extOff;
+					raw.data   = rawData;
+					exts.put(raw);
+
+				} else if (int.!(label) == 0x01) {
+					// Plain Text Extension: 12-byte fixed header, then text sub-blocks.
+					// parsePlainText() always leaves r past the fixed block.
+					var pt = parsePlainText();
+					var ptData = collectSubBlocks();
+					if (pt != null) {
+						pt.text = toStr(ptData);
+						plainTexts.put(pt);
+					}
+					pendingGCE = null;
+					var raw = GifExtension.new();
+					raw.label  = label;
+					raw.offset = extOff;
+					raw.data   = ptData;
+					exts.put(raw);
+
+				} else if (int.!(label) == 0xFF) {
+					// Application Extension: 11-byte fixed header, then data sub-blocks.
+					// parseAppExtension() always leaves r past the fixed block.
+					var app = parseAppExtension();
+					var appData = collectSubBlocks();
+					if (app != null) {
+						app.data = appData;
+						appExts.put(app);
+						if (file.netscape == null) {
+							file.netscape = tryDecodeNetscape(app);
+						}
+					}
+					var raw = GifExtension.new();
+					raw.label  = label;
+					raw.offset = extOff;
+					raw.data   = appData;
+					exts.put(raw);
+
+				} else {
+					// Unknown extension: collect sub-blocks.
+					var rawData = collectSubBlocks();
+					var raw = GifExtension.new();
+					raw.label  = label;
+					raw.offset = extOff;
+					raw.data   = rawData;
+					exts.put(raw);
+				}
+			} else {
+				// Unknown block introducer; stop parsing.
+				break;
+			}
+		}
+
+		file.frames      = frames.extract();
+		file.comments    = comments.extract();
+		file.plainTexts  = plainTexts.extract();
+		file.appExts     = appExts.extract();
+		file.extensions  = exts.extract();
+		file.totalFrames = file.frames.length;
+		file.animated    = file.frames.length > 1;
+		return file;
+	}
+
+	// ---- Block parsers ----
+
+	// Validate the 6-byte GIF header and set file.version.
+	// Returns false if the file does not begin with "GIF87a" or "GIF89a".
+	def parseHeader(file: GifFile) -> bool {
+		if (!r.peekN(6)) return false;
+		var d = r.data;
+		var p = r.pos;
+		if (d[p] != 'G' || d[p+1] != 'I' || d[p+2] != 'F') return false;
+		if (d[p+3] == '8' && d[p+4] == '7' && d[p+5] == 'a') {
+			file.version = GifVersion.GIF87a;
+		} else if (d[p+3] == '8' && d[p+4] == '9' && d[p+5] == 'a') {
+			file.version = GifVersion.GIF89a;
+		} else {
+			return false;
+		}
+		r.skipN(6);
+		return true;
+	}
+
+	// Decode the 7-byte Logical Screen Descriptor into {s}.
+	def parseScreenDescriptor(s: GifScreen) {
+		var d = r.readN(7);
+		s.width  = read_u16le(d, 0);
+		s.height = read_u16le(d, 2);
+		var packed = int.!(d[4]);
+		s.hasGlobalTable  = (packed & 0x80) != 0;
+		s.colorResolution = (packed >> 4) & 0x07;
+		s.globalSorted    = (packed & 0x08) != 0;
+		s.globalTableSize = colorTableLen(packed & 0x07);
+		s.bgColorIndex    = d[5];
+		s.pixelAspect     = d[6];
+	}
+
+	// Read a color table of {count} entries (3 bytes each) from the stream.
+	def readColorTable(count: int) -> Array<GifColorEntry> {
+		var entries = Array<GifColorEntry>.new(count);
+		for (i < count) {
+			if (!r.peekN(3)) break;
+			var e = r.readN(3);
+			entries[i] = GifColorEntry(e[0], e[1], e[2]);
+		}
+		return entries;
+	}
+
+	// Parse an Image Descriptor (9-byte header) plus local color table and image data.
+	// The separator byte 0x2C has already been consumed.
+	def parseImageDescriptor(index: int, offset: int, gce: GifGraphicControl) -> GifFrame {
+		if (!r.peekN(9)) return null;
+		var d = r.readN(9);
+		var frame = GifFrame.new();
+		frame.index       = index;
+		frame.imageOffset = offset;
+		frame.graphicCtrl = gce;
+		frame.left   = read_u16le(d, 0);
+		frame.top    = read_u16le(d, 2);
+		frame.width  = read_u16le(d, 4);
+		frame.height = read_u16le(d, 6);
+		var packed = int.!(d[8]);
+		frame.hasLocalTable = (packed & 0x80) != 0;
+		frame.interlaced    = (packed & 0x40) != 0;
+		frame.localSorted   = (packed & 0x20) != 0;
+		// Read local color table if present.
+		if (frame.hasLocalTable) {
+			frame.localTable = readColorTable(colorTableLen(packed & 0x07));
+		}
+		// LZW minimum code size byte.
+		if (!r.peekN(1)) return frame;
+		frame.lzwMinCode = r.read1();
+		// Skip image data sub-blocks while counting compressed bytes.
+		frame.imageDataSize = skipAndCountSubBlocks();
+		return frame;
+	}
+
+	// Parse a Graphic Control Extension body.
+	// The introducer (0x21) and label (0xF9) have already been consumed.
+	// Format: block_size(1) + packed(1) + delay(2) + transparent_idx(1) + terminator(1).
+	def parseGCE() -> GifGraphicControl {
+		if (!r.peekN(1)) return null;
+		var bsize = int.!(r.read1());  // should be 4
+		if (bsize < 4) {
+			if (r.peekN(bsize)) r.skipN(bsize);
+			if (r.peekN(1)) r.read1();  // try to consume terminator
+			return null;
+		}
+		if (!r.peekN(bsize)) { r.skipN(r.data.length - r.pos); return null; }
+		var d = r.readN(4);
+		if (bsize > 4) r.skipN(bsize - 4);
+		if (r.peekN(1)) r.read1();  // block terminator (0x00)
+		var packed = int.!(d[0]);
+		var gce = GifGraphicControl.new();
+		gce.disposal         = decodeDisposal(u8.!((packed >> 3) & 0x07));
+		gce.userInput        = (packed & 0x02) != 0;
+		gce.hasTransparency  = (packed & 0x01) != 0;
+		gce.delayCs          = read_u16le(d, 1);
+		gce.transparentIndex = d[3];
+		return gce;
+	}
+
+	// Parse a Plain Text Extension fixed header (12 bytes).
+	// The introducer (0x21) and label (0x01) have already been consumed.
+	// Always leaves r positioned past the fixed header block.
+	// Text sub-blocks are read by the caller via collectSubBlocks().
+	// Returns null on truncated or malformed input.
+	def parsePlainText() -> GifPlainText {
+		if (!r.peekN(1)) return null;
+		var bsize = int.!(r.read1());  // should be 12
+		if (bsize < 12) {
+			// Skip whatever bytes are here; caller handles sub-blocks.
+			if (r.peekN(bsize)) r.skipN(bsize);
+			else r.skipN(r.data.length - r.pos);
+			return null;
+		}
+		if (!r.peekN(bsize)) { r.skipN(r.data.length - r.pos); return null; }
+		var d = r.readN(12);
+		if (bsize > 12) r.skipN(bsize - 12);
+		var pt = GifPlainText.new();
+		pt.gridLeft    = read_u16le(d, 0);
+		pt.gridTop     = read_u16le(d, 2);
+		pt.gridWidth   = read_u16le(d, 4);
+		pt.gridHeight  = read_u16le(d, 6);
+		pt.cellWidth   = d[8];
+		pt.cellHeight  = d[9];
+		pt.fgColorIndex = d[10];
+		pt.bgColorIndex = d[11];
+		return pt;  // caller sets pt.text from collectSubBlocks()
+	}
+
+	// Parse an Application Extension fixed header (11 bytes).
+	// The introducer (0x21) and label (0xFF) have already been consumed.
+	// Always leaves r positioned past the fixed header block.
+	// Data sub-blocks are read by the caller via collectSubBlocks().
+	// Returns null on truncated or malformed input.
+	def parseAppExtension() -> GifAppExtension {
+		if (!r.peekN(1)) return null;
+		var bsize = int.!(r.read1());  // should be 11
+		if (bsize < 11) {
+			if (r.peekN(bsize)) r.skipN(bsize);
+			else r.skipN(r.data.length - r.pos);
+			return null;
+		}
+		if (!r.peekN(bsize)) { r.skipN(r.data.length - r.pos); return null; }
+		var d = r.readN(11);
+		if (bsize > 11) r.skipN(bsize - 11);
+		var app = GifAppExtension.new();
+		app.appId    = toStr(d[0 ..+ 8]);
+		app.authCode = toStr(d[8 ..+ 3]);
+		// caller sets app.data from collectSubBlocks()
+		return app;
+	}
+
+	// Try to decode a NETSCAPE 2.0 loop-count application extension.
+	def tryDecodeNetscape(app: GifAppExtension) -> GifNetscapeExt {
+		if (!strEq(app.appId, "NETSCAPE")) return null;
+		if (!strEq(app.authCode, "2.0")) return null;
+		var d = app.data;
+		// Data layout: 0x01 + 2-byte little-endian loop count.
+		if (d.length < 3) return null;
+		if (int.!(d[0]) != 0x01) return null;
+		var ext = GifNetscapeExt.new();
+		ext.loopCount = read_u16le(d, 1);
+		return ext;
+	}
+
+	// ---- Sub-block helpers ----
+
+	// Collect all sub-blocks at the current position into a flat byte array.
+	// Each sub-block is preceded by a 1-byte count; a count of 0 terminates.
+	// The size bytes themselves are stripped; only data bytes are returned.
+	def collectSubBlocks() -> Array<byte> {
+		// First pass: calculate total data bytes (without copying).
+		var start = r.pos;
+		var total = 0;
+		var p = start;
+		while (p < r.data.length) {
+			var sz = int.!(r.data[p]);
+			p = p + 1;
+			if (sz == 0) break;
+			if (p + sz > r.data.length) { total = total + (r.data.length - p); p = r.data.length; break; }
+			total = total + sz;
+			p = p + sz;
+		}
+		// Second pass: copy data bytes into output array.
+		var out = Array<byte>.new(total);
+		var cur = start;
+		var q   = 0;
+		while (cur < r.data.length) {
+			var sz = int.!(r.data[cur]);
+			cur = cur + 1;
+			if (sz == 0) break;
+			if (cur + sz > r.data.length) sz = r.data.length - cur;
+			for (k < sz) { out[q] = r.data[cur]; cur = cur + 1; q = q + 1; }
+		}
+		r.skipN(p - start);  // advance reader past all sub-blocks (uses first-pass end position)
+		return out;
+	}
+
+	// Skip all sub-blocks at the current position.
+	def skipSubBlocks() {
+		while (r.peekN(1)) {
+			var sz = int.!(r.read1());
+			if (sz == 0) break;
+			if (!r.peekN(sz)) { r.skipN(r.data.length - r.pos); break; }
+			r.skipN(sz);
+		}
+	}
+
+	// Skip sub-blocks while accumulating total data bytes (used for image data).
+	def skipAndCountSubBlocks() -> int {
+		var total = 0;
+		while (r.peekN(1)) {
+			var sz = int.!(r.read1());
+			if (sz == 0) break;
+			if (!r.peekN(sz)) { r.skipN(r.data.length - r.pos); break; }
+			total = total + sz;
+			r.skipN(sz);
+		}
+		return total;
+	}
+
+	// ---- Enum decoder ----
+
+	def decodeDisposal(code: u8) -> GifDisposal {
+		if (code == 1) return GifDisposal.DO_NOT_DISPOSE;
+		if (code == 2) return GifDisposal.RESTORE_BACKGROUND;
+		if (code == 3) return GifDisposal.RESTORE_PREVIOUS;
+		return GifDisposal.NONE;
+	}
+
+	// ---- Numeric utilities ----
+
+	// Number of color table entries for packed size field N (0–7): 2^(N+1).
+	def colorTableLen(sizeField: int) -> int {
+		return 2 << sizeField;
+	}
+
+	// Read a 2-byte little-endian unsigned integer from {d} at byte offset {at}.
+	def read_u16le(d: Range<byte>, at: int) -> int {
+		return int.!(d[at]) | (int.!(d[at+1]) << 8);
+	}
+
+	// Copy a Range<byte> into a new string.
+	def toStr(d: Range<byte>) -> string {
+		if (d.length <= 0) return "";
+		var buf = Array<byte>.new(d.length);
+		for (i < d.length) buf[i] = d[i];
+		return buf;
+	}
+
+	// Case-sensitive string equality.
+	def strEq(a: string, b: string) -> bool {
+		if (a.length != b.length) return false;
+		for (i < a.length) if (a[i] != b[i]) return false;
+		return true;
+	}
+}

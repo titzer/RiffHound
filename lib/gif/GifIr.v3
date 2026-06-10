@@ -1,0 +1,108 @@
+// Intermediate representation for GIF images (GIF87a and GIF89a).
+
+// GIF version (from the 6-byte header signature).
+enum GifVersion {
+	GIF87a,
+	GIF89a
+}
+
+// Disposal method for a frame (from Graphic Control Extension).
+enum GifDisposal(code: u8) {
+	NONE(0),           // no disposal specified
+	DO_NOT_DISPOSE(1), // leave in place
+	RESTORE_BACKGROUND(2), // restore to background color
+	RESTORE_PREVIOUS(3)    // restore to previous content
+}
+
+// A single palette entry: red, green, blue each 0–255.
+type GifColorEntry(r: u8, g: u8, b: u8) {}
+
+// Decoded Logical Screen Descriptor (7 bytes after the header).
+class GifScreen {
+	var width:           int;   // logical screen width in pixels
+	var height:          int;   // logical screen height in pixels
+	var hasGlobalTable:  bool;  // true if a global color table follows
+	var colorResolution: int;   // bits per primary color channel minus 1 (1–8)
+	var globalSorted:    bool;  // true if global color table is sorted by importance
+	var globalTableSize: int;   // number of entries in the global color table (2^(N+1))
+	var bgColorIndex:    u8;    // index into global color table for background
+	var pixelAspect:     u8;    // pixel aspect ratio (0 = square / not given)
+}
+
+// Decoded Graphic Control Extension (GIF89a, block label 0xF9).
+class GifGraphicControl {
+	var disposal:           GifDisposal; // frame disposal method
+	var userInput:          bool;        // wait for user input before advancing
+	var hasTransparency:    bool;        // transparent color index is valid
+	var delayCs:            int;         // delay in hundredths of a second
+	var transparentIndex:   u8;          // color index treated as transparent
+}
+
+// A decoded image frame.
+class GifFrame {
+	var index:         int;                   // 0-based frame number
+	var left:          int;                   // left offset within logical screen
+	var top:           int;                   // top offset within logical screen
+	var width:         int;                   // frame width in pixels
+	var height:        int;                   // frame height in pixels
+	var hasLocalTable: bool;                  // true if a local color table follows
+	var interlaced:    bool;                  // true if image data is interlaced
+	var localSorted:   bool;                  // true if local color table is sorted
+	var localTable:    Array<GifColorEntry>;  // null if no local color table
+	var lzwMinCode:    u8;                    // LZW minimum code size
+	var imageDataSize: int;                   // total compressed image data bytes
+	var imageOffset:   int;                   // byte offset of image descriptor in file
+	var graphicCtrl:   GifGraphicControl;     // null if no preceding GCE
+}
+
+// A decoded Comment Extension (GIF89a, block label 0xFE).
+class GifComment {
+	var text: string;  // comment text (raw bytes concatenated from sub-blocks)
+}
+
+// A decoded Plain Text Extension (GIF89a, block label 0x01).
+class GifPlainText {
+	var gridLeft:      int;   // text grid left position
+	var gridTop:       int;   // text grid top position
+	var gridWidth:     int;   // text grid width
+	var gridHeight:    int;   // text grid height
+	var cellWidth:     u8;    // character cell width
+	var cellHeight:    u8;    // character cell height
+	var fgColorIndex:  u8;    // foreground color index
+	var bgColorIndex:  u8;    // background color index
+	var text:          string; // plain text data (raw bytes from sub-blocks)
+}
+
+// A decoded Application Extension (GIF89a, block label 0xFF).
+class GifAppExtension {
+	var appId:      string;        // 8-byte application identifier
+	var authCode:   string;        // 3-byte application authentication code
+	var data:       Range<byte>;   // raw application data sub-block bytes
+}
+
+// Known application extension subtypes decoded from the raw extension.
+class GifNetscapeExt {
+	var loopCount: int;  // 0 = loop forever, 1–65535 = repeat N times
+}
+
+// A raw extension block (unknown or unparsed type).
+class GifExtension {
+	var label:  u8;           // extension label byte (e.g. 0xF9, 0xFE, 0x01, 0xFF)
+	var offset: int;          // byte offset of introducer (0x21) in file
+	var data:   Range<byte>;  // concatenated raw sub-block bytes
+}
+
+// Top-level GIF file representation.
+class GifFile {
+	var version:      GifVersion;             // GIF87a or GIF89a
+	var screen:       GifScreen;              // logical screen descriptor; never null
+	var globalTable:  Array<GifColorEntry>;   // null if no global color table
+	var frames:       Array<GifFrame>;        // all image frames in file order
+	var comments:     Array<GifComment>;      // all comment extensions
+	var plainTexts:   Array<GifPlainText>;    // all plain text extensions
+	var appExts:      Array<GifAppExtension>; // all application extensions
+	var netscape:     GifNetscapeExt;         // null if no NETSCAPE 2.0 extension
+	var extensions:   Array<GifExtension>;    // all extensions (raw) in file order
+	var animated:     bool;                   // true if more than one frame
+	var totalFrames:  int;                    // number of image frames
+}

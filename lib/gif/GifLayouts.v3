@@ -1,0 +1,84 @@
+// Binary layouts for fixed-size GIF file structures.
+// GIF uses little-endian byte order for multi-byte integers.
+
+// The 6-byte GIF header signature.
+// Must be either "GIF87a" or "GIF89a".
+layout GifHeader {
+	+0  signature: u8[3];  // "GIF"
+	+3  version:   u8[3];  // "87a" or "89a"
+	=6;
+}
+
+// The 7-byte Logical Screen Descriptor, immediately following the header.
+//
+// packed byte bits:
+//   bit 7  : global color table flag (1 = global table follows)
+//   bits 4-6: color resolution minus 1 (number of bits per primary color - 1)
+//   bit 3  : sort flag (1 = global table sorted by decreasing importance)
+//   bits 0-2: global color table size (table has 2^(N+1) entries)
+layout GifScreenDescriptor {
+	+0  width:      u8[2];  // logical screen width  (little-endian u16)
+	+2  height:     u8[2];  // logical screen height (little-endian u16)
+	+4  packed:     u8;     // packed fields (see above)
+	+5  bg_index:   u8;     // background color index into global color table
+	+6  aspect:     u8;     // pixel aspect ratio (0 = not given)
+	=7;
+}
+
+// One entry in a color table (global or local). Always 3 bytes.
+layout GifColorTableEntry {
+	+0  r: u8;
+	+1  g: u8;
+	+2  b: u8;
+	=3;
+}
+
+// The 10-byte Image Descriptor, introduced by separator byte 0x2C.
+//
+// packed byte bits:
+//   bit 7  : local color table flag (1 = local table follows)
+//   bit 6  : interlace flag (1 = interlaced)
+//   bit 5  : sort flag (1 = local table sorted by decreasing importance)
+//   bits 3-4: reserved (must be 0)
+//   bits 0-2: local color table size (table has 2^(N+1) entries)
+layout GifImageDescriptor {
+	+0  left:   u8[2];  // image left position  (little-endian u16)
+	+2  top:    u8[2];  // image top  position  (little-endian u16)
+	+4  width:  u8[2];  // image width  in pixels (little-endian u16)
+	+6  height: u8[2];  // image height in pixels (little-endian u16)
+	+8  packed: u8;     // packed fields (see above)
+	=9;
+}
+
+// The 4-byte body of a Graphic Control Extension (after the block size byte).
+//
+// packed byte bits:
+//   bits 3-5: disposal method (0=none, 1=do not dispose, 2=restore bg, 3=restore prev)
+//   bit 2  : user input flag
+//   bit 0  : transparent color flag
+layout GifGCEBody {
+	+0  packed:        u8;     // packed fields (see above)
+	+1  delay:         u8[2];  // delay in 1/100 seconds (little-endian u16)
+	+3  transparent:   u8;     // transparent color index (valid only if flag set)
+	=4;
+}
+
+// The 12-byte body of a Plain Text Extension (after the block size byte).
+layout GifPlainTextHeader {
+	+0  grid_left:    u8[2];  // text grid left   (little-endian u16)
+	+2  grid_top:     u8[2];  // text grid top    (little-endian u16)
+	+4  grid_width:   u8[2];  // text grid width  (little-endian u16)
+	+6  grid_height:  u8[2];  // text grid height (little-endian u16)
+	+8  cell_width:   u8;     // character cell width  in pixels
+	+9  cell_height:  u8;     // character cell height in pixels
+	+10 fg_index:     u8;     // foreground color index
+	+11 bg_index:     u8;     // background color index
+	=12;
+}
+
+// The 11-byte body of an Application Extension (after the block size byte).
+layout GifAppExtHeader {
+	+0  app_id:    u8[8];  // application identifier (ASCII)
+	+8  auth_code: u8[3];  // application authentication code
+	=11;
+}

@@ -1,0 +1,373 @@
+// gifdumper.main.v3 — load, parse, and selectively dump GIF files.
+// Usage: gifdumper [options] <file.gif> ...
+
+// ---- Global options ----
+var opt_info       = false;
+var opt_frames     = false;
+var opt_exts       = false;
+var opt_palette    = false;
+var opt_comments   = false;
+var opt_animation  = false;
+
+component Main {
+	def main(args: Array<string>) -> int {
+		var files = Array<string>.new(args.length + 1);
+		var nf = 0;
+		var i = 0;
+		while (i < args.length) {
+			var a = args[i];
+			if (strEq(a, "--help") || strEq(a, "-h")) {
+				usage(); return 0;
+			} else if (strEq(a, "--info")) {
+				opt_info = true;
+			} else if (strEq(a, "--frames") || strEq(a, "-f")) {
+				opt_frames = true;
+			} else if (strEq(a, "--exts") || strEq(a, "-e")) {
+				opt_exts = true;
+			} else if (strEq(a, "--palette") || strEq(a, "-p")) {
+				opt_palette = true;
+			} else if (strEq(a, "--comments") || strEq(a, "-c")) {
+				opt_comments = true;
+			} else if (strEq(a, "--animation") || strEq(a, "-a")) {
+				opt_animation = true;
+			} else if (a.length > 0 && a[0] == '-') {
+				System.puts("gifdumper: unknown option: ");
+				System.puts(a); System.ln();
+				return 1;
+			} else {
+				files[nf] = a;
+				nf = nf + 1;
+			}
+			i = i + 1;
+		}
+		if (nf == 0) { usage(); return 1; }
+		// Default: show info summary.
+		if (!opt_frames && !opt_exts && !opt_palette && !opt_comments && !opt_animation) {
+			opt_info = true;
+		}
+		var ok = true;
+		for (j < nf) ok &= processFile(files[j]);
+		return if(ok, 0, 1);
+	}
+}
+
+def usage() {
+	System.puts("Usage: gifdumper [options] <file.gif> ...\n");
+	System.puts("Options:\n");
+	System.puts("  -h, --help       Print this help\n");
+	System.puts("  --info           Print file summary (default)\n");
+	System.puts("  -f, --frames     List all image frames\n");
+	System.puts("  -e, --exts       List all extension blocks\n");
+	System.puts("  -p, --palette    Show global color table\n");
+	System.puts("  -c, --comments   Show comment extensions\n");
+	System.puts("  -a, --animation  Show animation/loop info\n");
+}
+
+def processFile(name: string) -> bool {
+	var data = System.fileLoad(name);
+	if (data == null) {
+		System.puts("gifdumper: cannot open: "); System.puts(name); System.ln();
+		return false;
+	}
+	var file = GifParser.new(data).parse();
+	if (opt_info)      dumpInfo(name, file);
+	if (opt_frames)    dumpFrames(file);
+	if (opt_exts)      dumpExts(file);
+	if (opt_palette)   dumpPalette(file);
+	if (opt_comments)  dumpComments(file);
+	if (opt_animation) dumpAnimation(file);
+	return true;
+}
+
+// ---- Info summary ----
+
+def dumpInfo(name: string, file: GifFile) {
+	System.puts("File:      "); System.puts(name); System.ln();
+
+	if (file.screen == null) {
+		System.puts("GIF:       (invalid GIF or unrecognised header)\n");
+		return;
+	}
+
+	System.puts("Version:   ");
+	if (file.version == GifVersion.GIF87a) System.puts("GIF87a");
+	else System.puts("GIF89a");
+	System.ln();
+
+	var s = file.screen;
+	System.puts("Canvas:    ");
+	System.puti(s.width); System.puts(" x "); System.puti(s.height);
+	System.puts(" pixels\n");
+
+	System.puts("Frames:    "); System.puti(file.totalFrames);
+	if (file.animated) System.puts("  (animated)");
+	System.ln();
+
+	if (file.screen.hasGlobalTable) {
+		System.puts("Global CT: "); System.puti(file.screen.globalTableSize);
+		System.puts(" entries");
+		if (file.screen.globalSorted) System.puts(", sorted");
+		System.puts("  (bg index "); System.puti(int.!(s.bgColorIndex)); System.puts(")");
+		System.ln();
+	}
+
+	if (s.colorResolution > 0) {
+		System.puts("Color res: "); System.puti(s.colorResolution + 1);
+		System.puts(" bits/channel\n");
+	}
+
+	if (s.pixelAspect != 0) {
+		// Actual ratio = (pixelAspect + 15) / 64
+		System.puts("Aspect:    ");
+		System.puti(int.!(s.pixelAspect) + 15);
+		System.puts("/64  (raw "); System.puti(int.!(s.pixelAspect)); System.puts(")\n");
+	}
+
+	if (file.extensions.length > 0) {
+		System.puts("Exts:      "); System.puti(file.extensions.length); System.ln();
+	}
+
+	if (file.comments.length > 0) {
+		System.puts("Comments:  "); System.puti(file.comments.length); System.ln();
+	}
+
+	if (file.appExts.length > 0) {
+		System.puts("App exts:  "); System.puti(file.appExts.length); System.ln();
+	}
+
+	if (file.netscape != null) {
+		System.puts("Loop:      ");
+		if (file.netscape.loopCount == 0) System.puts("infinite");
+		else { System.puti(file.netscape.loopCount); System.puts(" time(s)"); }
+		System.ln();
+	}
+}
+
+// ---- Frame listing ----
+
+def dumpFrames(file: GifFile) {
+	if (file.frames == null || file.frames.length == 0) {
+		System.puts("Frames: (none)\n");
+		return;
+	}
+	System.puts("Frames:\n");
+	for (i < file.frames.length) {
+		var f = file.frames[i];
+		System.puts("  #");
+		pintW(f.index, 3);
+		System.puts(":  ");
+		pintW(f.width,  4); System.puts(" x "); pintW(f.height, 4);
+		System.puts("  @ (");
+		pintW(f.left, 4); System.puts(", "); pintW(f.top, 4);
+		System.puts(")");
+		if (f.interlaced)    System.puts("  interlaced");
+		if (f.hasLocalTable) {
+			System.puts("  LCT:");
+			System.puti(f.localTable.length);
+		}
+		System.puts("  lzw:");
+		System.puti(int.!(f.lzwMinCode));
+		System.puts("  data:");
+		System.puti(f.imageDataSize);
+		System.puts(" bytes");
+		if (f.graphicCtrl != null) {
+			var gce = f.graphicCtrl;
+			System.puts("  delay:");
+			System.puti(gce.delayCs);
+			System.puts("cs");
+			if (gce.hasTransparency) {
+				System.puts("  trans:#");
+				System.puti(int.!(gce.transparentIndex));
+			}
+			System.puts("  disp:");
+			printDisposal(gce.disposal);
+		}
+		System.ln();
+	}
+}
+
+// ---- Extension listing ----
+
+def dumpExts(file: GifFile) {
+	if (file.extensions == null || file.extensions.length == 0) {
+		System.puts("Extensions: (none)\n");
+		return;
+	}
+	System.puts("Extensions:\n");
+	for (i < file.extensions.length) {
+		var e = file.extensions[i];
+		System.puts("  0x");
+		printHex2(int.!(e.label));
+		System.puts("  (");
+		System.puts(extLabelName(int.!(e.label)));
+		System.puts(")  @ ");
+		System.puti(e.offset);
+		if (e.data.length > 0) {
+			System.puts("  [");
+			System.puti(e.data.length);
+			System.puts(" data bytes]");
+		}
+		System.ln();
+	}
+	// Application extension details
+	if (file.appExts.length > 0) {
+		System.puts("Application extensions:\n");
+		for (i < file.appExts.length) {
+			var a = file.appExts[i];
+			System.puts("  \"");
+			System.puts(a.appId);
+			System.puts("\"  auth:\"");
+			System.puts(a.authCode);
+			System.puts("\"  [");
+			System.puti(a.data.length);
+			System.puts(" bytes]\n");
+		}
+	}
+}
+
+// ---- Global color table ----
+
+def dumpPalette(file: GifFile) {
+	if (file.globalTable == null) {
+		System.puts("Palette: (no global color table)\n");
+		return;
+	}
+	System.puts("Global color table: ");
+	System.puti(file.globalTable.length);
+	System.puts(" entries\n");
+	for (i < file.globalTable.length) {
+		var e = file.globalTable[i];
+		System.puts("  #");
+		pintW(i, 3);
+		System.puts(":  #");
+		printHex2(int.!(e.r));
+		printHex2(int.!(e.g));
+		printHex2(int.!(e.b));
+		System.puts("  rgb(");
+		pintW(int.!(e.r), 3); System.puts(", ");
+		pintW(int.!(e.g), 3); System.puts(", ");
+		pintW(int.!(e.b), 3);
+		System.puts(")\n");
+	}
+}
+
+// ---- Comment extensions ----
+
+def dumpComments(file: GifFile) {
+	if (file.comments == null || file.comments.length == 0) {
+		System.puts("Comments: (none)\n");
+		return;
+	}
+	System.puts("Comments:\n");
+	for (i < file.comments.length) {
+		var c = file.comments[i];
+		System.puts("  [");
+		System.puti(i);
+		System.puts("]: \"");
+		pstrTrunc(c.text, 72);
+		System.puts("\"\n");
+	}
+}
+
+// ---- Animation info ----
+
+def dumpAnimation(file: GifFile) {
+	if (!file.animated && file.netscape == null) {
+		System.puts("Animation: (single frame, no loop extension)\n");
+		return;
+	}
+	System.puts("Animation:\n");
+	System.puts("  Frames:  "); System.puti(file.totalFrames); System.ln();
+
+	if (file.netscape != null) {
+		System.puts("  Loop:    ");
+		if (file.netscape.loopCount == 0) System.puts("infinite");
+		else { System.puti(file.netscape.loopCount); System.puts(" time(s)"); }
+		System.ln();
+	} else {
+		System.puts("  Loop:    (no NETSCAPE loop extension)\n");
+	}
+
+	// Per-frame delay summary.
+	System.puts("  Frame delays (1/100 s):\n");
+	for (i < file.frames.length) {
+		var f = file.frames[i];
+		System.puts("    #");
+		pintW(f.index, 3);
+		System.puts(":  ");
+		if (f.graphicCtrl != null) {
+			pintW(f.graphicCtrl.delayCs, 5);
+			System.puts(" cs  (");
+			// Print as milliseconds: delayCs * 10
+			System.puti(f.graphicCtrl.delayCs * 10);
+			System.puts(" ms)  disp:");
+			printDisposal(f.graphicCtrl.disposal);
+		} else {
+			System.puts("  (no GCE)");
+		}
+		System.ln();
+	}
+}
+
+// ---- Printing helpers ----
+
+def printDisposal(d: GifDisposal) {
+	if      (d == GifDisposal.NONE)               System.puts("none");
+	else if (d == GifDisposal.DO_NOT_DISPOSE)      System.puts("keep");
+	else if (d == GifDisposal.RESTORE_BACKGROUND)  System.puts("bg");
+	else                                            System.puts("prev");
+}
+
+def extLabelName(label: int) -> string {
+	if (label == 0xF9) return "Graphic Control";
+	if (label == 0xFE) return "Comment";
+	if (label == 0x01) return "Plain Text";
+	if (label == 0xFF) return "Application";
+	return "Unknown";
+}
+
+def printHex2(v: int) {
+	var hi = (v >> 4) & 0xF;
+	var lo =  v       & 0xF;
+	System.puts(hexDigit(hi));
+	System.puts(hexDigit(lo));
+}
+
+def hexDigit(v: int) -> string {
+	if (v < 10) {
+		var c = Array<byte>.new(1);
+		c[0] = byte.!(48 + v);
+		return c;
+	}
+	var c = Array<byte>.new(1);
+	c[0] = byte.!(55 + v);
+	return c;
+}
+
+def pintW(n: int, width: int) {
+	for (i < width - ndigits(n)) System.puts(" ");
+	System.puti(n);
+}
+
+def ndigits(n: int) -> int {
+	if (n <= 0) return 1;
+	var d = 0;
+	var v = n;
+	while (v > 0) { d = d + 1; v = v / 10; }
+	return d;
+}
+
+def pstrTrunc(s: string, maxLen: int) {
+	if (s == null) return;
+	if (s.length <= maxLen) { System.puts(s); return; }
+	var v = Vector<byte>.new();
+	for (i < maxLen - 3) v.put(s[i]);
+	v.put('.'); v.put('.'); v.put('.');
+	System.puts(v.extract());
+}
+
+def strEq(a: string, b: string) -> bool {
+	if (a.length != b.length) return false;
+	for (i < a.length) if (a[i] != b[i]) return false;
+	return true;
+}
