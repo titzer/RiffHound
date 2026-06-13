@@ -224,6 +224,7 @@
 		<label for="micGain">Gain</label>
 		<input id="micGain" type="range" min="-10" max="30" step="1" value="0">
 		<span id="micGainVal" style="font-size:12px;color:var(--muted);min-width:5ch">0 dB</span>
+		<span id="midiStatus" style="font-size:12px;color:var(--muted);min-width:8ch">MIDI --</span>
 	</div>
 	<div class="group">
 		<label for="wave">Wave</label>
@@ -329,6 +330,7 @@
 		micStream: null,
 		micSource: null,
 		micGainNode: null,
+		midiAccess: null,
 		analyser: null,
 		pianoOsc: null,
 		pianoGain: null,
@@ -355,6 +357,7 @@
 			micBtn: byId("micBtn"),
 			micGain: byId("micGain"),
 			micGainVal: byId("micGainVal"),
+			midiStatus: byId("midiStatus"),
 			wave: byId("wave"),
 			a4: byId("a4"),
 			volume: byId("volume"),
@@ -478,6 +481,43 @@
 		app.els.micBtn.textContent = "Start Mic";
 		app.els.micBtn.classList.remove("on");
 		app.els.audioState.textContent = "idle";
+	}
+
+	function onMidiMessage(event) {
+		var data = event.data;
+		if (!data || data.length < 2) return;
+		var status   = data[0] & 0xF0;  // strip channel nibble
+		var note     = data[1];
+		var velocity = data.length > 2 ? data[2] : 0;
+		if (status === 0x90 && velocity > 0) {
+			playPianoNote(note);
+		} else if (status === 0x80 || (status === 0x90 && velocity === 0)) {
+			if (app.pianoActiveNote === note) stopPianoNote();
+		}
+	}
+
+	function connectMidiInputs() {
+		if (!app.midiAccess) return;
+		var count = 0;
+		app.midiAccess.inputs.forEach(function (input) {
+			input.onmidimessage = onMidiMessage;
+			count++;
+		});
+		app.els.midiStatus.textContent = count ? "MIDI: " + count : "MIDI: --";
+	}
+
+	function initMidi() {
+		if (!navigator.requestMIDIAccess) {
+			app.els.midiStatus.textContent = "no MIDI";
+			return;
+		}
+		navigator.requestMIDIAccess().then(function (access) {
+			app.midiAccess = access;
+			connectMidiInputs();
+			access.onstatechange = connectMidiInputs;
+		}, function () {
+			app.els.midiStatus.textContent = "MIDI: ✗";
+		});
 	}
 
 	function playPianoNote(midi) {
@@ -1131,6 +1171,10 @@
 		stopPianoNote();
 		if (app.micGainNode) { try { app.micGainNode.disconnect(); } catch (ignore) {} app.micGainNode = null; }
 		if (app.pianoGain) { try { app.pianoGain.disconnect(); } catch (ignore) {} app.pianoGain = null; }
+		if (app.midiAccess) {
+			try { app.midiAccess.inputs.forEach(function (input) { input.onmidimessage = null; }); } catch (ignore) {}
+			app.midiAccess = null;
+		}
 		for (var i = 0; i < app.disposers.length; i++) {
 			try { app.disposers[i](); } catch (ignore) {}
 		}
@@ -1140,6 +1184,7 @@
 	try {
 		updateOctaveLabel();
 		bindUI();
+		initMidi();
 		// Sync display labels with control values (browser may cache controls across reloads).
 		(function () {
 			var db = Number(app.els.micGain.value);
