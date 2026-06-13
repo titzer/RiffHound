@@ -47,6 +47,9 @@
   <button id="sheetBtn" class="modality-btn active-mode">Sheet Music</button>
   <button id="earBtn"   class="modality-btn">Ear</button>
   <button id="tabBtn"   class="modality-btn">Tab</button>
+  <span style="color:#bbb; margin:0 2px;">|</span>
+  <span id="midiStatus" class="hint">MIDI: —</span>
+  <button id="midiRetryBtn" style="font-size:12px;padding:3px 7px;">↺</button>
 </div>
 
 <!-- Key filter (key quiz only) -->
@@ -1237,11 +1240,60 @@ window.addEventListener("keydown", e => {
 });
 
 // =====================================================================
+// MIDI INPUT
+// =====================================================================
+const midiStatusEl = document.getElementById("midiStatus");
+
+function updateMidiStatus(text, good) {
+  midiStatusEl.textContent = text;
+  midiStatusEl.style.color = good ? "#0a7a2f" : "#888";
+}
+
+function handleMidiMessage(event) {
+  const [status, note, velocity] = event.data;
+  // Accept note-on (0x90) with velocity > 0; treat note-on with vel=0 as note-off
+  if ((status & 0xf0) !== 0x90 || velocity === 0) return;
+  if (waitingForNext) return;
+  // Only active for note quiz (sheet or tab)
+  if (!((modality === "sheet" && quizMode === "note") || modality === "tab")) return;
+  const letter = SEMI_INV.get(note % 12);
+  if (!letter) return; // black key — ignore
+  if (modality === "tab") handleTabNoteGuess(letter);
+  else handleSheetNoteGuess(letter);
+}
+
+function setupMidiInputs(access) {
+  access.inputs.forEach(input => { input.onmidimessage = handleMidiMessage; });
+}
+
+function initMidi() {
+  if (!navigator.requestMIDIAccess) {
+    updateMidiStatus("MIDI: N/A", false);
+    return;
+  }
+  navigator.requestMIDIAccess().then(access => {
+    function refresh() {
+      let count = 0;
+      access.inputs.forEach(() => count++);
+      setupMidiInputs(access);
+      updateMidiStatus(count > 0 ? "MIDI: \u25CF connected" : "MIDI: no device", count > 0);
+    }
+    access.onstatechange = refresh;
+    refresh();
+  }, () => {
+    updateMidiStatus("MIDI: denied", false);
+  });
+}
+
+document.getElementById("midiRetryBtn").addEventListener("click", initMidi);
+
+// =====================================================================
 // INIT
 // =====================================================================
 updateStats();
 updateUI();
 startNewQuestion();
+initMidi();
 
 })();
 </script>
@@ -1249,7 +1301,8 @@ startNewQuestion();
 <div style="margin-top:14px;" class="hint">
   <strong>Keyboard shortcuts:</strong>
   Sheet/Tab: <b>A–G</b> answer · <b>Space</b> replay · Key quiz: <b>#/- then M/m</b> · <b>Skip</b> next question · <b>Hint</b> shows root note ·
-  Ear: <b>Space</b> replay · <b>1–6</b> pick choice · <b>n</b> new question
+  Ear: <b>Space</b> replay · <b>1–6</b> pick choice · <b>n</b> new question ·
+  <strong>MIDI:</strong> play any natural note on your keyboard (Sheet/Tab note quiz)
 </div>
 </body>
 </html>
