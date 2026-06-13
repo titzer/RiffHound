@@ -1,0 +1,1164 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>YIN Vocal Trainer Prototype</title>
+<style>
+	:root {
+		--bg: #101216;
+		--panel: #181c22;
+		--panel2: #202632;
+		--text: #eef2f7;
+		--muted: #9aa7b7;
+		--line: #303846;
+		--accent: #7dd3fc;
+		--good: #86efac;
+		--warn: #fde68a;
+		--bad: #fca5a5;
+	}
+	* { box-sizing: border-box; }
+	body {
+		margin: 0;
+		font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+		background: var(--bg);
+		color: var(--text);
+	}
+	button, select, input {
+		font: inherit;
+		color: var(--text);
+		background: #12161d;
+		border: 1px solid var(--line);
+		border-radius: 8px;
+		padding: 7px 10px;
+	}
+	button { cursor: pointer; }
+	button.on { background: #164e63; border-color: #38bdf8; }
+	label { color: var(--muted); font-size: 13px; }
+	.topbar {
+		display: flex;
+		gap: 10px;
+		align-items: center;
+		padding: 8px 10px;
+		border-bottom: 1px solid var(--line);
+		background: #0d1015;
+		position: sticky;
+		top: 0;
+		z-index: 3;
+		flex-wrap: wrap;
+	}
+	.group {
+		display: flex;
+		gap: 8px;
+		align-items: center;
+		padding-right: 10px;
+		border-right: 1px solid var(--line);
+	}
+	.group:last-child { border-right: none; }
+	/* Param popup buttons */
+	.param-wrap { position: relative; }
+	.param-btn {
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		padding: 4px 9px;
+		font-size: 11px;
+		line-height: 1.25;
+		min-width: 52px;
+		gap: 0;
+	}
+	.param-btn .pval {
+		font-size: 12px;
+		font-weight: 700;
+		color: var(--accent);
+		display: block;
+	}
+	.param-btn.open { border-color: var(--accent); background: #101922; }
+	.param-pop {
+		display: none;
+		position: absolute;
+		top: calc(100% + 6px);
+		left: 0;
+		background: var(--panel);
+		border: 1px solid var(--line);
+		border-radius: 10px;
+		padding: 12px 14px;
+		min-width: 190px;
+		z-index: 100;
+		box-shadow: 0 8px 28px rgba(0,0,0,0.6);
+	}
+	.param-pop.open { display: block; }
+	.param-pop .pop-label {
+		display: block;
+		color: var(--muted);
+		font-size: 12px;
+		margin-bottom: 8px;
+	}
+	.param-pop input[type="range"] {
+		width: 100%;
+		padding: 0;
+		border: none;
+		background: none;
+		accent-color: var(--accent);
+		cursor: pointer;
+	}
+	.param-pop .pop-num {
+		width: 100%;
+		margin-top: 8px;
+		text-align: center;
+		padding: 5px 8px;
+		font-size: 13px;
+	}
+	/* Compact inline pitch readout in topbar */
+	.ri-pitch {
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		line-height: 1.1;
+	}
+	.ri-note {
+		font-size: 24px;
+		font-weight: 800;
+		letter-spacing: -0.02em;
+		display: inline-block;
+		width: 3ch;
+		text-align: center;
+	}
+	.ri-cents {
+		font-size: 11px;
+		font-weight: 700;
+		display: inline-block;
+		width: 56px;
+		text-align: center;
+	}
+	.ri-hz {
+		font-size: 12px;
+		color: var(--muted);
+		min-width: 72px;
+	}
+	#tunerMeter {
+		width: 120px;
+		height: 28px;
+		display: block;
+		flex-shrink: 0;
+	}
+	.ri-stat {
+		font-size: 12px;
+		color: var(--muted);
+		white-space: nowrap;
+	}
+	.ri-stat b { color: var(--text); }
+	/* Main layout */
+	.main {
+		display: flex;
+		flex-direction: column;
+		gap: 10px;
+		padding: 10px;
+		height: calc(100vh - 56px);
+		min-height: 480px;
+	}
+	.panel {
+		background: var(--panel);
+		border: 1px solid var(--line);
+		border-radius: 14px;
+		overflow: hidden;
+	}
+	.pianoSection {
+		flex-shrink: 0;
+		display: flex;
+		flex-direction: column;
+		height: 130px;
+	}
+	.panelTitle {
+		height: 36px;
+		padding: 0 12px;
+		font-weight: 700;
+		border-bottom: 1px solid var(--line);
+		background: var(--panel2);
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 8px;
+		flex-shrink: 0;
+	}
+	.oct-ctrl { display: flex; align-items: center; gap: 5px; }
+	.oct-btn { padding: 2px 8px; font-size: 13px; line-height: 1.4; }
+	#octaveLabel {
+		font-size: 12px;
+		font-weight: 400;
+		color: var(--muted);
+		min-width: 6ch;
+		text-align: center;
+	}
+	.pianoWrap { flex: 1; min-height: 0; position: relative; }
+	#pianoRoll {
+		width: 100%;
+		height: 100%;
+		display: block;
+		background: #0f1319;
+		cursor: pointer;
+	}
+	.plotWrap {
+		flex: 1;
+		min-height: 0;
+		display: flex;
+		flex-direction: column;
+	}
+	#historyPlot {
+		flex: 1;
+		min-height: 0;
+		width: 100%;
+		display: block;
+		background: #0f1319;
+	}
+	@media (max-width: 800px) {
+		.main { height: auto; }
+		.pianoSection { height: 100px; }
+	}
+</style>
+</head>
+<body>
+<div class="topbar">
+	<div class="group">
+		<button id="micBtn" type="button">Start Mic</button>
+		<label for="micGain">Gain</label>
+		<input id="micGain" type="range" min="-10" max="30" step="1" value="0">
+		<span id="micGainVal" style="font-size:12px;color:var(--muted);min-width:5ch">0 dB</span>
+	</div>
+	<div class="group">
+		<label for="wave">Wave</label>
+		<select id="wave">
+			<option>sine</option>
+			<option>triangle</option>
+			<option>sawtooth</option>
+			<option>square</option>
+		</select>
+	</div>
+	<div class="group">
+		<label for="a4">A4</label>
+		<input id="a4" type="number" min="400" max="480" step="0.1" value="440" style="width:82px">
+		<label for="volume">Vol</label>
+		<input id="volume" type="range" min="0" max="0.3" step="0.005" value="0.05">
+	</div>
+	<div class="group">
+		<div class="param-wrap">
+			<button class="param-btn" id="btnThresh" type="button">Thresh<span class="pval" id="thresholdLabel">0.15</span></button>
+			<div class="param-pop" id="popThresh">
+				<span class="pop-label">YIN threshold</span>
+				<input id="threshold" type="range" min="0.05" max="0.35" step="0.01" value="0.15">
+				<input class="pop-num" id="threshNum" type="number" min="0.05" max="0.35" step="0.01" value="0.15">
+			</div>
+		</div>
+		<div class="param-wrap">
+			<button class="param-btn" id="btnSmooth" type="button">Smooth<span class="pval" id="smoothLabel">0.30</span></button>
+			<div class="param-pop" id="popSmooth">
+				<span class="pop-label">Smoothing</span>
+				<input id="smooth" type="range" min="0" max="0.9" step="0.01" value="0.30">
+				<input class="pop-num" id="smoothNum" type="number" min="0" max="0.9" step="0.01" value="0.30">
+			</div>
+		</div>
+		<div class="param-wrap">
+			<button class="param-btn" id="btnMinHz" type="button">MinHz<span class="pval" id="minFreqLabel">70</span></button>
+			<div class="param-pop" id="popMinHz">
+				<span class="pop-label">Min frequency (Hz)</span>
+				<input id="minFreq" type="range" min="40" max="180" step="1" value="70">
+				<input class="pop-num" id="minFreqNum" type="number" min="40" max="180" step="1" value="70">
+			</div>
+		</div>
+		<div class="param-wrap">
+			<button class="param-btn" id="btnMaxHz" type="button">MaxHz<span class="pval" id="maxFreqLabel">900</span></button>
+			<div class="param-pop" id="popMaxHz">
+				<span class="pop-label">Max frequency (Hz)</span>
+				<input id="maxFreq" type="range" min="250" max="1200" step="10" value="900">
+				<input class="pop-num" id="maxFreqNum" type="number" min="250" max="1200" step="10" value="900">
+			</div>
+		</div>
+	</div>
+	<div class="group">
+		<div class="ri-pitch">
+			<span id="noteName" class="ri-note">--</span>
+			<span id="cents" class="ri-cents">-- ¢</span>
+		</div>
+		<span id="freq" class="ri-hz">--</span>
+		<canvas id="tunerMeter"></canvas>
+		<span class="ri-stat">Conf&nbsp;<b id="conf">0.00</b></span>
+		<span class="ri-stat">RMS&nbsp;<b id="rms">0.000</b></span>
+	</div>
+	<div class="group">
+		<span id="audioState" style="color:var(--muted)">idle</span>
+	</div>
+</div>
+
+<div class="main">
+	<div class="panel plotWrap">
+		<canvas id="historyPlot"></canvas>
+	</div>
+
+	<div class="panel pianoSection">
+		<div class="panelTitle">
+			<span>Piano Roll</span>
+			<div class="oct-ctrl">
+				<button id="octDown" class="oct-btn" type="button">▼</button>
+				<span id="octaveLabel">C2–C5</span>
+				<button id="octUp" class="oct-btn" type="button">▲</button>
+			</div>
+		</div>
+		<div class="pianoWrap"><canvas id="pianoRoll"></canvas></div>
+	</div>
+</div>
+
+<script>
+/*
+	The script is deliberately written with `var` and one uniquely named namespace
+	instead of top-level `const`/`let`. Some Safari/WebKit extension/canvas preview
+	environments re-inject scripts into the same global scope and can throw duplicate
+	lexical declaration errors before page code has a chance to run. This page owns
+	only window.__YIN_VOCAL_TRAINER_PROTOTYPE_20260524__ and cleans up the previous
+	instance when the document is re-evaluated.
+*/
+(function () {
+	var NS = "__YIN_VOCAL_TRAINER_PROTOTYPE_20260524__";
+	var root = window;
+
+	if (root[NS] && typeof root[NS].destroy === "function") {
+		try { root[NS].destroy(); } catch (ignore) {}
+	}
+
+	var app = {
+		audioCtx: null,
+		micStream: null,
+		micSource: null,
+		micGainNode: null,
+		analyser: null,
+		pianoOsc: null,
+		pianoGain: null,
+		pianoActiveNote: null,
+		raf: 0,
+		smoothedFreq: 0,
+		lastGood: null,
+		history: [],
+		maxHistory: 2000,
+		bufSize: 4096,
+		pianoOctaveShift: 0,
+		disposers: [],
+		noteNames: ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
+	};
+	root[NS] = app;
+
+	function byId(id) { return document.getElementById(id); }
+	function on(target, eventName, handler) {
+		target.addEventListener(eventName, handler);
+		app.disposers.push(function () { target.removeEventListener(eventName, handler); });
+	}
+	function getEls() {
+		return {
+			micBtn: byId("micBtn"),
+			micGain: byId("micGain"),
+			micGainVal: byId("micGainVal"),
+			wave: byId("wave"),
+			a4: byId("a4"),
+			volume: byId("volume"),
+			audioState: byId("audioState"),
+			noteName: byId("noteName"),
+			cents: byId("cents"),
+			freq: byId("freq"),
+			conf: byId("conf"),
+			rms: byId("rms"),
+			threshold: byId("threshold"),
+			thresholdLabel: byId("thresholdLabel"),
+			smooth: byId("smooth"),
+			smoothLabel: byId("smoothLabel"),
+			minFreq: byId("minFreq"),
+			minFreqLabel: byId("minFreqLabel"),
+			maxFreq: byId("maxFreq"),
+			maxFreqLabel: byId("maxFreqLabel"),
+			meter: byId("tunerMeter"),
+			historyCanvas: byId("historyPlot"),
+			piano: byId("pianoRoll"),
+			octDown: byId("octDown"),
+			octUp: byId("octUp"),
+			octaveLabel: byId("octaveLabel")
+		};
+	}
+	app.els = getEls();
+
+	function pianoBounds() {
+		var base = 36 + app.pianoOctaveShift * 12;
+		return { minMidi: base, maxMidi: base + 36 };
+	}
+
+	function midiToName(midi) {
+		var n = ((midi % 12) + 12) % 12;
+		var octave = Math.floor(midi / 12) - 1;
+		return app.noteNames[n] + octave;
+	}
+	function midiToFreqWithA4(midi, a4) {
+		return a4 * Math.pow(2, (midi - 69) / 12);
+	}
+	function midiToFreq(midi) {
+		var a4 = Number(app.els.a4.value) || 440;
+		return midiToFreqWithA4(midi, a4);
+	}
+	function freqToMidiWithA4(freq, a4) {
+		return 69 + 12 * Math.log2(freq / a4);
+	}
+	function freqToMidi(freq) {
+		var a4 = Number(app.els.a4.value) || 440;
+		return freqToMidiWithA4(freq, a4);
+	}
+	function nearestPitch(freq) {
+		var m = freqToMidi(freq);
+		var nearest = Math.round(m);
+		var cents = (m - nearest) * 100;
+		return { midi: nearest, name: midiToName(nearest), target: midiToFreq(nearest), cents: cents };
+	}
+
+	function updateOctaveLabel() {
+		var b = pianoBounds();
+		app.els.octaveLabel.textContent = midiToName(b.minMidi) + "–" + midiToName(b.maxMidi);
+	}
+
+	function ensureAudio() {
+		return new Promise(function (resolve, reject) {
+			try {
+				if (!app.audioCtx) {
+					var Ctor = window.AudioContext || window.webkitAudioContext;
+					if (!Ctor) throw new Error("WebAudio is not available in this browser.");
+					app.audioCtx = new Ctor();
+				}
+				var p = app.audioCtx.state !== "running" ? app.audioCtx.resume() : Promise.resolve();
+				p.then(resolve, reject);
+			} catch (e) {
+				reject(e);
+			}
+		});
+	}
+
+	function startMic() {
+		return ensureAudio().then(function () {
+			if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) throw new Error("getUserMedia is not available. Use HTTPS or localhost.");
+			if (app.micStream) return;
+			return navigator.mediaDevices.getUserMedia({
+				audio: {
+					echoCancellation: false,
+					noiseSuppression: false,
+					autoGainControl: false
+				}
+			}).then(function (stream) {
+				app.micStream = stream;
+				app.micSource = app.audioCtx.createMediaStreamSource(stream);
+				app.micGainNode = app.audioCtx.createGain();
+				app.micGainNode.gain.value = Math.pow(10, Number(app.els.micGain.value) / 20);
+				app.analyser = app.audioCtx.createAnalyser();
+				app.analyser.fftSize = app.bufSize;
+				app.analyser.smoothingTimeConstant = 0;
+				app.micSource.connect(app.micGainNode);
+				app.micGainNode.connect(app.analyser);
+			});
+		}).then(function () {
+			app.els.micBtn.textContent = "Stop Mic";
+			app.els.micBtn.classList.add("on");
+			app.els.audioState.textContent = "mic";
+			if (!app.raf) loop();
+		});
+	}
+
+	function stopMic() {
+		if (app.micStream) {
+			var tracks = app.micStream.getTracks();
+			for (var i = 0; i < tracks.length; i++) tracks[i].stop();
+			app.micStream = null;
+		}
+		try { if (app.micSource) app.micSource.disconnect(); } catch (ignore1) {}
+		try { if (app.micGainNode) app.micGainNode.disconnect(); } catch (ignore2) {}
+		try { if (app.analyser) app.analyser.disconnect(); } catch (ignore3) {}
+		app.micSource = null;
+		app.micGainNode = null;
+		app.analyser = null;
+		app.els.micBtn.textContent = "Start Mic";
+		app.els.micBtn.classList.remove("on");
+		app.els.audioState.textContent = "idle";
+	}
+
+	function playPianoNote(midi) {
+		stopPianoNote();
+		ensureAudio().then(function () {
+			if (!app.pianoGain) {
+				app.pianoGain = app.audioCtx.createGain();
+				app.pianoGain.gain.value = 0;
+				app.pianoGain.connect(app.audioCtx.destination);
+			}
+			app.pianoOsc = app.audioCtx.createOscillator();
+			app.pianoOsc.type = app.els.wave.value;
+			app.pianoOsc.frequency.value = midiToFreq(midi);
+			app.pianoOsc.connect(app.pianoGain);
+			app.pianoGain.gain.setTargetAtTime(Number(app.els.volume.value), app.audioCtx.currentTime, 0.015);
+			app.pianoOsc.start();
+			app.pianoActiveNote = midi;
+			app.els.audioState.textContent = app.micStream ? "mic + " + midiToName(midi) : midiToName(midi);
+			drawAll();
+		});
+	}
+
+	function stopPianoNote() {
+		if (!app.pianoOsc) return;
+		var osc = app.pianoOsc;
+		app.pianoOsc = null;
+		app.pianoActiveNote = null;
+		if (app.pianoGain && app.audioCtx) app.pianoGain.gain.setTargetAtTime(0, app.audioCtx.currentTime, 0.015);
+		setTimeout(function () { try { osc.stop(); osc.disconnect(); } catch (ignore) {} }, 80);
+		app.els.audioState.textContent = app.micStream ? "mic" : "idle";
+		drawAll();
+	}
+
+	// Map a click at (clickX, clickY) in CSS pixels (relative to piano canvas) to a MIDI note.
+	// Top section (y < bkH): chromatic-slot layout matching the white stubs and black keys.
+	// Bottom section (y >= bkH): white-key-linear layout matching the wider white key bodies.
+	function pianoHitTest(clickX, clickY) {
+		var rect = app.els.piano.getBoundingClientRect();
+		var w = rect.width;
+		var h = rect.height;
+
+		var b = pianoBounds();
+		var minMidi = b.minMidi, maxMidi = b.maxMidi;
+		var N = maxMidi - minMidi + 1;
+		var blackPcs = [1, 3, 6, 8, 10];
+
+		function isBlack(m) { return blackPcs.indexOf(((m % 12) + 12) % 12) >= 0; }
+
+		var wkIdx = {};
+		var numWhite = 0;
+		for (var m = minMidi; m <= maxMidi; m++) {
+			if (!isBlack(m)) wkIdx[m] = numWhite++;
+		}
+		var u   = w / N;
+		var wkW = u * 12 / 7; // must match drawPiano
+		var bkH = Math.round(h * 0.62);
+		var bkW = Math.round(u * 0.65);
+
+		if (clickY < bkH) {
+			// Top section: black keys first (they sit on top of white stubs)
+			for (var m = minMidi; m <= maxMidi; m++) {
+				if (!isBlack(m)) continue;
+				var xc = (m - minMidi + 0.5) * u;
+				var kx = Math.round(xc - bkW / 2);
+				if (clickX >= kx && clickX < kx + bkW) return m;
+			}
+			// White key stubs — which chromatic slot was clicked?
+			var slot = Math.floor(clickX / u);
+			if (slot >= 0 && slot < N) {
+				var slotMidi = minMidi + slot;
+				if (!isBlack(slotMidi)) return slotMidi;
+			}
+			return null;
+		} else {
+			// Bottom section: same chromatic-anchored boundaries as drawPiano
+			for (var m = minMidi; m <= maxMidi; m++) {
+				if (isBlack(m)) continue;
+				var pc = ((m % 12) + 12) % 12;
+				var kxLeft = (pc === 5) ? Math.round((m - minMidi) * u) : Math.round(wkIdx[m] * wkW);
+				var kxRight;
+				if (pc === 4) {
+					kxRight = Math.round((m + 1 - minMidi) * u);
+				} else if (wkIdx[m] + 1 >= numWhite) {
+					kxRight = w;
+				} else {
+					kxRight = Math.round((wkIdx[m] + 1) * wkW);
+				}
+				if (clickX >= kxLeft && clickX < kxRight) return m;
+			}
+			return null;
+		}
+	}
+
+	function yin(buffer, sampleRate, minFreq, maxFreq, threshold) {
+		var n = buffer.length;
+		var rms = 0;
+		for (var i = 0; i < n; i++) rms += buffer[i] * buffer[i];
+		rms = Math.sqrt(rms / n);
+		if (rms < 0.006) return { freq: 0, confidence: 0, rms: rms, tau: 0 };
+
+		var mean = 0;
+		for (i = 0; i < n; i++) mean += buffer[i];
+		mean /= n;
+		var x = new Float32Array(n);
+		for (i = 0; i < n; i++) {
+			var w = 0.5 - 0.5 * Math.cos(2 * Math.PI * i / (n - 1));
+			x[i] = (buffer[i] - mean) * w;
+		}
+
+		var minTau = Math.max(2, Math.floor(sampleRate / maxFreq));
+		var maxTau = Math.min(n - 2, Math.ceil(sampleRate / minFreq));
+		if (maxTau <= minTau) return { freq: 0, confidence: 0, rms: rms, tau: 0 };
+
+		var diff = new Float32Array(maxTau + 1);
+		for (var tau = 1; tau <= maxTau; tau++) {
+			var sum = 0;
+			var limit = n - tau;
+			for (i = 0; i < limit; i++) {
+				var d = x[i] - x[i + tau];
+				sum += d * d;
+			}
+			diff[tau] = sum;
+		}
+
+		var cmnd = new Float32Array(maxTau + 1);
+		cmnd[0] = 1;
+		var running = 0;
+		for (tau = 1; tau <= maxTau; tau++) {
+			running += diff[tau];
+			cmnd[tau] = running ? diff[tau] * tau / running : 1;
+		}
+
+		var tauEstimate = 0;
+		for (tau = minTau; tau <= maxTau; tau++) {
+			if (cmnd[tau] < threshold) {
+				while (tau + 1 <= maxTau && cmnd[tau + 1] < cmnd[tau]) tau++;
+				tauEstimate = tau;
+				break;
+			}
+		}
+		if (!tauEstimate) {
+			var best = minTau;
+			var bestValue = Infinity;
+			for (tau = minTau; tau <= maxTau; tau++) {
+				if (cmnd[tau] < bestValue) { bestValue = cmnd[tau]; best = tau; }
+			}
+			if (bestValue < 0.45) tauEstimate = best;
+		}
+		if (!tauEstimate) return { freq: 0, confidence: 0, rms: rms, tau: 0 };
+
+		var betterTau = tauEstimate;
+		if (tauEstimate > 1 && tauEstimate < maxTau) {
+			var s0 = cmnd[tauEstimate - 1];
+			var s1 = cmnd[tauEstimate];
+			var s2 = cmnd[tauEstimate + 1];
+			var denom = 2 * (2 * s1 - s2 - s0);
+			if (Math.abs(denom) > 1e-9) betterTau = tauEstimate + (s2 - s0) / denom;
+		}
+		var confidence = Math.max(0, Math.min(1, 1 - cmnd[tauEstimate]));
+		return { freq: sampleRate / betterTau, confidence: confidence, rms: rms, tau: betterTau };
+	}
+	app.yin = yin;
+
+	function loop() {
+		app.raf = requestAnimationFrame(loop);
+		if (!app.analyser || !app.audioCtx) return;
+		var data = new Float32Array(app.analyser.fftSize);
+		app.analyser.getFloatTimeDomainData(data);
+		var result = yin(data, app.audioCtx.sampleRate, Number(app.els.minFreq.value), Number(app.els.maxFreq.value), Number(app.els.threshold.value));
+
+		var displayFreq = 0;
+		if (result.freq && result.confidence > 0.55) {
+			var alpha = Number(app.els.smooth.value);
+			displayFreq = app.smoothedFreq ? alpha * app.smoothedFreq + (1 - alpha) * result.freq : result.freq;
+			app.smoothedFreq = displayFreq;
+			app.lastGood = { freq: displayFreq, confidence: result.confidence, rms: result.rms, tau: result.tau, t: performance.now() };
+		} else if (app.lastGood && performance.now() - app.lastGood.t < 250) {
+			displayFreq = app.lastGood.freq;
+		} else {
+			app.smoothedFreq = 0;
+		}
+
+		updateReadout(displayFreq, result);
+		pushHistory(displayFreq, result);
+		drawAll();
+	}
+
+	function updateReadout(freq, result) {
+		app.els.conf.textContent = result.confidence.toFixed(2);
+		app.els.rms.textContent = result.rms.toFixed(3);
+		if (!freq) {
+			app.els.noteName.textContent = "--";
+			app.els.cents.textContent = "-- ¢";
+			app.els.cents.style.color = "var(--text)";
+			app.els.freq.textContent = "--";
+			return;
+		}
+		var p = nearestPitch(freq);
+		app.els.noteName.textContent = p.name;
+		app.els.cents.textContent = (p.cents >= 0 ? "+" : "") + p.cents.toFixed(1) + " ¢";
+		app.els.cents.style.color = Math.abs(p.cents) < 5 ? "var(--good)" : Math.abs(p.cents) < 15 ? "var(--warn)" : "var(--bad)";
+		app.els.freq.textContent = freq.toFixed(1) + " Hz";
+	}
+
+	function pushHistory(freq, result) {
+		var now = performance.now();
+		var item = { t: now, freq: 0, cents: null, midi: null, confidence: result.confidence, err: null, pianoNote: app.pianoActiveNote };
+		if (freq) {
+			var p = nearestPitch(freq);
+			item.freq = freq;
+			item.cents = p.cents;
+			item.midi = p.midi;
+			var recent = [];
+			for (var i = 0; i < app.history.length; i++) {
+				var h = app.history[i];
+				if (h.cents !== null && now - h.t < 700) recent.push(h.cents);
+			}
+			var jitter = 0;
+			if (recent.length >= 4) {
+				var total = 0;
+				for (i = 0; i < recent.length; i++) total += recent[i];
+				var mean = total / recent.length;
+				var sq = 0;
+				for (i = 0; i < recent.length; i++) sq += (recent[i] - mean) * (recent[i] - mean);
+				jitter = Math.sqrt(sq / recent.length);
+			}
+			item.err = Math.min(50, 2 + jitter + (1 - result.confidence) * 30);
+		}
+		app.history.push(item);
+		// Cull by time (keep full display span) then by count as a safety cap.
+		while (app.history.length > 0 && now - app.history[0].t > 8500) app.history.shift();
+		while (app.history.length > app.maxHistory) app.history.shift();
+	}
+
+	function setupCanvas(canvas) {
+		var r = canvas.getBoundingClientRect();
+		var dpr = window.devicePixelRatio || 1;
+		var cw = Math.max(1, Math.floor(r.width * dpr));
+		var ch = Math.max(1, Math.floor(r.height * dpr));
+		if (canvas.width !== cw || canvas.height !== ch) {
+			canvas.width = cw;
+			canvas.height = ch;
+		}
+		var ctx = canvas.getContext("2d");
+		ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+		return { ctx: ctx, w: r.width, h: r.height };
+	}
+
+	function drawMeter() {
+		var s = setupCanvas(app.els.meter);
+		var ctx = s.ctx, w = s.w, h = s.h;
+		ctx.fillStyle = "#0f1319";
+		ctx.fillRect(0, 0, w, h);
+		var pad = 6;
+		var mid = h / 2;
+		ctx.strokeStyle = "#303846";
+		ctx.lineWidth = 1;
+		ctx.beginPath();
+		ctx.moveTo(pad, mid);
+		ctx.lineTo(w - pad, mid);
+		ctx.stroke();
+		for (var c = -50; c <= 50; c += 10) {
+			var x = pad + (c + 50) / 100 * (w - pad * 2);
+			var len = c === 0 ? h * 0.65 : Math.abs(c) === 50 ? h * 0.45 : h * 0.28;
+			ctx.beginPath();
+			ctx.moveTo(x, mid - len / 2);
+			ctx.lineTo(x, mid + len / 2);
+			ctx.stroke();
+		}
+		var cents = null;
+		for (var i = app.history.length - 1; i >= 0; i--) if (app.history[i].cents !== null) { cents = app.history[i].cents; break; }
+		if (cents !== null) {
+			var clamped = Math.max(-50, Math.min(50, cents));
+			x = pad + (clamped + 50) / 100 * (w - pad * 2);
+			ctx.fillStyle = Math.abs(cents) < 5 ? "#86efac" : Math.abs(cents) < 15 ? "#fde68a" : "#fca5a5";
+			var th = Math.round(h * 0.55);
+			ctx.beginPath();
+			ctx.moveTo(x, 1);
+			ctx.lineTo(x - th * 0.45, 1 + th);
+			ctx.lineTo(x + th * 0.45, 1 + th);
+			ctx.closePath();
+			ctx.fill();
+		}
+	}
+
+	function drawHistory() {
+		var s = setupCanvas(app.els.historyCanvas);
+		var ctx = s.ctx, w = s.w, h = s.h;
+		ctx.fillStyle = "#0f1319";
+		ctx.fillRect(0, 0, w, h);
+
+		var a4 = Number(app.els.a4.value) || 440;
+		var b = pianoBounds();
+		var blackPcs = [1, 3, 6, 8, 10];
+
+		function isBlack(m) { return blackPcs.indexOf(((m % 12) + 12) % 12) >= 0; }
+
+		// Pure chromatic: every semitone gets an equal-width slot u = w/N.
+		// This matches the piano top section exactly so columns align perfectly.
+		var N = b.maxMidi - b.minMidi + 1;
+		var u = w / N;
+		var bkW = Math.round(u * 0.65);
+
+		function notePX(m) { return (m - b.minMidi + 0.5) * u; }
+
+		function fx(freq) {
+			if (freq <= 0) return -10;
+			var midiVal = freqToMidiWithA4(freq, a4);
+			midiVal = Math.max(b.minMidi, Math.min(b.maxMidi, midiVal));
+			return (midiVal - b.minMidi + 0.5) * u;
+		}
+
+		var now = performance.now();
+		var span = 8000;
+
+		// Map time → y: bottom = now, scrolling upward
+		function ty(t) { return h - (now - t) / span * h; }
+
+		// Background: shade full chromatic slot for each black key
+		for (var m = b.minMidi; m <= b.maxMidi; m++) {
+			if (!isBlack(m)) continue;
+			var xLeft  = Math.round((m - b.minMidi) * u);
+			var xRight = Math.round((m - b.minMidi + 1) * u);
+			ctx.fillStyle = "rgba(0,0,0,0.22)";
+			ctx.fillRect(xLeft, 0, xRight - xLeft, h);
+		}
+
+		// White key separators at chromatic positions (aligns with piano top stubs)
+		ctx.lineWidth = 1;
+		for (var m = b.minMidi; m <= b.maxMidi; m++) {
+			if (isBlack(m)) continue;
+			var pc2 = ((m % 12) + 12) % 12;
+			var gx = Math.round((m - b.minMidi) * u);
+			ctx.strokeStyle = pc2 === 0 ? "#303846" : "#252e3d";
+			ctx.beginPath();
+			ctx.moveTo(gx + 0.5, 0);
+			ctx.lineTo(gx + 0.5, h);
+			ctx.stroke();
+		}
+
+		// Pass 0: piano key reference boxes (green, behind everything else)
+		for (var i = 0; i < app.history.length; i++) {
+			var p = app.history[i];
+			if (p.pianoNote === null || now - p.t > span) continue;
+			var hy = ty(p.t);
+			var pFreq = midiToFreqWithA4(p.pianoNote, a4);
+			var pkL = fx(pFreq * Math.pow(2, -50 / 1200));
+			var pkR = fx(pFreq * Math.pow(2,  50 / 1200));
+			ctx.fillStyle = "rgba(74, 222, 128, 0.3)";
+			ctx.fillRect(pkL, hy - 1, pkR - pkL, 2);
+		}
+
+		// Pass 1: note key bands (±50 cents when within 30 cents) + error bars
+		for (var i = 0; i < app.history.length; i++) {
+			var p = app.history[i];
+			if (p.freq === 0 || now - p.t > span) continue;
+			var hy = ty(p.t);
+
+			if (p.cents !== null && Math.abs(p.cents) < 30) {
+				var noteFreq = midiToFreqWithA4(p.midi, a4);
+				var kLeft  = fx(noteFreq * Math.pow(2, -50 / 1200));
+				var kRight = fx(noteFreq * Math.pow(2,  50 / 1200));
+				ctx.fillStyle = "rgba(125, 211, 252, 0.09)";
+				ctx.fillRect(kLeft, hy - 1, kRight - kLeft, 3);
+			}
+
+			if (p.err !== null) {
+				ctx.strokeStyle = "rgba(125, 211, 252, 0.25)";
+				ctx.lineWidth = 1;
+				ctx.beginPath();
+				ctx.moveTo(fx(p.freq * Math.pow(2, -p.err / 1200)), hy);
+				ctx.lineTo(fx(p.freq * Math.pow(2,  p.err / 1200)), hy);
+				ctx.stroke();
+			}
+		}
+
+		// Pass 2: pitch line
+		ctx.strokeStyle = "#7dd3fc";
+		ctx.lineWidth = 2;
+		ctx.beginPath();
+		var started = false;
+		for (i = 0; i < app.history.length; i++) {
+			p = app.history[i];
+			if (p.freq === 0 || now - p.t > span) { started = false; continue; }
+			var hxv = fx(p.freq);
+			var hyv = ty(p.t);
+			if (!started) { ctx.moveTo(hxv, hyv); started = true; }
+			else ctx.lineTo(hxv, hyv);
+		}
+		ctx.stroke();
+	}
+
+	function drawPiano() {
+		var s = setupCanvas(app.els.piano);
+		var ctx = s.ctx, w = s.w, h = s.h;
+		var b = pianoBounds();
+		var minMidi = b.minMidi, maxMidi = b.maxMidi;
+		var N = maxMidi - minMidi + 1;
+		var blackPcs = [1, 3, 6, 8, 10];
+
+		function isBlack(m) { return blackPcs.indexOf(((m % 12) + 12) % 12) >= 0; }
+
+		// currentMidi: note detected from mic (blue highlight)
+		var currentMidi = null;
+		for (var i = app.history.length - 1; i >= 0; i--) {
+			if (app.history[i].midi !== null) { currentMidi = app.history[i].midi; break; }
+		}
+		// pressedMidi: note pressed on piano (green highlight)
+		var pressedMidi = app.pianoActiveNote;
+
+		// Bottom section (y = bkH → h): equal-width white keys (wkW = w/numWhite).
+		// Each key gets the same body width, giving C an L-shape (right jog at bkH),
+		// E a backwards-L shape (left jog), and D symmetric. Matches a real piano.
+		var wkIdx = {};
+		var numWhite = 0;
+		for (var m = minMidi; m <= maxMidi; m++) {
+			if (!isBlack(m)) wkIdx[m] = numWhite++;
+		}
+		// Top section (y = 0 → bkH): chromatic slots, every key gets an equal-width stub.
+		var u   = w / N;                    // chromatic unit = top key width
+		var bkH = Math.round(h * 0.62);    // divider between top and bottom sections
+		var bkW = Math.round(u * 0.65);    // black key width
+
+		// wkW = 12u/7: 7 white keys span exactly one chromatic octave (12u), so B-C
+		// (octave) dividers fall exactly on chromatic positions with no extra math.
+		// E-F dividers are anchored explicitly via wkLeftX/wkRightX below.
+		var wkW = u * 12 / 7;
+
+		// Bottom-section x-boundaries. Critical invariant:
+		//   wkRightX(m) === wkLeftX(nextWhiteKey(m))
+		// B-C naturally aligns because 7 × (12u/7) = 12u = one chromatic octave.
+		// E-F is anchored to the chromatic F position so both halves show the same line.
+		function wkLeftX(m) {
+			var pc = ((m % 12) + 12) % 12;
+			if (pc === 5) return Math.round((m - minMidi) * u); // F: chromatic anchor
+			return Math.round(wkIdx[m] * wkW);
+		}
+		function wkRightX(m) {
+			var pc = ((m % 12) + 12) % 12;
+			if (pc === 4) return Math.round((m + 1 - minMidi) * u); // E: right = chromatic F
+			if (wkIdx[m] + 1 >= numWhite) return w;
+			return Math.round((wkIdx[m] + 1) * wkW);
+		}
+
+		// ── Background ──
+		ctx.fillStyle = "#0f1319";
+		ctx.fillRect(0, 0, w, h);
+
+		// ── Pass 1: white key BOTTOM bands (bkH → h) ──
+		for (var m = minMidi; m <= maxMidi; m++) {
+			if (isBlack(m)) continue;
+			var kx = wkLeftX(m);
+			var kw = wkRightX(m) - kx;
+			var isPressed = (m === pressedMidi);
+			var isVoice   = (m === currentMidi);
+			ctx.fillStyle = (isPressed && isVoice) ? "#38d080" :
+			                isPressed               ? "#4caf7d" :
+			                isVoice                 ? "#1a8fb5" :
+			                                         "#c8d4e0";
+			ctx.fillRect(kx, bkH, kw, h - bkH);
+		}
+
+		// ── Pass 2: 1px dividers in the bottom section ──
+		ctx.fillStyle = "#0f1319";
+		for (var m = minMidi + 1; m <= maxMidi; m++) {
+			if (isBlack(m)) continue;
+			ctx.fillRect(wkLeftX(m), bkH, 1, h - bkH);
+		}
+
+		// ── Pass 3: white key TOP stubs (0 → bkH, chromatic slot width) ──
+		for (var m = minMidi; m <= maxMidi; m++) {
+			if (isBlack(m)) continue;
+			var cs = m - minMidi;
+			var kx = Math.round(cs * u);
+			var kw = Math.round((cs + 1) * u) - kx;
+			var isPressed = (m === pressedMidi);
+			var isVoice   = (m === currentMidi);
+			ctx.fillStyle = (isPressed && isVoice) ? "#38d080" :
+			                isPressed               ? "#4caf7d" :
+			                isVoice                 ? "#1a8fb5" :
+			                                         "#c8d4e0";
+			ctx.fillRect(kx, 0, kw, bkH);
+		}
+
+		// ── Pass 4: 1px dividers in the top section (only where whites are adjacent: E–F, B–C) ──
+		ctx.fillStyle = "#0f1319";
+		for (var m = minMidi + 1; m <= maxMidi; m++) {
+			if (isBlack(m) || isBlack(m - 1)) continue;
+			ctx.fillRect(Math.round((m - minMidi) * u), 0, 1, bkH);
+		}
+
+		// ── Pass 5: black keys ──
+		for (var m = minMidi; m <= maxMidi; m++) {
+			if (!isBlack(m)) continue;
+			var cs = m - minMidi;
+			var xc = (cs + 0.5) * u;
+			var kx = Math.round(xc - bkW / 2);
+			var isPressed = (m === pressedMidi);
+			var isVoice   = (m === currentMidi);
+			ctx.fillStyle = (isPressed && isVoice) ? "#1a7050" :
+			                isPressed               ? "#1a5a35" :
+			                isVoice                 ? "#1060a0" :
+			                                         "#1c2435";
+			ctx.fillRect(kx, 0, bkW, bkH);
+		}
+
+		// ── Pass 6: labels (white keys + any active note) ──
+		ctx.textBaseline = "bottom";
+		ctx.textAlign = "center";
+		ctx.font = Math.max(7, Math.min(11, Math.round(wkW * 0.55))) + "px system-ui";
+		for (var m = minMidi; m <= maxMidi; m++) {
+			var pc        = ((m % 12) + 12) % 12;
+			var isPressed = (m === pressedMidi);
+			var isVoice   = (m === currentMidi);
+			if (isBlack(m) && !isPressed && !isVoice) continue;
+			var xc;
+			if (!isBlack(m)) {
+				xc = (wkLeftX(m) + wkRightX(m)) / 2;
+			} else {
+				xc = (m - minMidi + 0.5) * u;
+			}
+			ctx.fillStyle = (isPressed && isVoice) ? "#ffffff" :
+			                isPressed               ? "#86efac" :
+			                isVoice                 ? "#7dd3fc" :
+			                (pc === 0               ? "#7a8fa8" : "#647a8f");
+			ctx.fillText(midiToName(m), xc, h - 2);
+		}
+	}
+
+	function drawAll() {
+		drawMeter();
+		drawHistory();
+		drawPiano();
+	}
+
+	function bindUI() {
+		on(app.els.micBtn, "click", function () {
+			if (app.micStream) stopMic();
+			else startMic().catch(function (e) { app.els.audioState.textContent = "mic failed: " + e.message; });
+		});
+		on(app.els.micGain, "input", function () {
+			var db = Number(app.els.micGain.value);
+			app.els.micGainVal.textContent = (db > 0 ? "+" : "") + db + " dB";
+			if (app.micGainNode) app.micGainNode.gain.setTargetAtTime(Math.pow(10, db / 20), app.audioCtx.currentTime, 0.01);
+		});
+		on(app.els.wave, "change", function () { if (app.pianoOsc) app.pianoOsc.type = app.els.wave.value; });
+		on(app.els.volume, "input", function () {
+			if (app.pianoGain && app.audioCtx) app.pianoGain.gain.setTargetAtTime(Number(app.els.volume.value), app.audioCtx.currentTime, 0.01);
+		});
+
+		// Param button popovers
+		var paramCfg = [
+			{ btn: byId("btnThresh"), pop: byId("popThresh"), range: app.els.threshold, num: byId("threshNum"), label: app.els.thresholdLabel },
+			{ btn: byId("btnSmooth"), pop: byId("popSmooth"), range: app.els.smooth,    num: byId("smoothNum"),  label: app.els.smoothLabel },
+			{ btn: byId("btnMinHz"),  pop: byId("popMinHz"),  range: app.els.minFreq,   num: byId("minFreqNum"), label: app.els.minFreqLabel },
+			{ btn: byId("btnMaxHz"),  pop: byId("popMaxHz"),  range: app.els.maxFreq,   num: byId("maxFreqNum"), label: app.els.maxFreqLabel }
+		];
+
+		function closeAllPops() {
+			for (var j = 0; j < paramCfg.length; j++) {
+				paramCfg[j].pop.classList.remove("open");
+				paramCfg[j].btn.classList.remove("open");
+			}
+		}
+
+		for (var k = 0; k < paramCfg.length; k++) {
+			(function (pc) {
+				on(pc.btn, "click", function (e) {
+					e.stopPropagation();
+					var isOpen = pc.pop.classList.contains("open");
+					closeAllPops();
+					if (!isOpen) {
+						pc.pop.classList.add("open");
+						pc.btn.classList.add("open");
+					}
+				});
+				on(pc.range, "input", function () {
+					pc.label.textContent = pc.range.value;
+					pc.num.value = pc.range.value;
+				});
+				on(pc.num, "input", function () {
+					pc.range.value = pc.num.value;
+					pc.label.textContent = pc.num.value;
+				});
+			})(paramCfg[k]);
+		}
+
+		// Octave shift buttons
+		on(app.els.octDown, "click", function () {
+			var newShift = app.pianoOctaveShift - 1;
+			if (36 + newShift * 12 >= 12) {
+				app.pianoOctaveShift = newShift;
+				updateOctaveLabel();
+				drawAll();
+			}
+		});
+		on(app.els.octUp, "click", function () {
+			var newShift = app.pianoOctaveShift + 1;
+			if (72 + newShift * 12 <= 108) {
+				app.pianoOctaveShift = newShift;
+				updateOctaveLabel();
+				drawAll();
+			}
+		});
+
+		// Piano key interaction (mouse)
+		var pianoMouseDown = false;
+		on(app.els.piano, "mousedown", function (e) {
+			e.preventDefault();
+			pianoMouseDown = true;
+			var rect = app.els.piano.getBoundingClientRect();
+			var midi = pianoHitTest(e.clientX - rect.left, e.clientY - rect.top);
+			if (midi !== null) playPianoNote(midi);
+		});
+		on(app.els.piano, "mousemove", function (e) {
+			if (!pianoMouseDown) return;
+			var rect = app.els.piano.getBoundingClientRect();
+			var midi = pianoHitTest(e.clientX - rect.left, e.clientY - rect.top);
+			if (midi !== null && midi !== app.pianoActiveNote) playPianoNote(midi);
+		});
+		on(document, "mouseup", function () {
+			if (pianoMouseDown) { pianoMouseDown = false; stopPianoNote(); }
+		});
+
+		// Piano key interaction (touch)
+		on(app.els.piano, "touchstart", function (e) {
+			e.preventDefault();
+			var touch = e.changedTouches[0];
+			var rect = app.els.piano.getBoundingClientRect();
+			var midi = pianoHitTest(touch.clientX - rect.left, touch.clientY - rect.top);
+			if (midi !== null) playPianoNote(midi);
+		});
+		on(app.els.piano, "touchmove", function (e) {
+			e.preventDefault();
+			var touch = e.changedTouches[0];
+			var rect = app.els.piano.getBoundingClientRect();
+			var midi = pianoHitTest(touch.clientX - rect.left, touch.clientY - rect.top);
+			if (midi !== null && midi !== app.pianoActiveNote) playPianoNote(midi);
+		});
+		on(app.els.piano, "touchend", function () { stopPianoNote(); });
+		on(app.els.piano, "touchcancel", function () { stopPianoNote(); });
+
+		on(document, "click", closeAllPops);
+		on(window, "resize", drawAll);
+	}
+
+	app.destroy = function () {
+		if (app.raf) cancelAnimationFrame(app.raf);
+		app.raf = 0;
+		stopMic();
+		stopPianoNote();
+		if (app.micGainNode) { try { app.micGainNode.disconnect(); } catch (ignore) {} app.micGainNode = null; }
+		if (app.pianoGain) { try { app.pianoGain.disconnect(); } catch (ignore) {} app.pianoGain = null; }
+		for (var i = 0; i < app.disposers.length; i++) {
+			try { app.disposers[i](); } catch (ignore) {}
+		}
+		app.disposers = [];
+	};
+
+	try {
+		updateOctaveLabel();
+		bindUI();
+		// Sync display labels with control values (browser may cache controls across reloads).
+		(function () {
+			var db = Number(app.els.micGain.value);
+			app.els.micGainVal.textContent = (db > 0 ? "+" : "") + db + " dB";
+			app.els.thresholdLabel.textContent = app.els.threshold.value;
+			byId("threshNum").value = app.els.threshold.value;
+			app.els.smoothLabel.textContent = app.els.smooth.value;
+			byId("smoothNum").value = app.els.smooth.value;
+			app.els.minFreqLabel.textContent = app.els.minFreq.value;
+			byId("minFreqNum").value = app.els.minFreq.value;
+			app.els.maxFreqLabel.textContent = app.els.maxFreq.value;
+			byId("maxFreqNum").value = app.els.maxFreq.value;
+		})();
+		drawAll();
+	} catch (e) {
+		if (app.els && app.els.audioState) app.els.audioState.textContent = "init failed: " + e.message;
+		throw e;
+	}
+})();
+</script>
+</body>
+</html>
