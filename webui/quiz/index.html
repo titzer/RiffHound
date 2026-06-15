@@ -112,6 +112,7 @@
     </div>
 
     <!-- Note letter buttons A-G (sheet mode only) -->
+    <!-- TODO: factor out all font adjustments for buttons to CSS -->
     <div id="noteBtns" style="display:flex; gap:6px; margin-top:6px; flex-wrap:wrap;">
       <button class="note-btn" data-note="A" style="font-size:20px;font-weight:600;min-width:44px;min-height:44px;">A</button>
       <button class="note-btn" data-note="B" style="font-size:20px;font-weight:600;min-width:44px;min-height:44px;">B</button>
@@ -337,8 +338,8 @@ function keyDisplayName(k) {
 function buildKeyPool() {
   const pool = KEY_SIGNATURES.filter(k => {
     if (!keyLettersEnabled.has(k.letter))           return false;
-    if (!keySharpsEnabled && k.acc === "#")          return false;
-    if (!keyFlatsEnabled  && k.acc === "-")          return false;
+    if (!keySharpsEnabled && k.sharps > 0)            return false;
+    if (!keyFlatsEnabled  && k.flats  > 0)           return false;
     if (!keyMinorEnabled  && k.quality === "minor") return false;
     return true;
   });
@@ -415,7 +416,7 @@ const synth = new Synth();
 // SVG DRAWING
 // =====================================================================
 const svg = document.getElementById("board");
-const staffX0 = 140, staffX1 = 960;
+const staffX0 = 140, staffX1 = 900;
 const lineSpacing = 26, step = lineSpacing / 2;
 const yMidC = 260;
 
@@ -460,8 +461,8 @@ function drawLedgerLinesFor(idx, xC) {
     svg.appendChild(el("line",{x1:x0,y1:yMidC,x2:x1,y2:yMidC,stroke:"#111","stroke-width":2}));
 }
 function noteXPositions(n) {
-  if (n === 1) return [720];
-  return Array.from({length:n}, (_,i) => Math.round(350 + i * 550 / (n-1)));
+  if (n === 1) return [220];
+  return Array.from({length:n}, (_,i) => Math.round(200 + i * 450 / (n-1)));
 }
 function drawNote(idx, x, color, label) {
   const y = yForIndex(idx);
@@ -674,12 +675,15 @@ function handleSheetKeyGuess() {
   const {key} = sheetKeyCurrent;
   let i = 0;
   const letter = keyBuf[i++] || "";
+  if (!letter) return;
   let acc = ""; if (keyBuf[i]=== "#" || keyBuf[i] === "-") acc = keyBuf[i++];
   const quality = keyBuf[i] || "";
   sheetKeyCurrent.tries++;
   document.getElementById("tries").textContent = String(sheetKeyCurrent.tries);
   const correct = letter === key.letter && acc === key.acc &&
-    ((quality === "M" && key.quality === "major") || (quality === "m" && key.quality === "minor"));
+    ((quality === "M" && key.quality === "major") ||
+     (quality === "m" && key.quality === "minor") ||
+     (quality === "" && key.quality === "major"));
   if (correct) {
     sheetKeyCurrent.answered = true;
     setFeedback("✓","good");
@@ -1143,8 +1147,10 @@ document.getElementById("keyHintBtn").addEventListener("click", () => {
   sheetKeyCurrent.hintUsed = true;
   const {key} = sheetKeyCurrent;
   const dispAcc = key.acc === "-" ? "b" : key.acc;
+  const signs = key.sharps > 0 ? `${key.sharps} sharp${key.sharps > 1 ? "s" : ""}` :
+                key.flats  > 0 ? `${key.flats} flat${key.flats > 1 ? "s" : ""}` : "no accidentals";
   const hintEl = document.getElementById("keyHintText");
-  hintEl.textContent = "Hint: root = " + key.letter + dispAcc;
+  hintEl.textContent = `Hint: root = ${key.letter}${dispAcc} · ${signs} · ${key.quality}`;
   hintEl.style.display = "block";
 });
 
@@ -1225,6 +1231,8 @@ window.addEventListener("keydown", e => {
       e.preventDefault(); keyBuf+="-"; updateKeyTypedDisplay(); updateKeyBtnHighlights();
     } else if ((e.key==="M"||e.key==="m") && keyBuf.length>=1) {
       e.preventDefault(); keyBuf+=e.key; updateKeyTypedDisplay(); updateKeyBtnHighlights(); handleSheetKeyGuess();
+    } else if (e.key==="Enter" && keyBuf.length>=1) {
+      e.preventDefault(); handleSheetKeyGuess();
     }
     return;
   }
@@ -1299,9 +1307,34 @@ initMidi();
 </script>
 
 <div style="margin-top:14px;" class="hint">
-  <strong>Keyboard shortcuts:</strong>
-  Sheet/Tab: <b>A–G</b> answer · <b>Space</b> replay · Key quiz: <b>#/- then M/m</b> · <b>Skip</b> next question · <b>Hint</b> shows root note ·
-  Ear: <b>Space</b> replay · <b>1–6</b> pick choice · <b>n</b> new question ·
+  <strong>Keyboard shortcuts:</strong><br>
+  <ul>
+    <li><b>N</b> skip to next question<br>
+    <li><b>H</b> show hint for question<br>
+    <li><b>R</b> reset statistics<br>
+    </ul>
+    
+  Note quiz (sheet music or tab):
+  <ul>
+  <li><b>A–G</b> answer <br>
+  <li><b>Space</b> replay <br>
+  </ul>
+
+  Note quiz (ear):
+  <ul>
+  <li><b>1–6</b> answer <br>
+  <li><b>Space</b> replay <br>
+    <li><b>N</b> skip to next question<br>
+  </ul>
+  
+  Key quiz (sheet music):
+  <ul>
+    <li><b>A–G</b> answer <br>
+    <li><b>#/-</b> sharp/flat
+    <li><b>M/m</b> major/minor
+    <li><b>Enter</b> to submit<br>
+  </ul>
+  
   <strong>MIDI:</strong> play any natural note on your keyboard (Sheet/Tab note quiz)
 </div>
 </body>
