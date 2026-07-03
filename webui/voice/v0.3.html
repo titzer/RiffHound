@@ -154,7 +154,7 @@
 		flex-direction: column;
 		gap: 10px;
 		padding: 10px;
-		height: calc(100vh - 56px);
+		height: calc(100vh - 100px);
 		min-height: 480px;
 	}
 	.panel {
@@ -222,7 +222,7 @@
 	<div class="group">
 		<button id="micBtn" type="button">Start Mic</button>
 		<label for="micGain">Gain</label>
-		<input id="micGain" type="range" min="-10" max="30" step="1" value="0">
+		<input id="micGain" type="range" min="-10" max="30" step="1" value="20">
 		<span id="micGainVal" style="font-size:12px;color:var(--muted);min-width:5ch">0 dB</span>
 		<span id="midiStatus" style="font-size:12px;color:var(--muted);min-width:8ch">MIDI --</span>
 	</div>
@@ -239,7 +239,7 @@
 		<label for="a4">A4</label>
 		<input id="a4" type="number" min="400" max="480" step="0.1" value="440" style="width:82px">
 		<label for="volume">Vol</label>
-		<input id="volume" type="range" min="0" max="0.3" step="0.005" value="0.05">
+		<input id="volume" type="range" min="0" max="0.3" step="0.005" value="0.25">
 	</div>
 	<div class="group">
 		<div class="param-wrap">
