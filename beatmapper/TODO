@@ -11,13 +11,16 @@
   - reinterpolate beats between (delete and reinsert)
   - insert measure(s) 4,8,12 beats
 - Chord progressions per section
+  - Simple chord change cue?
 - Tool assist using audio analysis:
   - lyric find / align: analyze audio to find vocals, line up to lyrics
   - beat find / align: analyze audio to find likely beats and present, add new strip that shows inferred beats and allows transferring
     - beat analysis shows possible beats (and eventually drum voices like snare, kick, tom, etc) on spectrogram
-d    - makes it easy to select a range of spectrogram, get suggested beats, and put them in
+    - makes it easy to select a range of spectrogram, get suggested beats, and put them in
+- Lyric mode: larger font
+  - button to copy previous or other lyric
 
-
+- Collapse each of beat, section, lyric, chord, melody editors.
 - Beat-precise lyrics. In the lyric editing timeline pane, there is a way to line up beats with individual words and syllables.
 - Riff text strip for melodies
 - Chord progressions
