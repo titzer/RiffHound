@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Music Apps</title>
+  <style>
+    body {
+      margin: 0;
+      font-family: system-ui, sans-serif;
+      background: #f8f8f8;
+      color: #111;
+    }
+
+    main {
+      max-width: 1000px;
+      margin: 0 auto;
+      padding: 2rem;
+    }
+
+    h1 {
+      text-align: center;
+      margin: 1rem 0 2rem;
+    }
+
+    .apps {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+      gap: 1.5rem;
+    }
+
+    .app {
+      display: block;
+      padding: 1rem;
+      text-align: center;
+      text-decoration: none;
+      color: inherit;
+      background: white;
+      border-radius: 1rem;
+      box-shadow: 0 2px 12px #0001;
+    }
+
+    .app:hover {
+      box-shadow: 0 4px 20px #0002;
+      transform: translateY(-1px);
+    }
+
+    .app img {
+      width: 100%;
+      max-width: 220px;
+      height: auto;
+      display: block;
+      margin: 0 auto 0.75rem;
+    }
+
+    .app span {
+      font-weight: 700;
+      font-size: 1.1rem;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Music Apps</h1>
+
+    <div class="apps">
+      <a class="app" href="chords/v0.8.html">
+        <img src="chords/logo-medium.png" alt="Chord Buddy logo">
+        <span>Chord Buddy</span>
+      </a>
+
+      <a class="app" href="quiz/index.html">
+        <img src="quiz/logo-medium.png" alt="Ear Quiz logo">
+        <span>Ear Quiz</span>
+      </a>
+
+      <a class="app" href="voice/v0.3.html">
+        <img src="voice/logo-medium.png" alt="Pitch Trainer logo">
+        <span>Pitch Trainer</span>
+      </a>
+
+      <a class="app" href="drums/v0.3.html">
+        <img src="drums/logo-medium.png" alt="Drum Machine logo">
+        <span>Drum Machine</span>
+      </a>
+
+      <a class="app" href="karaoke/index.html">
+        <img src="karaoke/logo-medium.png" alt="Karaoke App logo">
+        <span>Karaoke App</span>
+      </a>
+
+      <!-- Add up to three more apps by copying one of the blocks above. -->
+    </div>
+  </main>
+</body>
+</html>
