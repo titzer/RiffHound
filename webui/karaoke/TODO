@@ -1,0 +1,3 @@
+- Use directory handle to list all *.mp3 or *.mp4 files that have a matching *.txt
+  and put them into the GUI: https://developer.mozilla.org/en-US/docs/Web/API/FileSystemDirectoryHandle
+

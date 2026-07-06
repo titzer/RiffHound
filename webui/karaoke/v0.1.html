@@ -81,6 +81,7 @@ body {
   display: block;
   width: 100%;
   height: 100%;
+  cursor: pointer;
 }
 
 /* ── Lyrics area ─────────────────────────────────────────────────────────── */
@@ -247,6 +248,7 @@ body {
       <button class="tab-btn active" data-tab="known">Known</button>
       <button class="tab-btn"        data-tab="remote">Remote</button>
       <button class="tab-btn"        data-tab="files">Files</button>
+      <button class="tab-btn"        data-tab="directory">Directory</button>
     </div>
 
     <!-- Known tab: cache control only -->
@@ -262,13 +264,11 @@ body {
       <div id="remote-results" class="hint" style="margin-top:4px">Remote query not yet implemented.</div>
     </div>
 
-    <!-- Files tab: FSA pickers + fallback inputs -->
+    <!-- Files tab: individual file pickers -->
     <div id="tab-files" class="tab-content">
-      <div id="fsa-controls" style="margin-bottom:8px">
-        <button id="open-dir-btn">&#128193; Directory&#8230;</button>
+      <div style="margin-bottom:8px">
         <button id="open-files-btn">&#127925; File(s)&#8230;</button>
       </div>
-      <div id="dir-list"></div>
       <div class="file-pick-section">
         <label>Audio (.mp3 / .ogg / .wav)</label>
         <input type="file" id="audio-file-input" accept="audio/*,.mp3,.ogg,.wav,.flac">
@@ -279,6 +279,17 @@ body {
       </div>
       <button id="file-load-btn">Load</button>
       <div id="file-status"></div>
+    </div>
+
+    <!-- Directory tab: scan a folder for paired audio+lyrics tracks -->
+    <div id="tab-directory" class="tab-content">
+      <div style="margin-bottom:8px;display:flex;gap:6px;flex-wrap:wrap;align-items:center">
+        <button id="open-dir-btn">&#128193; Picker&#8230;</button>
+        <button id="dir-browse-btn">&#128194; Browse&#8230;</button>
+        <input type="file" id="dir-file-input" style="display:none" webkitdirectory multiple>
+      </div>
+      <div id="dir-list"></div>
+      <p class="hint" style="margin-top:6px">Picker (Chrome/Edge) persists directories across sessions. Browse works in all browsers but resets on reload.</p>
     </div>
   </div>
 </div>
@@ -445,6 +456,20 @@ function drawSections() {
     ctx.textBaseline = 'top';
     ctx.textAlign    = 'left';
     ctx.fillText(label, x0 + 5 * dpr, 5 * dpr, w - 10 * dpr);
+  }
+
+  // Lyric marks — small rects spanning the bottom third of the bar
+  const LH = Math.round(H / 3);
+  const LY = H - LH;
+  for (const lyr of state.lyrics) {
+    const x0 = (lyr.t_start / dur) * W;
+    const x1 = (lyr.t_end   / dur) * W;
+    const w  = Math.max(x1 - x0, 1);
+    ctx.fillStyle = 'rgba(255,255,255,0.20)';
+    ctx.fillRect(x0, LY, w, LH);
+    ctx.strokeStyle = 'rgba(255,255,255,0.35)';
+    ctx.lineWidth   = 1;
+    ctx.strokeRect(x0 + 0.5, LY + 0.5, w - 1, LH - 1);
   }
 
   // Time ruler ticks
@@ -639,8 +664,9 @@ function initAudio(url, title) {
     document.getElementById('play-btn').textContent = '\u25B6 PLAY';
     document.getElementById('play-btn').classList.remove('active');
   });
-  audio.addEventListener('error', () => {
-    const err = audio.error;
+  audio.addEventListener('error', e => {
+    if (e.target !== audio) return;   // stale event from a replaced/discarded element
+    const err = e.target.error;
     const msg = err ? `Audio error ${err.code}: ${err.message}` : 'Audio load error';
     console.error(msg);
     document.getElementById('track-title').textContent = '\u26A0 ' + msg;
@@ -743,9 +769,10 @@ document.addEventListener('keydown', e => {
 });
 
 // ── Modal state ───────────────────────────────────────────────────────────────
-let _db        = null;   // IDBDatabase, opened once
-let _dirCache  = [];     // [{id, name, dirHandle, files:[{name,handle}], permitted}]
-let _searchSeq = 0;      // stale-result guard for async refresh
+let _db              = null;   // IDBDatabase, opened once
+let _dirCache        = [];     // [{id, name, dirHandle, files:[{name,handle}], permitted}]
+let _webkitDirTracks = [];     // [{dirName, pairs:[{stem,title,audioFile,txtFile}]}]
+let _searchSeq       = 0;      // stale-result guard for async refresh
 
 // FSA feature detection
 const HAS_FSA     = typeof showOpenFilePicker  === 'function';
@@ -850,6 +877,40 @@ async function fsEnumDir(dirHandle) {
   return files;
 }
 
+// ── webkitdirectory scanner ───────────────────────────────────────────────────
+// Used for cross-browser directory scanning (works in Safari, Firefox, Chrome).
+// Returns null if fileList is empty; otherwise { dirName, pairs:[{stem,title,audioFile,txtFile}] }.
+// Only tracks that have BOTH an audio file and a matching .txt are included.
+function scanInputFiles(fileList) {
+  if (!fileList.length) return null;
+  const firstPath  = fileList[0].webkitRelativePath || '';
+  const slashIdx   = firstPath.indexOf('/');
+  const dirName    = slashIdx > 0 ? firstPath.slice(0, slashIdx) : 'Directory';
+
+  const stems = {};
+  for (const file of fileList) {
+    const isAudio = /\.(mp3|ogg|wav|flac|m4a)$/i.test(file.name);
+    const isTxt   = /\.txt$/i.test(file.name);
+    if (!isAudio && !isTxt) continue;
+    const relPath     = file.webkitRelativePath || file.name;
+    const withoutRoot = slashIdx > 0 ? relPath.slice(slashIdx + 1) : relPath;
+    const stem        = withoutRoot.replace(/\.[^/.]+$/, '');
+    if (!stems[stem]) stems[stem] = {};
+    if (isAudio) stems[stem].audioFile = file;
+    else         stems[stem].txtFile   = file;
+  }
+
+  const pairs = [];
+  for (const [stem, pair] of Object.entries(stems)) {
+    if (!pair.audioFile || !pair.txtFile) continue;
+    const displayStem = stem.replace(/\//g, ' \u203A ').replace(/[_\-]+/g, ' ');
+    pairs.push({ stem, title: `${dirName} / ${displayStem}`,
+                 audioFile: pair.audioFile, txtFile: pair.txtFile });
+  }
+  pairs.sort((a, b) => a.stem.localeCompare(b.stem));
+  return { dirName, pairs };
+}
+
 // ── Dir cache ─────────────────────────────────────────────────────────────────
 async function rebuildDirCache() {
   _dirCache = [];
@@ -919,6 +980,16 @@ function gatherResults(query) {
     }
   }
 
+  // Files from webkitdirectory picks (session-only; requires both audio + txt)
+  for (const dir of _webkitDirTracks) {
+    for (const pair of dir.pairs) {
+      const namePart = pair.stem.includes('/') ? pair.stem.split('/').pop() : pair.stem;
+      if (fuzzyMatch(q, namePart) || fuzzyMatch(q, dir.dirName))
+        items.push({ title: pair.title, badge: 'dir', badgeClass: 'dir',
+                     audio: pair.audioFile, txt: pair.txtFile });
+    }
+  }
+
   return items;
 }
 
@@ -970,12 +1041,13 @@ async function refreshResults() {
 async function clearAllCaches() {
   try { await dbClear('dir_handles'); } catch {}
   localStorage.removeItem(RECENTS_KEY);
-  _dirCache = [];
+  _dirCache        = [];
+  _webkitDirTracks = [];
   renderDirList();
   refreshResults();
 }
 
-// ── Dir list in Files tab ─────────────────────────────────────────────────────
+// ── Dir list in Directory tab ────────────────────────────────────────────────
 function renderDirList() {
   const el = document.getElementById('dir-list');
   el.innerHTML = '';
@@ -1014,6 +1086,30 @@ function renderDirList() {
       refreshResults();
     });
     row.appendChild(rm);
+    el.appendChild(row);
+  }
+
+  // Session directories (webkitdirectory picks — not persisted across reload)
+  for (const dir of _webkitDirTracks) {
+    const row     = document.createElement('div');
+    row.className = 'dir-entry';
+    const nameEl  = document.createElement('span');
+    nameEl.className = 'dir-name';
+    nameEl.textContent = dir.dirName;
+    row.appendChild(nameEl);
+    const cnt = document.createElement('span');
+    cnt.className = 'dir-perm';
+    const n = dir.pairs.length;
+    cnt.textContent = `${n} paired track${n !== 1 ? 's' : ''} \u2022 session`;
+    row.appendChild(cnt);
+    const rm2 = document.createElement('button');
+    rm2.textContent = '\u2715'; rm2.title = 'Remove';
+    rm2.addEventListener('click', () => {
+      _webkitDirTracks = _webkitDirTracks.filter(d => d !== dir);
+      renderDirList();
+      refreshResults();
+    });
+    row.appendChild(rm2);
     el.appendChild(row);
   }
 }
@@ -1087,14 +1183,23 @@ if (HAS_FSA) {
   document.getElementById('open-files-btn').style.display = 'none';
 }
 
-// Show hint if FSA completely unavailable
-if (!HAS_FSA && !HAS_FSA_DIR) {
-  const hint = document.createElement('div');
-  hint.className = 'hint';
-  hint.style.marginBottom = '8px';
-  hint.textContent = 'File System Access API not available in this browser. Use the file inputs below.';
-  document.getElementById('fsa-controls').appendChild(hint);
-}
+// webkitdirectory browser (cross-browser: Safari, Firefox, Chrome, Edge)
+document.getElementById('dir-browse-btn').addEventListener('click', () => {
+  document.getElementById('dir-file-input').click();
+});
+
+document.getElementById('dir-file-input').addEventListener('change', e => {
+  const fileList = e.target.files;
+  if (!fileList.length) return;
+  const result = scanInputFiles(fileList);
+  e.target.value = '';   // reset so the same directory can be re-picked
+  if (!result) return;
+  const idx = _webkitDirTracks.findIndex(d => d.dirName === result.dirName);
+  if (idx >= 0) _webkitDirTracks.splice(idx, 1, result);
+  else          _webkitDirTracks.push(result);
+  renderDirList();
+  refreshResults();
+});
 
 // Fallback file inputs
 document.getElementById('file-load-btn').addEventListener('click', async () => {
@@ -1122,6 +1227,27 @@ document.getElementById('remote-search-btn').addEventListener('click', () => {
   document.getElementById('remote-results').innerHTML =
     `<div class="hint">Remote query not yet implemented.<br>Would search: <b>${server || '(no server)'}</b> for <b>${query || '(empty)'}</b></div>`;
 });
+
+// ── Timeline seeking ─────────────────────────────────────────────────────────
+function seekFromPointer(clientX) {
+  if (!audio || !isFinite(audio.duration) || audio.duration <= 0) return;
+  const rect  = secCanvas.getBoundingClientRect();
+  const ratio = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+  audio.currentTime = ratio * audio.duration;
+}
+
+let _seeking = false;
+secCanvas.addEventListener('mousedown', e => { _seeking = true; seekFromPointer(e.clientX); });
+window.addEventListener('mousemove',   e => { if (_seeking) seekFromPointer(e.clientX); });
+window.addEventListener('mouseup',     ()  => { _seeking = false; });
+
+secCanvas.addEventListener('touchstart', e => {
+  _seeking = true; seekFromPointer(e.touches[0].clientX); e.preventDefault();
+}, { passive: false });
+window.addEventListener('touchmove', e => {
+  if (_seeking) { seekFromPointer(e.touches[0].clientX); e.preventDefault(); }
+}, { passive: false });
+window.addEventListener('touchend', () => { _seeking = false; });
 
 // ── Resize observer ───────────────────────────────────────────────────────────
 const ro = new ResizeObserver(() => { drawSections(); drawLyrics(); });
