@@ -246,7 +246,7 @@ int main(int argc, char** argv) {
                     if (beatmap.beats[i].selected) any_beats = true;
 
                 if (any_beats) {
-                    undo_push(&undo, &beatmap);
+                    undo_push(&undo, &beatmap, &lyricmap);
                     for (int i = beatmap.count - 1; i >= 0; i--)
                         if (beatmap.beats[i].selected)
                             beatmap_remove(&beatmap, i);
@@ -254,6 +254,7 @@ int main(int argc, char** argv) {
                     sectionmap_remove(&sectionmap, sectionmap.selected_idx);
                     sectionmap.selected_idx = -1;
                 } else if (lyricmap.selected_idx >= 0) {
+                    undo_push(&undo, &beatmap, &lyricmap);
                     lyricmap_remove(&lyricmap, lyricmap.selected_idx);
                     lyricmap.selected_idx = -1;
                 }
@@ -267,7 +268,7 @@ int main(int argc, char** argv) {
 
             // Ctrl+Z → undo
             if (ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_Z))
-                undo_pop(&undo, &beatmap);
+                undo_pop(&undo, &beatmap, &lyricmap);
 
             // Ctrl+S → Save Beatmap (silent overwrite if a path is already known)
             if (ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_S)) {

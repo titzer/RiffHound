@@ -453,7 +453,7 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
                 : editor->view_start;
             if (t_place < 0.0)              t_place = 0.0;
             if (t_place > editor->duration) t_place = editor->duration;
-            undo_push(undo, beatmap);
+            undo_push(undo, beatmap, lyricmap);
             if (io.KeyShift && beatmap->count >= 1) {
                 // Shift+click: add beat + fill from nearest beat using its instantaneous BPM.
                 // Binary search for insertion point.
@@ -701,7 +701,7 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
         bool was_interp   = beatmap->beats[s_drag_beat].interp;
         bool was_selected = beatmap->beats[s_drag_beat].selected;
         if (fabs(s_drag_new_t - beatmap->beats[s_drag_beat].time) > 1e-6)
-            undo_push(undo, beatmap);
+            undo_push(undo, beatmap, lyricmap);
         beatmap_remove(beatmap, s_drag_beat);
         int new_idx = beatmap_add(beatmap, s_drag_new_t);
         if (new_idx >= 0) {
@@ -791,6 +791,7 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
         double pt0 = (s_lyr_drag_t0 < s_lyr_drag_t1) ? s_lyr_drag_t0 : s_lyr_drag_t1;
         double pt1 = (s_lyr_drag_t0 < s_lyr_drag_t1) ? s_lyr_drag_t1 : s_lyr_drag_t0;
         if (pt1 - pt0 > 0.05) {
+            undo_push(undo, beatmap, lyricmap);
             int idx = lyricmap_add(lyricmap, pt0, pt1, "");
             if (idx >= 0) s_lyr_selected = idx;
         }
@@ -822,6 +823,7 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
         int i = s_lyr_body_drag_idx;
         if (i >= 0 && i < lyricmap->count &&
             fabs(s_lyr_body_new_t0 - lyricmap->lyrics[i].t_start) > 1e-6) {
+            undo_push(undo, beatmap, lyricmap);
             double t0 = s_lyr_body_new_t0;
             double t1 = t0 + s_lyr_body_drag_dur;
             char   saved[128];
@@ -1743,7 +1745,7 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
         ImGui::SameLine();
 
         if (ImGui::Button("Fill##ctx", ImVec2(btn_w, 0))) {
-            undo_push(undo, beatmap);
+            undo_push(undo, beatmap, lyricmap);
             beatmap_fill(beatmap, t1, t2, (double)s_ctx_bpm);
         }
         s_ctx_hover = ImGui::IsItemHovered();
@@ -1827,12 +1829,15 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
             if (ImGui::InputText("##lyr_text", ly.text, sizeof(ly.text),
                                  ImGuiInputTextFlags_CallbackAlways, lyr_split_callback))
                 lyricmap->dirty = true;
-            if (s_lyr_split_state.req)
+            if (s_lyr_split_state.req) {
+                undo_push(undo, beatmap, lyricmap);
                 lyricmap_split(lyricmap, s_lyr_selected, s_lyr_split_state.cursor, &s_lyr_selected);
+            }
 
             // Delete button — right-aligned
             ImGui::SameLine(ImGui::GetWindowWidth() - btn_w - 4.0f);
             if (ImGui::Button("Delete##lyr", ImVec2(btn_w, 0))) {
+                undo_push(undo, beatmap, lyricmap);
                 lyricmap_remove(lyricmap, s_lyr_selected);
                 s_lyr_selected = -1;
             }
@@ -1854,6 +1859,7 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
             if (ImGui::Button("Paste")) {
                 const char* clip = ImGui::GetClipboardText();
                 if (clip && clip[0]) {
+                    undo_push(undo, beatmap, lyricmap);
                     // Find next available unplaced slot index to avoid t_start collisions
                     double base_t = has_audio ? dur : 0.0;
                     int n_unplaced = 0;
@@ -2038,11 +2044,14 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
             ImGui::EndChild();
 
             // ---- Split deferred action ----
-            if (pending_split_idx >= 0 && pending_split_idx < lyricmap->count)
+            if (pending_split_idx >= 0 && pending_split_idx < lyricmap->count) {
+                undo_push(undo, beatmap, lyricmap);
                 lyricmap_split(lyricmap, pending_split_idx, pending_split_cursor, &s_lyr_selected);
+            }
 
             // ---- Delete deferred action ----
             if (pending_delete >= 0 && pending_delete < lyricmap->count) {
+                undo_push(undo, beatmap, lyricmap);
                 lyricmap_remove(lyricmap, pending_delete);
                 if (s_lyr_selected == pending_delete)     s_lyr_selected = -1;
                 else if (s_lyr_selected > pending_delete) s_lyr_selected--;
@@ -2051,6 +2060,7 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
             // ---- Auto-place deferred action ----
             // Find a gap in the timeline for this lyric and re-insert with real timestamps.
             if (pending_place >= 0 && pending_place < lyricmap->count) {
+                undo_push(undo, beatmap, lyricmap);
                 int i = pending_place;
 
                 // prev_end: t_end of last placed lyric before index i (0 if none)
@@ -2107,6 +2117,7 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
             // ---- Place-at-region deferred action ----
             if (pending_region_place >= 0 && pending_region_place < lyricmap->count
                     && editor->has_region) {
+                undo_push(undo, beatmap, lyricmap);
                 int    i  = pending_region_place;
                 double t0 = editor->region_start;
                 double t1 = editor->region_end;
