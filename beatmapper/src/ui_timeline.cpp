@@ -191,6 +191,20 @@ static void draw_diamond(ImDrawList* dl, float cx, float cy, float r,
 
 // --- layout constants --------------------------------------------------
 
+// ---- Lyric split callback -----------------------------------------------
+// Shared state written by the callback, read by the site that called InputText.
+struct LyrSplitState { bool req; int cursor; };
+static LyrSplitState s_lyr_split_state;
+
+static int lyr_split_callback(ImGuiInputTextCallbackData* d) {
+    if (ImGui::IsKeyDown(ImGuiMod_Shift) &&
+            ImGui::IsKeyPressed(ImGuiKey_Enter, false)) {
+        s_lyr_split_state.req    = true;
+        s_lyr_split_state.cursor = d->CursorPos;
+    }
+    return 0;
+}
+
 static const float RULER_H       = 24.0f;
 static const float MINIMAP_H     = 40.0f;
 static const float CTX_PANEL_H   = 36.0f;  // contextual interpolate panel
@@ -1809,8 +1823,12 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
             ImGui::SameLine();
 
             ImGui::SetNextItemWidth(text_w);
-            if (ImGui::InputText("##lyr_text", ly.text, sizeof(ly.text)))
+            s_lyr_split_state = {};
+            if (ImGui::InputText("##lyr_text", ly.text, sizeof(ly.text),
+                                 ImGuiInputTextFlags_CallbackAlways, lyr_split_callback))
                 lyricmap->dirty = true;
+            if (s_lyr_split_state.req)
+                lyricmap_split(lyricmap, s_lyr_selected, s_lyr_split_state.cursor, &s_lyr_selected);
 
             // Delete button — right-aligned
             ImGui::SameLine(ImGui::GetWindowWidth() - btn_w - 4.0f);
@@ -1889,6 +1907,9 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
             // Deferred auto-place: collect index during loop, act on it after EndChild
             int pending_place        = -1;
             int pending_region_place = -1;
+            int pending_delete       = -1;
+            int pending_split_idx    = -1;
+            int pending_split_cursor = 0;
 
             // 'L' shortcut: place the first unplaced lyric at the current region
             if (first_unplaced_idx >= 0 && editor->has_region &&
@@ -1978,18 +1999,34 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
                             : placed ? "Already placed" : "Place at selected region");
                 }
 
-                // Lyric text input (fills remaining row width)
+                // Lyric text input (fills remaining row width, minus X delete button)
                 ImGui::SameLine(0, 2.0f);
-                ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x);
+                const float del_btn_w = 20.0f;
+                ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - del_btn_w - 2.0f);
                 // Dim unplaced lyrics so placed ones stand out
                 if (!placed)
                     ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.62f,0.59f,0.49f,0.76f));
-                if (ImGui::InputText("##t", ly.text, sizeof(ly.text)))
+                s_lyr_split_state = {};
+                if (ImGui::InputText("##t", ly.text, sizeof(ly.text),
+                                     ImGuiInputTextFlags_CallbackAlways, lyr_split_callback))
                     lyricmap->dirty = true;
                 if (!placed)
                     ImGui::PopStyleColor();
                 // Typing in the text field selects the lyric in the strip too
                 if (ImGui::IsItemActive()) s_lyr_selected = i;
+                if (s_lyr_split_state.req) {
+                    pending_split_idx    = i;
+                    pending_split_cursor = s_lyr_split_state.cursor;
+                }
+
+                // X button to delete this lyric
+                ImGui::SameLine(0, 2.0f);
+                ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.55f,0.12f,0.12f,0.76f));
+                ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.72f,0.18f,0.18f,0.90f));
+                ImGui::PushStyleColor(ImGuiCol_ButtonActive,  ImVec4(0.90f,0.25f,0.25f,1.00f));
+                if (ImGui::Button("x", ImVec2(del_btn_w, 0))) pending_delete = i;
+                ImGui::PopStyleColor(3);
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Delete lyric");
 
                 ImGui::PopID();
             }
@@ -1999,6 +2036,17 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
 
             ImGui::PopStyleVar(2);
             ImGui::EndChild();
+
+            // ---- Split deferred action ----
+            if (pending_split_idx >= 0 && pending_split_idx < lyricmap->count)
+                lyricmap_split(lyricmap, pending_split_idx, pending_split_cursor, &s_lyr_selected);
+
+            // ---- Delete deferred action ----
+            if (pending_delete >= 0 && pending_delete < lyricmap->count) {
+                lyricmap_remove(lyricmap, pending_delete);
+                if (s_lyr_selected == pending_delete)     s_lyr_selected = -1;
+                else if (s_lyr_selected > pending_delete) s_lyr_selected--;
+            }
 
             // ---- Auto-place deferred action ----
             // Find a gap in the timeline for this lyric and re-insert with real timestamps.

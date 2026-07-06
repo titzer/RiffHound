@@ -66,3 +66,43 @@ void lyricmap_remove(LyricMap* lm, int idx) {
     if (lm->selected_idx == idx)     lm->selected_idx = -1;
     else if (lm->selected_idx > idx) lm->selected_idx--;
 }
+
+void lyricmap_split(LyricMap* lm, int idx, int cursor_pos, int* new_sel) {
+    if (idx < 0 || idx >= lm->count) return;
+
+    // Save lyric data before removal
+    double t0 = lm->lyrics[idx].t_start;
+    double t1 = lm->lyrics[idx].t_end;
+    char   saved[128];
+    strncpy(saved, lm->lyrics[idx].text, sizeof(saved) - 1);
+    saved[sizeof(saved) - 1] = '\0';
+
+    int len = (int)strlen(saved);
+    if (cursor_pos < 0)   cursor_pos = 0;
+    if (cursor_pos > len) cursor_pos = len;
+
+    // Build the two text halves
+    char text_a[128] = {}, text_b[128] = {};
+    int la = cursor_pos < 127 ? cursor_pos : 127;
+    int lb = len - cursor_pos < 127 ? len - cursor_pos : 127;
+    if (la > 0) strncpy(text_a, saved,              la);
+    if (lb > 0) strncpy(text_b, saved + cursor_pos, lb);
+
+    // Split the time range at the midpoint; for zero/tiny range (unplaced
+    // lyrics), give each half a 1 ms slot so insertion order is preserved.
+    bool   has_range = (t1 - t0 > 1e-4);
+    double t_mid     = (t0 + t1) * 0.5;
+    double ta0, ta1, tb0, tb1;
+    if (has_range) {
+        ta0 = t0;    ta1 = t_mid;
+        tb0 = t_mid; tb1 = t1;
+    } else {
+        ta0 = t0;          ta1 = t0 + 0.001;
+        tb0 = t0 + 0.001;  tb1 = t0 + 0.002;
+    }
+
+    lyricmap_remove(lm, idx);
+    lyricmap_add(lm, ta0, ta1, text_a);
+    int ib = lyricmap_add(lm, tb0, tb1, text_b);
+    if (new_sel) *new_sel = ib;
+}

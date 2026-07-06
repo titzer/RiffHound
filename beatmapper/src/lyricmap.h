@@ -24,3 +24,7 @@ int  lyricmap_add(LyricMap* lm, double t_start, double t_end, const char* text);
 
 // Remove lyric at index idx.
 void lyricmap_remove(LyricMap* lm, int idx);
+
+// Split lyric at idx: text is split at cursor_pos, time range split at midpoint.
+// *new_sel (if non-null) is set to the index of the second lyric after the split.
+void lyricmap_split(LyricMap* lm, int idx, int cursor_pos, int* new_sel);
