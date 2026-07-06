@@ -191,6 +191,28 @@ static void draw_diamond(ImDrawList* dl, float cx, float cy, float r,
 
 // --- layout constants --------------------------------------------------
 
+// ---- Lyric font size control --------------------------------------------
+
+static ImFont** s_lyric_fonts      = nullptr;
+static int      s_lyric_font_count = 0;
+static int      s_lyric_font_idx   = 0;
+
+void ui_timeline_set_lyric_fonts(ImFont** fonts, int count, int default_idx) {
+    s_lyric_fonts      = fonts;
+    s_lyric_font_count = count;
+    s_lyric_font_idx   = (default_idx >= 0 && default_idx < count) ? default_idx : 0;
+}
+void ui_timeline_lyric_font_larger()  { if (s_lyric_font_idx < s_lyric_font_count - 1) s_lyric_font_idx++; }
+void ui_timeline_lyric_font_smaller() { if (s_lyric_font_idx > 0) s_lyric_font_idx--; }
+bool ui_timeline_lyric_font_can_grow()   { return s_lyric_font_idx < s_lyric_font_count - 1; }
+bool ui_timeline_lyric_font_can_shrink() { return s_lyric_font_idx > 0; }
+
+static ImFont* s_lyric_font() {
+    if (s_lyric_fonts && s_lyric_font_count > 0)
+        return s_lyric_fonts[s_lyric_font_idx];
+    return ImGui::GetFont();
+}
+
 // ---- Lyric split callback -----------------------------------------------
 // Shared state written by the callback, read by the site that called InputText.
 struct LyrSplitState { bool req; int cursor; };
@@ -1525,17 +1547,19 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
 
         // Lyric text, left-aligned inside the rect
         if (ly.text[0]) {
-            float th_lbl = ImGui::GetTextLineHeight();
-            float lbl_y  = y0 + (y1 - y0 - th_lbl) * 0.5f;
-            float lbl_x  = lx0 + 4.0f;
-            ImVec2 ts = ImGui::CalcTextSize(ly.text);
+            ImFont* lf      = s_lyric_font();
+            float   lf_sz   = lf->FontSize;
+            float   th_lbl  = lf_sz;
+            float   lbl_y   = y0 + (y1 - y0 - th_lbl) * 0.5f;
+            float   lbl_x   = lx0 + 4.0f;
+            ImVec2  ts      = lf->CalcTextSizeA(lf_sz, FLT_MAX, 0.0f, ly.text);
             // Clip text to lyric rect width
             if (lbl_x + ts.x < lx1 - 2.0f)
-                dl->AddText(ImVec2(lbl_x, lbl_y), IM_COL32(220, 220, 200, 230), ly.text);
+                dl->AddText(lf, lf_sz, ImVec2(lbl_x, lbl_y), IM_COL32(220, 220, 200, 230), ly.text);
             else if (lx1 - lx0 > 10.0f) {
                 // Ellipsis: push clip rect for the individual lyric
                 dl->PushClipRect(ImVec2(lx0, y0), ImVec2(lx1 - 2.0f, y1), true);
-                dl->AddText(ImVec2(lbl_x, lbl_y), IM_COL32(220, 220, 200, 230), ly.text);
+                dl->AddText(lf, lf_sz, ImVec2(lbl_x, lbl_y), IM_COL32(220, 220, 200, 230), ly.text);
                 dl->PopClipRect();
             }
         }
@@ -1824,11 +1848,13 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
             ImGui::TextUnformatted("Lyric:");
             ImGui::SameLine();
 
+            ImGui::PushFont(s_lyric_font());
             ImGui::SetNextItemWidth(text_w);
             s_lyr_split_state = {};
             if (ImGui::InputText("##lyr_text", ly.text, sizeof(ly.text),
                                  ImGuiInputTextFlags_CallbackAlways, lyr_split_callback))
                 lyricmap->dirty = true;
+            ImGui::PopFont();
             if (s_lyr_split_state.req) {
                 undo_push(undo, beatmap, lyricmap);
                 lyricmap_split(lyricmap, s_lyr_selected, s_lyr_split_state.cursor, &s_lyr_selected);
@@ -1922,6 +1948,7 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
                     ImGui::IsKeyPressed(ImGuiKey_L) && !ImGui::IsAnyItemActive())
                 pending_region_place = first_unplaced_idx;
 
+            ImGui::PushFont(s_lyric_font());
             ImGui::BeginChild("##li_rows", ImVec2(0, 0), false);
             ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing,  ImVec2(2.0f, 2.0f));
             ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(3.0f, 2.0f));
@@ -2042,6 +2069,7 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
 
             ImGui::PopStyleVar(2);
             ImGui::EndChild();
+            ImGui::PopFont();
 
             // ---- Split deferred action ----
             if (pending_split_idx >= 0 && pending_split_idx < lyricmap->count) {

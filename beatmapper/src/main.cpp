@@ -109,6 +109,22 @@ int main(int argc, char** argv) {
     style.ScrollbarRounding = 3.0f;
     style.Colors[ImGuiCol_WindowBg] = ImVec4(0.10f, 0.10f, 0.14f, 1.0f);
 
+    // Load the default font at several sizes for lyric display.
+    // Must be done after CreateContext() and before the first NewFrame().
+    static const float  LYRIC_FONT_SIZES[] = { 13.0f, 16.0f, 20.0f, 24.0f, 28.0f };
+    static const int    N_LYRIC_FONTS = 5;
+    static ImFont*      s_lyric_fonts[N_LYRIC_FONTS];
+    {
+        ImGuiIO& fio = ImGui::GetIO();
+        for (int i = 0; i < N_LYRIC_FONTS; i++) {
+            ImFontConfig cfg;
+            cfg.SizePixels = LYRIC_FONT_SIZES[i];
+            s_lyric_fonts[i] = fio.Fonts->AddFontDefault(&cfg);
+        }
+        // Default lyric font: 20px (index 2)
+        ui_timeline_set_lyric_fonts(s_lyric_fonts, N_LYRIC_FONTS, 2);
+    }
+
     ImGui_ImplGlfw_InitForOpenGL(window, true);
     ImGui_ImplOpenGL3_Init("#version 330");
 
@@ -270,6 +286,12 @@ int main(int argc, char** argv) {
             if (ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_Z))
                 undo_pop(&undo, &beatmap, &lyricmap);
 
+            // Ctrl+= / Ctrl+- → lyric font size
+            if (ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_Equal))
+                ui_timeline_lyric_font_larger();
+            if (ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_Minus))
+                ui_timeline_lyric_font_smaller();
+
             // Ctrl+S → Save Beatmap (silent overwrite if a path is already known)
             if (ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_S)) {
                 if (beatmap.save_path[0] != '\0') {
@@ -331,6 +353,13 @@ int main(int argc, char** argv) {
                 }
                 if (ImGui::BeginMenu("View")) {
                     ImGui::MenuItem("ImGui Demo", nullptr, &show_demo);
+                    ImGui::Separator();
+                    if (ImGui::MenuItem("Lyric Font Larger",  "Ctrl+=", nullptr,
+                                        ui_timeline_lyric_font_can_grow()))
+                        ui_timeline_lyric_font_larger();
+                    if (ImGui::MenuItem("Lyric Font Smaller", "Ctrl+-", nullptr,
+                                        ui_timeline_lyric_font_can_shrink()))
+                        ui_timeline_lyric_font_smaller();
                     ImGui::EndMenu();
                 }
                 ImGui::EndMenuBar();
