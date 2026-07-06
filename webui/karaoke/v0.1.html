@@ -1,0 +1,1136 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>RiffHound Karaoke</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  background: #0d0d1a;
+  color: #e0e0f0;
+  font-family: 'Segoe UI', Arial, sans-serif;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* ── Toolbar ─────────────────────────────────────────────────────────────── */
+#toolbar {
+  height: 72px;
+  min-height: 72px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 12px;
+  background: #1a1a2e;
+  border-bottom: 1px solid #2a2a4a;
+  z-index: 10;
+  flex-shrink: 0;
+}
+
+#toolbar button {
+  padding: 8px 18px;
+  background: #2a2a4a;
+  color: #c0c0e0;
+  border: 1px solid #3a3a6a;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 20px;
+  white-space: nowrap;
+  transition: background 0.1s;
+}
+#toolbar button:hover:not(:disabled) { background: #3a3a6a; }
+#toolbar button:disabled { opacity: 0.4; cursor: default; }
+#toolbar button.active { background: #4a4a9a; color: #fff; border-color: #6060c0; }
+
+#track-title {
+  flex: 1;
+  font-size: 38px;
+  font-weight: 600;
+  color: #b0b0ff;
+  text-align: center;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  padding: 0 8px;
+}
+
+#time-display {
+  font-size: 20px;
+  color: #6060a0;
+  white-space: nowrap;
+  font-family: monospace;
+  min-width: 130px;
+  text-align: right;
+}
+
+/* ── Sections strip ──────────────────────────────────────────────────────── */
+#sections-wrap {
+  height: 120px;
+  min-height: 120px;
+  flex-shrink: 0;
+  background: #12122a;
+  border-bottom: 1px solid #2a2a4a;
+  position: relative;
+}
+
+#sections-canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+/* ── Lyrics area ─────────────────────────────────────────────────────────── */
+#lyrics-area {
+  flex: 1;
+  overflow: hidden;
+  position: relative;
+  background: #0d0d1a;
+  min-height: 0;
+}
+
+#lyrics-canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+/* ── Modal overlay ───────────────────────────────────────────────────────── */
+#modal-overlay {
+  display: none; position: fixed; inset: 0;
+  background: rgba(0,0,0,0.75); z-index: 100;
+  justify-content: center; align-items: center;
+}
+#modal-overlay.open { display: flex; }
+
+#modal-box {
+  background: #1e1e3a; border: 1px solid #3a3a6a; border-radius: 8px;
+  width: 560px; max-width: 95vw; max-height: 85vh;
+  display: flex; flex-direction: column; overflow: hidden;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.6);
+}
+
+#modal-header {
+  display: flex; align-items: center;
+  padding: 10px 16px 6px; flex-shrink: 0;
+}
+#modal-header h2 { font-size: 15px; color: #c0c0ff; flex: 1; }
+#modal-close {
+  background: none; border: none; color: #6060a0;
+  cursor: pointer; font-size: 18px; padding: 2px 6px; border-radius: 3px;
+}
+#modal-close:hover { background: #2a2a4a; color: #c0c0ff; }
+
+#modal-search-bar { padding: 4px 16px 10px; flex-shrink: 0; }
+#modal-search-bar input {
+  width: 100%; padding: 9px 12px;
+  background: #12122a; border: 1px solid #3a3a6a;
+  color: #e0e0f0; border-radius: 4px; font-size: 16px; outline: none;
+}
+#modal-search-bar input:focus { border-color: #6060c0; }
+
+/* unified results */
+#unified-results {
+  flex: 1; overflow-y: auto; min-height: 100px;
+  border-top: 1px solid #2a2a4a; border-bottom: 1px solid #2a2a4a;
+}
+.result-item { display: flex; align-items: center; padding: 8px 16px; cursor: pointer; gap: 10px; }
+.result-item:hover { background: #2a2a4a; }
+.ri-title { flex: 1; font-size: 14px; color: #e0e0f0; }
+.ri-badge {
+  font-size: 10px; padding: 2px 7px; border-radius: 3px;
+  text-transform: uppercase; letter-spacing: 0.05em;
+  background: #2a2a4a; color: #8080b0; white-space: nowrap;
+}
+.ri-badge.recent { background: #1a3020; color: #70c090; }
+.ri-badge.known  { background: #1a1a38; color: #7090c0; }
+.ri-badge.file   { background: #382010; color: #c09060; }
+.ri-badge.dir    { background: #2a1838; color: #a060c0; }
+.result-section-header {
+  padding: 6px 16px 2px; font-size: 10px; text-transform: uppercase;
+  letter-spacing: 0.07em; color: #4a4a80;
+  border-top: 1px solid #202040;
+}
+.result-section-header:first-child { border-top: none; }
+
+/* tab bar — sits below results, tabs manage sources */
+.tab-bar { display: flex; padding: 6px 16px 0; gap: 4px; flex-shrink: 0; }
+.tab-btn {
+  padding: 5px 14px; background: none;
+  border: 1px solid transparent; border-bottom: none;
+  border-radius: 4px 4px 0 0; color: #7070a0; cursor: pointer; font-size: 13px;
+}
+.tab-btn:hover { color: #c0c0f0; }
+.tab-btn.active { background: #2a2a4a; color: #e0e0ff; border-color: #3a3a6a; }
+
+.tab-content {
+  display: none; padding: 10px 16px 12px; overflow-y: auto;
+  max-height: 180px; flex-shrink: 0; border-top: 1px solid #2a2a4a;
+}
+.tab-content.active { display: block; }
+
+.tab-content input[type="text"],
+.tab-content input[type="url"] {
+  width: 100%; padding: 6px 10px; background: #12122a;
+  border: 1px solid #3a3a6a; color: #e0e0f0;
+  border-radius: 4px; font-size: 13px; outline: none; margin-bottom: 6px;
+}
+.tab-content input:focus { border-color: #6060c0; }
+.tab-content button {
+  padding: 4px 12px; background: #2a2a6a; color: #c0c0f0;
+  border: 1px solid #4a4a9a; border-radius: 4px;
+  cursor: pointer; font-size: 13px; margin-right: 6px; margin-bottom: 6px;
+}
+.tab-content button:hover { background: #3a3a8a; }
+
+.file-pick-section { margin-bottom: 8px; }
+.file-pick-section label {
+  display: block; font-size: 11px; color: #8080b0; margin-bottom: 3px;
+  font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em;
+}
+.file-pick-section input[type="file"] { color: #c0c0f0; font-size: 12px; width: 100%; }
+
+.hint { font-size: 12px; color: #6060a0; line-height: 1.5; }
+.smsg { font-size: 13px; color: #70c070; margin-top: 6px; }
+.emsg { font-size: 13px; color: #c07070; margin-top: 6px; }
+
+#dir-list { margin-bottom: 4px; }
+.dir-entry { display: flex; align-items: center; gap: 6px; padding: 3px 0; font-size: 13px; }
+.dir-entry .dir-name { flex: 1; color: #c0c0e0; }
+.dir-entry .dir-perm { font-size: 11px; color: #6060a0; }
+.dir-entry button    { padding: 2px 7px; font-size: 11px; margin: 0; }
+</style>
+</head>
+<body>
+
+<!-- ── Toolbar ──────────────────────────────────────────────────────────────── -->
+<div id="toolbar">
+  <button id="load-btn">LOAD</button>
+  <span id="track-title">No track loaded</span>
+  <button id="play-btn"  disabled>&#9654; PLAY</button>
+  <button id="stop-btn"  disabled>&#9209; STOP</button>
+  <button id="mute-btn"  disabled>&#128266; MUTE</button>
+  <span   id="time-display">0:00 / 0:00</span>
+</div>
+
+<!-- ── Sections strip ───────────────────────────────────────────────────────── -->
+<div id="sections-wrap">
+  <canvas id="sections-canvas"></canvas>
+</div>
+
+<!-- ── Lyrics area ──────────────────────────────────────────────────────────── -->
+<div id="lyrics-area">
+  <canvas id="lyrics-canvas"></canvas>
+</div>
+
+<!-- ── Load Modal ───────────────────────────────────────────────────────────── -->
+<div id="modal-overlay">
+  <div id="modal-box">
+    <div id="modal-header">
+      <h2>Load Track</h2>
+      <button id="modal-close">&#10005;</button>
+    </div>
+
+    <!-- Always-visible search — queries all sources -->
+    <div id="modal-search-bar">
+      <input type="text" id="search-input" placeholder="Search tracks…" autocomplete="off" spellcheck="false">
+    </div>
+
+    <!-- Unified results from all sources -->
+    <div id="unified-results"></div>
+
+    <!-- Tabs manage sources, not results -->
+    <div class="tab-bar">
+      <button class="tab-btn active" data-tab="known">Known</button>
+      <button class="tab-btn"        data-tab="remote">Remote</button>
+      <button class="tab-btn"        data-tab="files">Files</button>
+    </div>
+
+    <!-- Known tab: cache control only -->
+    <div id="tab-known" class="tab-content active">
+      <button id="clear-cache-btn">Clear all caches</button>
+      <span class="hint" style="display:inline;margin-left:8px">Clears recents, saved file and directory handles.</span>
+    </div>
+
+    <!-- Remote tab: server config -->
+    <div id="tab-remote" class="tab-content">
+      <input type="url" id="remote-server" placeholder="Server URL (e.g. http://localhost:8765)" autocomplete="off">
+      <button id="remote-search-btn">Search</button>
+      <div id="remote-results" class="hint" style="margin-top:4px">Remote query not yet implemented.</div>
+    </div>
+
+    <!-- Files tab: FSA pickers + fallback inputs -->
+    <div id="tab-files" class="tab-content">
+      <div id="fsa-controls" style="margin-bottom:8px">
+        <button id="open-dir-btn">&#128193; Directory&#8230;</button>
+        <button id="open-files-btn">&#127925; File(s)&#8230;</button>
+      </div>
+      <div id="dir-list"></div>
+      <div class="file-pick-section">
+        <label>Audio (.mp3 / .ogg / .wav)</label>
+        <input type="file" id="audio-file-input" accept="audio/*,.mp3,.ogg,.wav,.flac">
+      </div>
+      <div class="file-pick-section">
+        <label>Lyrics (.txt)</label>
+        <input type="file" id="txt-file-input" accept=".txt,text/plain">
+      </div>
+      <button id="file-load-btn">Load</button>
+      <div id="file-status"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+'use strict';
+
+// ── Section kinds and colours (ported from beatmapper/src/ui_timeline.cpp) ──
+
+const SECTION_KINDS = [
+  'intro', 'verse', 'pre-chorus', 'chorus', 'post-chorus',
+  'bridge', 'breakdown', 'instrumental', 'solo',
+  'interlude', 'outro', 'refrain'
+];
+
+// IM_COL32(r,g,b,a) → rgba(r,g,b, a/255)
+const SECTION_COLORS = {
+  'intro':        { fill: 'rgba(70,130,210,0.667)',  border: 'rgba(120,180,255,0.902)' },
+  'verse':        { fill: 'rgba(50,160,80,0.667)',   border: 'rgba(100,210,130,0.902)' },
+  'pre-chorus':   { fill: 'rgba(155,185,50,0.667)',  border: 'rgba(200,230,90,0.902)'  },
+  'chorus':       { fill: 'rgba(220,120,40,0.667)',  border: 'rgba(255,170,80,0.902)'  },
+  'post-chorus':  { fill: 'rgba(200,60,60,0.667)',   border: 'rgba(240,110,110,0.902)' },
+  'bridge':       { fill: 'rgba(130,70,200,0.667)',  border: 'rgba(180,120,250,0.902)' },
+  'breakdown':    { fill: 'rgba(90,90,110,0.667)',   border: 'rgba(140,140,165,0.902)' },
+  'instrumental': { fill: 'rgba(40,170,160,0.667)',  border: 'rgba(80,220,210,0.902)'  },
+  'solo':         { fill: 'rgba(200,170,30,0.667)',  border: 'rgba(240,210,80,0.902)'  },
+  'interlude':    { fill: 'rgba(180,70,170,0.667)',  border: 'rgba(225,120,220,0.902)' },
+  'outro':        { fill: 'rgba(50,90,170,0.667)',   border: 'rgba(100,140,220,0.902)' },
+  'refrain':      { fill: 'rgba(190,50,100,0.667)',  border: 'rgba(230,90,145,0.902)'  },
+};
+const SEC_COLOR_DEFAULT = { fill: 'rgba(100,100,120,0.667)', border: 'rgba(160,160,180,0.902)' };
+
+// ── Known tracks  (hardcoded for now; later: external JSON or server query) ──
+// Each entry: { audio: <url>, txt: <url (optional, inferred if absent)>, title: <string> }
+const KNOWN_TRACKS = {
+  // "hey_jude": { audio: "tracks/hey_jude.mp3", title: "Hey Jude – The Beatles" },
+  // "stairway":  { audio: "tracks/stairway.mp3", title: "Stairway to Heaven – Led Zeppelin" },
+};
+
+// ── Application state ────────────────────────────────────────────────────────
+const state = {
+  title:    'No track loaded',
+  lyrics:   [],   // { t_start, t_end, text }
+  sections: [],   // { t_start, t_end, kind, label }
+  duration: 0,
+};
+
+let audio       = null;
+let animId      = null;
+let audioObjUrl = null;   // URL.createObjectURL blob URL to revoke on next load
+
+// ── Timeseries parser ────────────────────────────────────────────────────────
+function parseTimeseries(text) {
+  const lyrics   = [];
+  const sections = [];
+
+  for (const rawLine of text.split('\n')) {
+    // strip inline comment
+    const ci   = rawLine.indexOf('#');
+    const line = (ci >= 0 ? rawLine.slice(0, ci) : rawLine).trim();
+    if (!line) continue;
+
+    // t_start  t_end  event…
+    const m = line.match(/^(\S+)\s+(\S+)\s+(.*)/);
+    if (!m) continue;
+
+    // Skip beat-time references (B45, BM, etc.) — TODO: resolve via beatmap
+    if (/^B/i.test(m[1]) || /^B/i.test(m[2])) continue;
+
+    const t_start = parseFloat(m[1]);
+    const t_end   = parseFloat(m[2]);
+    const event   = m[3].trim();
+
+    if (!isFinite(t_start) || !isFinite(t_end)) continue;
+    if (t_end < t_start) continue;   // invalid per spec
+
+    if (event.startsWith('lyric:')) {
+      const text = event.slice(6).trim();
+      if (text) lyrics.push({ t_start, t_end, text });
+      continue;
+    }
+
+    // Section detection: keyword must be followed by end-of-string, ':', or ' '
+    for (const kind of SECTION_KINDS) {
+      if (event === kind ||
+          event.startsWith(kind + ':') ||
+          event.startsWith(kind + ' ')) {
+        const rest  = event.slice(kind.length).replace(/^[\s:]+/, '').trim();
+        sections.push({ t_start, t_end, kind, label: rest });
+        break;
+      }
+    }
+  }
+
+  lyrics.sort(  (a, b) => a.t_start - b.t_start);
+  sections.sort((a, b) => a.t_start - b.t_start);
+  return { lyrics, sections };
+}
+
+// ── Utilities ────────────────────────────────────────────────────────────────
+function formatTime(s) {
+  if (!isFinite(s) || s < 0) return '0:00';
+  const m  = Math.floor(s / 60);
+  const ss = String(Math.floor(s % 60)).padStart(2, '0');
+  return `${m}:${ss}`;
+}
+
+function inferPaired(filename, ext) {
+  return filename.replace(/\.[^/.]+$/, '') + ext;
+}
+
+// ── Canvas sizing (DPR-aware) ─────────────────────────────────────────────────
+function fitCanvas(canvas) {
+  const r   = canvas.getBoundingClientRect();
+  const dpr = window.devicePixelRatio || 1;
+  const pw  = Math.round(r.width  * dpr);
+  const ph  = Math.round(r.height * dpr);
+  if (canvas.width !== pw || canvas.height !== ph) {
+    canvas.width  = pw;
+    canvas.height = ph;
+  }
+  return dpr;
+}
+
+// ── Draw sections strip ───────────────────────────────────────────────────────
+const secCanvas = document.getElementById('sections-canvas');
+
+function drawSections() {
+  const dpr  = fitCanvas(secCanvas);
+  const ctx  = secCanvas.getContext('2d');
+  const W    = secCanvas.width;
+  const H    = secCanvas.height;
+  const now  = audio ? audio.currentTime : 0;
+  const dur  = (audio && isFinite(audio.duration) && audio.duration > 0)
+               ? audio.duration
+               : (state.duration > 0 ? state.duration : 1);
+
+  ctx.clearRect(0, 0, W, H);
+  ctx.fillStyle = '#12122a';
+  ctx.fillRect(0, 0, W, H);
+
+  // Active section (for highlight border)
+  const activeSec = state.sections.find(s => now >= s.t_start && now <= s.t_end);
+
+  // Section blocks
+  for (const sec of state.sections) {
+    const x0 = (sec.t_start / dur) * W;
+    const x1 = (sec.t_end   / dur) * W;
+    const w  = Math.max(x1 - x0, 1);
+    const c  = SECTION_COLORS[sec.kind] || SEC_COLOR_DEFAULT;
+    const isActive = sec === activeSec;
+
+    ctx.fillStyle = c.fill;
+    ctx.fillRect(x0, 0, w, H);
+
+    ctx.strokeStyle = isActive ? '#ffffff' : c.border;
+    ctx.lineWidth   = isActive ? 2 * dpr : 1 * dpr;
+    ctx.strokeRect(x0 + 0.5, 0.5, w - 1, H - 1);
+
+    // Label (clipped to block width)
+    const label = sec.kind + (sec.label ? ': ' + sec.label : '');
+    ctx.font         = `${11 * dpr}px sans-serif`;
+    ctx.fillStyle    = 'rgba(255,255,255,0.9)';
+    ctx.textBaseline = 'top';
+    ctx.textAlign    = 'left';
+    ctx.fillText(label, x0 + 5 * dpr, 5 * dpr, w - 10 * dpr);
+  }
+
+  // Time ruler ticks
+  const step = tickStep(dur);
+  ctx.strokeStyle  = 'rgba(255,255,255,0.12)';
+  ctx.lineWidth    = 1;
+  ctx.font         = `${9 * dpr}px monospace`;
+  ctx.fillStyle    = 'rgba(255,255,255,0.35)';
+  ctx.textBaseline = 'bottom';
+  ctx.textAlign    = 'left';
+  for (let t = step; t < dur; t += step) {
+    const x = (t / dur) * W;
+    ctx.beginPath();
+    ctx.moveTo(x, H - 14 * dpr);
+    ctx.lineTo(x, H);
+    ctx.stroke();
+    ctx.fillText(formatTime(t), x + 2 * dpr, H - 1);
+  }
+
+  // Playhead
+  const px = (now / dur) * W;
+  ctx.strokeStyle = '#ffffff';
+  ctx.lineWidth   = 2 * dpr;
+  ctx.beginPath();
+  ctx.moveTo(px, 0);
+  ctx.lineTo(px, H);
+  ctx.stroke();
+  // Small triangle cap
+  ctx.fillStyle = '#ffffff';
+  ctx.beginPath();
+  const ts = 6 * dpr;
+  ctx.moveTo(px - ts, 0);
+  ctx.lineTo(px + ts, 0);
+  ctx.lineTo(px, ts * 1.5);
+  ctx.closePath();
+  ctx.fill();
+}
+
+function tickStep(dur) {
+  const raw = dur / 10;
+  for (const s of [5, 10, 15, 20, 30, 60, 120, 300, 600]) {
+    if (s >= raw) return s;
+  }
+  return 60;
+}
+
+// ── Draw lyrics area ──────────────────────────────────────────────────────────
+const lyrCanvas = document.getElementById('lyrics-canvas');
+
+function drawLyrics() {
+  const dpr    = fitCanvas(lyrCanvas);
+  const ctx    = lyrCanvas.getContext('2d');
+  const W      = lyrCanvas.width;
+  const H      = lyrCanvas.height;
+  const now    = audio ? audio.currentTime : 0;
+  const lyrics = state.lyrics;
+
+  ctx.clearRect(0, 0, W, H);
+  ctx.fillStyle = '#0d0d1a';
+  ctx.fillRect(0, 0, W, H);
+
+  if (!lyrics.length) {
+    ctx.font         = `${20 * dpr}px sans-serif`;
+    ctx.fillStyle    = 'rgba(255,255,255,0.18)';
+    ctx.textAlign    = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('No lyrics loaded', W / 2, H / 2);
+    return;
+  }
+
+  const LINE_H = 62 * dpr;
+  const FONT_N = 38 * dpr;   // normal lyric size
+  const FONT_H = 42 * dpr;   // highlighted (current) lyric size
+
+  // Highlight line sits 2.5 line-heights from the top, so 2 past lines show above it
+  const HIGHLIGHT_Y = 2.5 * LINE_H;
+
+  // Left 25% reserved for timestamps (currently empty)
+  const GUTTER_W = Math.round(W * 0.25);
+  const TEXT_X   = GUTTER_W + 10 * dpr;
+  const TEXT_W   = W - GUTTER_W - 20 * dpr;
+
+  // ── Find current lyric index (last with t_start ≤ now) ──────────────────
+  let i = -1;
+  for (let j = 0; j < lyrics.length; j++) {
+    if (lyrics[j].t_start <= now) i = j;
+    else break;
+  }
+
+  // ── Fractional scroll position ───────────────────────────────────────────
+  // currentPos == i + f means lyric[i] is f * LINE_H above the highlight
+  let currentPos;
+  if (i < 0) {
+    // Before first lyric: scroll from -1→0 over the lead-in duration
+    const lead  = lyrics[0].t_start > 0 ? lyrics[0].t_start : 1;
+    currentPos  = (now / lead) - 1;   // arrives at 0 exactly at lyrics[0].t_start
+  } else if (i + 1 < lyrics.length) {
+    const dt   = lyrics[i + 1].t_start - lyrics[i].t_start;
+    const f    = dt > 0 ? Math.min(1, (now - lyrics[i].t_start) / dt) : 0;
+    currentPos = i + f;
+  } else {
+    currentPos = i;   // past last lyric — freeze
+  }
+
+  // ── Highlight band ───────────────────────────────────────────────────────
+  ctx.fillStyle = 'rgba(255,255,255,0.045)';
+  ctx.fillRect(GUTTER_W, HIGHLIGHT_Y - LINE_H * 0.55, W - GUTTER_W, LINE_H);
+
+  // Thin accent lines around the highlight band
+  ctx.strokeStyle = 'rgba(255,255,255,0.12)';
+  ctx.lineWidth   = 1;
+  const bandTop = HIGHLIGHT_Y - LINE_H * 0.55;
+  const bandBot = HIGHLIGHT_Y + LINE_H * 0.45;
+  ctx.beginPath();
+  ctx.moveTo(GUTTER_W, bandTop); ctx.lineTo(W, bandTop);
+  ctx.moveTo(GUTTER_W, bandBot); ctx.lineTo(W, bandBot);
+  ctx.stroke();
+
+  // ── Draw each lyric line ─────────────────────────────────────────────────
+  ctx.textBaseline = 'middle';
+  ctx.textAlign    = 'left';
+
+  const hiIdx = i >= 0 ? i : -1;
+
+  for (let j = 0; j < lyrics.length; j++) {
+    const y = HIGHLIGHT_Y + (j - currentPos) * LINE_H;
+    if (y < -LINE_H || y > H + LINE_H) continue;
+
+    const isHi   = j === hiIdx;
+    const isPast = j < hiIdx;
+
+    if (isHi) {
+      ctx.font      = `bold ${FONT_H}px sans-serif`;
+      ctx.fillStyle = '#ffffff';
+    } else if (isPast) {
+      ctx.font      = `${FONT_N}px sans-serif`;
+      ctx.fillStyle = 'rgba(255,255,255,0.30)';
+    } else {
+      ctx.font      = `${FONT_N}px sans-serif`;
+      // Upcoming: fade in from dim as they approach the highlight
+      const dist  = j - currentPos;   // lines away (> 0 = upcoming)
+      const alpha = Math.max(0.45, Math.min(0.80, 1 - dist * 0.12));
+      ctx.fillStyle = `rgba(255,255,255,${alpha.toFixed(2)})`;
+    }
+
+    ctx.fillText(lyrics[j].text, TEXT_X, y, TEXT_W);
+  }
+
+  // ── Gutter separator ─────────────────────────────────────────────────────
+  ctx.strokeStyle = 'rgba(255,255,255,0.06)';
+  ctx.lineWidth   = 1;
+  ctx.beginPath();
+  ctx.moveTo(GUTTER_W, 0);
+  ctx.lineTo(GUTTER_W, H);
+  ctx.stroke();
+}
+
+// ── Animation loop ────────────────────────────────────────────────────────────
+function frame() {
+  drawSections();
+  drawLyrics();
+
+  const cur = audio ? audio.currentTime : 0;
+  const dur = audio && isFinite(audio.duration) ? audio.duration : 0;
+  document.getElementById('time-display').textContent =
+    formatTime(cur) + ' / ' + formatTime(dur);
+
+  animId = requestAnimationFrame(frame);
+}
+
+function startLoop() { if (!animId) animId = requestAnimationFrame(frame); }
+function stopLoop()  { if (animId) { cancelAnimationFrame(animId); animId = null; } }
+
+// ── Audio initialisation ──────────────────────────────────────────────────────
+function initAudio(url, title) {
+  if (audio) { audio.pause(); audio.src = ''; }
+  // Blob URL lifecycle is managed by loadTrack; don't revoke here.
+
+  state.title = title || 'Unknown Track';
+  document.getElementById('track-title').textContent = state.title;
+
+  const noAudio = !url;
+  document.getElementById('play-btn').disabled = noAudio;
+  document.getElementById('stop-btn').disabled = noAudio;
+  document.getElementById('mute-btn').disabled = noAudio;
+
+  if (noAudio) { startLoop(); return; }
+
+  audio = new Audio(url);
+  audio.addEventListener('loadedmetadata', () => { state.duration = audio.duration; });
+  audio.addEventListener('ended', () => {
+    document.getElementById('play-btn').textContent = '\u25B6 PLAY';
+    document.getElementById('play-btn').classList.remove('active');
+  });
+  audio.addEventListener('error', () => {
+    const err = audio.error;
+    const msg = err ? `Audio error ${err.code}: ${err.message}` : 'Audio load error';
+    console.error(msg);
+    document.getElementById('track-title').textContent = '\u26A0 ' + msg;
+  });
+
+  startLoop();
+}
+
+// ── Unified track loader ───────────────────────────────────────────────────────
+// audioSrc: File | URL string | null
+// txtSrc:   File | URL string | null
+async function loadTrack(audioSrc, txtSrc, title) {
+  // Normalize FileSystemFileHandle → File
+  if (audioSrc && typeof audioSrc === 'object' && 'getFile' in audioSrc) {
+    try { audioSrc = await audioSrc.getFile(); } catch { audioSrc = null; }
+  }
+  if (txtSrc && typeof txtSrc === 'object' && 'getFile' in txtSrc) {
+    try { txtSrc = await txtSrc.getFile(); } catch { txtSrc = null; }
+  }
+
+  state.lyrics   = [];
+  state.sections = [];
+
+  if (txtSrc) {
+    try {
+      const text = (typeof txtSrc === 'string')
+        ? await fetch(txtSrc).then(r => { if (!r.ok) throw new Error(r.status); return r.text(); })
+        : await txtSrc.text();
+      const parsed = parseTimeseries(text);
+      state.lyrics   = parsed.lyrics;
+      state.sections = parsed.sections;
+    } catch (e) {
+      console.warn('Could not load lyrics:', e);
+    }
+  }
+
+  // Revoke the previous blob URL now, before creating a new one.
+  if (audioObjUrl) { URL.revokeObjectURL(audioObjUrl); audioObjUrl = null; }
+
+  let audioUrl = null;
+  if (audioSrc) {
+    if (typeof audioSrc === 'string') {
+      audioUrl = audioSrc;
+    } else {
+      audioUrl    = URL.createObjectURL(audioSrc);
+      audioObjUrl = audioUrl;   // track it so we can revoke on next load
+    }
+  }
+
+  initAudio(audioUrl, title);
+}
+
+// ── Playback controls ─────────────────────────────────────────────────────────
+document.getElementById('play-btn').addEventListener('click', () => {
+  if (!audio) return;
+  if (audio.paused) {
+    audio.play().catch(e => {
+      console.error('Play failed:', e);
+      document.getElementById('play-btn').textContent = '\u25B6 PLAY';
+      document.getElementById('play-btn').classList.remove('active');
+    });
+    document.getElementById('play-btn').textContent = '\u23F8 PAUSE';
+    document.getElementById('play-btn').classList.add('active');
+  } else {
+    audio.pause();
+    document.getElementById('play-btn').textContent = '\u25B6 PLAY';
+    document.getElementById('play-btn').classList.remove('active');
+  }
+});
+
+document.getElementById('stop-btn').addEventListener('click', () => {
+  if (!audio) return;
+  audio.pause();
+  audio.currentTime = 0;
+  document.getElementById('play-btn').textContent = '\u25B6 PLAY';
+  document.getElementById('play-btn').classList.remove('active');
+});
+
+document.getElementById('mute-btn').addEventListener('click', () => {
+  if (!audio) return;
+  audio.muted = !audio.muted;
+  document.getElementById('mute-btn').textContent = audio.muted ? '\uD83D\uDD07 MUTED' : '\uD83D\uDD0A MUTE';
+  document.getElementById('mute-btn').classList.toggle('active', audio.muted);
+});
+
+// Keyboard shortcuts
+document.addEventListener('keydown', e => {
+  if (e.target.tagName === 'INPUT') return;
+  if (e.key === ' ') {
+    e.preventDefault();
+    document.getElementById(audio && !audio.paused ? 'stop-btn' : 'play-btn').click();
+  } else if (e.key === 'l' || e.key === 'L') {
+    e.preventDefault();
+    openModal();
+  } else if (e.key === 'm' || e.key === 'M') {
+    document.getElementById('mute-btn').click();
+  } else if (e.key === 'Escape') {
+    closeModal();
+  }
+});
+
+// ── Modal state ───────────────────────────────────────────────────────────────
+let _db        = null;   // IDBDatabase, opened once
+let _dirCache  = [];     // [{id, name, dirHandle, files:[{name,handle}], permitted}]
+let _searchSeq = 0;      // stale-result guard for async refresh
+
+// FSA feature detection
+const HAS_FSA     = typeof showOpenFilePicker  === 'function';
+const HAS_FSA_DIR = typeof showDirectoryPicker === 'function';
+
+// ── IndexedDB helpers ─────────────────────────────────────────────────────────
+function dbOpen() {
+  if (_db) return Promise.resolve(_db);
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open('karaoke-db', 1);
+    req.onupgradeneeded = e => {
+      const db = e.target.result;
+      if (!db.objectStoreNames.contains('dir_handles'))
+        db.createObjectStore('dir_handles', { keyPath: 'id', autoIncrement: true });
+    };
+    req.onsuccess = e => { _db = e.target.result; resolve(_db); };
+    req.onerror   = e => reject(e.target.error);
+  });
+}
+
+function dbRun(storeName, mode, fn) {
+  return dbOpen().then(db => new Promise((resolve, reject) => {
+    const tx    = db.transaction(storeName, mode);
+    const store = tx.objectStore(storeName);
+    const req   = fn(store);
+    tx.oncomplete = () => resolve(req != null ? req.result : undefined);
+    tx.onerror    = e => reject(e.target.error);
+    tx.onabort    = e => reject(e.target.error);
+    if (req) req.onerror = e => reject(e.target.error);
+  }));
+}
+
+const dbAdd    = (s, r)   => dbRun(s, 'readwrite', st => st.add(r));
+const dbGetAll = (s)      => dbRun(s, 'readonly',  st => st.getAll());
+const dbDelete = (s, key) => dbRun(s, 'readwrite', st => st.delete(key));
+const dbClear  = (s)      => dbRun(s, 'readwrite', st => { st.clear(); return null; });
+
+// ── localStorage recents (URL-based tracks only) ──────────────────────────────
+const RECENTS_KEY = 'karaoke_recent';
+const RECENTS_MAX = 20;
+
+function getRecents() {
+  try { return JSON.parse(localStorage.getItem(RECENTS_KEY)) || []; }
+  catch { return []; }
+}
+
+function addRecent(entry) {
+  // entry: { title, audio, txt } — audio/txt must be URL strings
+  if (!entry.audio && !entry.txt) return;
+  let list = getRecents().filter(r => r.audio !== entry.audio || r.title !== entry.title);
+  list.unshift(entry);
+  if (list.length > RECENTS_MAX) list = list.slice(0, RECENTS_MAX);
+  try { localStorage.setItem(RECENTS_KEY, JSON.stringify(list)); } catch {}
+}
+
+// ── FSA helpers ───────────────────────────────────────────────────────────────
+async function fsPickFiles() {
+  try {
+    return await showOpenFilePicker({
+      multiple: true,
+      types: [{
+        description: 'Audio + Lyrics',
+        accept: {
+          'audio/*':    ['.mp3', '.ogg', '.wav', '.flac', '.m4a'],
+          'text/plain': ['.txt']
+        }
+      }]
+    });
+  } catch (e) {
+    if (e.name !== 'AbortError') console.warn('fsPickFiles:', e);
+    return [];
+  }
+}
+
+async function fsPickDir() {
+  try {
+    return await showDirectoryPicker({ mode: 'read' });
+  } catch (e) {
+    if (e.name !== 'AbortError') console.warn('fsPickDir:', e);
+    return null;
+  }
+}
+
+async function fsCheckPerm(handle) {
+  try { return await handle.queryPermission({ mode: 'read' }) === 'granted'; }
+  catch { return false; }
+}
+
+async function fsRequestPerm(handle) {
+  try { return await handle.requestPermission({ mode: 'read' }) === 'granted'; }
+  catch { return false; }
+}
+
+async function fsEnumDir(dirHandle) {
+  const files = [];
+  try {
+    for await (const [name, handle] of dirHandle.entries()) {
+      if (handle.kind === 'file') files.push({ name, handle });
+    }
+    files.sort((a, b) => a.name.localeCompare(b.name));
+  } catch {}
+  return files;
+}
+
+// ── Dir cache ─────────────────────────────────────────────────────────────────
+async function rebuildDirCache() {
+  _dirCache = [];
+  if (!HAS_FSA_DIR) return;
+  let rows;
+  try { rows = await dbGetAll('dir_handles'); } catch { return; }
+  for (const row of rows) {
+    const h         = row.handle;
+    const permitted = await fsCheckPerm(h);
+    const files     = permitted ? await fsEnumDir(h) : [];
+    _dirCache.push({ id: row.id, name: h.name, dirHandle: h, files, permitted });
+  }
+}
+
+// ── Fuzzy search ──────────────────────────────────────────────────────────────
+function fuzzyScore(query, str) {
+  const q = query.toLowerCase(), s = str.toLowerCase();
+  let qi = 0;
+  for (let i = 0; i < s.length && qi < q.length; i++) if (s[i] === q[qi]) qi++;
+  return qi === q.length ? qi : 0;
+}
+
+function fuzzyMatch(q, str) { return !q || fuzzyScore(q, str) > 0; }
+
+// ── Gather & render results ───────────────────────────────────────────────────
+function gatherResults(query) {
+  const q     = query.trim();
+  const items = [];
+
+  // Recents (URL-based)
+  for (const r of getRecents()) {
+    if (fuzzyMatch(q, r.title))
+      items.push({ title: r.title, badge: 'recent', badgeClass: 'recent',
+                   audio: r.audio, txt: r.txt });
+  }
+
+  // Known tracks (hardcoded)
+  for (const [key, t] of Object.entries(KNOWN_TRACKS)) {
+    const title = t.title || key;
+    if (fuzzyMatch(q, title) || fuzzyMatch(q, key)) {
+      const audio = t.audio || inferPaired(t.txt  || key, '.mp3');
+      const txt   = t.txt   || inferPaired(t.audio || key, '.txt');
+      items.push({ title, badge: 'known', badgeClass: 'known', audio, txt });
+    }
+  }
+
+  // Files from cached directories
+  for (const dir of _dirCache) {
+    if (!dir.permitted) continue;
+    // Pair audio + txt by filename stem
+    const stems = {};
+    for (const f of dir.files) {
+      const isAudio = /\.(mp3|ogg|wav|flac|m4a)$/i.test(f.name);
+      const isTxt   = /\.txt$/i.test(f.name);
+      if (!isAudio && !isTxt) continue;
+      const stem = f.name.replace(/\.[^/.]+$/, '');
+      if (!stems[stem]) stems[stem] = {};
+      if (isAudio) stems[stem].audio = f.handle;
+      else         stems[stem].txt   = f.handle;
+    }
+    for (const [stem, pair] of Object.entries(stems)) {
+      if (!pair.audio) continue;   // skip txt-only entries
+      const title = `${dir.name} / ${stem.replace(/[_\-]+/g, ' ')}`;
+      if (fuzzyMatch(q, stem) || fuzzyMatch(q, dir.name))
+        items.push({ title, badge: 'dir', badgeClass: 'dir',
+                     audio: pair.audio || null, txt: pair.txt || null });
+    }
+  }
+
+  return items;
+}
+
+function mkResult(title, badge, badgeClass, onClick) {
+  const el = document.createElement('div');
+  el.className = 'result-item';
+  const sp = document.createElement('span'); sp.className = 'ri-title'; sp.textContent = title;
+  const bd = document.createElement('span'); bd.className = `ri-badge ${badgeClass}`; bd.textContent = badge;
+  el.appendChild(sp); el.appendChild(bd);
+  el.addEventListener('click', onClick);
+  return el;
+}
+
+async function activateResult(audioSrc, txtSrc, title) {
+  closeModal();
+  await loadTrack(audioSrc, txtSrc, title);
+  // Persist URL-based sources to recents
+  if (typeof audioSrc === 'string' || typeof txtSrc === 'string')
+    addRecent({ title,
+                audio: typeof audioSrc === 'string' ? audioSrc : null,
+                txt:   typeof txtSrc   === 'string' ? txtSrc   : null });
+}
+
+function renderResults(items) {
+  const c = document.getElementById('unified-results');
+  c.innerHTML = '';
+  if (!items.length) {
+    const h = document.createElement('div');
+    h.className = 'hint';
+    h.style.cssText = 'padding:16px;text-align:center;color:#4a4a80';
+    h.textContent = 'No tracks found. Open a directory or add entries to KNOWN_TRACKS.';
+    c.appendChild(h);
+    return;
+  }
+  for (const item of items)
+    c.appendChild(mkResult(item.title, item.badge, item.badgeClass,
+                            () => activateResult(item.audio, item.txt, item.title)));
+}
+
+async function refreshResults() {
+  const seq = ++_searchSeq;
+  const q   = document.getElementById('search-input').value;
+  await Promise.resolve();   // yield so rapid typing doesn't pile up
+  if (seq !== _searchSeq) return;
+  renderResults(gatherResults(q));
+}
+
+// ── Clear caches ──────────────────────────────────────────────────────────────
+async function clearAllCaches() {
+  try { await dbClear('dir_handles'); } catch {}
+  localStorage.removeItem(RECENTS_KEY);
+  _dirCache = [];
+  renderDirList();
+  refreshResults();
+}
+
+// ── Dir list in Files tab ─────────────────────────────────────────────────────
+function renderDirList() {
+  const el = document.getElementById('dir-list');
+  el.innerHTML = '';
+  for (const dir of _dirCache) {
+    const row    = document.createElement('div');
+    row.className = 'dir-entry';
+    const nameEl = document.createElement('span'); nameEl.className = 'dir-name'; nameEl.textContent = dir.name;
+    row.appendChild(nameEl);
+
+    if (!dir.permitted) {
+      const btn = document.createElement('button');
+      btn.textContent = 'Grant';
+      btn.addEventListener('click', async () => {
+        if (await fsRequestPerm(dir.dirHandle)) {
+          dir.files     = await fsEnumDir(dir.dirHandle);
+          dir.permitted = true;
+          renderDirList();
+          refreshResults();
+        }
+      });
+      row.appendChild(btn);
+    } else {
+      const cnt = document.createElement('span');
+      cnt.className = 'dir-perm';
+      const n = dir.files.filter(f => /\.(mp3|ogg|wav|flac|m4a)$/i.test(f.name)).length;
+      cnt.textContent = `${n} audio file${n !== 1 ? 's' : ''}`;
+      row.appendChild(cnt);
+    }
+
+    const rm = document.createElement('button');
+    rm.textContent = '\u2715'; rm.title = 'Remove';
+    rm.addEventListener('click', async () => {
+      try { await dbDelete('dir_handles', dir.id); } catch {}
+      _dirCache = _dirCache.filter(d => d !== dir);
+      renderDirList();
+      refreshResults();
+    });
+    row.appendChild(rm);
+    el.appendChild(row);
+  }
+}
+
+// ── Modal open / close ────────────────────────────────────────────────────────
+async function openModal() {
+  document.getElementById('modal-overlay').classList.add('open');
+  await rebuildDirCache();
+  renderDirList();
+  const si = document.getElementById('search-input');
+  si.focus();
+  renderResults(gatherResults(si.value));
+}
+
+function closeModal() {
+  document.getElementById('modal-overlay').classList.remove('open');
+}
+
+document.getElementById('load-btn').addEventListener('click', openModal);
+document.getElementById('modal-close').addEventListener('click', closeModal);
+document.getElementById('modal-overlay').addEventListener('click', e => {
+  if (e.target === document.getElementById('modal-overlay')) closeModal();
+});
+
+// Tab switching
+document.querySelectorAll('.tab-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const tab = btn.dataset.tab;
+    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+    document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+    btn.classList.add('active');
+    document.getElementById('tab-' + tab).classList.add('active');
+  });
+});
+
+// Search input drives unified results
+document.getElementById('search-input').addEventListener('input', refreshResults);
+
+// Clear caches button
+document.getElementById('clear-cache-btn').addEventListener('click', clearAllCaches);
+
+// FSA: directory picker
+if (HAS_FSA_DIR) {
+  document.getElementById('open-dir-btn').addEventListener('click', async () => {
+    const handle = await fsPickDir();
+    if (!handle) return;
+    try { await dbAdd('dir_handles', { handle }); } catch {}
+    await rebuildDirCache();
+    renderDirList();
+    refreshResults();
+  });
+} else {
+  document.getElementById('open-dir-btn').style.display = 'none';
+}
+
+// FSA: file picker
+if (HAS_FSA) {
+  document.getElementById('open-files-btn').addEventListener('click', async () => {
+    const handles = await fsPickFiles();
+    if (!handles.length) return;
+    let audioHandle = null, txtHandle = null;
+    for (const h of handles) {
+      if (/\.(mp3|ogg|wav|flac|m4a)$/i.test(h.name)) audioHandle = h;
+      if (/\.txt$/i.test(h.name))                     txtHandle   = h;
+    }
+    const src   = audioHandle || txtHandle;
+    const title = src.name.replace(/\.[^/.]+$/, '').replace(/[_\-]+/g, ' ');
+    activateResult(audioHandle, txtHandle, title);
+  });
+} else {
+  document.getElementById('open-files-btn').style.display = 'none';
+}
+
+// Show hint if FSA completely unavailable
+if (!HAS_FSA && !HAS_FSA_DIR) {
+  const hint = document.createElement('div');
+  hint.className = 'hint';
+  hint.style.marginBottom = '8px';
+  hint.textContent = 'File System Access API not available in this browser. Use the file inputs below.';
+  document.getElementById('fsa-controls').appendChild(hint);
+}
+
+// Fallback file inputs
+document.getElementById('file-load-btn').addEventListener('click', async () => {
+  const audioFile = document.getElementById('audio-file-input').files[0] || null;
+  const txtFile   = document.getElementById('txt-file-input').files[0]   || null;
+  const statusEl  = document.getElementById('file-status');
+
+  if (!audioFile && !txtFile) {
+    statusEl.innerHTML = '<div class="emsg">Please select at least one file.</div>';
+    return;
+  }
+
+  const src   = audioFile || txtFile;
+  const title = src.name.replace(/\.[^/.]+$/, '').replace(/[_\-]+/g, ' ');
+
+  statusEl.innerHTML = '<div class="smsg">Loading\u2026</div>';
+  await loadTrack(audioFile, txtFile, title);
+  closeModal();
+});
+
+// Remote search (placeholder)
+document.getElementById('remote-search-btn').addEventListener('click', () => {
+  const query  = document.getElementById('search-input').value.trim();
+  const server = document.getElementById('remote-server').value.trim();
+  document.getElementById('remote-results').innerHTML =
+    `<div class="hint">Remote query not yet implemented.<br>Would search: <b>${server || '(no server)'}</b> for <b>${query || '(empty)'}</b></div>`;
+});
+
+// ── Resize observer ───────────────────────────────────────────────────────────
+const ro = new ResizeObserver(() => { drawSections(); drawLyrics(); });
+ro.observe(document.getElementById('sections-wrap'));
+ro.observe(document.getElementById('lyrics-area'));
+
+// ── Start ─────────────────────────────────────────────────────────────────────
+dbOpen().catch(e => console.warn('IndexedDB unavailable:', e));
+startLoop();
+</script>
+</body>
+</html>
