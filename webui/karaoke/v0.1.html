@@ -342,6 +342,11 @@ let audio       = null;
 let animId      = null;
 let audioObjUrl = null;   // URL.createObjectURL blob URL to revoke on next load
 let zoomLevel   = 0;      // 0 = normal, 1 = large
+let audioReady  = false;  // true once canplaythrough fires (VBR timing is accurate)
+let debugMode   = false;
+let debugTaps   = [];     // [{t: currentTime, wall: Date.now()}]
+let playStartWall = null; // performance.now() when play() was called
+let playStartCT   = null; // audio.currentTime when play() was called
         
 // ── Timeseries parser ────────────────────────────────────────────────────────
 function parseTimeseries(text) {
@@ -657,6 +662,70 @@ function drawLyrics() {
     ctx.lineTo(GUTTER_W, H);
     ctx.stroke();
   }
+
+  // ── Debug overlay ─────────────────────────────────────────────────────────
+  if (debugMode) {
+    const pad  = 10 * dpr;
+    const fs   = 14 * dpr;
+    ctx.font         = `bold ${fs}px monospace`;
+    ctx.textBaseline = 'top';
+    ctx.textAlign    = 'left';
+
+    // High-precision currentTime
+    const tStr = audio ? audio.currentTime.toFixed(3) : '—';
+    ctx.fillStyle = 'rgba(0,0,0,0.6)';
+    ctx.fillRect(pad - 4*dpr, pad - 2*dpr, ctx.measureText('t= ' + tStr).width + 8*dpr, fs + 8*dpr);
+    ctx.fillStyle = '#ffff00';
+    ctx.fillText('t= ' + tStr, pad, pad);
+
+    // Wall-clock vs currentTime drift
+    if (playStartWall !== null) {
+      const wallElapsed = (performance.now() - playStartWall) / 1000;
+      const ctElapsed   = now - playStartCT;
+      const drift       = ctElapsed - wallElapsed;  // +ve = currentTime running fast
+      const wStr = `wall=${wallElapsed.toFixed(3)}  ct=${ctElapsed.toFixed(3)}  drift=${drift.toFixed(3)}`;
+      const wY   = pad + fs + 10*dpr;
+      ctx.fillStyle = 'rgba(0,0,0,0.6)';
+      ctx.fillRect(pad - 4*dpr, wY - 2*dpr, ctx.measureText(wStr).width + 8*dpr, fs + 8*dpr);
+      ctx.fillStyle = Math.abs(drift) > 0.1 ? '#ff6060' : '#60ff60';
+      ctx.fillText(wStr, pad, wY);
+    }
+
+    // Active lyric t_start for comparison
+    if (i >= 0 && lyrics[i]) {
+      const lStr = `lyric[${i}].t_start= ${lyrics[i].t_start.toFixed(3)}  diff= ${(now - lyrics[i].t_start).toFixed(3)}`;
+      const lY   = pad + (fs + 10*dpr) * 2;
+      ctx.fillStyle = 'rgba(0,0,0,0.6)';
+      ctx.fillRect(pad - 4*dpr, lY - 2*dpr, ctx.measureText(lStr).width + 8*dpr, fs + 8*dpr);
+      ctx.fillStyle = '#00ffcc';
+      ctx.fillText(lStr, pad, lY);
+    }
+
+    // Tap log (last 5)
+    const tapStart = pad + (fs + 10*dpr) * 3;
+    ctx.font = `${12 * dpr}px monospace`;
+    for (let k = Math.max(0, debugTaps.length - 5); k < debugTaps.length; k++) {
+      const tap  = debugTaps[k];
+      const tY   = tapStart + (k - Math.max(0, debugTaps.length - 5)) * (13 * dpr);
+      const near = lyrics.reduce((best, lyr, idx) =>
+        Math.abs(lyr.t_start - tap.t) < Math.abs(best.d) ? { d: lyr.t_start - tap.t, idx } : best,
+        { d: Infinity, idx: -1 });
+      const nearStr = near.idx >= 0
+        ? `  → nearest lyric[${near.idx}] t_start=${lyrics[near.idx].t_start.toFixed(3)} delta=${near.d.toFixed(3)}s`
+        : '';
+      const tapStr = `TAP ${k+1}: t=${tap.t.toFixed(3)}${nearStr}`;
+      ctx.fillStyle = 'rgba(0,0,0,0.6)';
+      ctx.fillRect(pad - 4*dpr, tY - 1*dpr, ctx.measureText(tapStr).width + 8*dpr, 13*dpr + 4*dpr);
+      ctx.fillStyle = '#ffaa00';
+      ctx.fillText(tapStr, pad, tY);
+    }
+
+    // Instructions
+    ctx.font      = `${11 * dpr}px monospace`;
+    ctx.fillStyle = 'rgba(200,200,200,0.7)';
+    ctx.textAlign = 'right';
+    ctx.fillText('D=debug off  T=tap', W - pad, pad);
+  }
 }
 
 // ── Animation loop ────────────────────────────────────────────────────────────
@@ -676,7 +745,7 @@ function stopLoop()  { if (animId) { cancelAnimationFrame(animId); animId = null
 // Track loaded, playing: play disabled, stop enabled
 function updateButtonState() {
   const isPlaying = audio !== null && !audio.paused;
-  document.getElementById('play-btn').disabled = audio === null || isPlaying;
+  document.getElementById('play-btn').disabled = audio === null || !audioReady || isPlaying;
   document.getElementById('stop-btn').disabled = audio === null || !isPlaying;
   document.getElementById('mute-btn').disabled = audio === null;
 }
@@ -691,16 +760,27 @@ function initAudio(url, title) {
 
   if (!url) {
     audio = null;
+    audioReady = false;
     updateButtonState();
     startLoop();
     return;
   }
 
+  audioReady = false;
   audio = new Audio(url);
+  audio.preload = 'auto';
   audio.addEventListener('loadedmetadata', () => { state.duration = audio.duration; });
-  audio.addEventListener('play',  updateButtonState);
-  audio.addEventListener('pause', updateButtonState);
-  audio.addEventListener('ended', updateButtonState);
+  audio.addEventListener('canplaythrough', () => {
+    audioReady = true;
+    updateButtonState();
+  }, { once: true });
+  audio.addEventListener('play',  () => {
+    playStartWall = performance.now();
+    playStartCT   = audio.currentTime;
+    updateButtonState();
+  });
+  audio.addEventListener('pause', () => { playStartWall = null; updateButtonState(); });
+  audio.addEventListener('ended', () => { playStartWall = null; updateButtonState(); });
   audio.addEventListener('error', e => {
     if (e.target !== audio) return;   // stale event from a replaced/discarded element
     const err = e.target.error;
@@ -817,6 +897,15 @@ document.addEventListener('keydown', e => {
     _toggleFullscreen();
   } else if (e.key === 'z' || e.key === 'Z') {
     _zoomBtn.click();
+  } else if (e.key === 'd' || e.key === 'D') {
+    debugMode = !debugMode;
+    if (!debugMode) debugTaps = [];
+  } else if (e.key === 't' || e.key === 'T') {
+    if (audio && !audio.paused) {
+      const tap = { t: audio.currentTime, wall: Date.now() };
+      debugTaps.push(tap);
+      console.log(`[tap] currentTime=${tap.t.toFixed(3)}`);
+    }
   } else if (e.key === 'Escape') {
     closeModal();
   }
