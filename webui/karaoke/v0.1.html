@@ -201,13 +201,13 @@ body {
 
 <!-- ── Toolbar ──────────────────────────────────────────────────────────────── -->
 <div id="toolbar">
-  <button id="fullscreen-btn">&#x26F6;</button>
-  <button id="zoom-btn">ZOOM</button>
-  <button id="load-btn">LOAD</button>
+  <button id="load-btn" title="Load a track">LOAD</button>
+  <button id="play-btn"  disabled title="Play current track">&#9654;</button>
+  <button id="stop-btn"  disabled title="Stop playing">&#9209;</button>
   <span id="track-title">No track loaded</span>
-  <button id="play-btn"  disabled>&#9654; PLAY</button>
-  <button id="stop-btn"  disabled>&#9209; STOP</button>
-  <button id="mute-btn"  disabled>&#128266; MUTE</button>
+  <button id="mute-btn"  disabled title="Mute track without stopping">&#128266;</button>
+  <button id="zoom-btn" title="Toggle zoom levels"> &#x1F50D</button>
+  <button id="fullscreen-btn" title="Fullscreen mode">&#x26F6;</button>
 </div>
 
 <!-- ── Sections strip ───────────────────────────────────────────────────────── -->
@@ -334,7 +334,8 @@ let audio       = null;
 let animId      = null;
 let audioObjUrl = null;   // URL.createObjectURL blob URL to revoke on next load
 let zoomLevel   = 0;      // 0 = normal, 1 = large
-
+let PLAY_CHAR = '\u25B6';
+        
 // ── Timeseries parser ────────────────────────────────────────────────────────
 function parseTimeseries(text) {
   const lyrics   = [];
@@ -680,7 +681,7 @@ function initAudio(url, title) {
   audio = new Audio(url);
   audio.addEventListener('loadedmetadata', () => { state.duration = audio.duration; });
   audio.addEventListener('ended', () => {
-    document.getElementById('play-btn').textContent = '\u25B6 PLAY';
+    document.getElementById('play-btn').textContent = PLAY_CHAR;
     document.getElementById('play-btn').classList.remove('active');
   });
   audio.addEventListener('error', e => {
@@ -744,14 +745,14 @@ document.getElementById('play-btn').addEventListener('click', () => {
   if (audio.paused) {
     audio.play().catch(e => {
       console.error('Play failed:', e);
-      document.getElementById('play-btn').textContent = '\u25B6 PLAY';
+      document.getElementById('play-btn').textContent = PLAY_CHAR;
       document.getElementById('play-btn').classList.remove('active');
     });
-    document.getElementById('play-btn').textContent = '\u23F8 PAUSE';
+    document.getElementById('play-btn').textContent = '\u23F8';
     document.getElementById('play-btn').classList.add('active');
   } else {
     audio.pause();
-    document.getElementById('play-btn').textContent = '\u25B6 PLAY';
+    document.getElementById('play-btn').textContent = PLAY_CHAR;
     document.getElementById('play-btn').classList.remove('active');
   }
 });
@@ -759,7 +760,7 @@ document.getElementById('play-btn').addEventListener('click', () => {
 document.getElementById('stop-btn').addEventListener('click', () => {
   if (!audio) return;
   audio.pause();
-  document.getElementById('play-btn').textContent = '\u25B6 PLAY';
+  document.getElementById('play-btn').textContent = PLAY_CHAR;
   document.getElementById('play-btn').classList.remove('active');
 });
 
