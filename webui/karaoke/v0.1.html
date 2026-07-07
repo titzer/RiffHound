@@ -42,6 +42,14 @@ body {
   white-space: nowrap;
   transition: background 0.1s;
 }
+#play-btn, #stop-btn {
+  height: 44px;
+  padding-top: 0;
+  padding-bottom: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
 #toolbar button:hover:not(:disabled) { background: #3a3a6a; }
 #toolbar button:disabled { opacity: 0.4; cursor: default; }
 #toolbar button.active { background: #4a4a9a; color: #fff; border-color: #6060c0; }
@@ -334,7 +342,6 @@ let audio       = null;
 let animId      = null;
 let audioObjUrl = null;   // URL.createObjectURL blob URL to revoke on next load
 let zoomLevel   = 0;      // 0 = normal, 1 = large
-let PLAY_CHAR = '\u25B6';
         
 // ── Timeseries parser ────────────────────────────────────────────────────────
 function parseTimeseries(text) {
@@ -663,6 +670,17 @@ function frame() {
 function startLoop() { if (!animId) animId = requestAnimationFrame(frame); }
 function stopLoop()  { if (animId) { cancelAnimationFrame(animId); animId = null; } }
 
+// ── Button state machine ──────────────────────────────────────────────────────
+// No track: play disabled, stop disabled
+// Track loaded, paused: play enabled, stop disabled
+// Track loaded, playing: play disabled, stop enabled
+function updateButtonState() {
+  const isPlaying = audio !== null && !audio.paused;
+  document.getElementById('play-btn').disabled = audio === null || isPlaying;
+  document.getElementById('stop-btn').disabled = audio === null || !isPlaying;
+  document.getElementById('mute-btn').disabled = audio === null;
+}
+
 // ── Audio initialisation ──────────────────────────────────────────────────────
 function initAudio(url, title) {
   if (audio) { audio.pause(); audio.src = ''; }
@@ -671,19 +689,18 @@ function initAudio(url, title) {
   state.title = title || 'Unknown Track';
   document.getElementById('track-title').textContent = state.title;
 
-  const noAudio = !url;
-  document.getElementById('play-btn').disabled = noAudio;
-  document.getElementById('stop-btn').disabled = noAudio;
-  document.getElementById('mute-btn').disabled = noAudio;
-
-  if (noAudio) { startLoop(); return; }
+  if (!url) {
+    audio = null;
+    updateButtonState();
+    startLoop();
+    return;
+  }
 
   audio = new Audio(url);
   audio.addEventListener('loadedmetadata', () => { state.duration = audio.duration; });
-  audio.addEventListener('ended', () => {
-    document.getElementById('play-btn').textContent = PLAY_CHAR;
-    document.getElementById('play-btn').classList.remove('active');
-  });
+  audio.addEventListener('play',  updateButtonState);
+  audio.addEventListener('pause', updateButtonState);
+  audio.addEventListener('ended', updateButtonState);
   audio.addEventListener('error', e => {
     if (e.target !== audio) return;   // stale event from a replaced/discarded element
     const err = e.target.error;
@@ -692,6 +709,7 @@ function initAudio(url, title) {
     document.getElementById('track-title').textContent = '\u26A0 ' + msg;
   });
 
+  updateButtonState();
   startLoop();
 }
 
@@ -742,26 +760,12 @@ async function loadTrack(audioSrc, txtSrc, title) {
 // ── Playback controls ─────────────────────────────────────────────────────────
 document.getElementById('play-btn').addEventListener('click', () => {
   if (!audio) return;
-  if (audio.paused) {
-    audio.play().catch(e => {
-      console.error('Play failed:', e);
-      document.getElementById('play-btn').textContent = PLAY_CHAR;
-      document.getElementById('play-btn').classList.remove('active');
-    });
-    document.getElementById('play-btn').textContent = '\u23F8';
-    document.getElementById('play-btn').classList.add('active');
-  } else {
-    audio.pause();
-    document.getElementById('play-btn').textContent = PLAY_CHAR;
-    document.getElementById('play-btn').classList.remove('active');
-  }
+  audio.play().catch(e => console.error('Play failed:', e));
 });
 
 document.getElementById('stop-btn').addEventListener('click', () => {
   if (!audio) return;
   audio.pause();
-  document.getElementById('play-btn').textContent = PLAY_CHAR;
-  document.getElementById('play-btn').classList.remove('active');
 });
 
 document.getElementById('mute-btn').addEventListener('click', () => {
@@ -801,7 +805,9 @@ document.addEventListener('keydown', e => {
   if (e.target.tagName === 'INPUT') return;
   if (e.key === ' ') {
     e.preventDefault();
-    document.getElementById(audio && !audio.paused ? 'stop-btn' : 'play-btn').click();
+    if (!audio) return;
+    if (audio.paused) audio.play().catch(e => console.error('Play failed:', e));
+    else audio.pause();
   } else if (e.key === 'l' || e.key === 'L') {
     e.preventDefault();
     openModal();
