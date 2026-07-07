@@ -1,0 +1,53 @@
+                                                                                                                                                                                         
+⏺ Here's a breakdown of the key differences explaining the performance gap:                                                                                                               
+                                                                                                                                                                                          
+  1. Staggering difference in workload                                                                                                                                                    
+                                                                                                                                                                                          
+  ┌─────────────┬──────────────────┬────────────────┬────────────────┐                                                                                                                    
+  │  Parameter  │ beatmapper (C++) │ v0.3.html (JS) │     Ratio      │                                                                                                                    
+  ├─────────────┼──────────────────┼────────────────┼────────────────┤                                                                                                                    
+  │ FFT size    │ 2048             │ 8192           │ 4× bigger      │
+  ├─────────────┼──────────────────┼────────────────┼────────────────┤                                                                                                                    
+  │ Hop size    │ 512              │ 128            │ 4× more frames │                                                                                                                    
+  ├─────────────┼──────────────────┼────────────────┼────────────────┤                                                                                                                    
+  │ Channels    │ mono             │ stereo         │ 2×             │                                                                                                                    
+  ├─────────────┼──────────────────┼────────────────┼────────────────┤
+  │ Columns cap │ 8192             │ 50000          │ 6× more        │
+  └─────────────┴──────────────────┴────────────────┴────────────────┘
+
+  For a 3-minute song at 44100 Hz:
+  - C++: ~15,500 frames → capped to 8,192 FFTs of size 2048
+  - JS: ~62,000 frames, stereo → ~124,000 FFTs of size 8192
+
+  That's roughly 60–70× more total FFT work before accounting for language speed.
+
+  2. Language speed
+
+  The C++ FFT runs as compiled native code on the CPU — even without precomputed twiddles (it recomputes cosf/sinf per stage). The JS version runs in a Worker — still
+  interpreted/JIT-compiled JavaScript. For tight inner loops like FFT butterfly stages, native C is easily 10–50× faster per operation.
+
+  Combined with the 60–70× more work: the total wall-clock difference is in the range of 600–3000×.
+
+  3. Rendering architecture
+
+  beatmapper: Computes once, uploads a single RGBA GPU texture, renders it in one dl->AddImage() call. GPU hardware handles all bilinear interpolation. Zero per-frame CPU work.
+
+  v0.3.html: On every animation frame, drawSpectrogram() runs a full nested w × h pixel loop in JS, calling sampleSpec() (bilinear interpolation in JS) for each pixel. So the canvas is
+  slow to paint even after the FFT is done.
+
+  4. Async yield overhead
+
+  The JS worker does await new Promise(r => setTimeout(r, 0)) every 64 frames to keep the page responsive. Each setTimeout round-trip is ~4ms minimum, so for 62,000 frames that's ~3,800
+  yields → adds ~15 seconds of forced idle time on top of compute time.
+
+  What would help
+
+  In rough order of impact:
+  1. Increase hop size (e.g. 512 or 1024) — reduces frame count 4–8×, biggest win
+  2. Decrease FFT size to match beatmapper's 2048 — less frequency resolution but 4× faster per FFT
+  3. Move rendering to a pre-built ImageData / OffscreenCanvas — compute once, blit on draw instead of per-pixel JS loop each frame
+  4. Reduce setTimeout yield frequency — every 512 or 1024 frames instead of 64
+  5. Use the PFFFT wasm engine for FFTs — likely 2–5× faster than the JS engine at equivalent sizes
+
+  The beatmapper's "almost instant" feel comes down to: 70× less data × 10–50× faster language × zero per-frame rendering cost.
+

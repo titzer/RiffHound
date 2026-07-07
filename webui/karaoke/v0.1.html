@@ -58,19 +58,11 @@ body {
   padding: 0 8px;
 }
 
-#time-display {
-  font-size: 20px;
-  color: #6060a0;
-  white-space: nowrap;
-  font-family: monospace;
-  min-width: 130px;
-  text-align: right;
-}
 
 /* ── Sections strip ──────────────────────────────────────────────────────── */
 #sections-wrap {
-  height: 120px;
-  min-height: 120px;
+  height: 50px;
+  min-height: 50px;
   flex-shrink: 0;
   background: #12122a;
   border-bottom: 1px solid #2a2a4a;
@@ -209,12 +201,13 @@ body {
 
 <!-- ── Toolbar ──────────────────────────────────────────────────────────────── -->
 <div id="toolbar">
+  <button id="fullscreen-btn">&#x26F6;</button>
+  <button id="zoom-btn">ZOOM</button>
   <button id="load-btn">LOAD</button>
   <span id="track-title">No track loaded</span>
   <button id="play-btn"  disabled>&#9654; PLAY</button>
   <button id="stop-btn"  disabled>&#9209; STOP</button>
   <button id="mute-btn"  disabled>&#128266; MUTE</button>
-  <span   id="time-display">0:00 / 0:00</span>
 </div>
 
 <!-- ── Sections strip ───────────────────────────────────────────────────────── -->
@@ -340,6 +333,7 @@ const state = {
 let audio       = null;
 let animId      = null;
 let audioObjUrl = null;   // URL.createObjectURL blob URL to revoke on next load
+let zoomLevel   = 0;      // 0 = normal, 1 = large
 
 // ── Timeseries parser ────────────────────────────────────────────────────────
 function parseTimeseries(text) {
@@ -455,7 +449,7 @@ function drawSections() {
     ctx.fillStyle    = 'rgba(255,255,255,0.9)';
     ctx.textBaseline = 'top';
     ctx.textAlign    = 'left';
-    ctx.fillText(label, x0 + 5 * dpr, 5 * dpr, w - 10 * dpr);
+    ctx.fillText(label, x0 + 5 * dpr, 19 * dpr, w - 10 * dpr);
   }
 
   // Lyric marks — small rects spanning the bottom third of the bar
@@ -506,6 +500,24 @@ function drawSections() {
   ctx.lineTo(px, ts * 1.5);
   ctx.closePath();
   ctx.fill();
+
+  // Current time — floats beside the playhead, flips left when near right edge
+  const curStr  = formatTime(now);
+  const pad     = 5 * dpr;
+  ctx.font      = `bold ${10 * dpr}px monospace`;
+  ctx.fillStyle = 'rgba(255,255,255,0.95)';
+  ctx.textBaseline = 'top';
+  const curW    = ctx.measureText(curStr).width;
+  const curX    = (px + pad + curW < W - pad) ? px + pad : px - pad - curW;
+  ctx.textAlign = 'left';
+  ctx.fillText(curStr, curX, pad);
+
+  // Track duration — pinned to top-right
+  const durStr  = formatTime(dur);
+  ctx.font      = `${10 * dpr}px monospace`;
+  ctx.fillStyle = 'rgba(255,255,255,0.45)';
+  ctx.textAlign = 'right';
+  ctx.fillText(durStr, W - pad, pad);
 }
 
 function tickStep(dur) {
@@ -540,17 +552,27 @@ function drawLyrics() {
     return;
   }
 
-  const LINE_H = 62 * dpr;
-  const FONT_N = 38 * dpr;   // normal lyric size
-  const FONT_H = 42 * dpr;   // highlighted (current) lyric size
+  // Layout parameters — vary by zoom level
+  let LINE_H, FONT_N, FONT_H, GUTTER_W, TEXT_X, TEXT_W;
+  if (zoomLevel === 1) {
+    // Large: fill width, ~5 lines visible (LINE_H ≈ H/5)
+    LINE_H   = Math.round(H / 5);
+    FONT_N   = Math.round(LINE_H * 0.62);
+    FONT_H   = Math.round(LINE_H * 0.70);
+    GUTTER_W = 0;
+    TEXT_X   = Math.round(20 * dpr);
+    TEXT_W   = W - Math.round(40 * dpr);
+  } else {
+    LINE_H   = Math.round(62 * dpr);
+    FONT_N   = Math.round(38 * dpr);
+    FONT_H   = Math.round(42 * dpr);
+    GUTTER_W = Math.round(W * 0.25);
+    TEXT_X   = GUTTER_W + Math.round(10 * dpr);
+    TEXT_W   = W - GUTTER_W - Math.round(20 * dpr);
+  }
 
   // Highlight line sits 2.5 line-heights from the top, so 2 past lines show above it
   const HIGHLIGHT_Y = 2.5 * LINE_H;
-
-  // Left 25% reserved for timestamps (currently empty)
-  const GUTTER_W = Math.round(W * 0.25);
-  const TEXT_X   = GUTTER_W + 10 * dpr;
-  const TEXT_W   = W - GUTTER_W - 20 * dpr;
 
   // ── Find current lyric index (last with t_start ≤ now) ──────────────────
   let i = -1;
@@ -618,24 +640,21 @@ function drawLyrics() {
     ctx.fillText(lyrics[j].text, TEXT_X, y, TEXT_W);
   }
 
-  // ── Gutter separator ─────────────────────────────────────────────────────
-  ctx.strokeStyle = 'rgba(255,255,255,0.06)';
-  ctx.lineWidth   = 1;
-  ctx.beginPath();
-  ctx.moveTo(GUTTER_W, 0);
-  ctx.lineTo(GUTTER_W, H);
-  ctx.stroke();
+  // ── Gutter separator (normal mode only) ──────────────────────────────────
+  if (GUTTER_W > 0) {
+    ctx.strokeStyle = 'rgba(255,255,255,0.06)';
+    ctx.lineWidth   = 1;
+    ctx.beginPath();
+    ctx.moveTo(GUTTER_W, 0);
+    ctx.lineTo(GUTTER_W, H);
+    ctx.stroke();
+  }
 }
 
 // ── Animation loop ────────────────────────────────────────────────────────────
 function frame() {
   drawSections();
   drawLyrics();
-
-  const cur = audio ? audio.currentTime : 0;
-  const dur = audio && isFinite(audio.duration) ? audio.duration : 0;
-  document.getElementById('time-display').textContent =
-    formatTime(cur) + ' / ' + formatTime(dur);
 
   animId = requestAnimationFrame(frame);
 }
@@ -740,7 +759,6 @@ document.getElementById('play-btn').addEventListener('click', () => {
 document.getElementById('stop-btn').addEventListener('click', () => {
   if (!audio) return;
   audio.pause();
-  audio.currentTime = 0;
   document.getElementById('play-btn').textContent = '\u25B6 PLAY';
   document.getElementById('play-btn').classList.remove('active');
 });
@@ -750,6 +768,31 @@ document.getElementById('mute-btn').addEventListener('click', () => {
   audio.muted = !audio.muted;
   document.getElementById('mute-btn').textContent = audio.muted ? '\uD83D\uDD07 MUTED' : '\uD83D\uDD0A MUTE';
   document.getElementById('mute-btn').classList.toggle('active', audio.muted);
+});
+
+// Fullscreen
+const _fsBtn = document.getElementById('fullscreen-btn');
+function _toggleFullscreen() {
+  if (document.fullscreenElement || document.webkitFullscreenElement) {
+    (document.exitFullscreen || document.webkitExitFullscreen).call(document);
+  } else {
+    const el = document.documentElement;
+    (el.requestFullscreen || el.webkitRequestFullscreen).call(el);
+  }
+}
+function _updateFsBtn() {
+  const inFs = !!(document.fullscreenElement || document.webkitFullscreenElement);
+  _fsBtn.classList.toggle('active', inFs);
+}
+_fsBtn.addEventListener('click', _toggleFullscreen);
+document.addEventListener('fullscreenchange',       _updateFsBtn);
+document.addEventListener('webkitfullscreenchange', _updateFsBtn);
+
+// Zoom
+const _zoomBtn = document.getElementById('zoom-btn');
+_zoomBtn.addEventListener('click', () => {
+  zoomLevel = zoomLevel === 0 ? 1 : 0;
+  _zoomBtn.classList.toggle('active', zoomLevel === 1);
 });
 
 // Keyboard shortcuts
@@ -763,6 +806,10 @@ document.addEventListener('keydown', e => {
     openModal();
   } else if (e.key === 'm' || e.key === 'M') {
     document.getElementById('mute-btn').click();
+  } else if (e.key === 'f' || e.key === 'F') {
+    _toggleFullscreen();
+  } else if (e.key === 'z' || e.key === 'Z') {
+    _zoomBtn.click();
   } else if (e.key === 'Escape') {
     closeModal();
   }
@@ -903,8 +950,8 @@ function scanInputFiles(fileList) {
   const pairs = [];
   for (const [stem, pair] of Object.entries(stems)) {
     if (!pair.audioFile || !pair.txtFile) continue;
-    const displayStem = stem.replace(/\//g, ' \u203A ').replace(/[_\-]+/g, ' ');
-    pairs.push({ stem, title: `${dirName} / ${displayStem}`,
+    const leaf  = stem.includes('/') ? stem.split('/').pop() : stem;
+    pairs.push({ stem, title: leaf.replace(/[_\-]+/g, ' '),
                  audioFile: pair.audioFile, txtFile: pair.txtFile });
   }
   pairs.sort((a, b) => a.stem.localeCompare(b.stem));
@@ -918,9 +965,12 @@ async function rebuildDirCache() {
   let rows;
   try { rows = await dbGetAll('dir_handles'); } catch { return; }
   for (const row of rows) {
-    const h         = row.handle;
-    const permitted = await fsCheckPerm(h);
-    const files     = permitted ? await fsEnumDir(h) : [];
+    const h = row.handle;
+    // queryPermission first; if not already granted, request it now
+    // (safe because rebuildDirCache is always called inside a user-gesture chain)
+    let permitted = await fsCheckPerm(h);
+    if (!permitted) permitted = await fsRequestPerm(h);
+    const files = permitted ? await fsEnumDir(h) : [];
     _dirCache.push({ id: row.id, name: h.name, dirHandle: h, files, permitted });
   }
 }
@@ -973,7 +1023,7 @@ function gatherResults(query) {
     }
     for (const [stem, pair] of Object.entries(stems)) {
       if (!pair.audio) continue;   // skip txt-only entries
-      const title = `${dir.name} / ${stem.replace(/[_\-]+/g, ' ')}`;
+      const title = stem.replace(/[_\-]+/g, ' ');
       if (fuzzyMatch(q, stem) || fuzzyMatch(q, dir.name))
         items.push({ title, badge: 'dir', badgeClass: 'dir',
                      audio: pair.audio || null, txt: pair.txt || null });
