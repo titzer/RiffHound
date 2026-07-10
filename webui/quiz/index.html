@@ -43,7 +43,8 @@
   <h2 style="margin:0;">Music Quiz</h2>
   <button id="noteQuizBtn" class="mode-btn active-mode">Note Quiz</button>
   <button id="keyQuizBtn"  class="mode-btn">Key Quiz</button>
-  <span style="color:#bbb; margin:0 2px;">|</span>
+  <button id="rhythmQuizBtn" class="mode-btn">Rhythm</button>
+  <span id="modalitySep" style="color:#bbb; margin:0 2px;">|</span>
   <button id="sheetBtn" class="modality-btn active-mode">Sheet Music</button>
   <button id="earBtn"   class="modality-btn">Ear</button>
   <button id="tabBtn"   class="modality-btn">Tab</button>
@@ -92,6 +93,53 @@
     style="width:46px;padding:2px 4px;font-size:13px;border-radius:4px;border:1px solid #ccc"></label>
 </div>
 
+<!-- Rhythm trainer options (rhythm mode only) -->
+<div id="rhythmOpts" style="display:none; margin-bottom:8px; gap:10px; align-items:center; flex-wrap:wrap;" class="hint">
+  <div style="display:flex; gap:6px; align-items:flex-end;">
+    <strong style="line-height:1.8;">Notes:</strong>
+    <label style="display:flex;flex-direction:column;align-items:center;gap:1px;font-size:12px;"><input type="checkbox" class="rhythmcount-cb" data-count="1">1</label>
+    <label style="display:flex;flex-direction:column;align-items:center;gap:1px;font-size:12px;"><input type="checkbox" class="rhythmcount-cb" data-count="2" checked>2</label>
+    <label style="display:flex;flex-direction:column;align-items:center;gap:1px;font-size:12px;"><input type="checkbox" class="rhythmcount-cb" data-count="3" checked>3</label>
+    <label style="display:flex;flex-direction:column;align-items:center;gap:1px;font-size:12px;"><input type="checkbox" class="rhythmcount-cb" data-count="4" checked>4</label>
+    <label style="display:flex;flex-direction:column;align-items:center;gap:1px;font-size:12px;"><input type="checkbox" class="rhythmcount-cb" data-count="5" checked>5</label>
+    <label style="display:flex;flex-direction:column;align-items:center;gap:1px;font-size:12px;"><input type="checkbox" class="rhythmcount-cb" data-count="6" checked>6</label>
+    <label style="display:flex;flex-direction:column;align-items:center;gap:1px;font-size:12px;"><input type="checkbox" class="rhythmcount-cb" data-count="7">7</label>
+    <label style="display:flex;flex-direction:column;align-items:center;gap:1px;font-size:12px;"><input type="checkbox" class="rhythmcount-cb" data-count="8">8</label>
+  </div>
+  <label>BPM: <input id="rhythmBpm" type="range" min="100" max="1000" step="50" value="150"
+    style="width:130px; vertical-align:middle;"> <span id="rhythmBpmVal">150</span></label>
+  <span style="color:#bbb; margin:0 2px;">|</span>
+  <div style="display:flex; gap:5px; align-items:flex-end;">
+    <strong style="line-height:1.8;">Tones:</strong>
+    <label style="display:flex;flex-direction:column;align-items:center;gap:1px;font-size:12px;"><input type="checkbox" class="rhythmnote-cb" data-note="C" checked>C</label>
+    <label style="display:flex;flex-direction:column;align-items:center;gap:1px;font-size:12px;"><input type="checkbox" class="rhythmnote-cb" data-note="D" checked>D</label>
+    <label style="display:flex;flex-direction:column;align-items:center;gap:1px;font-size:12px;"><input type="checkbox" class="rhythmnote-cb" data-note="E" checked>E</label>
+    <label style="display:flex;flex-direction:column;align-items:center;gap:1px;font-size:12px;"><input type="checkbox" class="rhythmnote-cb" data-note="F" checked>F</label>
+    <label style="display:flex;flex-direction:column;align-items:center;gap:1px;font-size:12px;"><input type="checkbox" class="rhythmnote-cb" data-note="G" checked>G</label>
+    <label style="display:flex;flex-direction:column;align-items:center;gap:1px;font-size:12px;"><input type="checkbox" class="rhythmnote-cb" data-note="A" checked>A</label>
+    <label style="display:flex;flex-direction:column;align-items:center;gap:1px;font-size:12px;"><input type="checkbox" class="rhythmnote-cb" data-note="B" checked>B</label>
+    <label style="display:flex;flex-direction:column;align-items:center;gap:1px;font-size:12px;border-left:1px solid #ccc;padding-left:5px;"><input type="checkbox" class="rhythmnote-cb" data-note="C'" checked><em>C</em></label>
+    <label style="margin-left:4px;">Oct: <select id="rhythmOctave" style="padding:2px 4px;font-size:13px;border-radius:4px;border:1px solid #ccc">
+      <option value="2">2</option>
+      <option value="3">3</option>
+      <option value="4" selected>4</option>
+      <option value="5">5</option>
+      <option value="6">6</option>
+    </select></label>
+  </div>
+  <span style="color:#bbb; margin:0 2px;">|</span>
+  <strong>Rhythm:</strong>
+  <button id="rhythmConstantBtn" class="selected-btn">Constant</button>
+  <label><input type="checkbox" class="rhythmdur-cb" data-dur="16th"> 16th</label>
+  <label><input type="checkbox" class="rhythmdur-cb" data-dur="8th"> 8th</label>
+  <label><input type="checkbox" class="rhythmdur-cb" data-dur="4th"> 4th</label>
+  <label><input type="checkbox" class="rhythmdur-cb" data-dur="triplet"> Triplet</label>
+  <label><input type="checkbox" id="rhythmRestCb"> 8th rest</label>
+  <span style="color:#bbb; margin:0 2px;">|</span>
+  <label><input type="checkbox" id="rhythmHintAlways"> Always hint</label>
+  <label><input type="checkbox" id="rhythmSoundFb" checked> Ding/buzz</label>
+</div>
+
 <div class="row">
   <!-- ===== MAIN QUIZ CARD ===== -->
   <div class="card" id="mainArea" style="flex:2; min-width:280px;">
@@ -107,6 +155,11 @@
         <button id="playBtn" style="font-size:16px;min-width:80px;min-height:44px;background:#4a90d9;color:#fff;border-color:#357ab8;">&#9654; Play</button>
         <button id="skipBtn" style="min-height:44px;">Skip</button>
         <span class="hint" id="earLabel"></span>
+      </div>
+      <!-- Rhythm hint: always present, populated when hint is active -->
+      <div id="rhythmHintArea" style="margin-bottom:10px; min-height:30px;">
+        <div id="rhythmBeats" style="position:relative; height:24px; margin-bottom:4px;"></div>
+        <div id="rhythmHintText" class="hint" style="font-size:15px;"></div>
       </div>
       <div id="choicesArea" style="display:flex; gap:8px; flex-wrap:wrap;"></div>
     </div>
@@ -202,6 +255,15 @@ let keyLettersEnabled = new Set(["A","B","C","D","E","F","G"]);
 
 // Ear (shared between ear+note and ear+key, different shapes)
 let earCurrent = null;
+
+// Rhythm trainer
+let rhythmCurrent = null;
+let rhythmDurSet       = new Set();                                               // checked note values → complex; empty → constant
+let rhythmRestEnabled  = false;
+let rhythmEnabledCounts = new Set([2, 3, 4, 5, 6]);                              // which note counts are active
+let rhythmEnabledNotes  = new Set(["C","D","E","F","G","A","B","C'"]);           // which pitches are active
+
+const RHYTHM_DUR_BEATS = { "16th": 0.25, "8th": 0.5, "4th": 1.0, "triplet": 1/3 };
 
 // =====================================================================
 // GUITAR TAB STATE
@@ -863,6 +925,184 @@ function lockChoiceButtons(chosen, correct) {
 }
 
 // =====================================================================
+// RHYTHM TRAINER QUIZ
+// =====================================================================
+function rhythmLiveBpm() {
+  return Math.max(60, Math.min(1000, Number(document.getElementById("rhythmBpm").value) || 150));
+}
+
+function buildRhythmNotePool() {
+  const oct = Number(document.getElementById("rhythmOctave").value) || 4;
+  const pool = [];
+  for (const n of rhythmEnabledNotes) {
+    const o = n === "C'" ? oct + 1 : oct;
+    const letter = n === "C'" ? "C" : n;
+    pool.push(12 + o * 12 + SEMI[letter]);
+  }
+  return pool.length > 0 ? pool : [12 + oct * 12 + SEMI["C"]];
+}
+
+function scheduleRhythmHighlights() {
+  const { events } = rhythmCurrent;
+  const bpm = rhythmLiveBpm();
+  const beatMs = (60 / bpm) * 1000;
+  const beatsEl = document.getElementById("rhythmBeats");
+  beatsEl.innerHTML = "";
+
+  const totalMs = events.reduce((s, ev) => s + ev.dur * beatMs, 0);
+  const DOT = 20;
+  const dots = [];
+  let elapsed = 0;
+
+  events.forEach(ev => {
+    if (!ev.rest) {
+      const frac = totalMs > 0 ? elapsed / totalMs : 0;
+      const dot = document.createElement("span");
+      dot.style.cssText = `position:absolute;width:${DOT}px;height:${DOT}px;border-radius:50%;` +
+        `background:#ddd;border:2px solid #bbb;transition:background 0.06s,border-color 0.06s;` +
+        `left:calc(${(frac * 100).toFixed(1)}% - ${DOT/2}px);top:0;`;
+      beatsEl.appendChild(dot);
+      dots.push({ dot, startMs: elapsed, durMs: ev.dur * beatMs });
+    }
+    elapsed += ev.dur * beatMs;
+  });
+
+  dots.forEach(({ dot, startMs, durMs }) => {
+    setTimeout(() => {
+      dot.style.background = "#4a90d9";
+      dot.style.borderColor = "#357ab8";
+      setTimeout(() => {
+        dot.style.background = "#0a7a2f";
+        dot.style.borderColor = "#068a35";
+      }, Math.min(durMs * 0.55, 220));
+    }, startMs + 50);
+  });
+}
+
+function playRhythmSequence() {
+  if (!rhythmCurrent) return;
+  const { events } = rhythmCurrent;
+  const bpm = rhythmLiveBpm();
+  synth.ensure();
+  const sg = synth.newSeqGain();
+  const beatSec = 60 / bpm;
+  let t = synth.ctx.currentTime + 0.05;
+  events.forEach(ev => {
+    const dur = ev.dur * beatSec;
+    if (!ev.rest) synth.playNote(midiToFreq(ev.midi), t, dur * 0.8, 0.5, sg);
+    t += dur;
+  });
+  if (rhythmCurrent.hintUsed) scheduleRhythmHighlights();
+}
+
+function renderRhythmChoices() {
+  const area = document.getElementById("choicesArea");
+  area.innerHTML = "";
+  for (let n = 1; n <= 8; n++) {
+    const btn = document.createElement("button");
+    btn.className = "choice-btn";
+    btn.style.cssText = "font-size:26px;font-weight:700;min-width:62px;min-height:62px;";
+    btn.textContent = String(n);
+    const enabled = rhythmEnabledCounts.has(n);
+    if (!enabled) { btn.disabled = true; btn.style.opacity = "0.25"; }
+    btn.addEventListener("click", () => handleRhythmAnswer(n));
+    area.appendChild(btn);
+  }
+}
+
+function rhythmHintAlways() {
+  return document.getElementById("rhythmHintAlways").checked;
+}
+
+function activateRhythmHint() {
+  rhythmCurrent.hintUsed = true;
+  playRhythmSequence(); // replays with dot highlights; user counts the dots
+}
+
+function handleRhythmHint() {
+  if (!rhythmCurrent || rhythmCurrent.answered) return;
+  activateRhythmHint();
+}
+
+function newRhythmQuestion() {
+  const pool = rhythmEnabledCounts.size > 0 ? [...rhythmEnabledCounts] : [2, 3, 4];
+  const count = pool[randomInt(0, pool.length - 1)];
+  const notePool = buildRhythmNotePool();
+  const durPool = rhythmDurSet.size > 0
+    ? [...rhythmDurSet].map(k => RHYTHM_DUR_BEATS[k])
+    : null; // null = constant (1 beat each)
+
+  // Build events: notes with chosen durations, optional 8th rests between notes
+  const events = [];
+  for (let i = 0; i < count; i++) {
+    const midi = notePool[randomInt(0, notePool.length - 1)];
+    const dur  = durPool ? durPool[randomInt(0, durPool.length - 1)] : 1.0;
+    events.push({ midi, dur });
+    if (rhythmRestEnabled && i < count - 1 && Math.random() < 0.5) {
+      events.push({ rest: true, dur: 0.5 });
+    }
+  }
+  rhythmCurrent = { count, events, hintUsed: false, answered: false, tries: 0 };
+  waitingForNext = false;
+  document.getElementById("rhythmHintText").textContent = "";
+  document.getElementById("rhythmBeats").innerHTML = "";
+  document.getElementById("earLabel").textContent = "How many notes did you hear?";
+  renderRhythmChoices();
+  clearFeedback(); resetTries();
+  if (rhythmHintAlways()) {
+    activateRhythmHint(); // auto-shows hint + plays with highlights
+  } else {
+    playRhythmSequence();
+  }
+}
+
+function playFeedbackDing() {
+  synth.ensure();
+  const t0 = synth.ctx.currentTime + 0.02;
+  synth.playNote(midiToFreq(84), t0,        0.08, 0.9); // C6 — bright tap
+  synth.playNote(midiToFreq(88), t0 + 0.09, 0.18, 0.6); // E6 — rising confirmation
+}
+
+function playFeedbackBuzz() {
+  synth.ensure();
+  const t0 = synth.ctx.currentTime + 0.02;
+  // Tritone cluster played together = dissonant "wrong" buzz
+  synth.playNote(midiToFreq(48), t0, 0.28, 0.55); // C3
+  synth.playNote(midiToFreq(54), t0, 0.28, 0.55); // F#3 (tritone — maximally dissonant)
+}
+
+function handleRhythmAnswer(count) {
+  if (!rhythmCurrent || rhythmCurrent.answered) return;
+  rhythmCurrent.tries++;
+  document.getElementById("tries").textContent = String(rhythmCurrent.tries);
+  const correct = count === rhythmCurrent.count;
+  if (document.getElementById("rhythmSoundFb").checked) {
+    if (correct) playFeedbackDing(); else playFeedbackBuzz();
+  }
+  if (correct) {
+    rhythmCurrent.answered = true;
+    lockChoiceButtons(count - 1, rhythmCurrent.count - 1);
+    setFeedback("✓  " + rhythmCurrent.count + " notes", "good");
+    recordResult(rhythmCurrent.count + " notes", "rhythm", rhythmCurrent.tries,
+      rhythmCurrent.tries === 1 && !rhythmCurrent.hintUsed);
+    setTimeout(newRhythmQuestion, 2000);
+  } else {
+    // Wrong: flash the pressed button, then replay for another attempt
+    setFeedback("✗", "bad");
+    waitingForNext = true;
+    const btns = Array.from(document.getElementById("choicesArea").children);
+    btns.forEach(b => { b.disabled = true; });
+    if (btns[count - 1]) btns[count - 1].classList.add("wrong");
+    setTimeout(() => {
+      waitingForNext = false;
+      clearFeedback();
+      renderRhythmChoices();
+      playRhythmSequence();
+    }, 800);
+  }
+}
+
+// =====================================================================
 // GUITAR TAB QUIZ
 // =====================================================================
 function noteToMidi(letter, octave) { return 12 + octave * 12 + SEMI[letter]; }
@@ -1045,35 +1285,47 @@ function clearFeedback() { setFeedback(""); }
 function resetTries() { document.getElementById("tries").textContent = "0"; }
 
 function updateUI() {
-  const isSheet = modality === "sheet";
-  const isEar   = modality === "ear";
-  const isTab   = modality === "tab";
-  const isNote  = quizMode  === "note";
-  const isKey   = quizMode  === "key";
+  const isSheet  = modality === "sheet";
+  const isEar    = modality === "ear";
+  const isTab    = modality === "tab";
+  const isNote   = quizMode  === "note";
+  const isKey    = quizMode  === "key";
+  const isRhythm = quizMode  === "rhythm";
 
   document.getElementById("noteQuizBtn").classList.toggle("active-mode", isNote);
   document.getElementById("keyQuizBtn").classList.toggle("active-mode",  isKey);
+  document.getElementById("rhythmQuizBtn").classList.toggle("active-mode", isRhythm);
   document.getElementById("sheetBtn").classList.toggle("active-mode", isSheet);
   document.getElementById("earBtn").classList.toggle("active-mode",   isEar);
   document.getElementById("tabBtn").classList.toggle("active-mode",   isTab);
 
-  document.getElementById("keyOpts").style.display  = isKey ? "flex" : "none";
-  document.getElementById("earOpts").style.display  = (isEar && isNote) ? "flex" : "none";
-  document.getElementById("tabOpts").style.display  = isTab ? "flex" : "none";
+  // Hide modality controls when rhythm mode is active (not applicable)
+  const showModality = !isRhythm;
+  document.getElementById("modalitySep").style.display = showModality ? "" : "none";
+  document.getElementById("sheetBtn").style.display    = showModality ? "" : "none";
+  document.getElementById("earBtn").style.display      = showModality ? "" : "none";
+  document.getElementById("tabBtn").style.display      = showModality ? "" : "none";
 
-  document.getElementById("boardWrap").style.display = (isSheet || isTab) ? "block" : "none";
-  document.getElementById("earArea").style.display   = isEar ? "block" : "none";
-  document.getElementById("noteBtns").style.display  = (isSheet || isTab) ? "flex" : "none";
-  document.getElementById("keyBtns").style.display   = (isSheet && isKey) ? "block" : "none";
-  document.getElementById("answerRow").style.display = (isSheet || isTab) ? "" : "none";
-  document.getElementById("seqLenWrap").style.display = ((isSheet || isTab) && isNote) ? "" : "none";
+  document.getElementById("keyOpts").style.display     = isKey ? "flex" : "none";
+  document.getElementById("earOpts").style.display     = (isEar && isNote) ? "flex" : "none";
+  document.getElementById("tabOpts").style.display     = isTab ? "flex" : "none";
+  document.getElementById("rhythmOpts").style.display  = isRhythm ? "flex" : "none";
+
+  const showBoard = (isSheet || isTab) && !isRhythm;
+  document.getElementById("boardWrap").style.display  = showBoard ? "block" : "none";
+  document.getElementById("earArea").style.display    = (isEar || isRhythm) ? "block" : "none";
+  document.getElementById("noteBtns").style.display   = showBoard ? "flex" : "none";
+  document.getElementById("keyBtns").style.display    = (isSheet && isKey && !isRhythm) ? "block" : "none";
+  document.getElementById("answerRow").style.display  = showBoard ? "" : "none";
+  document.getElementById("seqLenWrap").style.display = (showBoard && isNote) ? "" : "none";
 }
 
 function startNewQuestion() {
   waitingForNext = false;
   resetTries(); clearFeedback();
   document.querySelectorAll(".note-btn,.acc-btn,.qual-btn").forEach(b => b.classList.remove("selected-btn"));
-  if      (modality==="sheet" && quizMode==="note") newSheetNoteQuestion();
+  if      (quizMode === "rhythm")                    newRhythmQuestion();
+  else if (modality==="sheet" && quizMode==="note") newSheetNoteQuestion();
   else if (modality==="sheet" && quizMode==="key")  newSheetKeyQuestion();
   else if (modality==="tab")                         newTabNoteQuestion();
   else if (modality==="ear"   && quizMode==="note") newEarNoteQuestion();
@@ -1092,8 +1344,10 @@ document.getElementById("keyQuizBtn").addEventListener("click",  () => {
 document.getElementById("sheetBtn").addEventListener("click", () => { modality="sheet"; updateUI(); startNewQuestion(); });
 document.getElementById("earBtn").addEventListener("click",   () => { modality="ear";   updateUI(); startNewQuestion(); });
 document.getElementById("tabBtn").addEventListener("click",   () => { modality="tab"; quizMode="note"; updateUI(); startNewQuestion(); });
+document.getElementById("rhythmQuizBtn").addEventListener("click", () => { quizMode="rhythm"; updateUI(); startNewQuestion(); });
 
 document.getElementById("playBtn").addEventListener("click", () => {
+  if (quizMode === "rhythm") { playRhythmSequence(); return; }
   if (!earCurrent) return;
   if (earCurrent.kind === "note" && earCurrent.midi) synth.playMidi(earCurrent.midi, 90, 0.6);
   else if (earCurrent.kind === "key" && earCurrent.key) playEarKeySequence(earCurrent.key);
@@ -1180,6 +1434,52 @@ document.querySelectorAll(".tabpos-btn").forEach(btn => {
   });
 });
 
+// Rhythm controls update state only; the new values take effect on the next question.
+document.querySelectorAll(".rhythmcount-cb").forEach(cb => {
+  cb.addEventListener("change", () => {
+    const n = Number(cb.dataset.count);
+    if (cb.checked) rhythmEnabledCounts.add(n);
+    else rhythmEnabledCounts.delete(n);
+    // Prevent unchecking the last box
+    if (rhythmEnabledCounts.size === 0) { cb.checked = true; rhythmEnabledCounts.add(n); }
+  });
+});
+
+const rhythmBpmEl = document.getElementById("rhythmBpm");
+const rhythmBpmValEl = document.getElementById("rhythmBpmVal");
+rhythmBpmEl.addEventListener("input", () => {
+  rhythmBpmValEl.textContent = rhythmBpmEl.value;
+});
+
+document.querySelectorAll(".rhythmnote-cb").forEach(cb => {
+  cb.addEventListener("change", () => {
+    const n = cb.dataset.note;
+    if (cb.checked) rhythmEnabledNotes.add(n);
+    else rhythmEnabledNotes.delete(n);
+    if (rhythmEnabledNotes.size === 0) { cb.checked = true; rhythmEnabledNotes.add(n); }
+  });
+});
+// Octave and hint-always changes take effect on next question; no re-trigger needed.
+
+document.getElementById("rhythmConstantBtn").addEventListener("click", () => {
+  rhythmDurSet.clear();
+  document.querySelectorAll(".rhythmdur-cb").forEach(cb => { cb.checked = false; });
+  document.getElementById("rhythmConstantBtn").classList.add("selected-btn");
+});
+
+document.querySelectorAll(".rhythmdur-cb").forEach(cb => {
+  cb.addEventListener("change", () => {
+    if (cb.checked) rhythmDurSet.add(cb.dataset.dur);
+    else            rhythmDurSet.delete(cb.dataset.dur);
+    // Deselect Constant when any note value is active; restore it when none are
+    document.getElementById("rhythmConstantBtn").classList.toggle("selected-btn", rhythmDurSet.size === 0);
+  });
+});
+
+document.getElementById("rhythmRestCb").addEventListener("change", e => {
+  rhythmRestEnabled = e.target.checked;
+});
+
 function onKeyFilterChange() {
   if (modality === "ear" && quizMode === "key") newEarKeyQuestion();
 }
@@ -1195,7 +1495,20 @@ document.querySelectorAll(".letter-cb").forEach(cb => {
 });
 
 window.addEventListener("keydown", e => {
+  if (e.target.tagName === "INPUT" || e.target.tagName === "SELECT") return;
   if (waitingForNext) return;
+  if (quizMode === "rhythm") {
+    if (e.code === "Space" && !e.metaKey && !e.ctrlKey) {
+      e.preventDefault(); playRhythmSequence();
+    } else if (e.key >= "1" && e.key <= "9") {
+      e.preventDefault(); handleRhythmAnswer(Number(e.key));
+    } else if (e.key === "n" || e.key === "N") {
+      e.preventDefault(); startNewQuestion();
+    } else if (e.key === "h" || e.key === "H") {
+      e.preventDefault(); handleRhythmHint();
+    }
+    return;
+  }
   if (modality === "tab") {
     const kUp = e.key.toUpperCase();
     if (kUp.length===1 && kUp>="A" && kUp<="G") {
@@ -1335,6 +1648,13 @@ initMidi();
     <li><b>Enter</b> to submit<br>
   </ul>
   
+  Rhythm trainer:
+  <ul>
+  <li><b>1–9</b> answer (count of notes heard)<br>
+  <li><b>Space</b> replay sequence<br>
+  <li><b>N</b> skip to next question<br>
+  </ul>
+
   <strong>MIDI:</strong> play any natural note on your keyboard (Sheet/Tab note quiz)
 </div>
 </body>
