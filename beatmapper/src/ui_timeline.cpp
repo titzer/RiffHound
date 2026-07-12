@@ -231,9 +231,9 @@ static const float RULER_H       = 24.0f;
 static const float MINIMAP_H     = 40.0f;
 static const float CTX_PANEL_H   = 36.0f;  // contextual interpolate panel
 static const float PLACE_STRIP_H = 22.0f;  // beat placement strip
+static const float TAP_STRIP_H   = 22.0f;  // tap recording strip
 static const float SECTION_H     = 52.0f;  // section strip
 static const float LYRIC_H       = 36.0f;  // lyric strip
-static const float EDIT_PANEL_H  = 34.0f;  // unified edit panel (section or lyric) at bottom
 
 // Per-kind fill and border colours (index = SectionKind)
 static const ImU32 s_sec_fill[SK_COUNT] = {
@@ -264,6 +264,12 @@ static const ImU32 s_sec_border[SK_COUNT] = {
     IM_COL32(100, 140, 220, 230),  // outro
     IM_COL32(230,  90, 145, 230),  // refrain
 };
+
+// --- Tap strip data ---
+static const int MAX_TAPS = 1024;
+struct TapEntry { double time; bool selected; };
+static TapEntry s_taps[MAX_TAPS];
+static int      s_tap_count = 0;
 
 // --- main widget -------------------------------------------------------
 
@@ -317,15 +323,13 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
 
     // Layout (top to bottom):
     //   minimap | ruler | spectrogram (flexible) |
-    //   place strip | beat area | [ctx panel] | section strip | lyric strip | edit panel
-    // The edit panel is always reserved at a fixed height at the very bottom and shows
-    // section or lyric widgets depending on which is currently selected.
+    //   place strip | tap strip | beat area | [ctx panel] | section strip | lyric strip
     ImVec2 avail = ImGui::GetContentRegionAvail();
     float fixed_h = MINIMAP_H + 2.0f + RULER_H + 2.0f
-                  + 2.0f + PLACE_STRIP_H + 2.0f
+                  + 2.0f + PLACE_STRIP_H + 2.0f + TAP_STRIP_H + 2.0f
                   + (s_beats_collapsed ? 0.0f : BEAT_AREA_H + ctx_h)
                   + 2.0f + SECTION_H
-                  + 2.0f + LYRIC_H + EDIT_PANEL_H;
+                  + 2.0f + LYRIC_H;
     float spectro_h = avail.y - fixed_h;
     if (spectro_h < 50.0f) spectro_h = 50.0f;
     float total_h = fixed_h + spectro_h;
@@ -351,14 +355,14 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
     float mm_x = cx, mm_y = ry,                       mm_w = cw, mm_h = MINIMAP_H;
     float ruler_y = mm_y + mm_h + 2.0f;
     float tx = cx,   ty = ruler_y + RULER_H + 2.0f,   tw = cw,   th = spectro_h;
-    float ps_x = cx, ps_y = ty + th + 2.0f,            ps_w = cw; // placement strip
-    float ba_x = cx, ba_y = ps_y + PLACE_STRIP_H + 2.0f, ba_w = cw,
+    float ps_x = cx, ps_y = ty + th + 2.0f,              ps_w = cw; // placement strip
+    float tap_x = cx, tap_y = ps_y + PLACE_STRIP_H + 2.0f, tap_w = cw; // tap strip
+    float ba_x = cx, ba_y = tap_y + TAP_STRIP_H + 2.0f, ba_w = cw,
           ba_h = s_beats_collapsed ? 0.0f : BEAT_AREA_H;
     // ctx panel sits between beat area and section strip (ctx_y defined after ba_y)
     float ctx_y  = ba_y + ba_h;
     float sa_x   = cx,  sa_y = ctx_y + ctx_h + 2.0f, sa_w = cw, sa_h = SECTION_H;
     float la_x   = cx,  la_y = sa_y + SECTION_H + 2.0f, la_w = cw, la_h = LYRIC_H;
-    float ep_y   = la_y + la_h;   // unified edit panel top (always reserved)
 
     // --- Beat position layout pass (rebuilds every frame) ---
     // Computes screen positions + stagger rows for all beats.
@@ -402,7 +406,7 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
     ImGui::SetNextItemAllowOverlap();
     ImGui::SetCursorScreenPos(ImVec2(rx, ry));
     ImGui::InvisibleButton("##timeline_input",
-                           ImVec2(rw, total_h - ctx_h - EDIT_PANEL_H),
+                           ImVec2(rw, total_h - ctx_h),
                            ImGuiButtonFlags_MouseButtonLeft |
                            ImGuiButtonFlags_MouseButtonMiddle);
     bool hovered = ImGui::IsItemHovered();
@@ -414,6 +418,10 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
     static bool   s_drag_in_beats   = false;
     static bool   s_drag_in_sec     = false;   // drag started in section strip
     static bool   s_drag_in_lyr     = false;   // drag started in lyric strip
+    static bool   s_drag_in_tap     = false;   // drag started in tap strip
+    // Tap selection state
+    static bool   s_tap_rect_sel    = false;
+    static float  s_tap_rect_x0     = 0.0f;
     // Section editing state
     static bool   s_sec_drag        = false;   // drag-to-create in progress
     static double s_sec_drag_t0     = 0.0;
@@ -457,6 +465,8 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
         // Beat placement: only in content area, only when expanded
         s_drag_in_place   = (!s_beats_collapsed && click_x >= cx &&
                               click_y >= ps_y && click_y < ps_y + PLACE_STRIP_H);
+        s_drag_in_tap     = (click_x >= cx &&
+                              click_y >= tap_y && click_y < tap_y + TAP_STRIP_H);
         s_drag_in_beats   = (click_y >= ba_y    && click_y < ba_y + ba_h);
         s_drag_in_sec     = (click_y >= sa_y    && click_y < sa_y + sa_h);
         s_drag_in_lyr     = (click_y >= la_y    && click_y < la_y + la_h);
@@ -658,6 +668,32 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
                 s_lyr_hdrag         = false;
                 s_lyr_body_drag     = false;
                 s_lyr_body_drag_idx = -1;
+            }
+        }
+
+        if (s_drag_in_tap) {
+            // Hit-test taps
+            int   hit  = -1;
+            float best = 8.0f;
+            for (int i = 0; i < s_tap_count; i++) {
+                float bx = time_to_x(s_taps[i].time,
+                                     editor->view_start, editor->view_end, tap_x, tap_w);
+                float dx = fabsf(io.MousePos.x - bx);
+                if (dx < best) { best = dx; hit = i; }
+            }
+            if (hit >= 0) {
+                if (io.KeyShift) {
+                    s_taps[hit].selected = !s_taps[hit].selected;
+                } else {
+                    for (int i = 0; i < s_tap_count; i++) s_taps[i].selected = false;
+                    s_taps[hit].selected = true;
+                }
+                s_tap_rect_sel = false;
+            } else {
+                if (!io.KeyShift)
+                    for (int i = 0; i < s_tap_count; i++) s_taps[i].selected = false;
+                s_tap_rect_sel = true;
+                s_tap_rect_x0  = io.MousePos.x;
             }
         }
 
@@ -874,11 +910,25 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
         s_rect_sel = false;
     }
 
+    // Tap rect-select release
+    if (s_tap_rect_sel && !ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+        float rsx0 = s_tap_rect_x0 < io.MousePos.x ? s_tap_rect_x0 : io.MousePos.x;
+        float rsx1 = s_tap_rect_x0 < io.MousePos.x ? io.MousePos.x : s_tap_rect_x0;
+        for (int i = 0; i < s_tap_count; i++) {
+            float bx = time_to_x(s_taps[i].time,
+                                 editor->view_start, editor->view_end, tap_x, tap_w);
+            if (bx >= rsx0 && bx <= rsx1)
+                s_taps[i].selected = true;
+        }
+        s_tap_rect_sel = false;
+    }
+
     if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
         s_drag_in_spectro = false;
         s_drag_in_ruler   = false;
         s_mm_seeking      = false;
         s_drag_in_place   = false;
+        s_drag_in_tap     = false;
         s_drag_in_beats   = false;
         s_drag_in_sec     = false;
         s_drag_in_lyr     = false;
@@ -956,6 +1006,42 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
             editor->view_start = new_start;
             editor->view_end   = new_start + span;
         }
+    }
+
+    // T key: record a tap at the current playhead position (play mode only)
+    if (audio->playing && !ImGui::IsAnyItemActive() &&
+            ImGui::IsKeyPressed(ImGuiKey_T, false)) {
+        double t = audio_get_position(audio);
+        if (s_tap_count < MAX_TAPS)
+            s_taps[s_tap_count++] = { t, false };
+    }
+
+    // I key: insert selected taps into the beatmap as real beats
+    if (!ImGui::IsAnyItemActive() && ImGui::IsKeyPressed(ImGuiKey_I, false)) {
+        bool any = false;
+        for (int i = 0; i < s_tap_count; i++)
+            if (s_taps[i].selected) { any = true; break; }
+        if (any) {
+            undo_push(undo, beatmap, lyricmap);
+            for (int i = 0; i < s_tap_count; i++)
+                if (s_taps[i].selected)
+                    beatmap_add(beatmap, s_taps[i].time);
+            int j = 0;
+            for (int i = 0; i < s_tap_count; i++)
+                if (!s_taps[i].selected)
+                    s_taps[j++] = s_taps[i];
+            s_tap_count = j;
+        }
+    }
+
+    // Delete/Backspace: remove selected taps
+    if (!ImGui::IsAnyItemActive() &&
+            (ImGui::IsKeyPressed(ImGuiKey_Delete) || ImGui::IsKeyPressed(ImGuiKey_Backspace))) {
+        int j = 0;
+        for (int i = 0; i < s_tap_count; i++)
+            if (!s_taps[i].selected)
+                s_taps[j++] = s_taps[i];
+        s_tap_count = j;
     }
 
     // --- Draw ---
@@ -1325,6 +1411,41 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
         }
     }
 
+    // --- Tap strip ---
+    dl->AddRectFilled(ImVec2(tap_x, tap_y), ImVec2(tap_x + tap_w, tap_y + TAP_STRIP_H),
+                      IM_COL32(10, 18, 14, 255));
+    dl->AddRect(ImVec2(tap_x, tap_y), ImVec2(tap_x + tap_w, tap_y + TAP_STRIP_H),
+                IM_COL32(40, 65, 50, 255));
+    dl->AddText(ImVec2(cx + 4.0f, tap_y + 3.0f), IM_COL32(90, 110, 90, 100), "Taps");
+
+    {
+        const float TAP_R  = 5.0f;
+        float strip_cy = tap_y + TAP_STRIP_H * 0.5f;
+        double span    = editor->view_end - editor->view_start;
+        dl->PushClipRect(ImVec2(tap_x, tap_y), ImVec2(tap_x + tap_w, tap_y + TAP_STRIP_H), true);
+        for (int i = 0; i < s_tap_count; i++) {
+            float bx = (span > 0.0 && tap_w > 0)
+                ? tap_x + (float)((s_taps[i].time - editor->view_start) / span * tap_w)
+                : tap_x;
+            if (bx < tap_x - TAP_R || bx > tap_x + tap_w + TAP_R) continue;
+            bool  sel    = s_taps[i].selected;
+            ImU32 fill   = sel ? IM_COL32(100, 200, 255, 220) : IM_COL32(120, 200, 140, 190);
+            ImU32 border = sel ? IM_COL32(160, 230, 255, 255) : IM_COL32(160, 230, 160, 220);
+            draw_diamond(dl, bx, strip_cy, TAP_R, fill, border);
+        }
+        // Rect-select highlight
+        if (s_tap_rect_sel && ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+            float rsx0 = s_tap_rect_x0 < io.MousePos.x ? s_tap_rect_x0 : io.MousePos.x;
+            float rsx1 = s_tap_rect_x0 < io.MousePos.x ? io.MousePos.x : s_tap_rect_x0;
+            float cl0 = rsx0 < tap_x ? tap_x : rsx0;
+            float cl1 = rsx1 > tap_x + tap_w ? tap_x + tap_w : rsx1;
+            if (cl1 > cl0)
+                dl->AddRectFilled(ImVec2(cl0, tap_y), ImVec2(cl1, tap_y + TAP_STRIP_H),
+                                  IM_COL32(100, 200, 255, 40));
+        }
+        dl->PopClipRect();
+    }
+
     // Beat area background
     dl->AddRectFilled(ImVec2(ba_x, ba_y), ImVec2(ba_x + ba_w, ba_y + ba_h),
                       IM_COL32(14, 14, 22, 255));
@@ -1622,14 +1743,6 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
         }
     }
 
-    // --- Unified edit panel background --- always drawn to keep layout stable.
-    dl->AddRectFilled(ImVec2(cx, ep_y), ImVec2(cx + cw, ep_y + EDIT_PANEL_H),
-                      IM_COL32(10, 10, 18, 255));
-    dl->AddLine(ImVec2(cx, ep_y), ImVec2(cx + cw, ep_y),
-                IM_COL32(50, 50, 70, 255));
-    if (s_sec_selected < 0 && s_lyr_selected < 0)
-        dl->AddText(ImVec2(cx + 4.0f, ep_y + 3.0f), IM_COL32(90, 90, 110, 100), "Edit");
-
     // --- Contextual interpolation panel ---
     // Shown when exactly two adjacent beats are selected.
     if (show_ctx) {
@@ -1777,97 +1890,6 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
         // Pair is no longer selected — invalidate cached indices
         s_ctx_prev0 = s_ctx_prev1 = -1;
         s_ctx_hover = false;
-    }
-
-    // --- Unified edit panel widgets ---
-    // Shows section or lyric controls depending on which is selected.
-    {
-        float fh  = ImGui::GetFrameHeight();
-        float btn_w = 58.0f;
-        float py  = ep_y + (EDIT_PANEL_H - fh) * 0.5f;
-
-        if (s_sec_selected >= 0 && s_sec_selected < sectionmap->count) {
-            Section& sec = sectionmap->sections[s_sec_selected];
-            float combo_w = 120.0f;
-            float label_w = 140.0f;
-
-            ImGui::SetCursorScreenPos(ImVec2(cx + 4.0f, py));
-
-            // Kind combo
-            ImGui::SetNextItemWidth(combo_w);
-            int kind_int = (int)sec.kind;
-            if (ImGui::BeginCombo("##sec_kind", SECTION_KIND_NAMES[kind_int])) {
-                for (int k = 0; k < SK_COUNT; k++) {
-                    bool sel_k = (k == kind_int);
-                    if (ImGui::Selectable(SECTION_KIND_NAMES[k], sel_k)) {
-                        sec.kind          = (SectionKind)k;
-                        sectionmap->dirty = true;
-                    }
-                    if (sel_k) ImGui::SetItemDefaultFocus();
-                }
-                ImGui::EndCombo();
-            }
-            ImGui::SameLine();
-
-            // Optional custom label
-            ImGui::SetNextItemWidth(label_w);
-            if (ImGui::InputText("##sec_label", sec.label, sizeof(sec.label)))
-                sectionmap->dirty = true;
-            ImGui::SameLine();
-
-            // Time signature: numerator DragInt + "/" + denominator DragInt
-            ImGui::SetNextItemWidth(32.0f);
-            if (ImGui::DragInt("##ts_num", &sec.ts_num, 0.15f, 1, 16, "%d")) {
-                if (sec.ts_num < 1) sec.ts_num = 1;
-                sectionmap->dirty = true;
-            }
-            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Beats per measure");
-            ImGui::SameLine(0, 2.0f);
-            ImGui::TextUnformatted("/");
-            ImGui::SameLine(0, 2.0f);
-            ImGui::SetNextItemWidth(32.0f);
-            if (ImGui::DragInt("##ts_den", &sec.ts_den, 0.15f, 1, 32, "%d")) {
-                if (sec.ts_den < 1) sec.ts_den = 1;
-                sectionmap->dirty = true;
-            }
-            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Note value (4 = quarter note)");
-
-            // Delete button — right-aligned
-            ImGui::SameLine(ImGui::GetWindowWidth() - btn_w - 4.0f);
-            if (ImGui::Button("Delete##sec", ImVec2(btn_w, 0))) {
-                sectionmap_remove(sectionmap, s_sec_selected);
-                s_sec_selected = -1;
-            }
-
-        } else if (s_lyr_selected >= 0 && s_lyr_selected < lyricmap->count) {
-            Lyric& ly = lyricmap->lyrics[s_lyr_selected];
-            float text_w = 320.0f;
-
-            ImGui::SetCursorScreenPos(ImVec2(cx + 4.0f, py));
-
-            ImGui::TextUnformatted("Lyric:");
-            ImGui::SameLine();
-
-            ImGui::PushFont(s_lyric_font());
-            ImGui::SetNextItemWidth(text_w);
-            s_lyr_split_state = {};
-            if (ImGui::InputText("##lyr_text", ly.text, sizeof(ly.text),
-                                 ImGuiInputTextFlags_CallbackAlways, lyr_split_callback))
-                lyricmap->dirty = true;
-            ImGui::PopFont();
-            if (s_lyr_split_state.req) {
-                undo_push(undo, beatmap, lyricmap);
-                lyricmap_split(lyricmap, s_lyr_selected, s_lyr_split_state.cursor, &s_lyr_selected);
-            }
-
-            // Delete button — right-aligned
-            ImGui::SameLine(ImGui::GetWindowWidth() - btn_w - 4.0f);
-            if (ImGui::Button("Delete##lyr", ImVec2(btn_w, 0))) {
-                undo_push(undo, beatmap, lyricmap);
-                lyricmap_remove(lyricmap, s_lyr_selected);
-                s_lyr_selected = -1;
-            }
-        }
     }
 
     ImGui::EndChild();
