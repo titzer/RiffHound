@@ -22,6 +22,8 @@ void editor_init(EditorState* e) {
     e->speed        = 1.0f;
     e->semitones    = 0;
     e->cents        = 0;
+    e->show_chroma_panel = false;
+    e->chroma_hover_note = -1;
 }
 
 void editor_clamp_view(EditorState* e) {

@@ -393,6 +393,17 @@ void audio_free_pcm(float* samples) {
     free(samples);
 }
 
+const float* audio_pcm_data(const AudioState* a,
+                              uint64_t* frame_count,
+                              uint32_t* channels,
+                              uint32_t* sample_rate) {
+    if (!s_wsola_ok || !s_wsola.pcm) return nullptr;
+    if (frame_count)  *frame_count  = s_wsola.frame_count;
+    if (channels)     *channels     = s_wsola.channels;
+    if (sample_rate)  *sample_rate  = s_wsola.sample_rate;
+    return s_wsola.pcm;
+}
+
 void audio_shutdown(AudioState* a) {
     // Stop the sound (removes it from the node graph) first.
     if (s_sound_ok)  { ma_sound_uninit(&s_sound);   s_sound_ok = false; }

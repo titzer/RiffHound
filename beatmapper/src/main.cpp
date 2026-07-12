@@ -14,6 +14,7 @@
 #include "recent.h"
 #include "ui_timeline.h"
 #include "ui_toolbar.h"
+#include "ui_chroma.h"
 #include "platform.h"
 
 #include <stdio.h>
@@ -331,6 +332,7 @@ int main(int argc, char** argv) {
                     if (ImGui::MenuItem("Open Audio...")) { ui_toolbar_open_dialog(); }
                     ImGui::Separator();
                     if (ImGui::MenuItem("Settings...")) { ui_toolbar_open_settings(); }
+                    ImGui::MenuItem("Chroma Analyzer", nullptr, &editor.show_chroma_panel);
                     ImGui::Separator();
                     if (ImGui::MenuItem("Save Beatmap", "Ctrl+S")) {
                         if (beatmap.save_path[0] != '\0') {
@@ -376,6 +378,9 @@ int main(int argc, char** argv) {
 
             ImGui::End();
         }
+
+        // Chroma Analyzer (floating panel, outside the main docked window)
+        ui_chroma_render(&editor, &audio);
 
         if (show_demo) ImGui::ShowDemoWindow(&show_demo);
 

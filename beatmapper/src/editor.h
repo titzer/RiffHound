@@ -26,6 +26,10 @@ struct EditorState {
     float  speed;         // playback speed [0.25, 2.0], default 1.0
     int    semitones;     // pitch shift in semitones [-12, 12]
     int    cents;         // pitch fine-tune in cents  [-100, 100]
+
+    // Chroma Analyzer
+    bool   show_chroma_panel;   // true while the Chroma Analyzer panel is visible
+    int    chroma_hover_note;   // 0=C..11=B; -1=none; set by ui_chroma, read by ui_timeline
 };
 
 void editor_init(EditorState* e);

@@ -44,3 +44,11 @@ void   audio_shutdown(AudioState* a);
 bool   audio_decode_pcm(const char* path, float** out_samples,
                         uint64_t* out_frame_count, uint32_t* out_sample_rate);
 void   audio_free_pcm(float* samples);
+
+// Access the loaded PCM buffer (stereo interleaved f32). Returns nullptr if no
+// audio is loaded. Do not modify or free the returned pointer.
+// Safe to call from the main thread; do not call during file load.
+const float* audio_pcm_data(const AudioState* a,
+                             uint64_t* frame_count,
+                             uint32_t* channels,
+                             uint32_t* sample_rate);

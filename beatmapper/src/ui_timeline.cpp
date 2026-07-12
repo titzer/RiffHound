@@ -1304,6 +1304,35 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
                        editor->view_start, editor->view_end,
                        (float)(s_spectro_max_khz * 1000));
 
+    // Chroma hover overlay: faint green band for each octave of the hovered note
+    if (editor->chroma_hover_note >= 0 && spectro->computed && spectro->sample_rate > 0) {
+        float nyquist     = (float)(spectro->sample_rate / 2);
+        float max_freq_hz = (float)(s_spectro_max_khz * 1000);
+        if (max_freq_hz > nyquist) max_freq_hz = nyquist;
+
+        int pc = editor->chroma_hover_note;  // 0=C .. 11=B
+        for (int oct = 2; oct <= 6; oct++) {
+            int   midi         = 12 * (oct + 1) + pc;
+            float freq_center  = 440.0f * powf(2.0f, (midi - 69) / 12.0f);
+            float freq_lo      = freq_center * 0.9717f;  // -50 cents
+            float freq_hi      = freq_center * 1.0293f;  // +50 cents
+            if (freq_lo >= max_freq_hz) continue;        // above visible range
+            if (freq_hi <= 0.0f)        continue;
+            if (freq_lo < 0.0f) freq_lo = 0.0f;
+            if (freq_hi > max_freq_hz) freq_hi = max_freq_hz;
+
+            // Frequency → y: higher freq = smaller y (higher on screen)
+            float y_top = ty + th * (1.0f - freq_hi / max_freq_hz);
+            float y_bot = ty + th * (1.0f - freq_lo / max_freq_hz);
+            if (y_top < ty)        y_top = ty;
+            if (y_bot > ty + th)   y_bot = ty + th;
+            if (y_bot <= y_top + 0.5f) y_bot = y_top + 1.0f;
+
+            dl->AddRectFilled(ImVec2(tx, y_top), ImVec2(tx + tw, y_bot),
+                              IM_COL32(100, 255, 120, 50));
+        }
+    }
+
     // Region selection highlight
     if (editor->has_region) {
         float rx1 = time_to_x(editor->region_start, editor->view_start, editor->view_end, tx, tw);

@@ -21,6 +21,12 @@ SOURCES := \
     $(SRC_DIR)/recent.cpp \
     $(SRC_DIR)/ui_timeline.cpp \
     $(SRC_DIR)/ui_toolbar.cpp \
+    $(SRC_DIR)/ui_chroma.cpp \
+    $(SRC_DIR)/chroma_algo.cpp \
+    $(SRC_DIR)/chroma_goertzel.cpp \
+    $(SRC_DIR)/chroma_hps.cpp \
+    $(SRC_DIR)/chroma_nnls.cpp \
+    $(SRC_DIR)/chroma_peaks.cpp \
     $(IMGUI_DIR)/imgui.cpp \
     $(IMGUI_DIR)/imgui_demo.cpp \
     $(IMGUI_DIR)/imgui_draw.cpp \

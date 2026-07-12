@@ -304,6 +304,13 @@ void ui_toolbar_render(EditorState* editor, AudioState* audio, BeatMap* beatmap,
         ImGui::Spacing();
         ImGui::Separator();
         ImGui::Spacing();
+        ImGui::TextDisabled("Tools:");
+        ImGui::Spacing();
+        ImGui::Checkbox("Chroma Analyzer", &editor->show_chroma_panel);
+
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::Spacing();
         if (ImGui::Button("Close", ImVec2(80, 0)))
             ImGui::CloseCurrentPopup();
         ImGui::EndPopup();
