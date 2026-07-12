@@ -2,6 +2,8 @@
 #include "sectionmap.h"
 #include "lyricmap.h"
 #include "miscmap.h"
+#include "beat_algo.h"
+#include "ui_beat_detector.h"
 #include "undo.h"
 #include "imgui.h"
 #include <math.h>
@@ -177,6 +179,20 @@ static const float STAGGER_Y[N_STAGGER] = { 0.50f, 0.28f, 0.72f, 0.10f, 0.90f };
 
 struct BeatVis { int idx; float bx, cy; };
 
+// Snap time t to the nearest onset in ab within the given window (seconds).
+// Returns t unchanged when no onset is close enough.
+static double snap_to_onset(double t, const AutoBeatList* ab, double window)
+{
+    if (!ab || ab->onset_count == 0) return t;
+    double best_dist = window;
+    double best_t    = t;
+    for (int i = 0; i < ab->onset_count; i++) {
+        double d = fabs(ab->onset_times[i] - t);
+        if (d < best_dist) { best_dist = d; best_t = ab->onset_times[i]; }
+    }
+    return best_t;
+}
+
 static void draw_diamond(ImDrawList* dl, float cx, float cy, float r,
                          ImU32 fill, ImU32 border)
 {
@@ -232,8 +248,9 @@ static const float RULER_H       = 24.0f;
 static const float MINIMAP_H     = 40.0f;
 static const float CTX_PANEL_H   = 36.0f;  // contextual interpolate panel
 static const float PLACE_STRIP_H = 22.0f;  // beat placement strip
-static const float TAP_STRIP_H   = 22.0f;  // tap recording strip
-static const float SECTION_H     = 52.0f;  // section strip
+static const float TAP_STRIP_H       = 22.0f;  // tap recording strip
+static const float AUTOBEAT_STRIP_H  = 22.0f;  // auto-detected beat strip
+static const float SECTION_H         = 52.0f;  // section strip
 static const float LYRIC_H       = 36.0f;  // lyric strip
 static const float MISC_STRIP_H  = 36.0f;  // misc annotation strip
 
@@ -278,12 +295,14 @@ static int      s_tap_count = 0;
 void ui_timeline_render(EditorState* editor, AudioState* audio,
                         SpectrogramState* spectro, BeatMap* beatmap,
                         UndoStack* undo, SectionMap* sectionmap,
-                        LyricMap* lyricmap, MiscMap* miscmap)
+                        LyricMap* lyricmap, MiscMap* miscmap,
+                        AutoBeatList* autobeat)
 {
     ImGuiIO& io = ImGui::GetIO();
 
     static bool s_beats_collapsed   = false;  // beat editor collapsed to slim display strip
     static int  s_spectro_max_khz  = 22;     // max displayed frequency [2, 22] kHz
+    static bool s_spectro_log      = false;  // logarithmic frequency axis
     static bool s_lyric_index_open = false;  // lyric index floating window visible
 
     // Pre-compute contextual panel visibility (needs beatmap state, but before BeginChild
@@ -329,8 +348,9 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
 
     ImVec2 avail = ImGui::GetContentRegionAvail();
     float strips_h = 2.0f;  // initial gap between spectrogram and first strip
-    if (editor->show_place_strip)   strips_h += PLACE_STRIP_H + 2.0f;
-    if (editor->show_tap_strip)     strips_h += TAP_STRIP_H   + 2.0f;
+    if (editor->show_place_strip)    strips_h += PLACE_STRIP_H    + 2.0f;
+    if (editor->show_tap_strip)      strips_h += TAP_STRIP_H      + 2.0f;
+    if (editor->show_autobeat_strip) strips_h += AUTOBEAT_STRIP_H + 2.0f;
     if (editor->show_beat_strip && !s_beats_collapsed) strips_h += BEAT_AREA_H;
     strips_h += ctx_h;
     if (editor->show_section_strip) strips_h += 2.0f + SECTION_H;
@@ -372,6 +392,9 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
 
     float tap_x = cx, tap_w = cw, tap_y = _y;
     if (editor->show_tap_strip) _y += TAP_STRIP_H + 2.0f;
+
+    float ab_x = cx, ab_w = cw, ab_y = _y;
+    if (editor->show_autobeat_strip) _y += AUTOBEAT_STRIP_H + 2.0f;
 
     float ba_x = cx, ba_w = cw, ba_y = _y;
     float ba_h = (editor->show_beat_strip && !s_beats_collapsed) ? BEAT_AREA_H : 0.0f;
@@ -448,10 +471,14 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
     static bool   s_drag_in_beats   = false;
     static bool   s_drag_in_sec     = false;   // drag started in section strip
     static bool   s_drag_in_lyr     = false;   // drag started in lyric strip
-    static bool   s_drag_in_tap     = false;   // drag started in tap strip
+    static bool   s_drag_in_tap      = false;  // drag started in tap strip
+    static bool   s_drag_in_autobeat = false;  // drag started in auto-beat strip
     // Tap selection state
     static bool   s_tap_rect_sel    = false;
     static float  s_tap_rect_x0     = 0.0f;
+    // Autobeat selection state
+    static bool   s_ab_rect_sel     = false;
+    static float  s_ab_rect_x0      = 0.0f;
     // Section editing state
     static bool   s_sec_drag        = false;   // drag-to-create in progress
     static double s_sec_drag_t0     = 0.0;
@@ -508,8 +535,10 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
         // Beat placement: only in content area, only when expanded
         s_drag_in_place   = (!s_beats_collapsed && click_x >= cx &&
                               click_y >= ps_y && click_y < ps_y + PLACE_STRIP_H);
-        s_drag_in_tap     = (editor->show_tap_strip && click_x >= cx &&
-                              click_y >= tap_y && click_y < tap_y + TAP_STRIP_H);
+        s_drag_in_tap      = (editor->show_tap_strip && click_x >= cx &&
+                               click_y >= tap_y && click_y < tap_y + TAP_STRIP_H);
+        s_drag_in_autobeat = (editor->show_autobeat_strip && autobeat && click_x >= cx &&
+                               click_y >= ab_y && click_y < ab_y + AUTOBEAT_STRIP_H);
         s_drag_in_beats   = (editor->show_beat_strip &&
                               click_y >= ba_y    && click_y < ba_y + ba_h);
         s_drag_in_sec     = (editor->show_section_strip &&
@@ -575,9 +604,29 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
                     fill_t1 = t_place;
                     fill_t2 = beatmap->beats[near].time;
                 }
+                // Snap the clicked position itself to nearest onset if feature is on.
+                if (editor->snap_interp_to_onsets && fill_bpm > 0.0) {
+                    // Ensure onsets cover the fill range; run detection if needed.
+                    ui_beat_detector_ensure_onsets(audio, beatmap, autobeat,
+                                                   fill_t1, fill_t2);
+                    t_place = snap_to_onset(t_place, autobeat, 0.20 * 60.0 / fill_bpm);
+                }
                 beatmap_add(beatmap, t_place);
-                if (fill_bpm > 0.0)
-                    beatmap_fill(beatmap, fill_t1, fill_t2, fill_bpm);
+                if (fill_bpm > 0.0) {
+                    if (editor->snap_interp_to_onsets) {
+                        // Inline fill with per-position onset snapping.
+                        double snap_win = 0.20 * 60.0 / fill_bpm;
+                        int n = (int)round((fill_t2 - fill_t1) * fill_bpm / 60.0);
+                        for (int k = 1; k < n; k++) {
+                            double gt = fill_t1 + (fill_t2 - fill_t1) * k / n;
+                            gt = snap_to_onset(gt, autobeat, snap_win);
+                            int idx = beatmap_add(beatmap, gt);
+                            if (idx >= 0) beatmap->beats[idx].interp = true;
+                        }
+                    } else {
+                        beatmap_fill(beatmap, fill_t1, fill_t2, fill_bpm);
+                    }
+                }
             } else {
                 beatmap_add(beatmap, t_place);
             }
@@ -754,6 +803,34 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
                     for (int i = 0; i < s_tap_count; i++) s_taps[i].selected = false;
                 s_tap_rect_sel = true;
                 s_tap_rect_x0  = io.MousePos.x;
+            }
+        }
+
+        if (s_drag_in_autobeat && autobeat) {
+            // Hit-test auto-beats
+            int   hit  = -1;
+            float best = 8.0f;
+            for (int i = 0; i < autobeat->beat_count; i++) {
+                float bx = time_to_x(autobeat->beat_times[i],
+                                     editor->view_start, editor->view_end, ab_x, ab_w);
+                float dx = fabsf(io.MousePos.x - bx);
+                if (dx < best) { best = dx; hit = i; }
+            }
+            if (hit >= 0) {
+                if (io.KeyShift) {
+                    autobeat->beat_selected[hit] = !autobeat->beat_selected[hit];
+                } else {
+                    for (int i = 0; i < autobeat->beat_count; i++)
+                        autobeat->beat_selected[i] = false;
+                    autobeat->beat_selected[hit] = true;
+                }
+                s_ab_rect_sel = false;
+            } else {
+                if (!io.KeyShift)
+                    for (int i = 0; i < autobeat->beat_count; i++)
+                        autobeat->beat_selected[i] = false;
+                s_ab_rect_sel = true;
+                s_ab_rect_x0  = io.MousePos.x;
             }
         }
 
@@ -1083,16 +1160,30 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
         s_tap_rect_sel = false;
     }
 
+    // Autobeat rect-select release
+    if (s_ab_rect_sel && !ImGui::IsMouseDown(ImGuiMouseButton_Left) && autobeat) {
+        float rsx0 = s_ab_rect_x0 < io.MousePos.x ? s_ab_rect_x0 : io.MousePos.x;
+        float rsx1 = s_ab_rect_x0 < io.MousePos.x ? io.MousePos.x : s_ab_rect_x0;
+        for (int i = 0; i < autobeat->beat_count; i++) {
+            float bx = time_to_x(autobeat->beat_times[i],
+                                 editor->view_start, editor->view_end, ab_x, ab_w);
+            if (bx >= rsx0 && bx <= rsx1)
+                autobeat->beat_selected[i] = true;
+        }
+        s_ab_rect_sel = false;
+    }
+
     if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
-        s_drag_in_spectro = false;
-        s_drag_in_ruler   = false;
-        s_mm_seeking      = false;
-        s_drag_in_place   = false;
-        s_drag_in_tap     = false;
-        s_drag_in_beats   = false;
-        s_drag_in_sec     = false;
-        s_drag_in_lyr     = false;
-        s_drag_in_misc    = false;
+        s_drag_in_spectro  = false;
+        s_drag_in_ruler    = false;
+        s_mm_seeking       = false;
+        s_drag_in_place    = false;
+        s_drag_in_tap      = false;
+        s_drag_in_autobeat = false;
+        s_drag_in_beats    = false;
+        s_drag_in_sec      = false;
+        s_drag_in_lyr      = false;
+        s_drag_in_misc     = false;
     }
 
     // Minimap seek/scrub
@@ -1205,6 +1296,27 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
         s_tap_count = j;
     }
 
+    // I key: also inserts selected auto-beats into the beatmap
+    if (!ImGui::IsAnyItemActive() && ImGui::IsKeyPressed(ImGuiKey_I, false) && autobeat) {
+        bool any = false;
+        for (int i = 0; i < autobeat->beat_count; i++)
+            if (autobeat->beat_selected[i]) { any = true; break; }
+        if (any) {
+            undo_push(undo, beatmap, lyricmap);
+            for (int i = 0; i < autobeat->beat_count; i++)
+                if (autobeat->beat_selected[i])
+                    beatmap_add(beatmap, autobeat->beat_times[i]);
+            int j = 0;
+            for (int i = 0; i < autobeat->beat_count; i++)
+                if (!autobeat->beat_selected[i]) {
+                    autobeat->beat_times[j]    = autobeat->beat_times[i];
+                    autobeat->beat_selected[j] = false;
+                    j++;
+                }
+            autobeat->beat_count = j;
+        }
+    }
+
     // --- Draw ---
 
     // Left sidebar: background + right border
@@ -1231,7 +1343,7 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
         }
     }
 
-    // Max-frequency +/- buttons in left sidebar at top of spectrogram (stacked vertically)
+    // Spectrogram controls in left sidebar: Log toggle, then +/- max-freq buttons
     {
         bool at_max = (s_spectro_max_khz >= 22);
         bool at_min = (s_spectro_max_khz <= 2);
@@ -1239,15 +1351,28 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
         float bw  = sidebar_w - 4.0f;
         float bh  = ImGui::GetFrameHeight();
         float bx  = rx + 2.0f;
+        float by  = ty + 2.0f;
 
-        ImGui::SetCursorScreenPos(ImVec2(bx, ty + 2.0f));
+        // Log toggle button — snapshot state before Button() which may flip it
+        bool log_active = s_spectro_log;
+        if (log_active) {
+            ImGui::PushStyleColor(ImGuiCol_Button,        IM_COL32(45, 100, 55, 255));
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, IM_COL32(60, 130, 70, 255));
+        }
+        ImGui::SetCursorScreenPos(ImVec2(bx, by));
+        if (ImGui::Button("Log##sl", ImVec2(bw, 0))) s_spectro_log = !s_spectro_log;
+        if (log_active) ImGui::PopStyleColor(2);
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Logarithmic frequency axis");
+        by += bh + 2.0f;
+
+        ImGui::SetCursorScreenPos(ImVec2(bx, by));
         if (at_max) ImGui::BeginDisabled();
         if (ImGui::Button("+##mfp", ImVec2(bw, 0))) s_spectro_max_khz++;
         bool ph = ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled);
         if (at_max) ImGui::EndDisabled();
         if (ph) ImGui::SetTooltip("Max freq +1 kHz (now %d kHz)", s_spectro_max_khz);
 
-        ImGui::SetCursorScreenPos(ImVec2(bx, ty + 2.0f + bh + 2.0f));
+        ImGui::SetCursorScreenPos(ImVec2(bx, by + bh + 2.0f));
         if (at_min) ImGui::BeginDisabled();
         if (ImGui::Button("-##mfm", ImVec2(bw, 0))) s_spectro_max_khz--;
         bool mh = ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled);
@@ -1269,9 +1394,14 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
         int   n_sb    = (int)(sizeof(sb_freqs) / sizeof(sb_freqs[0]));
         float lh      = ImGui::GetTextLineHeight();
         float last_bot = ty - lh - 2.0f;  // primed so the first label always passes
+        float log_range = s_spectro_log ? logf(max_freq_hz / SPECTRO_LOG_FMIN) : 0.0f;
         for (int i = n_sb - 1; i >= 0; i--) {  // high-freq → low-freq  (top → bottom)
             if (sb_freqs[i] >= (int)max_freq_hz) continue;
-            float frac    = 1.0f - (float)sb_freqs[i] / max_freq_hz;
+            float frac;
+            if (s_spectro_log && log_range > 0.0f && sb_freqs[i] > SPECTRO_LOG_FMIN)
+                frac = 1.0f - logf((float)sb_freqs[i] / SPECTRO_LOG_FMIN) / log_range;
+            else
+                frac = 1.0f - (float)sb_freqs[i] / max_freq_hz;
             float cy_freq = ty + frac * th;
             float label_y = cy_freq - lh * 0.5f;
             if (label_y < ty) continue;
@@ -1298,7 +1428,7 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
 
     spectrogram_render(spectro, dl, tx, ty, tw, th,
                        editor->view_start, editor->view_end,
-                       (float)(s_spectro_max_khz * 1000));
+                       (float)(s_spectro_max_khz * 1000), s_spectro_log);
 
     // Chroma hover overlay: faint green band for each octave of the hovered note
     if (editor->chroma_hover_note >= 0 && spectro->computed && spectro->sample_rate > 0) {
@@ -1318,8 +1448,17 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
             if (freq_hi > max_freq_hz) freq_hi = max_freq_hz;
 
             // Frequency → y: higher freq = smaller y (higher on screen)
-            float y_top = ty + th * (1.0f - freq_hi / max_freq_hz);
-            float y_bot = ty + th * (1.0f - freq_lo / max_freq_hz);
+            float y_top, y_bot;
+            if (s_spectro_log) {
+                float lr = logf(max_freq_hz / SPECTRO_LOG_FMIN);
+                float fhi = freq_hi > SPECTRO_LOG_FMIN ? freq_hi : SPECTRO_LOG_FMIN;
+                float flo = freq_lo > SPECTRO_LOG_FMIN ? freq_lo : SPECTRO_LOG_FMIN;
+                y_top = ty + th * (1.0f - logf(fhi / SPECTRO_LOG_FMIN) / lr);
+                y_bot = ty + th * (1.0f - logf(flo / SPECTRO_LOG_FMIN) / lr);
+            } else {
+                y_top = ty + th * (1.0f - freq_hi / max_freq_hz);
+                y_bot = ty + th * (1.0f - freq_lo / max_freq_hz);
+            }
             if (y_top < ty)        y_top = ty;
             if (y_bot > ty + th)   y_bot = ty + th;
             if (y_bot <= y_top + 0.5f) y_bot = y_top + 1.0f;
@@ -1615,16 +1754,35 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
         const float TAP_R  = 5.0f;
         float strip_cy = tap_y + TAP_STRIP_H * 0.5f;
         double span    = editor->view_end - editor->view_start;
+        // Hover hit-test (find nearest tap to mouse, within the strip y-band)
+        int   tap_hover      = -1;
+        float tap_hover_best = 9.0f;
+        bool  in_tap_y = (io.MousePos.y >= tap_y && io.MousePos.y < tap_y + TAP_STRIP_H);
+        if (in_tap_y) {
+            for (int i = 0; i < s_tap_count; i++) {
+                float bx = (span > 0.0 && tap_w > 0)
+                    ? tap_x + (float)((s_taps[i].time - editor->view_start) / span * tap_w)
+                    : tap_x;
+                float dx = fabsf(io.MousePos.x - bx);
+                if (dx < tap_hover_best) { tap_hover_best = dx; tap_hover = i; }
+            }
+        }
         dl->PushClipRect(ImVec2(tap_x, tap_y), ImVec2(tap_x + tap_w, tap_y + TAP_STRIP_H), true);
         for (int i = 0; i < s_tap_count; i++) {
             float bx = (span > 0.0 && tap_w > 0)
                 ? tap_x + (float)((s_taps[i].time - editor->view_start) / span * tap_w)
                 : tap_x;
-            if (bx < tap_x - TAP_R || bx > tap_x + tap_w + TAP_R) continue;
+            bool  hov    = (i == tap_hover);
+            float r      = hov ? TAP_R + 2.0f : TAP_R;
+            if (bx < tap_x - r || bx > tap_x + tap_w + r) continue;
             bool  sel    = s_taps[i].selected;
-            ImU32 fill   = sel ? IM_COL32(100, 200, 255, 220) : IM_COL32(120, 200, 140, 190);
-            ImU32 border = sel ? IM_COL32(160, 230, 255, 255) : IM_COL32(160, 230, 160, 220);
-            draw_diamond(dl, bx, strip_cy, TAP_R, fill, border);
+            ImU32 fill   = hov  ? IM_COL32(200, 240, 255, 255)
+                         : sel  ? IM_COL32(100, 200, 255, 220)
+                                : IM_COL32(120, 200, 140, 190);
+            ImU32 border = hov  ? IM_COL32(255, 255, 255, 255)
+                         : sel  ? IM_COL32(160, 230, 255, 255)
+                                : IM_COL32(160, 230, 160, 220);
+            draw_diamond(dl, bx, strip_cy, r, fill, border);
         }
         // Rect-select highlight
         if (s_tap_rect_sel && ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
@@ -1637,8 +1795,136 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
                                   IM_COL32(100, 200, 255, 40));
         }
         dl->PopClipRect();
+        // Hover BPM labels: instantaneous tempo to the left/right of the hovered tap
+        if (tap_hover >= 0 && in_tap_y) {
+            float bx = time_to_x(s_taps[tap_hover].time,
+                                  editor->view_start, editor->view_end, tap_x, tap_w);
+            float r = TAP_R + 2.0f;
+            char  buf[32];
+            ImVec2 ts;
+            if (tap_hover > 0) {
+                double dt = s_taps[tap_hover].time - s_taps[tap_hover - 1].time;
+                if (dt > 1e-6) {
+                    snprintf(buf, sizeof(buf), "%.1f", 60.0 / dt);
+                    ts = ImGui::CalcTextSize(buf);
+                    float lx = bx - r - 4.0f - ts.x;
+                    if (lx >= tap_x)
+                        dl->AddText(ImVec2(lx, strip_cy - ts.y * 0.5f),
+                                    IM_COL32(160, 230, 160, 220), buf);
+                }
+            }
+            if (tap_hover < s_tap_count - 1) {
+                double dt = s_taps[tap_hover + 1].time - s_taps[tap_hover].time;
+                if (dt > 1e-6) {
+                    snprintf(buf, sizeof(buf), "%.1f", 60.0 / dt);
+                    ts = ImGui::CalcTextSize(buf);
+                    float lx = bx + r + 4.0f;
+                    if (lx + ts.x <= tap_x + tap_w)
+                        dl->AddText(ImVec2(lx, strip_cy - ts.y * 0.5f),
+                                    IM_COL32(160, 230, 160, 220), buf);
+                }
+            }
+        }
     }
     }  // end show_tap_strip
+
+    // --- Auto-beat strip ---
+    if (editor->show_autobeat_strip && autobeat) {
+    dl->AddRectFilled(ImVec2(ab_x, ab_y), ImVec2(ab_x + ab_w, ab_y + AUTOBEAT_STRIP_H),
+                      IM_COL32(20, 10, 10, 255));
+    dl->AddRect(ImVec2(ab_x, ab_y), ImVec2(ab_x + ab_w, ab_y + AUTOBEAT_STRIP_H),
+                IM_COL32(80, 30, 30, 255));
+    dl->AddText(ImVec2(cx + 4.0f, ab_y + 3.0f), IM_COL32(130, 60, 60, 100), "Auto");
+
+    {
+        float  strip_cy = ab_y + AUTOBEAT_STRIP_H * 0.5f;
+        // Hover hit-test
+        int   ab_hover      = -1;
+        float ab_hover_best = 9.0f;
+        bool  in_ab_y = (io.MousePos.y >= ab_y && io.MousePos.y < ab_y + AUTOBEAT_STRIP_H);
+        if (in_ab_y) {
+            for (int i = 0; i < autobeat->beat_count; i++) {
+                float bx = time_to_x(autobeat->beat_times[i],
+                                     editor->view_start, editor->view_end, ab_x, ab_w);
+                float dx = fabsf(io.MousePos.x - bx);
+                if (dx < ab_hover_best) { ab_hover_best = dx; ab_hover = i; }
+            }
+        }
+        dl->PushClipRect(ImVec2(ab_x, ab_y), ImVec2(ab_x + ab_w, ab_y + AUTOBEAT_STRIP_H), true);
+
+        // Raw onset ticks (subtle vertical lines)
+        if (editor->show_raw_onsets) {
+            for (int i = 0; i < autobeat->onset_count; i++) {
+                float bx = time_to_x(autobeat->onset_times[i],
+                                     editor->view_start, editor->view_end, ab_x, ab_w);
+                if (bx < ab_x || bx > ab_x + ab_w) continue;
+                dl->AddLine(ImVec2(bx, ab_y + 2.0f),
+                            ImVec2(bx, ab_y + AUTOBEAT_STRIP_H - 2.0f),
+                            IM_COL32(200, 80, 80, 120), 1.0f);
+            }
+        }
+
+        // Beat diamonds
+        const float AB_R = 5.0f;
+        for (int i = 0; i < autobeat->beat_count; i++) {
+            float bx = time_to_x(autobeat->beat_times[i],
+                                 editor->view_start, editor->view_end, ab_x, ab_w);
+            bool  hov    = (i == ab_hover);
+            float r      = hov ? AB_R + 2.0f : AB_R;
+            if (bx < ab_x - r || bx > ab_x + ab_w + r) continue;
+            bool  sel    = autobeat->beat_selected[i];
+            ImU32 fill   = hov  ? IM_COL32(255, 200, 200, 255)
+                         : sel  ? IM_COL32(220,  50,  50, 230)
+                                : IM_COL32(140,  35,  35, 180);
+            ImU32 border = hov  ? IM_COL32(255, 230, 230, 255)
+                         : sel  ? IM_COL32(255, 120, 120, 255)
+                                : IM_COL32(200,  80,  80, 200);
+            draw_diamond(dl, bx, strip_cy, r, fill, border);
+        }
+
+        // Rect-select highlight
+        if (s_ab_rect_sel && ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+            float rsx0 = s_ab_rect_x0 < io.MousePos.x ? s_ab_rect_x0 : io.MousePos.x;
+            float rsx1 = s_ab_rect_x0 < io.MousePos.x ? io.MousePos.x : s_ab_rect_x0;
+            float cl0  = rsx0 < ab_x           ? ab_x           : rsx0;
+            float cl1  = rsx1 > ab_x + ab_w    ? ab_x + ab_w    : rsx1;
+            if (cl1 > cl0)
+                dl->AddRectFilled(ImVec2(cl0, ab_y), ImVec2(cl1, ab_y + AUTOBEAT_STRIP_H),
+                                  IM_COL32(220, 60, 60, 35));
+        }
+        dl->PopClipRect();
+        // Hover BPM labels: instantaneous tempo to the left/right of the hovered auto-beat
+        if (ab_hover >= 0 && in_ab_y) {
+            float bx = time_to_x(autobeat->beat_times[ab_hover],
+                                  editor->view_start, editor->view_end, ab_x, ab_w);
+            float r = AB_R + 2.0f;
+            char  buf[32];
+            ImVec2 ts;
+            if (ab_hover > 0) {
+                double dt = autobeat->beat_times[ab_hover] - autobeat->beat_times[ab_hover - 1];
+                if (dt > 1e-6) {
+                    snprintf(buf, sizeof(buf), "%.1f", 60.0 / dt);
+                    ts = ImGui::CalcTextSize(buf);
+                    float lx = bx - r - 4.0f - ts.x;
+                    if (lx >= ab_x)
+                        dl->AddText(ImVec2(lx, strip_cy - ts.y * 0.5f),
+                                    IM_COL32(255, 150, 150, 220), buf);
+                }
+            }
+            if (ab_hover < autobeat->beat_count - 1) {
+                double dt = autobeat->beat_times[ab_hover + 1] - autobeat->beat_times[ab_hover];
+                if (dt > 1e-6) {
+                    snprintf(buf, sizeof(buf), "%.1f", 60.0 / dt);
+                    ts = ImGui::CalcTextSize(buf);
+                    float lx = bx + r + 4.0f;
+                    if (lx + ts.x <= ab_x + ab_w)
+                        dl->AddText(ImVec2(lx, strip_cy - ts.y * 0.5f),
+                                    IM_COL32(255, 150, 150, 220), buf);
+                }
+            }
+        }
+    }
+    }  // end show_autobeat_strip
 
     // Beat area background
     if (editor->show_beat_strip) {

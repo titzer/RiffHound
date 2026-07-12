@@ -214,7 +214,8 @@ void spectrogram_compute(SpectrogramState* s,
 
 void spectrogram_render(SpectrogramState* s, ImDrawList* dl,
                         float x, float y, float width, float height,
-                        double view_start, double view_end, float max_freq)
+                        double view_start, double view_end, float max_freq,
+                        bool log_freq)
 {
     if (width <= 0.0f || height <= 0.0f) return;
 
@@ -238,13 +239,42 @@ void spectrogram_render(SpectrogramState* s, ImDrawList* dl,
     if (u1 > 1.0f) u1 = 1.0f;
     if (u1 <= u0) return;
 
-    // UV-Y: v=0 = Nyquist (top row in texture), v=1 = 0 Hz (bottom row).
-    // Crop to [0, max_freq] by raising v0 away from 0.
+    // UV-Y: v=0 = Nyquist (top of texture), v=1 = 0 Hz (bottom of texture).
     float nyquist = s->sample_rate > 0 ? (float)(s->sample_rate / 2) : 22050.0f;
     if (max_freq <= 0.0f || max_freq > nyquist) max_freq = nyquist;
-    float v0 = 1.0f - max_freq / nyquist;
-    if (v0 < 0.0f) v0 = 0.0f;
-    dl->AddImage((ImTextureID)(intptr_t)s->texture,
-                 ImVec2(x, y), ImVec2(x + width, y + height),
-                 ImVec2(u0, v0), ImVec2(u1, 1.0f));
+
+    if (!log_freq) {
+        // Linear: single image covering the whole rect
+        float v0 = 1.0f - max_freq / nyquist;
+        if (v0 < 0.0f) v0 = 0.0f;
+        dl->AddImage((ImTextureID)(intptr_t)s->texture,
+                     ImVec2(x, y), ImVec2(x + width, y + height),
+                     ImVec2(u0, v0), ImVec2(u1, 1.0f));
+    } else {
+        // Logarithmic: draw N horizontal strips, each mapped to the
+        // corresponding log-frequency V coordinate in the linear texture.
+        // Screen frac 0 (top) → max_freq,  frac 1 (bottom) → SPECTRO_LOG_FMIN.
+        // f(frac) = max_freq * (SPECTRO_LOG_FMIN / max_freq) ^ frac
+        const int   N        = 256;
+        const float f_min    = SPECTRO_LOG_FMIN;
+        const float log_base = (max_freq > f_min) ? logf(f_min / max_freq) : -1e-6f;
+        ImTextureID tex_id   = (ImTextureID)(intptr_t)s->texture;
+        for (int i = 0; i < N; i++) {
+            float frac_top = (float)i       / N;
+            float frac_bot = (float)(i + 1) / N;
+            float f_top    = max_freq * expf(log_base * frac_top);
+            float f_bot    = max_freq * expf(log_base * frac_bot);
+            if (f_top > nyquist) f_top = nyquist;
+            if (f_bot < 0.0f)   f_bot = 0.0f;
+            float v_top = 1.0f - f_top / nyquist;
+            float v_bot = 1.0f - f_bot / nyquist;
+            if (v_top < 0.0f) v_top = 0.0f;
+            if (v_bot > 1.0f) v_bot = 1.0f;
+            float sy_top = y + frac_top * height;
+            float sy_bot = y + frac_bot * height;
+            dl->AddImage(tex_id,
+                         ImVec2(x, sy_top), ImVec2(x + width, sy_bot),
+                         ImVec2(u0, v_top), ImVec2(u1, v_bot));
+        }
+    }
 }

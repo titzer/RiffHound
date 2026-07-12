@@ -24,6 +24,10 @@ void editor_init(EditorState* e) {
     e->cents        = 0;
     e->show_chroma_panel = false;
     e->chroma_hover_note = -1;
+    e->show_beat_detector      = false;
+    e->show_autobeat_strip     = true;
+    e->show_raw_onsets         = false;
+    e->snap_interp_to_onsets   = false;
 }
 
 void editor_clamp_view(EditorState* e) {

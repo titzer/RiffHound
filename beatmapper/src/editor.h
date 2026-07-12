@@ -30,6 +30,12 @@ struct EditorState {
     // Chroma Analyzer
     bool   show_chroma_panel;   // true while the Chroma Analyzer panel is visible
     int    chroma_hover_note;   // 0=C..11=B; -1=none; set by ui_chroma, read by ui_timeline
+
+    // Beat Detector
+    bool   show_beat_detector;       // true while the Beat Detector panel is visible
+    bool   show_autobeat_strip;      // auto-beat strip visible in the timeline
+    bool   show_raw_onsets;          // overlay raw onset ticks in the auto-beat strip
+    bool   snap_interp_to_onsets;    // shift+click snaps each grid pos to nearest detected onset
 };
 
 void editor_init(EditorState* e);

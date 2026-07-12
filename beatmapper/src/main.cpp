@@ -16,6 +16,8 @@
 #include "ui_timeline.h"
 #include "ui_toolbar.h"
 #include "ui_chroma.h"
+#include "beat_algo.h"
+#include "ui_beat_detector.h"
 #include "platform.h"
 
 #include <stdio.h>
@@ -138,6 +140,7 @@ int main(int argc, char** argv) {
     SectionMap       sectionmap;
     LyricMap         lyricmap;
     MiscMap          miscmap;
+    AutoBeatList     autobeat;
     UndoStack        undo;
     RecentFiles      recent;
 
@@ -148,6 +151,7 @@ int main(int argc, char** argv) {
     sectionmap_init(&sectionmap);
     lyricmap_init(&lyricmap);
     miscmap_init(&miscmap);
+    autobeat_init(&autobeat);
     undo_init(&undo);
     recent_init(&recent);
     recent_load(&recent);
@@ -336,6 +340,7 @@ int main(int argc, char** argv) {
                     ImGui::Separator();
                     if (ImGui::MenuItem("Settings...")) { ui_toolbar_open_settings(); }
                     ImGui::MenuItem("Chroma Analyzer", nullptr, &editor.show_chroma_panel);
+                    ImGui::MenuItem("Beat Detector",   nullptr, &editor.show_beat_detector);
                     ImGui::Separator();
                     if (ImGui::MenuItem("Save Beatmap", "Ctrl+S")) {
                         if (beatmap.save_path[0] != '\0') {
@@ -377,13 +382,16 @@ int main(int argc, char** argv) {
             ImGui::Separator();
 
             // Timeline
-            ui_timeline_render(&editor, &audio, &spectro, &beatmap, &undo, &sectionmap, &lyricmap, &miscmap);
+            ui_timeline_render(&editor, &audio, &spectro, &beatmap, &undo, &sectionmap, &lyricmap, &miscmap, &autobeat);
 
             ImGui::End();
         }
 
         // Chroma Analyzer (floating panel, outside the main docked window)
         ui_chroma_render(&editor, &audio);
+
+        // Beat Detector (floating panel, outside the main docked window)
+        ui_beat_detector_render(&editor, &audio, &beatmap, &undo, &autobeat);
 
         if (show_demo) ImGui::ShowDemoWindow(&show_demo);
 

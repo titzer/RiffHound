@@ -23,12 +23,16 @@ void spectrogram_compute(SpectrogramState* s,
                          uint64_t     num_samples,
                          uint32_t     sample_rate);
 
+// Minimum frequency (Hz) for the logarithmic axis display.
+static constexpr float SPECTRO_LOG_FMIN = 20.0f;
+
 // Render into the current ImGui window's draw list.
 // Draws in the rect [x, y, x+width, y+height].
 // view_start/view_end are the visible time range in seconds.
-struct ImDrawList;
 // max_freq: highest frequency (Hz) to display; clamped to [0, Nyquist].
-// Pass 0 to show the full range up to Nyquist.
+// log_freq: if true, map the y axis logarithmically (SPECTRO_LOG_FMIN..max_freq).
+struct ImDrawList;
 void spectrogram_render(SpectrogramState* s, ImDrawList* dl,
                         float x, float y, float width, float height,
-                        double view_start, double view_end, float max_freq);
+                        double view_start, double view_end, float max_freq,
+                        bool log_freq = false);

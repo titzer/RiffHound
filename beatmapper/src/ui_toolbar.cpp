@@ -298,6 +298,7 @@ void ui_toolbar_render(EditorState* editor, AudioState* audio, BeatMap* beatmap,
         ImGui::Checkbox("Beat insertion strip", &editor->show_place_strip);
         ImGui::Checkbox("Beats strip",          &editor->show_beat_strip);
         ImGui::Checkbox("Tap strip",            &editor->show_tap_strip);
+        ImGui::Checkbox("Auto-beat strip",      &editor->show_autobeat_strip);
         ImGui::Checkbox("Sections strip",       &editor->show_section_strip);
         ImGui::Checkbox("Lyrics strip",         &editor->show_lyric_strip);
         ImGui::Checkbox("Misc annotations strip", &editor->show_misc_strip);
@@ -308,6 +309,7 @@ void ui_toolbar_render(EditorState* editor, AudioState* audio, BeatMap* beatmap,
         ImGui::TextDisabled("Tools:");
         ImGui::Spacing();
         ImGui::Checkbox("Chroma Analyzer", &editor->show_chroma_panel);
+        ImGui::Checkbox("Beat Detector",   &editor->show_beat_detector);
 
         ImGui::Spacing();
         ImGui::Separator();

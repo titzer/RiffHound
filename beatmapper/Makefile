@@ -24,6 +24,9 @@ SOURCES := \
     $(SRC_DIR)/miscmap.cpp \
     $(SRC_DIR)/ui_chroma.cpp \
     $(SRC_DIR)/chroma_algo.cpp \
+    $(SRC_DIR)/beat_algo.cpp \
+    $(SRC_DIR)/beat_spectral_flux.cpp \
+    $(SRC_DIR)/ui_beat_detector.cpp \
     $(SRC_DIR)/chroma_goertzel.cpp \
     $(SRC_DIR)/chroma_hps.cpp \
     $(SRC_DIR)/chroma_nnls.cpp \
