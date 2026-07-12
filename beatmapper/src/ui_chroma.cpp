@@ -108,8 +108,8 @@ void ui_chroma_render(EditorState* editor, AudioState* audio)
     }
 
     // --- Floating window ---
-    ImGui::SetNextWindowSizeConstraints(ImVec2(120, 220), ImVec2(500, 800));
-    ImGui::SetNextWindowSize(ImVec2(200, 400), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSizeConstraints(ImVec2(200, 220), ImVec2(600, 800));
+    ImGui::SetNextWindowSize(ImVec2(260, 400), ImGuiCond_FirstUseEver);
     if (!ImGui::Begin("Chroma Analyzer", &editor->show_chroma_panel,
                       ImGuiWindowFlags_NoScrollbar |
                       ImGuiWindowFlags_NoScrollWithMouse)) {
@@ -167,13 +167,17 @@ void ui_chroma_render(EditorState* editor, AudioState* audio)
     ImVec2      avail  = ImGui::GetContentRegionAvail();
     ImVec2      origin = ImGui::GetCursorScreenPos();
 
-    const float LBL_W   = 26.0f;
-    const float GAP     =  2.0f;
-    const float total_h = avail.y;
+    const float LBL_W    = 26.0f;
+    const float GAP      =  2.0f;
+    const float SQ_GAP   =  4.0f;   // gap between square and confidence bar
+    const float CONF_W   = 100.0f;  // confidence bar width (px)
+    const float CONF_INS =  2.0f;   // vertical inset for confidence bar
+    const float total_h  = avail.y;
     float bar_h = (total_h - 11.0f * GAP) / 12.0f;
     if (bar_h < 13.0f) bar_h = 13.0f;
 
-    ImGui::Dummy(ImVec2(avail.x, 12.0f * (bar_h + GAP) - GAP));
+    // Row height × 12 drives the dummy; total content width fixed by layout
+    ImGui::Dummy(ImVec2(LBL_W + bar_h + SQ_GAP + CONF_W, 12.0f * (bar_h + GAP) - GAP));
 
     editor->chroma_hover_note = -1;
     ImVec2 mouse = ImGui::GetIO().MousePos;
@@ -181,29 +185,47 @@ void ui_chroma_render(EditorState* editor, AudioState* audio)
 
     for (int i = 0; i < 12; i++) {
         int   note = 11 - i;   // row 0 = B (highest), row 11 = C (lowest)
-        float y0  = origin.y + (float)i * (bar_h + GAP);
-        float y1  = y0 + bar_h;
-        float bx0 = origin.x + LBL_W;
-        float bx1 = origin.x + avail.x;
+        float y0   = origin.y + (float)i * (bar_h + GAP);
+        float y1   = y0 + bar_h;
 
-        bool hov = (mouse.x >= origin.x && mouse.x < bx1 &&
+        // Square: bar_h × bar_h
+        float sq_x0 = origin.x + LBL_W;
+        float sq_x1 = sq_x0 + bar_h;
+
+        // Confidence bar
+        float cb_x0 = sq_x1 + SQ_GAP;
+        float cb_x1 = cb_x0 + CONF_W;
+        float cb_y0 = y0 + CONF_INS;
+        float cb_y1 = y1 - CONF_INS;
+
+        bool hov = (mouse.x >= origin.x && mouse.x < cb_x1 &&
                     mouse.y >= y0        && mouse.y <  y1);
         if (hov) editor->chroma_hover_note = note;
 
         // Note label
         ImU32 lbl_col = hov ? IM_COL32(220, 255, 220, 255)
                             : IM_COL32(170, 178, 170, 210);
-        float lbl_y = y0 + (bar_h - lh) * 0.5f;
-        dl->AddText(ImVec2(origin.x + 2.0f, lbl_y), lbl_col, NOTE_NAMES[note]);
+        dl->AddText(ImVec2(origin.x + 2.0f, y0 + (bar_h - lh) * 0.5f),
+                    lbl_col, NOTE_NAMES[note]);
 
-        // Colored bar
+        // Colored square
         ImU32 fill   = chroma_colormap(s_chroma[note]);
-        dl->AddRectFilled(ImVec2(bx0, y0), ImVec2(bx1, y1), fill, 3.0f);
+        ImU32 border = hov ? IM_COL32(160, 255, 160, 220) : IM_COL32(40, 55, 40, 130);
+        dl->AddRectFilled(ImVec2(sq_x0, y0), ImVec2(sq_x1, y1), fill, 2.0f);
+        dl->AddRect      (ImVec2(sq_x0, y0), ImVec2(sq_x1, y1), border, 2.0f);
 
+        // Confidence bar — dark background
+        dl->AddRectFilled(ImVec2(cb_x0, cb_y0), ImVec2(cb_x1, cb_y1),
+                          IM_COL32(18, 20, 18, 210), 2.0f);
+        // Filled portion
+        float fill_w = CONF_W * s_chroma[note];
+        if (fill_w > 0.5f)
+            dl->AddRectFilled(ImVec2(cb_x0, cb_y0), ImVec2(cb_x0 + fill_w, cb_y1),
+                              fill, 2.0f);
         // Border
-        ImU32 border = hov ? IM_COL32(160, 255, 160, 220)
-                           : IM_COL32(40, 55, 40, 130);
-        dl->AddRect(ImVec2(bx0, y0), ImVec2(bx1, y1), border, 3.0f);
+        dl->AddRect(ImVec2(cb_x0, cb_y0), ImVec2(cb_x1, cb_y1),
+                    hov ? IM_COL32(140, 230, 140, 180) : IM_COL32(45, 55, 45, 140),
+                    2.0f);
     }
 
     if (editor->chroma_hover_note >= 0)

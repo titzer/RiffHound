@@ -21,6 +21,7 @@ SOURCES := \
     $(SRC_DIR)/recent.cpp \
     $(SRC_DIR)/ui_timeline.cpp \
     $(SRC_DIR)/ui_toolbar.cpp \
+    $(SRC_DIR)/miscmap.cpp \
     $(SRC_DIR)/ui_chroma.cpp \
     $(SRC_DIR)/chroma_algo.cpp \
     $(SRC_DIR)/chroma_goertzel.cpp \

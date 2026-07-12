@@ -1,6 +1,7 @@
 #include "ui_timeline.h"
 #include "sectionmap.h"
 #include "lyricmap.h"
+#include "miscmap.h"
 #include "undo.h"
 #include "imgui.h"
 #include <math.h>
@@ -272,18 +273,12 @@ struct TapEntry { double time; bool selected; };
 static TapEntry s_taps[MAX_TAPS];
 static int      s_tap_count = 0;
 
-// --- Misc annotation strip data (session-only, not persisted) ---
-static const int MAX_MISC = 256;
-struct MiscAnnotation { double t_start, t_end; char text[128]; bool selected; };
-static MiscAnnotation s_misc[MAX_MISC];
-static int            s_misc_count = 0;
-
 // --- main widget -------------------------------------------------------
 
 void ui_timeline_render(EditorState* editor, AudioState* audio,
                         SpectrogramState* spectro, BeatMap* beatmap,
                         UndoStack* undo, SectionMap* sectionmap,
-                        LyricMap* lyricmap)
+                        LyricMap* lyricmap, MiscMap* miscmap)
 {
     ImGuiIO& io = ImGui::GetIO();
 
@@ -486,6 +481,8 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
     static int    s_misc_hdrag_idx    = -1;
     static int    s_misc_hdrag_end    = 0;
     static int    s_misc_selected     = -1;
+    if (s_misc_selected >= miscmap->count) s_misc_selected = -1;
+    miscmap->selected_idx = s_misc_selected;  // keep struct in sync
     static int    s_misc_inline_edit  = -1;     // misc index being inline-edited
     static bool   s_rect_sel        = false;  // rect selection in progress
     static float  s_rect_x0         = 0.0f, s_rect_y0 = 0.0f;
@@ -812,10 +809,10 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
             const float HANDLE_PX = 6.0f;
             int hit = -1, hit_end = 0;
             float mx = io.MousePos.x;
-            for (int i = 0; i < s_misc_count; i++) {
-                float mx0 = time_to_x(s_misc[i].t_start,
+            for (int i = 0; i < miscmap->count; i++) {
+                float mx0 = time_to_x(miscmap->entries[i].t_start,
                                        editor->view_start, editor->view_end, misc_x, misc_w);
-                float mx1 = time_to_x(s_misc[i].t_end,
+                float mx1 = time_to_x(miscmap->entries[i].t_end,
                                        editor->view_start, editor->view_end, misc_x, misc_w);
                 if (fabsf(mx - mx0) <= HANDLE_PX) { hit = i; hit_end = 0; break; }
                 if (fabsf(mx - mx1) <= HANDLE_PX) { hit = i; hit_end = 1; break; }
@@ -1027,18 +1024,19 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
 
     // Misc handle drag: resize selected annotation
     if (s_misc_hdrag && ImGui::IsMouseDragging(ImGuiMouseButton_Left)) {
-        if (s_misc_hdrag_idx >= 0 && s_misc_hdrag_idx < s_misc_count) {
+        if (s_misc_hdrag_idx >= 0 && s_misc_hdrag_idx < miscmap->count) {
             double span  = editor->view_end - editor->view_start;
             double t_raw = (misc_w > 0 && span > 0)
                 ? editor->view_start + (double)(io.MousePos.x - misc_x) / misc_w * span
                 : editor->view_start;
             double t_snap = snap_to_beat(t_raw, beatmap,
                                           editor->view_start, editor->view_end, misc_w);
-            MiscAnnotation& ma = s_misc[s_misc_hdrag_idx];
+            MiscAnnotation& ma = miscmap->entries[s_misc_hdrag_idx];
             if (s_misc_hdrag_end == 0)
                 ma.t_start = (t_snap < ma.t_end - 0.001) ? t_snap : ma.t_end - 0.001;
             else
                 ma.t_end   = (t_snap > ma.t_start + 0.001) ? t_snap : ma.t_start + 0.001;
+            miscmap->dirty = true;
         }
     }
 
@@ -1046,12 +1044,12 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
     if (s_misc_drag && !ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
         double pt0 = (s_misc_drag_t0 < s_misc_drag_t1) ? s_misc_drag_t0 : s_misc_drag_t1;
         double pt1 = (s_misc_drag_t0 < s_misc_drag_t1) ? s_misc_drag_t1 : s_misc_drag_t0;
-        if (pt1 - pt0 > 0.05 && s_misc_count < MAX_MISC) {
-            MiscAnnotation ma = { pt0, pt1, "", false };
-            s_misc[s_misc_count] = ma;
-            s_misc_selected    = s_misc_count;
-            s_misc_inline_edit = s_misc_count;  // immediately enter text editing
-            s_misc_count++;
+        if (pt1 - pt0 > 0.05) {
+            int idx = miscmap_add(miscmap, pt0, pt1, "");
+            if (idx >= 0) {
+                s_misc_selected    = idx;
+                s_misc_inline_edit = idx;  // immediately enter text editing
+            }
         }
         s_misc_drag = false;
     }
@@ -1065,10 +1063,8 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
     // Delete key: remove selected misc annotation
     if (!ImGui::IsAnyItemActive() &&
             (ImGui::IsKeyPressed(ImGuiKey_Delete) || ImGui::IsKeyPressed(ImGuiKey_Backspace))) {
-        if (s_misc_selected >= 0 && s_misc_selected < s_misc_count) {
-            for (int i = s_misc_selected; i < s_misc_count - 1; i++)
-                s_misc[i] = s_misc[i + 1];
-            s_misc_count--;
+        if (s_misc_selected >= 0 && s_misc_selected < miscmap->count) {
+            miscmap_remove(miscmap, s_misc_selected);
             s_misc_selected    = -1;
             s_misc_inline_edit = -1;
         }
@@ -2004,8 +2000,8 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
                          ImVec2(misc_x + misc_w, misc_y + MISC_STRIP_H), true);
         const float MISC_PAD = 3.0f;
         float my0 = misc_y + MISC_PAD, my1 = misc_y + MISC_STRIP_H - MISC_PAD;
-        for (int i = 0; i < s_misc_count; i++) {
-            const MiscAnnotation& ma = s_misc[i];
+        for (int i = 0; i < miscmap->count; i++) {
+            const MiscAnnotation& ma = miscmap->entries[i];
             float mx0 = time_to_x(ma.t_start, editor->view_start, editor->view_end,
                                    misc_x, misc_w);
             float mx1 = time_to_x(ma.t_end,   editor->view_start, editor->view_end,
@@ -2062,12 +2058,12 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
         static int  s_misc_ie_prev_idx   = -1;
         static bool s_misc_ie_was_active = false;
 
-        if (s_misc_inline_edit >= 0 && s_misc_inline_edit < s_misc_count
+        if (s_misc_inline_edit >= 0 && s_misc_inline_edit < miscmap->count
                 && editor->show_misc_strip) {
             bool is_new = (s_misc_inline_edit != s_misc_ie_prev_idx);
             s_misc_ie_prev_idx = s_misc_inline_edit;
 
-            MiscAnnotation& ma = s_misc[s_misc_inline_edit];
+            MiscAnnotation& ma = miscmap->entries[s_misc_inline_edit];
             float mx0 = time_to_x(ma.t_start, editor->view_start, editor->view_end,
                                    misc_x, misc_w);
             float mx1 = time_to_x(ma.t_end,   editor->view_start, editor->view_end,
@@ -2088,10 +2084,13 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
             ImGui::PopStyleColor();
             ImGui::PopStyleVar();
             bool cur_active = ImGui::IsItemActive();
-            if (submitted || ImGui::IsKeyPressed(ImGuiKey_Escape, false))
+            if (submitted || ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
+                miscmap->dirty     = true;
                 s_misc_inline_edit = -1;
-            else if (!cur_active && s_misc_ie_was_active)
+            } else if (!cur_active && s_misc_ie_was_active) {
+                miscmap->dirty     = true;
                 s_misc_inline_edit = -1;
+            }
             s_misc_ie_was_active = cur_active;
         } else {
             s_misc_ie_prev_idx   = -1;

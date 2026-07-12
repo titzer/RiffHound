@@ -10,6 +10,7 @@
 #include "beatmap.h"
 #include "sectionmap.h"
 #include "lyricmap.h"
+#include "miscmap.h"
 #include "undo.h"
 #include "recent.h"
 #include "ui_timeline.h"
@@ -136,6 +137,7 @@ int main(int argc, char** argv) {
     BeatMap          beatmap;
     SectionMap       sectionmap;
     LyricMap         lyricmap;
+    MiscMap          miscmap;
     UndoStack        undo;
     RecentFiles      recent;
 
@@ -145,6 +147,7 @@ int main(int argc, char** argv) {
     beatmap_init(&beatmap);
     sectionmap_init(&sectionmap);
     lyricmap_init(&lyricmap);
+    miscmap_init(&miscmap);
     undo_init(&undo);
     recent_init(&recent);
     recent_load(&recent);
@@ -166,7 +169,7 @@ int main(int argc, char** argv) {
             audio_load(&audio, &editor, last_file);
             char bm_path[512];
             beatmap_path_for_audio(last_file, bm_path, sizeof(bm_path));
-            if (!beatmap_load(&beatmap, &sectionmap, &lyricmap, bm_path))
+            if (!beatmap_load(&beatmap, &sectionmap, &lyricmap, &miscmap, bm_path))
                 beatmap.count = 0;
             strncpy(beatmap.save_path, bm_path, sizeof(beatmap.save_path) - 1);
             beatmap.dirty = false;
@@ -182,7 +185,7 @@ int main(int argc, char** argv) {
 
         // Intercept window-close when there are unsaved changes.
         if (glfwWindowShouldClose(window) &&
-            (beatmap.dirty || sectionmap.dirty || lyricmap.dirty)) {
+            (beatmap.dirty || sectionmap.dirty || lyricmap.dirty || miscmap.dirty)) {
             glfwSetWindowShouldClose(window, 0);
             show_quit_modal = true;
         }
@@ -296,14 +299,14 @@ int main(int argc, char** argv) {
             // Ctrl+S → Save Beatmap (silent overwrite if a path is already known)
             if (ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_S)) {
                 if (beatmap.save_path[0] != '\0') {
-                    beatmap_save(&beatmap, &sectionmap, &lyricmap, beatmap.save_path);
+                    beatmap_save(&beatmap, &sectionmap, &lyricmap, &miscmap, beatmap.save_path);
                 } else {
                     char suggested[256] = "beatmap.txt";
                     if (audio.loaded)
                         beatmap_suggested_name(audio.filename, suggested, sizeof(suggested));
                     char sp[512] = {};
                     if (platform_save_beatmap_dialog(sp, sizeof(sp), suggested))
-                        beatmap_save(&beatmap, &sectionmap, &lyricmap, sp);
+                        beatmap_save(&beatmap, &sectionmap, &lyricmap, &miscmap, sp);
                 }
             }
         }
@@ -336,20 +339,20 @@ int main(int argc, char** argv) {
                     ImGui::Separator();
                     if (ImGui::MenuItem("Save Beatmap", "Ctrl+S")) {
                         if (beatmap.save_path[0] != '\0') {
-                            beatmap_save(&beatmap, &sectionmap, &lyricmap, beatmap.save_path);
+                            beatmap_save(&beatmap, &sectionmap, &lyricmap, &miscmap, beatmap.save_path);
                         } else {
                             char suggested[256] = "beatmap.txt";
                             if (audio.loaded)
                                 beatmap_suggested_name(audio.filename, suggested, sizeof(suggested));
                             char sp[512] = {};
                             if (platform_save_beatmap_dialog(sp, sizeof(sp), suggested))
-                                beatmap_save(&beatmap, &sectionmap, &lyricmap, sp);
+                                beatmap_save(&beatmap, &sectionmap, &lyricmap, &miscmap, sp);
                         }
                     }
                     if (ImGui::MenuItem("Load Beatmap...")) {
                         char load_path[512] = {};
                         if (platform_open_beatmap_dialog(load_path, sizeof(load_path)))
-                            beatmap_load(&beatmap, &sectionmap, &lyricmap, load_path);
+                            beatmap_load(&beatmap, &sectionmap, &lyricmap, &miscmap, load_path);
                     }
                     ImGui::Separator();
                     if (ImGui::MenuItem("Quit")) glfwSetWindowShouldClose(window, 1);
@@ -370,11 +373,11 @@ int main(int argc, char** argv) {
             }
 
             // Toolbar strip
-            ui_toolbar_render(&editor, &audio, &beatmap, &undo, &recent, &sectionmap, &lyricmap);
+            ui_toolbar_render(&editor, &audio, &beatmap, &undo, &recent, &sectionmap, &lyricmap, &miscmap);
             ImGui::Separator();
 
             // Timeline
-            ui_timeline_render(&editor, &audio, &spectro, &beatmap, &undo, &sectionmap, &lyricmap);
+            ui_timeline_render(&editor, &audio, &spectro, &beatmap, &undo, &sectionmap, &lyricmap, &miscmap);
 
             ImGui::End();
         }
@@ -411,14 +414,14 @@ int main(int argc, char** argv) {
             ImGui::Spacing();
             if (ImGui::Button("Save and Quit", ImVec2(130, 0))) {
                 if (beatmap.save_path[0] != '\0') {
-                    beatmap_save(&beatmap, &sectionmap, &lyricmap, beatmap.save_path);
+                    beatmap_save(&beatmap, &sectionmap, &lyricmap, &miscmap, beatmap.save_path);
                 } else {
                     char suggested[256] = "beatmap.txt";
                     if (audio.loaded)
                         beatmap_suggested_name(audio.filename, suggested, sizeof(suggested));
                     char sp[512] = {};
                     if (platform_save_beatmap_dialog(sp, sizeof(sp), suggested))
-                        beatmap_save(&beatmap, &sectionmap, &lyricmap, sp);
+                        beatmap_save(&beatmap, &sectionmap, &lyricmap, &miscmap, sp);
                 }
                 glfwSetWindowShouldClose(window, 1);
                 ImGui::CloseCurrentPopup();
@@ -455,6 +458,7 @@ int main(int argc, char** argv) {
 
     // Cleanup
     undo_shutdown(&undo);
+    miscmap_shutdown(&miscmap);
     lyricmap_shutdown(&lyricmap);
     sectionmap_shutdown(&sectionmap);
     beatmap_shutdown(&beatmap);

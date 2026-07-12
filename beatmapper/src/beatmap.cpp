@@ -1,6 +1,7 @@
 #include "beatmap.h"
 #include "sectionmap.h"
 #include "lyricmap.h"
+#include "miscmap.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -62,7 +63,7 @@ void beatmap_remove(BeatMap* bm, int idx) {
     bm->dirty = true;
 }
 
-bool beatmap_save(BeatMap* bm, SectionMap* sm, LyricMap* lm, const char* path) {
+bool beatmap_save(BeatMap* bm, SectionMap* sm, LyricMap* lm, MiscMap* mm, const char* path) {
     FILE* f = fopen(path, "w");
     if (!f) {
         fprintf(stderr, "[beatmap] failed to open '%s' for writing\n", path);
@@ -97,9 +98,17 @@ bool beatmap_save(BeatMap* bm, SectionMap* sm, LyricMap* lm, const char* path) {
         lm->dirty = false;
     }
 
+    if (mm && mm->count > 0) {
+        fprintf(f, "# Misc\n");
+        for (int i = 0; i < mm->count; i++)
+            fprintf(f, "%.6f\t%.6f\t%s\n",
+                    mm->entries[i].t_start, mm->entries[i].t_end, mm->entries[i].text);
+        mm->dirty = false;
+    }
+
     fclose(f);
-    fprintf(stderr, "[beatmap] saved %d beats + %d sections + %d lyrics to '%s'\n",
-            bm->count, sm ? sm->count : 0, lm ? lm->count : 0, path);
+    fprintf(stderr, "[beatmap] saved %d beats + %d sections + %d lyrics + %d misc to '%s'\n",
+            bm->count, sm ? sm->count : 0, lm ? lm->count : 0, mm ? mm->count : 0, path);
     beatmap_commit(bm);
     strncpy(bm->save_path, path, sizeof(bm->save_path) - 1);
     bm->save_path[sizeof(bm->save_path) - 1] = '\0';
@@ -107,11 +116,12 @@ bool beatmap_save(BeatMap* bm, SectionMap* sm, LyricMap* lm, const char* path) {
     return true;
 }
 
-bool beatmap_load(BeatMap* bm, SectionMap* sm, LyricMap* lm, const char* path) {
+bool beatmap_load(BeatMap* bm, SectionMap* sm, LyricMap* lm, MiscMap* mm, const char* path) {
     // Always clear first so stale data never persists when the file is missing.
     bm->count = 0;
     if (sm) sectionmap_clear(sm);
     if (lm) lyricmap_clear(lm);
+    if (mm) miscmap_clear(mm);
 
     FILE* f = fopen(path, "r");
     if (!f) {
@@ -155,7 +165,12 @@ bool beatmap_load(BeatMap* bm, SectionMap* sm, LyricMap* lm, const char* path) {
                 for (int i = 0; i < n; i++)
                     beatmap_add(bm, t1 + (t2 - t1) * i / (n - 1));
             }
-        } else if (sm) {
+        } else {
+            // Save original token before stripping ':' (needed for misc round-trip)
+            char orig_tok[64];
+            strncpy(orig_tok, kind_tok, sizeof(orig_tok) - 1);
+            orig_tok[sizeof(orig_tok) - 1] = '\0';
+
             // Strip trailing ':' from kind token (handles "verse:" written without space)
             int klen = (int)strlen(kind_tok);
             if (klen > 0 && kind_tok[klen - 1] == ':') kind_tok[--klen] = '\0';
@@ -165,7 +180,7 @@ bool beatmap_load(BeatMap* bm, SectionMap* sm, LyricMap* lm, const char* path) {
             for (int k = 0; k < SK_COUNT; k++) {
                 if (strcmp(kind_tok, SECTION_KIND_NAMES[k]) == 0) { kind = k; break; }
             }
-            if (kind >= 0) {
+            if (kind >= 0 && sm) {
                 // Collect optional label: rest of line after the first token
                 char label[48] = {};
                 const char* rest = p + off;
@@ -203,15 +218,28 @@ bool beatmap_load(BeatMap* bm, SectionMap* sm, LyricMap* lm, const char* path) {
                     sm->sections[sec_idx].ts_num = ts_num;
                     sm->sections[sec_idx].ts_den = ts_den;
                 }
+            } else if (mm) {
+                // Unrecognized line: store as misc annotation preserving original text
+                char misc_text[128] = {};
+                const char* rest = p + off;
+                while (*rest == ' ' || *rest == '\t') rest++;
+                if (*rest && *rest != '\n' && *rest != '\r')
+                    snprintf(misc_text, sizeof(misc_text), "%s %s", orig_tok, rest);
+                else
+                    strncpy(misc_text, orig_tok, sizeof(misc_text) - 1);
+                int ll = (int)strlen(misc_text);
+                while (ll > 0 && misc_text[ll-1] <= ' ') misc_text[--ll] = '\0';
+                miscmap_add(mm, t1, t2, misc_text);
             }
         }
     }
     fclose(f);
-    fprintf(stderr, "[beatmap] loaded %d beats + %d sections + %d lyrics from '%s'\n",
-            bm->count, sm ? sm->count : 0, lm ? lm->count : 0, path);
+    fprintf(stderr, "[beatmap] loaded %d beats + %d sections + %d lyrics + %d misc from '%s'\n",
+            bm->count, sm ? sm->count : 0, lm ? lm->count : 0, mm ? mm->count : 0, path);
     bm->dirty = false;
     if (sm) sm->dirty = false;
     if (lm) lm->dirty = false;
+    if (mm) mm->dirty = false;
     return true;
 }
 

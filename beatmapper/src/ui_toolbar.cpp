@@ -15,7 +15,7 @@ void ui_toolbar_open_settings() { s_show_settings_popup = true; }
 
 void ui_toolbar_render(EditorState* editor, AudioState* audio, BeatMap* beatmap,
                        UndoStack* undo, RecentFiles* recent, SectionMap* sectionmap,
-                       LyricMap* lyricmap) {
+                       LyricMap* lyricmap, MiscMap* miscmap) {
     // --- Playback controls ---
     bool can_play = audio->loaded && !audio->playing;
     bool can_stop = audio->loaded &&  audio->playing;
@@ -230,7 +230,7 @@ void ui_toolbar_render(EditorState* editor, AudioState* audio, BeatMap* beatmap,
             audio_load(audio, editor, s_file_buf);
             char bm_path[512];
             beatmap_path_for_audio(s_file_buf, bm_path, sizeof(bm_path));
-            if (!beatmap_load(beatmap, sectionmap, lyricmap, bm_path))
+            if (!beatmap_load(beatmap, sectionmap, lyricmap, miscmap, bm_path))
                 beatmap->count = 0;
             // Companion .txt is the default save target regardless of whether it exists
             strncpy(beatmap->save_path, bm_path, sizeof(beatmap->save_path) - 1);
@@ -238,7 +238,8 @@ void ui_toolbar_render(EditorState* editor, AudioState* audio, BeatMap* beatmap,
             editor->has_region = false;
             // Auto-show strips that have content in the loaded file
             if (sectionmap->count > 0) editor->show_section_strip = true;
-            if (lyricmap->count  > 0) editor->show_lyric_strip  = true;
+            if (lyricmap->count  > 0) editor->show_lyric_strip   = true;
+            if (miscmap->count   > 0) editor->show_misc_strip    = true;
             recent_add(recent, s_file_buf);
             recent_save(recent);
             ImGui::CloseCurrentPopup();
