@@ -234,6 +234,7 @@ static const float PLACE_STRIP_H = 22.0f;  // beat placement strip
 static const float TAP_STRIP_H   = 22.0f;  // tap recording strip
 static const float SECTION_H     = 52.0f;  // section strip
 static const float LYRIC_H       = 36.0f;  // lyric strip
+static const float MISC_STRIP_H  = 36.0f;  // misc annotation strip
 
 // Per-kind fill and border colours (index = SectionKind)
 static const ImU32 s_sec_fill[SK_COUNT] = {
@@ -270,6 +271,12 @@ static const int MAX_TAPS = 1024;
 struct TapEntry { double time; bool selected; };
 static TapEntry s_taps[MAX_TAPS];
 static int      s_tap_count = 0;
+
+// --- Misc annotation strip data (session-only, not persisted) ---
+static const int MAX_MISC = 256;
+struct MiscAnnotation { double t_start, t_end; char text[128]; bool selected; };
+static MiscAnnotation s_misc[MAX_MISC];
+static int            s_misc_count = 0;
 
 // --- main widget -------------------------------------------------------
 
@@ -321,15 +328,21 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
     if (s_lyr_selected >= lyricmap->count) s_lyr_selected = -1;
     lyricmap->selected_idx = s_lyr_selected;  // keep struct in sync for main.cpp delete
 
-    // Layout (top to bottom):
-    //   minimap | ruler | spectrogram (flexible) |
-    //   place strip | tap strip | beat area | [ctx panel] | section strip | lyric strip
+    // Dynamic layout: only count visible strips in fixed_h.
+    // If beat strip is hidden, suppress the ctx panel too.
+    if (!editor->show_beat_strip) { show_ctx = false; ctx_h = 0.0f; }
+
     ImVec2 avail = ImGui::GetContentRegionAvail();
-    float fixed_h = MINIMAP_H + 2.0f + RULER_H + 2.0f
-                  + 2.0f + PLACE_STRIP_H + 2.0f + TAP_STRIP_H + 2.0f
-                  + (s_beats_collapsed ? 0.0f : BEAT_AREA_H + ctx_h)
-                  + 2.0f + SECTION_H
-                  + 2.0f + LYRIC_H;
+    float strips_h = 2.0f;  // initial gap between spectrogram and first strip
+    if (editor->show_place_strip)   strips_h += PLACE_STRIP_H + 2.0f;
+    if (editor->show_tap_strip)     strips_h += TAP_STRIP_H   + 2.0f;
+    if (editor->show_beat_strip && !s_beats_collapsed) strips_h += BEAT_AREA_H;
+    strips_h += ctx_h;
+    if (editor->show_section_strip) strips_h += 2.0f + SECTION_H;
+    if (editor->show_lyric_strip)   strips_h += 2.0f + LYRIC_H;
+    if (editor->show_misc_strip)    strips_h += 2.0f + MISC_STRIP_H;
+
+    float fixed_h = MINIMAP_H + 2.0f + RULER_H + 2.0f + strips_h;
     float spectro_h = avail.y - fixed_h;
     if (spectro_h < 50.0f) spectro_h = 50.0f;
     float total_h = fixed_h + spectro_h;
@@ -355,14 +368,36 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
     float mm_x = cx, mm_y = ry,                       mm_w = cw, mm_h = MINIMAP_H;
     float ruler_y = mm_y + mm_h + 2.0f;
     float tx = cx,   ty = ruler_y + RULER_H + 2.0f,   tw = cw,   th = spectro_h;
-    float ps_x = cx, ps_y = ty + th + 2.0f,              ps_w = cw; // placement strip
-    float tap_x = cx, tap_y = ps_y + PLACE_STRIP_H + 2.0f, tap_w = cw; // tap strip
-    float ba_x = cx, ba_y = tap_y + TAP_STRIP_H + 2.0f, ba_w = cw,
-          ba_h = s_beats_collapsed ? 0.0f : BEAT_AREA_H;
-    // ctx panel sits between beat area and section strip (ctx_y defined after ba_y)
-    float ctx_y  = ba_y + ba_h;
-    float sa_x   = cx,  sa_y = ctx_y + ctx_h + 2.0f, sa_w = cw, sa_h = SECTION_H;
-    float la_x   = cx,  la_y = sa_y + SECTION_H + 2.0f, la_w = cw, la_h = LYRIC_H;
+
+    // Running-y: compute strip top positions based on which strips are visible.
+    float _y = ty + th + 2.0f;
+
+    float ps_x = cx, ps_w = cw, ps_y = _y;
+    if (editor->show_place_strip) _y += PLACE_STRIP_H + 2.0f;
+
+    float tap_x = cx, tap_w = cw, tap_y = _y;
+    if (editor->show_tap_strip) _y += TAP_STRIP_H + 2.0f;
+
+    float ba_x = cx, ba_w = cw, ba_y = _y;
+    float ba_h = (editor->show_beat_strip && !s_beats_collapsed) ? BEAT_AREA_H : 0.0f;
+    if (editor->show_beat_strip && !s_beats_collapsed) _y += BEAT_AREA_H;
+    float ctx_y = ba_y + ba_h;
+    _y += ctx_h;
+
+    float sa_x = cx, sa_w = cw, sa_h = SECTION_H;
+    if (editor->show_section_strip) _y += 2.0f;
+    float sa_y = _y;
+    if (editor->show_section_strip) _y += SECTION_H;
+
+    float la_x = cx, la_w = cw, la_h = LYRIC_H;
+    if (editor->show_lyric_strip) _y += 2.0f;
+    float la_y = _y;
+    if (editor->show_lyric_strip) _y += LYRIC_H;
+
+    float misc_x = cx, misc_w = cw;
+    if (editor->show_misc_strip) _y += 2.0f;
+    float misc_y = _y;
+    // _y after misc is unused but kept for clarity
 
     // --- Beat position layout pass (rebuilds every frame) ---
     // Computes screen positions + stagger rows for all beats.
@@ -441,6 +476,17 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
     static double s_lyr_body_drag_dt  = 0.0;   // cursor_t - t_start at drag start
     static double s_lyr_body_drag_dur = 0.0;   // lyric duration preserved during drag
     static double s_lyr_body_new_t0   = 0.0;   // virtual t_start while dragging
+    static int    s_lyr_inline_edit   = -1;     // lyric index being inline-edited (-1 = none)
+    // Misc strip editing state
+    static bool   s_drag_in_misc      = false;
+    static bool   s_misc_drag         = false;  // drag-to-create in progress
+    static double s_misc_drag_t0      = 0.0;
+    static double s_misc_drag_t1      = 0.0;
+    static bool   s_misc_hdrag        = false;
+    static int    s_misc_hdrag_idx    = -1;
+    static int    s_misc_hdrag_end    = 0;
+    static int    s_misc_selected     = -1;
+    static int    s_misc_inline_edit  = -1;     // misc index being inline-edited
     static bool   s_rect_sel        = false;  // rect selection in progress
     static float  s_rect_x0         = 0.0f, s_rect_y0 = 0.0f;
     static double s_anchor          = 0.0;
@@ -465,18 +511,30 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
         // Beat placement: only in content area, only when expanded
         s_drag_in_place   = (!s_beats_collapsed && click_x >= cx &&
                               click_y >= ps_y && click_y < ps_y + PLACE_STRIP_H);
-        s_drag_in_tap     = (click_x >= cx &&
+        s_drag_in_tap     = (editor->show_tap_strip && click_x >= cx &&
                               click_y >= tap_y && click_y < tap_y + TAP_STRIP_H);
-        s_drag_in_beats   = (click_y >= ba_y    && click_y < ba_y + ba_h);
-        s_drag_in_sec     = (click_y >= sa_y    && click_y < sa_y + sa_h);
-        s_drag_in_lyr     = (click_y >= la_y    && click_y < la_y + la_h);
+        s_drag_in_beats   = (editor->show_beat_strip &&
+                              click_y >= ba_y    && click_y < ba_y + ba_h);
+        s_drag_in_sec     = (editor->show_section_strip &&
+                              click_y >= sa_y    && click_y < sa_y + sa_h);
+        s_drag_in_lyr     = (editor->show_lyric_strip &&
+                              click_y >= la_y    && click_y < la_y + la_h);
+        s_drag_in_misc    = (editor->show_misc_strip && click_x >= cx &&
+                              click_y >= misc_y  && click_y < misc_y + MISC_STRIP_H);
 
         // Any click outside the section strip clears section selection.
         if (!s_drag_in_sec)
             s_sec_selected = -1;
-        // Any click outside the lyric strip clears lyric selection.
-        if (!s_drag_in_lyr)
-            s_lyr_selected = -1;
+        // Any click outside the lyric strip clears lyric selection and inline edit.
+        if (!s_drag_in_lyr) {
+            s_lyr_selected    = -1;
+            s_lyr_inline_edit = -1;
+        }
+        // Any click outside the misc strip clears misc selection and inline edit.
+        if (!s_drag_in_misc) {
+            s_misc_selected    = -1;
+            s_misc_inline_edit = -1;
+        }
 
         if (s_drag_in_place) {
             double span = editor->view_end - editor->view_start;
@@ -646,18 +704,23 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
                     s_lyr_body_drag     = false;
                     s_lyr_body_drag_idx = -1;
                 } else {
-                    // Body drag (translate whole segment)
+                    // Body click: if already selected, enter inline edit on double-click
+                    // or second click; otherwise just select.
+                    bool already_sel = (s_lyr_selected == hit);
                     s_lyr_hdrag             = false;
-                    s_lyr_body_drag         = true;
-                    s_lyr_body_drag_idx     = hit;
-                    s_lyr_body_drag_dur     = lyricmap->lyrics[hit].t_end
+                    s_lyr_body_drag         = !already_sel;  // only drag if not already selected
+                    s_lyr_body_drag_idx     = already_sel ? -1 : hit;
+                    if (!already_sel) {
+                        s_lyr_body_drag_dur = lyricmap->lyrics[hit].t_end
                                              - lyricmap->lyrics[hit].t_start;
-                    s_lyr_body_drag_dt      = t_raw - lyricmap->lyrics[hit].t_start;
-                    s_lyr_body_new_t0       = lyricmap->lyrics[hit].t_start;
+                        s_lyr_body_drag_dt  = t_raw - lyricmap->lyrics[hit].t_start;
+                        s_lyr_body_new_t0   = lyricmap->lyrics[hit].t_start;
+                    }
                     if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
-                        editor->has_region   = true;
-                        editor->region_start = lyricmap->lyrics[hit].t_start;
-                        editor->region_end   = lyricmap->lyrics[hit].t_end;
+                        // Double-click: enter inline text edit
+                        s_lyr_inline_edit = hit;
+                        s_lyr_body_drag   = false;
+                        s_lyr_body_drag_idx = -1;
                     }
                 }
             } else {
@@ -736,6 +799,47 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
                     s_rect_x0   = io.MousePos.x;
                     s_rect_y0   = io.MousePos.y;
                 }
+            }
+        }
+
+        if (s_drag_in_misc) {
+            double span  = editor->view_end - editor->view_start;
+            double t_raw = (misc_w > 0 && span > 0)
+                ? editor->view_start + (double)(io.MousePos.x - misc_x) / misc_w * span
+                : editor->view_start;
+            double t_snap = snap_to_beat(t_raw, beatmap,
+                                          editor->view_start, editor->view_end, misc_w);
+            const float HANDLE_PX = 6.0f;
+            int hit = -1, hit_end = 0;
+            float mx = io.MousePos.x;
+            for (int i = 0; i < s_misc_count; i++) {
+                float mx0 = time_to_x(s_misc[i].t_start,
+                                       editor->view_start, editor->view_end, misc_x, misc_w);
+                float mx1 = time_to_x(s_misc[i].t_end,
+                                       editor->view_start, editor->view_end, misc_x, misc_w);
+                if (fabsf(mx - mx0) <= HANDLE_PX) { hit = i; hit_end = 0; break; }
+                if (fabsf(mx - mx1) <= HANDLE_PX) { hit = i; hit_end = 1; break; }
+                if (mx > mx0 && mx < mx1)          { hit = i; hit_end = 2; break; }
+            }
+            if (hit >= 0) {
+                s_misc_selected = hit;
+                s_misc_drag     = false;
+                if (hit_end < 2) {
+                    s_misc_hdrag     = true;
+                    s_misc_hdrag_idx = hit;
+                    s_misc_hdrag_end = hit_end;
+                } else {
+                    s_misc_hdrag = false;
+                    if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left))
+                        s_misc_inline_edit = hit;
+                }
+            } else {
+                s_misc_selected    = -1;
+                s_misc_inline_edit = -1;
+                s_misc_drag        = true;
+                s_misc_drag_t0     = t_snap;
+                s_misc_drag_t1     = t_snap;
+                s_misc_hdrag       = false;
             }
         }
     }
@@ -910,6 +1014,66 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
         s_rect_sel = false;
     }
 
+    // Misc drag-to-create: update end time while dragging
+    if (s_misc_drag && s_drag_in_misc &&
+        ImGui::IsMouseDragging(ImGuiMouseButton_Left)) {
+        double span  = editor->view_end - editor->view_start;
+        double t_raw = (misc_w > 0 && span > 0)
+            ? editor->view_start + (double)(io.MousePos.x - misc_x) / misc_w * span
+            : editor->view_start;
+        s_misc_drag_t1 = snap_to_beat(t_raw, beatmap,
+                                       editor->view_start, editor->view_end, misc_w);
+    }
+
+    // Misc handle drag: resize selected annotation
+    if (s_misc_hdrag && ImGui::IsMouseDragging(ImGuiMouseButton_Left)) {
+        if (s_misc_hdrag_idx >= 0 && s_misc_hdrag_idx < s_misc_count) {
+            double span  = editor->view_end - editor->view_start;
+            double t_raw = (misc_w > 0 && span > 0)
+                ? editor->view_start + (double)(io.MousePos.x - misc_x) / misc_w * span
+                : editor->view_start;
+            double t_snap = snap_to_beat(t_raw, beatmap,
+                                          editor->view_start, editor->view_end, misc_w);
+            MiscAnnotation& ma = s_misc[s_misc_hdrag_idx];
+            if (s_misc_hdrag_end == 0)
+                ma.t_start = (t_snap < ma.t_end - 0.001) ? t_snap : ma.t_end - 0.001;
+            else
+                ma.t_end   = (t_snap > ma.t_start + 0.001) ? t_snap : ma.t_start + 0.001;
+        }
+    }
+
+    // Misc drag-to-create release
+    if (s_misc_drag && !ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+        double pt0 = (s_misc_drag_t0 < s_misc_drag_t1) ? s_misc_drag_t0 : s_misc_drag_t1;
+        double pt1 = (s_misc_drag_t0 < s_misc_drag_t1) ? s_misc_drag_t1 : s_misc_drag_t0;
+        if (pt1 - pt0 > 0.05 && s_misc_count < MAX_MISC) {
+            MiscAnnotation ma = { pt0, pt1, "", false };
+            s_misc[s_misc_count] = ma;
+            s_misc_selected    = s_misc_count;
+            s_misc_inline_edit = s_misc_count;  // immediately enter text editing
+            s_misc_count++;
+        }
+        s_misc_drag = false;
+    }
+
+    // Misc handle drag release
+    if (s_misc_hdrag && !ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+        s_misc_hdrag     = false;
+        s_misc_hdrag_idx = -1;
+    }
+
+    // Delete key: remove selected misc annotation
+    if (!ImGui::IsAnyItemActive() &&
+            (ImGui::IsKeyPressed(ImGuiKey_Delete) || ImGui::IsKeyPressed(ImGuiKey_Backspace))) {
+        if (s_misc_selected >= 0 && s_misc_selected < s_misc_count) {
+            for (int i = s_misc_selected; i < s_misc_count - 1; i++)
+                s_misc[i] = s_misc[i + 1];
+            s_misc_count--;
+            s_misc_selected    = -1;
+            s_misc_inline_edit = -1;
+        }
+    }
+
     // Tap rect-select release
     if (s_tap_rect_sel && !ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
         float rsx0 = s_tap_rect_x0 < io.MousePos.x ? s_tap_rect_x0 : io.MousePos.x;
@@ -932,6 +1096,7 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
         s_drag_in_beats   = false;
         s_drag_in_sec     = false;
         s_drag_in_lyr     = false;
+        s_drag_in_misc    = false;
     }
 
     // Minimap seek/scrub
@@ -1196,6 +1361,7 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
     }
 
     // Placement strip background
+    if (editor->show_place_strip) {
     dl->AddRectFilled(ImVec2(ps_x, ps_y), ImVec2(ps_x + ps_w, ps_y + PLACE_STRIP_H),
                       IM_COL32(12, 16, 22, 255));
     dl->AddRect(ImVec2(ps_x, ps_y), ImVec2(ps_x + ps_w, ps_y + PLACE_STRIP_H),
@@ -1392,6 +1558,7 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
             }
         }
     }
+    }  // end show_place_strip
 
     // Cursor time hint line + tooltip
     if (hovered) {
@@ -1412,6 +1579,7 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
     }
 
     // --- Tap strip ---
+    if (editor->show_tap_strip) {
     dl->AddRectFilled(ImVec2(tap_x, tap_y), ImVec2(tap_x + tap_w, tap_y + TAP_STRIP_H),
                       IM_COL32(10, 18, 14, 255));
     dl->AddRect(ImVec2(tap_x, tap_y), ImVec2(tap_x + tap_w, tap_y + TAP_STRIP_H),
@@ -1445,8 +1613,10 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
         }
         dl->PopClipRect();
     }
+    }  // end show_tap_strip
 
     // Beat area background
+    if (editor->show_beat_strip) {
     dl->AddRectFilled(ImVec2(ba_x, ba_y), ImVec2(ba_x + ba_w, ba_y + ba_h),
                       IM_COL32(14, 14, 22, 255));
     dl->AddRect(ImVec2(ba_x, ba_y), ImVec2(ba_x + ba_w, ba_y + ba_h),
@@ -1543,14 +1713,15 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
             }
         }
     }
+    }  // end show_beat_strip
 
     // --- Section strip ---
-    // Drawn before ctx panel widget calls to avoid clip-rect restriction.
+    if (editor->show_section_strip) {
     dl->AddRectFilled(ImVec2(sa_x, sa_y), ImVec2(sa_x + sa_w, sa_y + sa_h),
-                      IM_COL32(10, 10, 16, 255));
-    dl->AddLine(ImVec2(sa_x, sa_y), ImVec2(sa_x + sa_w, sa_y),
-                IM_COL32(40, 40, 60, 255));
-    dl->AddText(ImVec2(cx + 4.0f, sa_y + 3.0f), IM_COL32(90, 90, 110, 100), "Sections");
+                      IM_COL32(18, 18, 26, 255));
+    dl->AddRect(ImVec2(sa_x, sa_y), ImVec2(sa_x + sa_w, sa_y + sa_h),
+                IM_COL32(60, 60, 85, 255));
+    dl->AddText(ImVec2(cx + 4.0f, sa_y + 3.0f), IM_COL32(110, 110, 140, 160), "Sections");
 
     dl->PushClipRect(ImVec2(sa_x, sa_y), ImVec2(sa_x + sa_w, sa_y + sa_h), true);
     for (int i = 0; i < sectionmap->count; i++) {
@@ -1638,14 +1809,15 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
         }
     }
     dl->PopClipRect();
-
+    }  // end show_section_strip
 
     // --- Lyric strip ---
+    if (editor->show_lyric_strip) {
     dl->AddRectFilled(ImVec2(la_x, la_y), ImVec2(la_x + la_w, la_y + la_h),
-                      IM_COL32(10, 14, 18, 255));
-    dl->AddLine(ImVec2(la_x, la_y), ImVec2(la_x + la_w, la_y),
-                IM_COL32(40, 40, 60, 255));
-    dl->AddText(ImVec2(cx + 4.0f, la_y + 3.0f), IM_COL32(90, 90, 110, 100), "Lyrics");
+                      IM_COL32(18, 22, 28, 255));
+    dl->AddRect(ImVec2(la_x, la_y), ImVec2(la_x + la_w, la_y + la_h),
+                IM_COL32(55, 60, 80, 255));
+    dl->AddText(ImVec2(cx + 4.0f, la_y + 3.0f), IM_COL32(110, 110, 140, 160), "Lyrics");
 
     dl->PushClipRect(ImVec2(la_x, la_y), ImVec2(la_x + la_w, la_y + la_h), true);
     for (int i = 0; i < lyricmap->count; i++) {
@@ -1742,6 +1914,161 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
             dl->AddLine(ImVec2(icx - 6.0f, icy + 3.5f), ImVec2(icx + 6.0f, icy + 3.5f), ico, 1.5f);
         }
     }
+    }  // end show_lyric_strip
+
+    // --- Inline lyric edit (InputText overlay on the lyric block) ---
+    {
+        static int  s_lyr_ie_prev_idx   = -1;
+        static bool s_lyr_ie_was_active = false;
+
+        if (s_lyr_inline_edit >= 0 && s_lyr_inline_edit < lyricmap->count
+                && editor->show_lyric_strip) {
+            bool is_new = (s_lyr_inline_edit != s_lyr_ie_prev_idx);
+            s_lyr_ie_prev_idx = s_lyr_inline_edit;
+
+            Lyric& ly = lyricmap->lyrics[s_lyr_inline_edit];
+            float lx0 = time_to_x(ly.t_start, editor->view_start, editor->view_end, la_x, la_w);
+            float lx1 = time_to_x(ly.t_end,   editor->view_start, editor->view_end, la_x, la_w);
+            float y0  = la_y + 3.0f, y1 = la_y + la_h - 3.0f;
+            float iw  = lx1 - lx0;
+            if (iw < 60.0f) iw = 60.0f;
+
+            ImGui::SetCursorScreenPos(ImVec2(lx0, y0));
+            ImGui::SetNextItemWidth(iw);
+            ImGui::PushFont(s_lyric_font());
+            float lf_sz = s_lyric_font()->FontSize;
+            float pad_y = (y1 - y0 - lf_sz) * 0.5f;
+            if (pad_y < 1.0f) pad_y = 1.0f;
+            ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(3.0f, pad_y));
+            ImGui::PushStyleColor(ImGuiCol_FrameBg, IM_COL32(20, 55, 85, 230));
+            if (is_new) ImGui::SetKeyboardFocusHere(0);
+            bool submitted = ImGui::InputText("##lyr_ie", ly.text, sizeof(ly.text),
+                                              ImGuiInputTextFlags_EnterReturnsTrue);
+            ImGui::PopStyleColor();
+            ImGui::PopStyleVar();
+            ImGui::PopFont();
+            bool cur_active = ImGui::IsItemActive();
+            if (cur_active) lyricmap->dirty = true;
+            if (submitted || ImGui::IsKeyPressed(ImGuiKey_Escape, false))
+                s_lyr_inline_edit = -1;
+            else if (!cur_active && s_lyr_ie_was_active)
+                s_lyr_inline_edit = -1;  // clicked away
+            s_lyr_ie_was_active = cur_active;
+        } else {
+            s_lyr_ie_prev_idx   = -1;
+            s_lyr_ie_was_active = false;
+        }
+    }
+
+    // --- Misc annotations strip ---
+    if (editor->show_misc_strip) {
+        dl->AddRectFilled(ImVec2(misc_x, misc_y),
+                          ImVec2(misc_x + misc_w, misc_y + MISC_STRIP_H),
+                          IM_COL32(20, 18, 28, 255));
+        dl->AddRect(ImVec2(misc_x, misc_y),
+                    ImVec2(misc_x + misc_w, misc_y + MISC_STRIP_H),
+                    IM_COL32(60, 55, 80, 255));
+        dl->AddText(ImVec2(cx + 4.0f, misc_y + 3.0f),
+                    IM_COL32(120, 110, 150, 160), "Misc");
+
+        dl->PushClipRect(ImVec2(misc_x, misc_y),
+                         ImVec2(misc_x + misc_w, misc_y + MISC_STRIP_H), true);
+        const float MISC_PAD = 3.0f;
+        float my0 = misc_y + MISC_PAD, my1 = misc_y + MISC_STRIP_H - MISC_PAD;
+        for (int i = 0; i < s_misc_count; i++) {
+            const MiscAnnotation& ma = s_misc[i];
+            float mx0 = time_to_x(ma.t_start, editor->view_start, editor->view_end,
+                                   misc_x, misc_w);
+            float mx1 = time_to_x(ma.t_end,   editor->view_start, editor->view_end,
+                                   misc_x, misc_w);
+            if (mx1 <= misc_x || mx0 >= misc_x + misc_w) continue;
+            bool sel = (i == s_misc_selected);
+            dl->AddRectFilled(ImVec2(mx0, my0), ImVec2(mx1, my1),
+                              sel ? IM_COL32(90, 55, 130, 180) : IM_COL32(65, 40, 95, 140));
+            dl->AddRect(ImVec2(mx0, my0), ImVec2(mx1, my1),
+                        sel ? IM_COL32(160, 120, 210, 230) : IM_COL32(0, 0, 0, 100),
+                        0.0f, 0, sel ? 2.0f : 1.0f);
+            if (ma.text[0] && mx1 - mx0 > 8.0f) {
+                float lbl_y = my0 + (my1 - my0 - ImGui::GetTextLineHeight()) * 0.5f;
+                ImVec2 ts = ImGui::CalcTextSize(ma.text);
+                if (mx0 + 4.0f + ts.x < mx1 - 2.0f) {
+                    dl->AddText(ImVec2(mx0 + 4.0f, lbl_y),
+                                IM_COL32(220, 210, 240, 230), ma.text);
+                } else {
+                    dl->PushClipRect(ImVec2(mx0, my0), ImVec2(mx1 - 2.0f, my1), true);
+                    dl->AddText(ImVec2(mx0 + 4.0f, lbl_y),
+                                IM_COL32(220, 210, 240, 230), ma.text);
+                    dl->PopClipRect();
+                }
+            }
+            // Resize handles for selected annotation
+            if (sel) {
+                float hmy = my0 + (my1 - my0) * 0.5f;
+                dl->AddRectFilled(ImVec2(mx0 - 3.0f, hmy - 7.0f),
+                                  ImVec2(mx0 + 3.0f, hmy + 7.0f),
+                                  IM_COL32(160, 120, 210, 230));
+                dl->AddRectFilled(ImVec2(mx1 - 3.0f, hmy - 7.0f),
+                                  ImVec2(mx1 + 3.0f, hmy + 7.0f),
+                                  IM_COL32(160, 120, 210, 230));
+            }
+        }
+        // Drag-to-create preview
+        if (s_misc_drag) {
+            double dt0 = (s_misc_drag_t0 < s_misc_drag_t1) ? s_misc_drag_t0 : s_misc_drag_t1;
+            double dt1 = (s_misc_drag_t0 < s_misc_drag_t1) ? s_misc_drag_t1 : s_misc_drag_t0;
+            float  dx0 = time_to_x(dt0, editor->view_start, editor->view_end, misc_x, misc_w);
+            float  dx1 = time_to_x(dt1, editor->view_start, editor->view_end, misc_x, misc_w);
+            if (dx1 > dx0) {
+                dl->AddRectFilled(ImVec2(dx0, my0), ImVec2(dx1, my1),
+                                  IM_COL32(130, 80, 180, 60));
+                dl->AddRect(ImVec2(dx0, my0), ImVec2(dx1, my1),
+                            IM_COL32(170, 120, 220, 200), 0.0f, 0, 1.5f);
+            }
+        }
+        dl->PopClipRect();
+    }  // end show_misc_strip
+
+    // --- Inline misc edit (InputText overlay on the annotation block) ---
+    {
+        static int  s_misc_ie_prev_idx   = -1;
+        static bool s_misc_ie_was_active = false;
+
+        if (s_misc_inline_edit >= 0 && s_misc_inline_edit < s_misc_count
+                && editor->show_misc_strip) {
+            bool is_new = (s_misc_inline_edit != s_misc_ie_prev_idx);
+            s_misc_ie_prev_idx = s_misc_inline_edit;
+
+            MiscAnnotation& ma = s_misc[s_misc_inline_edit];
+            float mx0 = time_to_x(ma.t_start, editor->view_start, editor->view_end,
+                                   misc_x, misc_w);
+            float mx1 = time_to_x(ma.t_end,   editor->view_start, editor->view_end,
+                                   misc_x, misc_w);
+            float my0 = misc_y + 3.0f, my1 = misc_y + MISC_STRIP_H - 3.0f;
+            float iw  = mx1 - mx0;
+            if (iw < 60.0f) iw = 60.0f;
+
+            ImGui::SetCursorScreenPos(ImVec2(mx0, my0));
+            ImGui::SetNextItemWidth(iw);
+            float pad_y = (my1 - my0 - ImGui::GetTextLineHeight()) * 0.5f;
+            if (pad_y < 1.0f) pad_y = 1.0f;
+            ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(3.0f, pad_y));
+            ImGui::PushStyleColor(ImGuiCol_FrameBg, IM_COL32(50, 25, 75, 230));
+            if (is_new) ImGui::SetKeyboardFocusHere(0);
+            bool submitted = ImGui::InputText("##misc_ie", ma.text, sizeof(ma.text),
+                                              ImGuiInputTextFlags_EnterReturnsTrue);
+            ImGui::PopStyleColor();
+            ImGui::PopStyleVar();
+            bool cur_active = ImGui::IsItemActive();
+            if (submitted || ImGui::IsKeyPressed(ImGuiKey_Escape, false))
+                s_misc_inline_edit = -1;
+            else if (!cur_active && s_misc_ie_was_active)
+                s_misc_inline_edit = -1;
+            s_misc_ie_was_active = cur_active;
+        } else {
+            s_misc_ie_prev_idx   = -1;
+            s_misc_ie_was_active = false;
+        }
+    }
 
     // --- Contextual interpolation panel ---
     // Shown when exactly two adjacent beats are selected.
@@ -1800,8 +2127,7 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
                           : (float)suggested;
         }
 
-        // Panel background
-        float ctx_y = ba_y + ba_h;
+        // Panel background (ctx_y = ba_y + ba_h, computed in layout above)
         dl->AddRectFilled(ImVec2(ba_x, ctx_y), ImVec2(ba_x + ba_w, ctx_y + CTX_PANEL_H),
                           IM_COL32(10, 10, 18, 255));
         dl->AddLine(ImVec2(ba_x, ctx_y), ImVec2(ba_x + ba_w, ctx_y),

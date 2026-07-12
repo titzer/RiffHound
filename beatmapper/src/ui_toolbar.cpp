@@ -7,9 +7,11 @@
 #include <stdio.h>
 
 static char s_file_buf[512] = "";
-static bool s_show_open_dialog = false;
+static bool s_show_open_dialog    = false;
+static bool s_show_settings_popup = false;
 
-void ui_toolbar_open_dialog() { s_show_open_dialog = true; }
+void ui_toolbar_open_dialog()   { s_show_open_dialog    = true; }
+void ui_toolbar_open_settings() { s_show_settings_popup = true; }
 
 void ui_toolbar_render(EditorState* editor, AudioState* audio, BeatMap* beatmap,
                        UndoStack* undo, RecentFiles* recent, SectionMap* sectionmap,
@@ -106,6 +108,10 @@ void ui_toolbar_render(EditorState* editor, AudioState* audio, BeatMap* beatmap,
         if (audio->loaded)
             strncpy(s_file_buf, audio->filename, sizeof(s_file_buf) - 1);
     }
+
+    ImGui::SameLine();
+    if (ImGui::Button("Settings..."))
+        s_show_settings_popup = true;
 
     if (audio->loaded) {
         ImGui::SameLine();
@@ -230,6 +236,9 @@ void ui_toolbar_render(EditorState* editor, AudioState* audio, BeatMap* beatmap,
             strncpy(beatmap->save_path, bm_path, sizeof(beatmap->save_path) - 1);
             beatmap->dirty = false;
             editor->has_region = false;
+            // Auto-show strips that have content in the loaded file
+            if (sectionmap->count > 0) editor->show_section_strip = true;
+            if (lyricmap->count  > 0) editor->show_lyric_strip  = true;
             recent_add(recent, s_file_buf);
             recent_save(recent);
             ImGui::CloseCurrentPopup();
@@ -270,6 +279,32 @@ void ui_toolbar_render(EditorState* editor, AudioState* audio, BeatMap* beatmap,
             do_load();
         ImGui::SameLine();
         if (ImGui::Button("Cancel", ImVec2(80, 0)))
+            ImGui::CloseCurrentPopup();
+        ImGui::EndPopup();
+    }
+
+    // --- Settings popup ---
+    if (s_show_settings_popup) {
+        ImGui::OpenPopup("Settings");
+        s_show_settings_popup = false;
+    }
+    if (ImGui::BeginPopupModal("Settings", nullptr,
+                               ImGuiWindowFlags_AlwaysAutoResize)) {
+        if (ImGui::IsKeyPressed(ImGuiKey_Escape)) ImGui::CloseCurrentPopup();
+
+        ImGui::TextDisabled("Visible strips:");
+        ImGui::Spacing();
+        ImGui::Checkbox("Beat insertion strip", &editor->show_place_strip);
+        ImGui::Checkbox("Beats strip",          &editor->show_beat_strip);
+        ImGui::Checkbox("Tap strip",            &editor->show_tap_strip);
+        ImGui::Checkbox("Sections strip",       &editor->show_section_strip);
+        ImGui::Checkbox("Lyrics strip",         &editor->show_lyric_strip);
+        ImGui::Checkbox("Misc annotations strip", &editor->show_misc_strip);
+
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::Spacing();
+        if (ImGui::Button("Close", ImVec2(80, 0)))
             ImGui::CloseCurrentPopup();
         ImGui::EndPopup();
     }

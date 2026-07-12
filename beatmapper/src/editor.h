@@ -14,6 +14,14 @@ struct EditorState {
     bool   autoscroll;    // scroll timeline to follow playhead during playback
     bool   lyric_index_open;  // true while the Lyric Index floating window is visible
 
+    // Strip visibility (controlled via Settings popup)
+    bool   show_place_strip;   // beat insertion strip
+    bool   show_beat_strip;    // beat area
+    bool   show_tap_strip;     // tap recording strip
+    bool   show_section_strip; // section strip
+    bool   show_lyric_strip;   // lyric strip
+    bool   show_misc_strip;    // miscellaneous annotation strip
+
     // Playback parameters – reset to defaults on each new file load.
     float  speed;         // playback speed [0.25, 2.0], default 1.0
     int    semitones;     // pitch shift in semitones [-12, 12]

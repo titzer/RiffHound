@@ -16,3 +16,6 @@ void ui_toolbar_render(EditorState* editor, AudioState* audio, BeatMap* beatmap,
 
 // Request the Open Audio dialog to appear on the next frame (callable from menu bar).
 void ui_toolbar_open_dialog();
+
+// Request the Settings popup to appear on the next frame.
+void ui_toolbar_open_settings();

@@ -330,6 +330,8 @@ int main(int argc, char** argv) {
                 if (ImGui::BeginMenu("File")) {
                     if (ImGui::MenuItem("Open Audio...")) { ui_toolbar_open_dialog(); }
                     ImGui::Separator();
+                    if (ImGui::MenuItem("Settings...")) { ui_toolbar_open_settings(); }
+                    ImGui::Separator();
                     if (ImGui::MenuItem("Save Beatmap", "Ctrl+S")) {
                         if (beatmap.save_path[0] != '\0') {
                             beatmap_save(&beatmap, &sectionmap, &lyricmap, beatmap.save_path);

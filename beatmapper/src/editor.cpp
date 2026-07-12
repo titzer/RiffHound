@@ -13,6 +13,12 @@ void editor_init(EditorState* e) {
     e->region_end   = 0.0;
     e->autoscroll        = false;
     e->lyric_index_open  = false;
+    e->show_place_strip   = true;
+    e->show_beat_strip    = true;
+    e->show_tap_strip     = true;
+    e->show_section_strip = true;
+    e->show_lyric_strip   = true;
+    e->show_misc_strip    = true;
     e->speed        = 1.0f;
     e->semitones    = 0;
     e->cents        = 0;
