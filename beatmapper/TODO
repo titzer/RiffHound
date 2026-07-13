@@ -1,3 +1,6 @@
+- Fix Linux audio playback / generation
+- Try web/wasm build
+- Hook up analyzer plugins (out of process, python models)
 - Load dialog should immediately load after system dialog returns selection
 - Load dialog should allow up and down arrows
 - section duplicate tool:
@@ -14,20 +17,29 @@
   - Simple chord change cue?
 - Tool assist using audio analysis:
   - lyric find / align: analyze audio to find vocals, line up to lyrics
-  - beat find / align: analyze audio to find likely beats and present, add new strip that shows inferred beats and allows transferring
-    - beat analysis shows possible beats (and eventually drum voices like snare, kick, tom, etc) on spectrogram
-    - makes it easy to select a range of spectrogram, get suggested beats, and put them in
-- Lyric mode: larger font
+- Lyric mode: larger, higher resolution font
   - button to copy previous or other lyric
+- Global audit of all do/undo/redo history
+  - make sure it's associated with a track
+- Move/remove the track speedup / slowdown plus pitch adjustment?
 
-- Collapse each of beat, section, lyric, chord, melody editors.
+- Settings dialog for all panels.
 - Beat-precise lyrics. In the lyric editing timeline pane, there is a way to line up beats with individual words and syllables.
 - Riff text strip for melodies
 - Chord progressions
 
-Playback/jamming
+Track organization and serving
+- host all the tracks and metadata somehow
+
+Karaoke, Playback/jamming
+- pitch up/down and speed controls
+- display musical score or RiffText
+- animated target window
+- improve karaoke with YIN fundamental frequency analysis of input
 - set / playlist creation
 - much better track selection
+- take apart tracks into pieces
+- stem extraction
 - loop schedule (verse#2 x 3, chorus#2 x 1, fill#44, verse#1)
 - mashup
 - Quist jamalong mode: randomly select licks from appropriate parts of backing track, versus selecting just backing track

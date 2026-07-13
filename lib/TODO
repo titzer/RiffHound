@@ -1,0 +1,211 @@
+================================================================================
+ RiffHound lib — TODO / Ideas
+================================================================================
+
+--------------------------------------------------------------------------------
+ File format parsers (Virgil)
+--------------------------------------------------------------------------------
+
+Images:   PNG  JPG  GIF  SVG  WEBP  BMP  ICO
+Audio:    MP3  M4A  WAV  AAC  FLAC  OGG
+Video:    MP4  MKV  WEBM  AVI
+Other:    GPX  MIDI
+
+Status:
+  [x] MP3  — parser + dumper done (ID3v2/v1, MPEG frame, Xing/LAME)
+  [x] PNG  — parser + dumper done
+  [x] GIF  — parser + dumper done
+  [ ] MP3 audio decoding — Layer III (see mp3/notes.md for full roadmap)
+  [ ] WAV  — straightforward RIFF chunk parser; needed for raw PCM looping
+  [ ] MIDI — event-level parser; needed for tab/score sync and MIDI capture
+  [ ] FLAC — streaminfo + frame headers; needed for lossless source support
+
+--------------------------------------------------------------------------------
+ Resonate — EWMA resonator bank
+--------------------------------------------------------------------------------
+
+Reference: https://alexandrefrancois.org/Resonate/
+Author: Alexandre François
+
+Core idea:
+  Each resonator tracks one frequency f using an Exponentially Weighted Moving
+  Average (EWMA) of the complex signal e^(2πi·f·t) evaluated at each sample.
+  Update per sample: Z[n] = α · Z[n-1] + (1-α) · x[n] · e^(-iφ[n])
+  where α controls the time constant (bandwidth) and φ accumulates phase.
+  Output: magnitude |Z[n]| and phase arg(Z[n]) at every sample — no buffering,
+  no windowing, zero latency, only a multiply and an add per resonator per sample.
+  Optionally: allow resonators to track a drifting frequency by monitoring
+  instantaneous phase changes (frequency-adaptive mode).
+
+Why it matters for RiffHound:
+  - Zero-latency per-sample analysis vs. FFT's hop-size latency
+  - No windowing artifacts; exact phase available at every sample
+  - Trivially parallelizable (each resonator is independent)
+  - Can replace FFT in chroma analyzer, onset detector, and spectrogram
+  - Enables live-input analysis that FFT-hop-based methods cannot match
+
+Candidate uses:
+
+  1. Real-time chroma (replace chroma_goertzel.cpp)
+     - 12 (or 36 for 3-octave) resonators tuned to chromatic pitches
+     - Magnitude per pitch updated every sample → instantaneous chord snapshot
+     - Phase available for onset-accurate beat alignment
+     - Could feed chord display, key estimation, auto-accompaniment key locking
+
+  2. Onset / beat detection from live input
+     - Wideband resonator bank → track energy per band per sample
+     - Detect sharp rises in magnitude → onsets with sample-accurate timing
+     - Phase continuity break → note attack detection
+     - Could replace or augment the Ellis DP tracker for live (non-file) input
+
+  3. Pitch tracker for monophonic instruments (lead guitar, vocals, harmonica)
+     - Sweep resonator bank across full pitch range (e.g. MIDI 36–84)
+     - Dominant resonator = fundamental pitch
+     - Track glides, bends, vibrato via adaptive frequency-tracking mode
+     - Feed into pitch-trace overlay on spectrogram / score display
+
+  4. Key / scale detector for live input
+     - 12 resonators → normalize magnitude vector → correlate with major/minor
+       templates → real-time key confidence updated per sample
+     - Could drive auto-transposition of chord display and backing tracks
+
+  5. Time-stretch / pitch-shift engine
+     - Resonate can synthesize audio from tracked components
+     - Modify phase accumulation rate → time-stretch without windowing artifacts
+     - Shift resonator frequencies → pitch-shift without resampling
+     - Could replace or complement WSOLA in the beatmapper for loop playback
+
+  6. Spectrogram replacement
+     - Arbitrary frequency scale (log, mel, guitar, piano) with no FFT overhead
+     - Update display every N samples (e.g. N=64) for smooth scrolling
+     - Better frequency resolution at low end than FFT with same window size
+
+  Implementation notes:
+  - Core resonator loop is ~5 lines of C; vectorizes trivially with SIMD
+  - Frequency set is fixed at init; can change α to tune bandwidth per resonator
+  - Phase must be accumulated carefully (use double or Kahan sum) to avoid drift
+  - For chromatic use: tune to equal temperament, A4=440, all 12 pitch classes
+    across 3–5 octaves; sum octave bins for chroma reduction
+  - Adaptive mode: compare arg(Z[n]) - arg(Z[n-1]) to expected dφ; nudge f
+
+--------------------------------------------------------------------------------
+ Looping / playback application
+--------------------------------------------------------------------------------
+
+ Goal: a low-latency loop station + smart jam companion that runs without a
+ central display, controlled by voice, footswitches, and MIDI.
+
+ Core loop engine:
+  - Load audio file → decode to PCM (use Virgil MP3/WAV parsers or miniaudio)
+  - Define loop points from beatmap annotations (beat-aligned boundaries)
+  - Cross-fade at loop boundaries; configurable fade length
+  - Independent pitch-shift and time-stretch (WSOLA or Resonate synthesis)
+  - Multi-loop: stack multiple independent looping regions with separate
+    pitch/speed controls (e.g. drum loop + chord loop + bass loop)
+  - Sync mode: slave all loops to a master tempo; beat-quantized start/stop
+
+ Voice control (see transcripts.txt for real interaction examples):
+  - "drums at 115"               → set tempo, start drum loop
+  - "something funky"            → select style parameter
+  - "bass in E, basic blues"     → load/generate bass in key E, 12-bar pattern
+  - "too busy / make it simpler" → reduce density parameter
+  - "bring in the chords"        → unmute chord loop
+  - "let's go down to 110"       → ramp tempo
+  - Architecture: footswitch activates mic → Whisper (Python) → intent parser
+    → command dispatcher → loop engine
+
+ Sections / arrangement:
+  - Named sections from beatmap (verse, chorus, bridge, solo, etc.)
+  - Jump to section by voice: "go to the chorus"
+  - Repeat N times, then auto-advance
+  - Fade out / end
+
+--------------------------------------------------------------------------------
+ AI models — Python subprocess integration
+--------------------------------------------------------------------------------
+
+ Architecture: beatmapper or jam buddy spawns a Python sidecar process.
+ Communication: named pipe or Unix socket, binary frames or newline-delimited
+ JSON. Audio sent as raw f32 PCM chunks; results returned as structured data.
+
+ Model                  | Capability                        | RiffHound use
+ -----------------------|-----------------------------------|---------------------------
+ Whisper (OpenAI)       | Speech → text, very robust        | Voice command recognition;
+                        |                                   | lyric transcription from
+                        |                                   | audio for lyricmap
+ Demucs (Meta)          | Source separation: separate       | Isolate drums/bass/guitar/
+                        | drums, bass, vocals, guitar       | vocals; feed stems into
+                        | from a mixed recording            | beat detector or chroma
+ Basic Pitch (Spotify)  | Audio → MIDI (polyphonic)         | Auto-tab; feed MIDI into
+                        |                                   | chord display; score gen
+ CREPE                  | Monophonic pitch tracking         | Pitch trace for vocals /
+                        |                                   | lead guitar overlay on
+                        |                                   | spectrogram
+ MusicGen (Meta)        | Text/audio conditioned music      | Generate backing tracks
+                        | generation                        | from voice description:
+                        |                                   | "give me a funky bassline"
+ madmom / BeatNet       | Pre-trained beat + downbeat       | Supplement C++ Ellis DP;
+                        | tracker (RNN-based)               | better on complex rhythms
+ essentia (MTG)         | Key, tempo, danceability,         | Library tagging pipeline;
+                        | tonal/rhythmic descriptors        | song similarity search
+ chord recognition      | Real-time chord from audio        | Drive chord display and
+ (crema, autochord)     | (CNN/CRF models)                  | auto-accompaniment changes
+ AudioCraft / Stable    | Generative music                  | On-demand jam companion
+ Audio                  |                                   | track synthesis
+ YAMNet / VGGish        | Audio event classification        | Detect instrument, genre,
+                        |                                   | or percussive event type
+
+ Priority for first integration:
+  1. Whisper — highest leverage; voice control is core UX
+  2. Demucs — beat detector works much better on isolated drum stem
+  3. madmom — drop-in beat tracker that actually installs (see notes.txt);
+     use Python 3.10+ to avoid Cython/madmom build failures on 3.9
+  4. Basic Pitch — auto-tab pipeline from any audio file
+  5. chord recognition — real-time key/chord for live chroma display
+
+ Notes on madmom / BeatNet install failure (from notes.txt):
+  The issue is Python 3.9 + old Cython. Solution:
+    brew install pyenv
+    pyenv install 3.11.x
+    pyenv local 3.11.x
+    pip install madmom  # builds cleanly on 3.11
+
+--------------------------------------------------------------------------------
+ Songmap pipeline
+--------------------------------------------------------------------------------
+
+ Goal: `songmap <file.mp3>` → structured annotation file covering:
+  - beatmap (beat times, tempo map, sections)
+  - chord map (chord per beat or segment)
+  - lyrics (aligned to beats via Whisper)
+  - key / scale / mode
+  - instrument separation (Demucs stems)
+  - guitar tab (Basic Pitch MIDI → tab converter)
+  - structural analysis (intro/verse/chorus/bridge/outro via essentia or CNN)
+  - similarity fingerprint for library search
+
+ Stages:
+  1. Decode audio → PCM (miniaudio / Virgil MP3 parser)
+  2. Beat detection: C++ Ellis DP (beatmapper) or madmom (Python)
+  3. Source separation: Demucs (Python) → drum stem → refine beat detection
+  4. Chroma + chord: Resonate bank or crema (Python)
+  5. Lyrics: Whisper (Python) → align to beatmap
+  6. MIDI transcription: Basic Pitch (Python) → guitar tab
+  7. Structure: essentia or segment CNN (Python)
+  8. Output: JSON/text annotation file consumed by beatmapper and jam buddy
+
+--------------------------------------------------------------------------------
+ Spectrograph improvements (from notes.txt)
+--------------------------------------------------------------------------------
+
+  - Linux port
+  - Piano / Guitar / mel scale frequency axes
+  - Reduce flickering (use double-buffer or incremental update)
+  - Real-time extensibility:
+    - Overlay MIDI input events on spectrogram
+    - Resonate resonator magnitude overlay (per-pitch energy as colored dots)
+    - Pitch trace from CREPE overlay
+    - Chord label at top of each beat segment
+  - Plugin / extension mechanism (shared memory buffer or Wasm)
+
+================================================================================
