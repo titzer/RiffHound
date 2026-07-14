@@ -158,7 +158,7 @@
       </div>
       <!-- Rhythm hint: always present, populated when hint is active -->
       <div id="rhythmHintArea" style="margin-bottom:10px; min-height:30px;">
-        <div id="rhythmBeats" style="position:relative; height:24px; margin-bottom:4px;"></div>
+        <div id="rhythmBeats" style="margin-bottom:4px;"></div>
         <div id="rhythmHintText" class="hint" style="font-size:15px;"></div>
       </div>
       <div id="choicesArea" style="display:flex; gap:8px; flex-wrap:wrap;"></div>
@@ -949,33 +949,235 @@ function scheduleRhythmHighlights() {
   const beatsEl = document.getElementById("rhythmBeats");
   beatsEl.innerHTML = "";
 
-  const totalMs = events.reduce((s, ev) => s + ev.dur * beatMs, 0);
-  const DOT = 20;
-  const dots = [];
-  let elapsed = 0;
+  const totalBeats = events.reduce((s, ev) => s + ev.dur, 0);
 
-  events.forEach(ev => {
-    if (!ev.rest) {
-      const frac = totalMs > 0 ? elapsed / totalMs : 0;
-      const dot = document.createElement("span");
-      dot.style.cssText = `position:absolute;width:${DOT}px;height:${DOT}px;border-radius:50%;` +
-        `background:#ddd;border:2px solid #bbb;transition:background 0.06s,border-color 0.06s;` +
-        `left:calc(${(frac * 100).toFixed(1)}% - ${DOT/2}px);top:0;`;
-      beatsEl.appendChild(dot);
-      dots.push({ dot, startMs: elapsed, durMs: ev.dur * beatMs });
+  const PAD = 10;
+  const avail = Math.max(160, beatsEl.offsetWidth - 4);
+  const pxPerBeat = (avail - 2 * PAD) / 8;  // 8 quarter beats fills the container width
+  // Layout: notes float above baseline; ticks descend below baseline.
+  //   y=0..BASE  → note symbols (head cy, stem top)
+  //   y=BASE     → baseline rule
+  //   y=BASE..H  → tick marks
+  const H = 70, BASE = 42;
+  const svgW = Math.ceil(totalBeats * pxPerBeat) + 2 * PAD;
+  const xFor = b => PAD + b * pxPerBeat;
+
+  const ruler = el("svg", { width: svgW, height: H });
+  ruler.style.display = "block";
+
+  // Baseline rule
+  ruler.appendChild(el("line", {
+    x1: PAD, y1: BASE, x2: svgW - PAD, y2: BASE,
+    stroke: "#bbb", "stroke-width": 1.5
+  }));
+
+  // Tick marks descending from baseline; quarter-note ticks taller
+  let t = 0;
+  while (t <= totalBeats + 0.001) {
+    const isQuarter = Math.round(t * 16) % 4 === 0;
+    const tickH = isQuarter ? 20 : 7;
+    const x = xFor(t);
+    ruler.appendChild(el("line", {
+      x1: x, y1: BASE, x2: x, y2: BASE + tickH,
+      stroke: isQuarter ? "#888" : "#ccc",
+      "stroke-width": isQuarter ? 1.5 : 1
+    }));
+    t = Math.round((t + 0.25) * 16384) / 16384;
+  }
+
+  // ── Note/rest symbol helpers ──────────────────────────────────────────
+  // Note geometry: head is a small rotated ellipse; stem goes straight up.
+  const NCY = 31, NRX = 7, NRY = 5;    // head centre-y, x-radius, y-radius
+  const SX = 6;                          // stem x-offset (right edge of head)
+  const STOP = 10;                       // y of stem top
+  const BEAM_H = 4;                      // beam bar height
+
+  function isBeamable(dur) {
+    return Math.abs(dur - 0.25) < 0.01 ||   // 16th
+           Math.abs(dur - 0.5)  < 0.01 ||   // 8th
+           Math.abs(dur - 1/3)  < 0.01;     // triplet
+  }
+
+  // Draw an 8th rest; returns the array of animatable SVG elements.
+  // Shape: filled dot at top + thick diagonal stroke + small bottom curl.
+  function drawRest8th(x) {
+    const dot  = el("circle", { cx: x, cy: 13, r: 3.5, fill: "#bbb" });
+    const diag = el("line", {
+      x1: x + 3, y1: 17, x2: x - 4, y2: 32,
+      stroke: "#bbb", "stroke-width": 3.5, "stroke-linecap": "round"
+    });
+    const curl = el("path", {
+      d: `M ${x-4} 32 Q ${x-1} 37 ${x+3} 34`,
+      fill: "none", stroke: "#bbb", "stroke-width": 3, "stroke-linecap": "round"
+    });
+    ruler.appendChild(dot);
+    ruler.appendChild(diag);
+    ruler.appendChild(curl);
+    return [dot, diag, curl];
+  }
+
+  // ── Pre-compute x positions and elapsed start times ───────────────────
+  const evData = [];
+  {
+    let elapsed = 0;
+    for (const ev of events) {
+      evData.push({ ev, x: xFor(elapsed), elapsed });
+      elapsed += ev.dur;
     }
-    elapsed += ev.dur * beatMs;
-  });
+  }
 
-  dots.forEach(({ dot, startMs, durMs }) => {
+  // ── Identify beaming groups ───────────────────────────────────────────
+  // A group is a consecutive run of ≥2 beamable (non-rest) events.
+  const groupOf = new Array(events.length).fill(-1);
+  const groups  = [];
+  {
+    let gi = 0;
+    while (gi < evData.length) {
+      const { ev } = evData[gi];
+      if (!ev.rest && isBeamable(ev.dur)) {
+        let gj = gi + 1;
+        while (gj < evData.length && !evData[gj].ev.rest && isBeamable(evData[gj].ev.dur)) gj++;
+        if (gj - gi >= 2) {
+          const gIdx = groups.length;
+          const grp = [];
+          for (let k = gi; k < gj; k++) { groupOf[k] = gIdx; grp.push(k); }
+          groups.push(grp);
+        }
+        gi = gj;
+      } else {
+        gi++;
+      }
+    }
+  }
+
+  // ── Pass 1: draw stems for all pitched notes ──────────────────────────
+  for (let k = 0; k < evData.length; k++) {
+    const { ev, x } = evData[k];
+    if (!ev.rest) {
+      const sx = x + SX;
+      ruler.appendChild(el("line", {
+        x1: sx, y1: NCY, x2: sx, y2: STOP,
+        stroke: "#aaa", "stroke-width": 1.5, "stroke-linecap": "round"
+      }));
+    }
+  }
+
+  // ── Pass 2: draw beams for groups; flags for isolated beamable notes ──
+  for (const grp of groups) {
+    const bx0 = evData[grp[0]].x + SX;
+    const bx1 = evData[grp[grp.length - 1]].x + SX;
+
+    // Primary beam — connects all notes in the group
+    ruler.appendChild(el("rect", { x: bx0, y: STOP - 2, width: bx1 - bx0, height: BEAM_H, fill: "#aaa" }));
+
+    // Secondary beam — spans consecutive runs of 16th notes within the group
+    let runStart = -1;
+    for (let i = 0; i <= grp.length; i++) {
+      const is16 = i < grp.length && Math.abs(evData[grp[i]].ev.dur - 0.25) < 0.01;
+      if (is16) {
+        if (runStart === -1) runStart = i;
+      } else {
+        if (runStart !== -1) {
+          if (i - runStart >= 2) {
+            // Full secondary beam across this run
+            const r0 = evData[grp[runStart]].x + SX;
+            const r1 = evData[grp[i - 1]].x + SX;
+            ruler.appendChild(el("rect", { x: r0, y: STOP + 6, width: r1 - r0, height: BEAM_H, fill: "#aaa" }));
+          } else {
+            // Single isolated 16th: stub toward its group neighbor
+            const sx16 = evData[grp[runStart]].x + SX;
+            if (runStart === grp.length - 1) {
+              const prevSX = evData[grp[runStart - 1]].x + SX;
+              const stubW  = Math.min(8, (sx16 - prevSX) * 0.45);
+              ruler.appendChild(el("rect", { x: sx16 - stubW, y: STOP + 6, width: stubW, height: BEAM_H, fill: "#aaa" }));
+            } else {
+              const nextSX = evData[grp[runStart + 1]].x + SX;
+              const stubW  = Math.min(8, (nextSX - sx16) * 0.45);
+              ruler.appendChild(el("rect", { x: sx16, y: STOP + 6, width: stubW, height: BEAM_H, fill: "#aaa" }));
+            }
+          }
+          runStart = -1;
+        }
+      }
+    }
+
+    // Triplet label: "3" centred above the group
+    const allTriplet = grp.every(k => Math.abs(evData[k].ev.dur - 1/3) < 0.01);
+    if (allTriplet) {
+      const midX = (bx0 + bx1) / 2;
+      const lbl = el("text", {
+        x: midX, y: STOP - 4,
+        "font-size": 11, "font-weight": 700, "font-family": "system-ui",
+        fill: "#aaa", "text-anchor": "middle"
+      });
+      lbl.textContent = "3";
+      ruler.appendChild(lbl);
+    }
+  }
+
+  // Flags for isolated beamable notes (not in any group)
+  for (let k = 0; k < evData.length; k++) {
+    const { ev, x } = evData[k];
+    if (!ev.rest && groupOf[k] === -1 && isBeamable(ev.dur)) {
+      const isTriplet = Math.abs(ev.dur - 1/3) < 0.01;
+      const is16th    = Math.abs(ev.dur - 0.25) < 0.01;
+      const nFlags    = is16th ? 2 : 1;
+      const sx        = x + SX;
+      for (let f = 0; f < nFlags; f++) {
+        const fy = STOP + f * 7;
+        ruler.appendChild(el("path", {
+          d: `M ${sx} ${fy} C ${sx+11} ${fy+4} ${sx+11} ${fy+10} ${sx+6} ${fy+15}`,
+          fill: "none", stroke: "#aaa", "stroke-width": 2, "stroke-linecap": "round"
+        }));
+      }
+      if (isTriplet) {
+        const lbl = el("text", {
+          x: sx + 2, y: STOP - 4,
+          "font-size": 11, "font-weight": 700, "font-family": "system-ui", fill: "#aaa"
+        });
+        lbl.textContent = "3";
+        ruler.appendChild(lbl);
+      }
+    }
+  }
+
+  // ── Pass 3: draw note heads and rests; build animation list ──────────
+  // Heads drawn last so they sit on top of stems and beams.
+  const animItems = [];
+  for (let k = 0; k < evData.length; k++) {
+    const { ev, x, elapsed } = evData[k];
+    if (ev.rest) {
+      const restEls = drawRest8th(x);
+      animItems.push({ isRest: true, restEls, startMs: elapsed * beatMs, durMs: ev.dur * beatMs });
+    } else {
+      const head = el("ellipse", {
+        cx: x, cy: NCY, rx: NRX, ry: NRY,
+        fill: "#ccc", transform: `rotate(-15, ${x}, ${NCY})`
+      });
+      ruler.appendChild(head);
+      animItems.push({ isRest: false, head, startMs: elapsed * beatMs, durMs: ev.dur * beatMs });
+    }
+  }
+
+  beatsEl.appendChild(ruler);
+
+  // ── Animate: inactive (#bbb/#ccc) → blue (onset) → green (done) ──────
+  const setColor = (item, fill, stroke) => {
+    if (item.isRest) {
+      item.restEls.forEach(e => {
+        if (e.tagName === "circle") e.setAttribute("fill", fill);
+        else { e.setAttribute("stroke", stroke); }
+      });
+    } else {
+      item.head.setAttribute("fill", fill);
+    }
+  };
+  animItems.forEach(item => {
     setTimeout(() => {
-      dot.style.background = "#4a90d9";
-      dot.style.borderColor = "#357ab8";
-      setTimeout(() => {
-        dot.style.background = "#0a7a2f";
-        dot.style.borderColor = "#068a35";
-      }, Math.min(durMs * 0.55, 220));
-    }, startMs + 50);
+      setColor(item, "#4a90d9", "#357ab8");
+      setTimeout(() => setColor(item, "#0a7a2f", "#068a35"),
+        Math.min(item.durMs * 0.55, 220));
+    }, item.startMs + 50);
   });
 }
 
