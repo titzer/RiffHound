@@ -288,6 +288,202 @@ double beatmap_selected_bpm(const BeatMap* bm) {
     return 60.0 * (n - 1) / (t_last - t_first);
 }
 
+int beatmap_selection_range(const BeatMap* bm, int* i0, int* i1) {
+    int lo = -1, hi = -1, n = 0;
+    for (int i = 0; i < bm->count; i++) {
+        if (!bm->beats[i].selected) continue;
+        if (lo < 0) lo = i;
+        hi = i;
+        n++;
+    }
+    if (i0) *i0 = lo;
+    if (i1) *i1 = hi;
+    return n;
+}
+
+// --- tempo statistics ----------------------------------------------------
+
+BpmStats beatmap_bpm_stats(const double* times, int n) {
+    BpmStats st = { 0, 0.0, 0.0, 0.0, 0.0 };
+    if (!times || n < 2) return st;
+
+    double sum = 0.0, sum_sq = 0.0;
+    for (int i = 1; i < n; i++) {
+        double dt = times[i] - times[i - 1];
+        if (dt <= 1e-9) continue;
+        double bpm = 60.0 / dt;
+        if (st.n == 0) { st.min_bpm = st.max_bpm = bpm; }
+        else {
+            if (bpm < st.min_bpm) st.min_bpm = bpm;
+            if (bpm > st.max_bpm) st.max_bpm = bpm;
+        }
+        sum    += bpm;
+        sum_sq += bpm * bpm;
+        st.n++;
+    }
+    if (st.n > 0) {
+        st.mean = sum / st.n;
+        double var = sum_sq / st.n - st.mean * st.mean;
+        st.stddev = (var > 0.0) ? sqrt(var) : 0.0;
+    }
+    return st;
+}
+
+// --- smoothing -----------------------------------------------------------
+
+void smooth_params_defaults(SmoothParams* p) {
+    if (!p) return;
+    p->strength     = 0.5f;
+    p->iterations   = 20;
+    p->use_onsets   = false;
+    p->onset_weight = 0.35f;
+    p->onset_window = 0.20f;
+    p->max_shift    = 0.050f;   // 50 ms
+}
+
+// Nearest entry in a chronological array; returns -1 when the array is empty.
+static int nearest_time_idx(const double* onsets, int count, double t) {
+    if (!onsets || count <= 0) return -1;
+    int lo = 0, hi = count;
+    while (lo < hi) { int m = (lo + hi) / 2; if (onsets[m] < t) lo = m + 1; else hi = m; }
+    int best = -1;
+    double bd = 0.0;
+    if (lo < count)            { best = lo;     bd = onsets[lo] - t; }
+    if (lo > 0) {
+        double d = t - onsets[lo - 1];
+        if (best < 0 || d < bd) { best = lo - 1; bd = d; }
+    }
+    return best;
+}
+
+void beat_smooth_times(double* t, int n, const SmoothParams* p,
+                       const double* onsets, int onset_count)
+{
+    if (!t || !p || n < 3) return;
+
+    int   iters = (p->iterations < 1) ? 1 : p->iterations;
+    float alpha = p->strength;
+    if (alpha < 0.0f) alpha = 0.0f;
+    if (alpha > 1.0f) alpha = 1.0f;
+
+    // Originals, for the max-shift leash.
+    double* orig = (double*)malloc((size_t)n * sizeof(double));
+    if (!orig) return;
+    memcpy(orig, t, (size_t)n * sizeof(double));
+
+    // Ordering guard: never let two beats come closer than a fraction of the
+    // mean spacing (5 ms at most), so a crowded range can still be smoothed.
+    double span    = t[n - 1] - t[0];
+    double min_gap = (span > 0.0) ? span / (n - 1) * 0.10 : 0.0;
+    if (min_gap > 0.005) min_gap = 0.005;
+
+    bool use_onsets = p->use_onsets && onsets && onset_count > 0 &&
+                      p->onset_weight > 0.0f && p->onset_window > 0.0f;
+
+    for (int it = 0; it < iters; it++) {
+        // Anchors stay put; interior beats move toward their neighbours'
+        // midpoint.  Updates are applied in place (Gauss-Seidel) with the sweep
+        // direction alternating each pass: in place converges roughly twice as
+        // fast as a simultaneous update and does not oscillate at strength 1.0,
+        // and alternating removes the directional bias of a single sweep.
+        bool forward = ((it & 1) == 0);
+        int  k0      = forward ? 1     : n - 2;
+        int  k1      = forward ? n - 1 : 0;
+        int  step    = forward ? 1     : -1;
+
+        for (int k = k0; k != k1; k += step) {
+            double mid = 0.5 * (t[k - 1] + t[k + 1]);
+            double v   = t[k] + alpha * (mid - t[k]);
+
+            // Audio guidance: pull toward the nearest detected onset.
+            if (use_onsets) {
+                double win = 0.5 * (t[k + 1] - t[k - 1]) * p->onset_window;
+                if (win > 0.0) {
+                    int j = nearest_time_idx(onsets, onset_count, v);
+                    if (j >= 0) {
+                        double d = onsets[j] - v;
+                        if (d <= win && d >= -win) v += p->onset_weight * d;
+                    }
+                }
+            }
+
+            // Leash: keep every beat within max_shift of where it started.
+            if (p->max_shift > 0.0f) {
+                double d = v - orig[k];
+                if (d >  p->max_shift) v = orig[k] + p->max_shift;
+                if (d < -p->max_shift) v = orig[k] - p->max_shift;
+            }
+
+            // Strict ordering: stay clear of both neighbours.
+            double lo = t[k - 1] + min_gap;
+            double hi = t[k + 1] - min_gap;
+            if (lo <= hi) {
+                if (v < lo) v = lo;
+                if (v > hi) v = hi;
+            } else {
+                v = 0.5 * (t[k - 1] + t[k + 1]);   // no room: sit in the middle
+            }
+            t[k] = v;
+        }
+    }
+
+    free(orig);
+}
+
+void beatmap_apply_times(BeatMap* bm, int i0, const double* times, int n) {
+    if (!bm || !times || i0 < 0 || n <= 0 || i0 + n > bm->count) return;
+    for (int k = 0; k < n; k++)
+        bm->beats[i0 + k].time = times[k];
+    bm->dirty = true;
+}
+
+// Map t through the old -> new beat table when it sits on a beat.
+// Returns false when t was not pinned to any of the moved beats.
+static bool retime_one(double* t, const double* old_times, const double* new_times,
+                       int n, double tol)
+{
+    int k = nearest_time_idx(old_times, n, *t);   // same nearest-value search
+    if (k < 0) return false;
+    if (fabs(old_times[k] - *t) > tol) return false;
+    if (fabs(new_times[k] - *t) < 1e-12) return false;   // beat did not move
+    *t = new_times[k];
+    return true;
+}
+
+int beatmap_retime_annotations(SectionMap* sm, LyricMap* lm, MiscMap* mm,
+                               const double* old_times, const double* new_times,
+                               int n, double tol)
+{
+    if (!old_times || !new_times || n <= 0) return 0;
+    int changed = 0;
+
+    if (sm) {
+        bool any = false;
+        for (int i = 0; i < sm->count; i++) {
+            if (retime_one(&sm->sections[i].t_start, old_times, new_times, n, tol)) { changed++; any = true; }
+            if (retime_one(&sm->sections[i].t_end,   old_times, new_times, n, tol)) { changed++; any = true; }
+        }
+        if (any) sm->dirty = true;
+    }
+    if (lm) {
+        bool any = false;
+        for (int i = 0; i < lm->count; i++) {
+            if (retime_one(&lm->lyrics[i].t_start, old_times, new_times, n, tol)) { changed++; any = true; }
+            if (retime_one(&lm->lyrics[i].t_end,   old_times, new_times, n, tol)) { changed++; any = true; }
+        }
+        if (any) lm->dirty = true;
+    }
+    if (mm) {
+        bool any = false;
+        for (int i = 0; i < mm->count; i++) {
+            if (retime_one(&mm->entries[i].t_start, old_times, new_times, n, tol)) { changed++; any = true; }
+            if (retime_one(&mm->entries[i].t_end,   old_times, new_times, n, tol)) { changed++; any = true; }
+        }
+        if (any) mm->dirty = true;
+    }
+    return changed;
+}
+
 // --- interpolation -------------------------------------------------------
 
 void beatmap_fill(BeatMap* bm, double t1, double t2, double bpm) {

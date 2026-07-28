@@ -1,6 +1,7 @@
 #include "ui_toolbar.h"
 #include "undo.h"
 #include "recent.h"
+#include "panels.h"
 #include "imgui.h"
 #include "platform.h"
 #include <string.h>
@@ -227,6 +228,9 @@ void ui_toolbar_render(EditorState* editor, AudioState* audio, BeatMap* beatmap,
         // Helper: load the file in s_file_buf, update recent list, close popup
         auto do_load = [&]() {
             if (s_file_buf[0] == '\0') return;
+            // History belongs to the track being replaced — drop it, or Ctrl+Z
+            // would paste the previous track's beats over the new one.
+            undo_clear(undo);
             audio_load(audio, editor, s_file_buf);
             char bm_path[512];
             beatmap_path_for_audio(s_file_buf, bm_path, sizeof(bm_path));
@@ -237,9 +241,9 @@ void ui_toolbar_render(EditorState* editor, AudioState* audio, BeatMap* beatmap,
             beatmap->dirty = false;
             editor->has_region = false;
             // Auto-show strips that have content in the loaded file
-            if (sectionmap->count > 0) editor->show_section_strip = true;
-            if (lyricmap->count  > 0) editor->show_lyric_strip   = true;
-            if (miscmap->count   > 0) editor->show_misc_strip    = true;
+            if (sectionmap->count > 0) panel_set_visible(editor, PANEL_SECTIONS, true);
+            if (lyricmap->count   > 0) panel_set_visible(editor, PANEL_LYRICS,   true);
+            if (miscmap->count    > 0) panel_set_visible(editor, PANEL_MISC,     true);
             recent_add(recent, s_file_buf);
             recent_save(recent);
             ImGui::CloseCurrentPopup();
@@ -295,21 +299,37 @@ void ui_toolbar_render(EditorState* editor, AudioState* audio, BeatMap* beatmap,
 
         ImGui::TextDisabled("Visible strips:");
         ImGui::Spacing();
-        ImGui::Checkbox("Beat insertion strip", &editor->show_place_strip);
-        ImGui::Checkbox("Beats strip",          &editor->show_beat_strip);
-        ImGui::Checkbox("Tap strip",            &editor->show_tap_strip);
-        ImGui::Checkbox("Auto-beat strip",      &editor->show_autobeat_strip);
-        ImGui::Checkbox("Sections strip",       &editor->show_section_strip);
-        ImGui::Checkbox("Lyrics strip",         &editor->show_lyric_strip);
-        ImGui::Checkbox("Misc annotations strip", &editor->show_misc_strip);
+        panels_checkbox_list(editor, PK_STRIP);
+
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::Spacing();
+        ImGui::TextDisabled("Tempo graph:");
+        ImGui::Spacing();
+        ImGui::SetNextItemWidth(160);
+        if (ImGui::DragFloatRange2("BPM range", &editor->tempo_min_bpm,
+                                   &editor->tempo_max_bpm, 1.0f, 20.0f, 400.0f,
+                                   "min %.0f", "max %.0f"))
+            if (editor->tempo_max_bpm < editor->tempo_min_bpm + 1.0f)
+                editor->tempo_max_bpm = editor->tempo_min_bpm + 1.0f;
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Bottom and top of the tempo graph behind the beats strip");
+        ImGui::SetNextItemWidth(160);
+        ImGui::SliderInt("Average window", &editor->tempo_avg_window, 2, 64, "%d beats");
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Beats averaged for the rolling-average tempo line");
+        ImGui::Checkbox("Show all BPM labels", &editor->show_bpm_labels);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Label every interval with its instantaneous BPM in the\n"
+                              "beats, tap and auto-beat panes (thinned out when they\n"
+                              "would overlap)");
 
         ImGui::Spacing();
         ImGui::Separator();
         ImGui::Spacing();
         ImGui::TextDisabled("Tools:");
         ImGui::Spacing();
-        ImGui::Checkbox("Chroma Analyzer", &editor->show_chroma_panel);
-        ImGui::Checkbox("Beat Detector",   &editor->show_beat_detector);
+        panels_checkbox_list(editor, PK_WINDOW);
 
         ImGui::Spacing();
         ImGui::Separator();

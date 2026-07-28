@@ -1,3 +1,4 @@
 beatmapper
 **/*.o
+**/*.d
 imgui.ini

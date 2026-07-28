@@ -55,6 +55,59 @@ int    beatmap_selected_count(const BeatMap* bm);
 // Returns 0 if fewer than 2 beats are selected.
 double beatmap_selected_bpm(const BeatMap* bm);
 
+// Index range spanned by the selection: *i0 = lowest selected index,
+// *i1 = highest.  Everything between them is part of the range even when not
+// itself selected, so selecting just a start and an end beat works.
+// Returns the number of selected beats (0 when nothing is selected).
+int beatmap_selection_range(const BeatMap* bm, int* i0, int* i1);
+
+// --- tempo statistics ----------------------------------------------------
+
+struct BpmStats {
+    int    n;        // number of inter-beat intervals measured
+    double mean;     // mean instantaneous BPM
+    double stddev;   // spread of the instantaneous BPM
+    double min_bpm;
+    double max_bpm;
+};
+
+// Statistics over the intervals of a chronological array of beat times.
+BpmStats beatmap_bpm_stats(const double* times, int n);
+
+// --- smoothing -----------------------------------------------------------
+
+struct SmoothParams {
+    float strength;      // 0..1: per-pass pull toward the local midpoint
+    int   iterations;    // number of passes (more = closer to a constant tempo)
+    bool  use_onsets;    // pull each moved beat toward a detected onset
+    float onset_weight;  // 0..1: how hard onsets pull
+    float onset_window;  // search radius as a fraction of the local beat period
+    float max_shift;     // seconds; 0 = unlimited. Caps how far a beat may move.
+};
+
+void smooth_params_defaults(SmoothParams* p);
+
+// Smooth beat timing in place over times[0..n-1], which must be chronological.
+// The first and last entries are anchors and never move; interior beats are
+// repeatedly pulled toward the midpoint of their neighbours, which evens out the
+// instantaneous BPM.  When use_onsets is set, each pass also nudges beats toward
+// the nearest entry in onsets[] (chronological) within onset_window of the local
+// beat period, so audio evidence guides the result.
+void beat_smooth_times(double* times, int n, const SmoothParams* p,
+                       const double* onsets, int onset_count);
+
+// Overwrite the times of beats [i0, i0+n) with times[].  The caller is
+// responsible for keeping them chronological (beat_smooth_times does).
+void beatmap_apply_times(BeatMap* bm, int i0, const double* times, int n);
+
+// Carry annotations along when beats move: any section, lyric or misc endpoint
+// that sits within tol of old_times[k] is retimed to new_times[k].  Endpoints
+// that were not pinned to a beat are left where they are.  Pass nullptr for any
+// layer to skip it.  Returns the number of endpoints adjusted.
+int beatmap_retime_annotations(SectionMap* sm, LyricMap* lm, MiscMap* mm,
+                               const double* old_times, const double* new_times,
+                               int n, double tol);
+
 // --- interpolation -------------------------------------------------------
 
 // Insert evenly-spaced beats between t1 and t2 (exclusive) at the given BPM.

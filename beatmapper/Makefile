@@ -21,6 +21,9 @@ SOURCES := \
     $(SRC_DIR)/recent.cpp \
     $(SRC_DIR)/ui_timeline.cpp \
     $(SRC_DIR)/ui_toolbar.cpp \
+    $(SRC_DIR)/panels.cpp \
+    $(SRC_DIR)/ui_help.cpp \
+    $(SRC_DIR)/ui_smoothing.cpp \
     $(SRC_DIR)/miscmap.cpp \
     $(SRC_DIR)/ui_chroma.cpp \
     $(SRC_DIR)/chroma_algo.cpp \
@@ -45,6 +48,10 @@ INCLUDES := \
     -I$(IMGUI_DIR)/backends \
     -I$(VENDOR_DIR)/miniaudio
 
+# -MMD -MP emits .d files so edits to a header rebuild every .cpp that includes
+# it (without this, stale objects link against an old struct layout).
+DEPFLAGS := -MMD -MP
+
 ifeq ($(UNAME), Darwin)
     CXX      := clang++
     CXXFLAGS := -std=c++17 -O2 -Wall -DGL_SILENCE_DEPRECATION
@@ -66,6 +73,7 @@ else
 endif
 
 OBJECTS := $(SOURCES:.cpp=.o) $(PLATFORM_OBJ)
+DEPS    := $(OBJECTS:.o=.d)
 
 all: $(TARGET)
 
@@ -73,14 +81,16 @@ $(TARGET): $(OBJECTS)
 	$(CXX) $(CXXFLAGS) $^ -o $@ $(LDFLAGS)
 
 %.o: %.cpp
-	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
+	$(CXX) $(CXXFLAGS) $(DEPFLAGS) $(INCLUDES) -c $< -o $@
 
 # Objective-C++ rule for macOS platform file
 $(SRC_DIR)/platform_macos.o: $(SRC_DIR)/platform_macos.mm
-	$(CXX) $(CXXFLAGS) $(INCLUDES) -x objective-c++ -c $< -o $@
+	$(CXX) $(CXXFLAGS) $(DEPFLAGS) $(INCLUDES) -x objective-c++ -c $< -o $@
+
+-include $(DEPS)
 
 clean:
-	rm -f $(TARGET) $(OBJECTS)
+	rm -f $(TARGET) $(OBJECTS) $(DEPS)
 
 run: all
 	./$(TARGET)

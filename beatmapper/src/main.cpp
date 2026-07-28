@@ -18,6 +18,9 @@
 #include "ui_chroma.h"
 #include "beat_algo.h"
 #include "ui_beat_detector.h"
+#include "ui_smoothing.h"
+#include "ui_help.h"
+#include "panels.h"
 #include "platform.h"
 
 #include <stdio.h>
@@ -260,6 +263,10 @@ int main(int argc, char** argv) {
                     audio.loop = !audio.loop;
             }
 
+            // H → toggle the keyboard shortcut window
+            if (ImGui::IsKeyPressed(ImGuiKey_H))
+                panel_toggle(&editor, PANEL_HELP);
+
 
             // Delete / Backspace → selected beats take priority; fall back to
             // removing a selected section only when no beats are selected.
@@ -275,6 +282,7 @@ int main(int argc, char** argv) {
                         if (beatmap.beats[i].selected)
                             beatmap_remove(&beatmap, i);
                 } else if (sectionmap.selected_idx >= 0) {
+                    undo_push(&undo, nullptr, nullptr, &sectionmap, nullptr);
                     sectionmap_remove(&sectionmap, sectionmap.selected_idx);
                     sectionmap.selected_idx = -1;
                 } else if (lyricmap.selected_idx >= 0) {
@@ -290,9 +298,9 @@ int main(int argc, char** argv) {
                 ui_toolbar_open_dialog();
 
 
-            // Ctrl+Z → undo
+            // Ctrl+Z → undo (each snapshot restores only the layers it covered)
             if (ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_Z))
-                undo_pop(&undo, &beatmap, &lyricmap);
+                undo_pop(&undo, &beatmap, &lyricmap, &sectionmap, &miscmap);
 
             // Ctrl+= / Ctrl+- → lyric font size
             if (ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_Equal))
@@ -339,8 +347,6 @@ int main(int argc, char** argv) {
                     if (ImGui::MenuItem("Open Audio...")) { ui_toolbar_open_dialog(); }
                     ImGui::Separator();
                     if (ImGui::MenuItem("Settings...")) { ui_toolbar_open_settings(); }
-                    ImGui::MenuItem("Chroma Analyzer", nullptr, &editor.show_chroma_panel);
-                    ImGui::MenuItem("Beat Detector",   nullptr, &editor.show_beat_detector);
                     ImGui::Separator();
                     if (ImGui::MenuItem("Save Beatmap", "Ctrl+S")) {
                         if (beatmap.save_path[0] != '\0') {
@@ -356,15 +362,22 @@ int main(int argc, char** argv) {
                     }
                     if (ImGui::MenuItem("Load Beatmap...")) {
                         char load_path[512] = {};
-                        if (platform_open_beatmap_dialog(load_path, sizeof(load_path)))
+                        if (platform_open_beatmap_dialog(load_path, sizeof(load_path))) {
+                            // Replaces every layer; snapshots of the old content
+                            // must not survive it.
+                            undo_clear(&undo);
                             beatmap_load(&beatmap, &sectionmap, &lyricmap, &miscmap, load_path);
+                        }
                     }
                     ImGui::Separator();
                     if (ImGui::MenuItem("Quit")) glfwSetWindowShouldClose(window, 1);
                     ImGui::EndMenu();
                 }
                 if (ImGui::BeginMenu("View")) {
-                    ImGui::MenuItem("ImGui Demo", nullptr, &show_demo);
+                    ImGui::TextDisabled("Timeline panes");
+                    panels_menu_items(&editor, PK_STRIP);
+                    ImGui::Separator();
+                    ImGui::MenuItem("All BPM labels", nullptr, &editor.show_bpm_labels);
                     ImGui::Separator();
                     if (ImGui::MenuItem("Lyric Font Larger",  "Ctrl+=", nullptr,
                                         ui_timeline_lyric_font_can_grow()))
@@ -372,6 +385,16 @@ int main(int argc, char** argv) {
                     if (ImGui::MenuItem("Lyric Font Smaller", "Ctrl+-", nullptr,
                                         ui_timeline_lyric_font_can_shrink()))
                         ui_timeline_lyric_font_smaller();
+                    ImGui::Separator();
+                    ImGui::MenuItem("ImGui Demo", nullptr, &show_demo);
+                    ImGui::EndMenu();
+                }
+                if (ImGui::BeginMenu("Tools")) {
+                    panels_menu_items(&editor, PK_WINDOW);
+                    ImGui::EndMenu();
+                }
+                if (ImGui::BeginMenu("Help")) {
+                    panels_menu_items(&editor, PK_HELP);
                     ImGui::EndMenu();
                 }
                 ImGui::EndMenuBar();
@@ -392,6 +415,13 @@ int main(int argc, char** argv) {
 
         // Beat Detector (floating panel, outside the main docked window)
         ui_beat_detector_render(&editor, &audio, &beatmap, &undo, &autobeat);
+
+        // Beat Smoothing (floating panel)
+        ui_smoothing_render(&editor, &audio, &beatmap, &sectionmap, &lyricmap,
+                            &miscmap, &undo, &autobeat);
+
+        // Keyboard shortcut reference
+        ui_help_render(&editor);
 
         if (show_demo) ImGui::ShowDemoWindow(&show_demo);
 

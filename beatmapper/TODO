@@ -20,7 +20,11 @@
 - Lyric mode: larger, higher resolution font
   - button to copy previous or other lyric
 - Global audit of all do/undo/redo history
-  - make sure it's associated with a track
+  - DONE: snapshots now cover beats/lyrics/sections/misc per-layer, no-op edits
+    no longer push entries, and the stack is cleared when a track or beatmap is
+    loaded (it used to be restorable onto the wrong track)
+  - remaining: inline text edits (lyric / misc / section labels) are not
+    undoable; there is still no redo
 - Move/remove the track speedup / slowdown plus pitch adjustment?
 
 - Settings dialog for all panels.

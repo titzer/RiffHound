@@ -19,6 +19,11 @@ void editor_init(EditorState* e) {
     e->show_section_strip = true;
     e->show_lyric_strip   = true;
     e->show_misc_strip    = true;
+    e->show_tempo_graph   = true;
+    e->tempo_min_bpm      = 50.0f;
+    e->tempo_max_bpm      = 150.0f;
+    e->tempo_avg_window   = 8;
+    e->show_bpm_labels    = false;
     e->speed        = 1.0f;
     e->semitones    = 0;
     e->cents        = 0;
@@ -28,6 +33,8 @@ void editor_init(EditorState* e) {
     e->show_autobeat_strip     = true;
     e->show_raw_onsets         = false;
     e->snap_interp_to_onsets   = false;
+    e->show_smoothing_panel    = false;
+    e->show_help               = false;
 }
 
 void editor_clamp_view(EditorState* e) {

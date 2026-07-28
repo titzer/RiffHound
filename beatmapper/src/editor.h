@@ -14,13 +14,20 @@ struct EditorState {
     bool   autoscroll;    // scroll timeline to follow playhead during playback
     bool   lyric_index_open;  // true while the Lyric Index floating window is visible
 
-    // Strip visibility (controlled via Settings popup)
+    // Strip visibility (controlled via the pane checkboxes and the Settings popup)
     bool   show_place_strip;   // beat insertion strip
     bool   show_beat_strip;    // beat area
     bool   show_tap_strip;     // tap recording strip
     bool   show_section_strip; // section strip
     bool   show_lyric_strip;   // lyric strip
     bool   show_misc_strip;    // miscellaneous annotation strip
+
+    // Tempo graph drawn behind the beat strip
+    bool   show_tempo_graph;   // instantaneous + rolling-average BPM plot
+    float  tempo_min_bpm;      // bottom of the tempo graph (default  50)
+    float  tempo_max_bpm;      // top of the tempo graph    (default 150)
+    int    tempo_avg_window;   // beats averaged for the rolling average (default 8)
+    bool   show_bpm_labels;    // label every interval with its instantaneous BPM
 
     // Playback parameters – reset to defaults on each new file load.
     float  speed;         // playback speed [0.25, 2.0], default 1.0
@@ -36,6 +43,12 @@ struct EditorState {
     bool   show_autobeat_strip;      // auto-beat strip visible in the timeline
     bool   show_raw_onsets;          // overlay raw onset ticks in the auto-beat strip
     bool   snap_interp_to_onsets;    // shift+click snaps each grid pos to nearest detected onset
+
+    // Beat Smoothing
+    bool   show_smoothing_panel;     // true while the Beat Smoothing panel is visible
+
+    // Help
+    bool   show_help;                // true while the Keyboard Shortcuts window is visible
 };
 
 void editor_init(EditorState* e);
