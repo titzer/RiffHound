@@ -5,6 +5,7 @@
 var opt_info    = false;
 var opt_tracks  = false;
 var opt_markers = false;
+var opt_lyrics = false;
 var opt_beats   = false;
 var opt_notes   = false;
 var opt_track   = -1;     // -1 = all tracks
@@ -28,6 +29,8 @@ component Main {
 				opt_tracks = true;
 			} else if (strEq(a, "--markers")) {
 				opt_markers = true;
+			} else if (strEq(a, "--lyrics")) {
+				opt_lyrics = true;
 			} else if (strEq(a, "--beats")) {
 				opt_beats = true;
 			} else if (strEq(a, "--notes")) {
@@ -57,7 +60,7 @@ component Main {
 		}
 		if (nf == 0) { usage(); return 1; }
 		// Default to info if no dump mode selected
-		if (!opt_tracks && !opt_markers && !opt_beats && !opt_notes && !opt_tab) opt_info = true;
+		if (!opt_tracks && !opt_markers && !opt_beats && !opt_notes && !opt_tab && !opt_lyrics) opt_info = true;
 		var ok = true;
 		for (j < nf) ok &= processFile(files[j]);
 		return if(ok, 0, 1);
@@ -71,6 +74,7 @@ def usage() {
 	System.puts("  --info                   Print song info (default)\n");
 	System.puts("  --list-tracks, -lt       List all tracks\n");
 	System.puts("  --markers                List rehearsal markers\n");
+	System.puts("  --lyrics                 Print embedded lyrics (GP4+)\n");
 	System.puts("  --beats                  Dump beats per track/measure\n");
 	System.puts("  --notes                  Add per-note detail (with --beats)\n");
 	System.puts("  -t N, --track N          Filter to track N (1-indexed)\n");
@@ -97,6 +101,7 @@ def processFile(name: string) -> bool {
 	if (opt_info)              dumpInfo(name, song);
 	if (opt_tracks)            dumpTrackList(song);
 	if (opt_markers)           dumpMarkers(song);
+	if (opt_lyrics)            dumpLyrics(song);
 	if (opt_beats || opt_notes) dumpBeats(song);
 	if (opt_tab)               dumpTab(song);
 	return true;
@@ -136,6 +141,15 @@ def dumpTrackList(song: GpxSong) {
 		System.puts("/"); System.puti(int.!(t.channel2) + 1);
 		var ch = song.channels[int.!(t.channel1)];
 		if (ch.percussion) System.puts(" [perc]");
+		else {
+			// Open-string MIDI values, highest string first.  Downstream tools
+			// need these to turn (string, fret) into pitch; a track tuned down
+			// a whole step is common and silently transposes everything.
+			System.puts("  tuning");
+			for (s < t.strings.length) {
+				System.puts(" "); System.puti(t.strings[s].value);
+			}
+		}
 		System.ln();
 	}
 }
@@ -152,6 +166,37 @@ def dumpMarkers(song: GpxSong) {
 		}
 	}
 	if (!found) System.puts("Markers: (none)\n");
+}
+
+// ---- Lyrics ----
+// GP4 and GP5 store up to five lyric blocks, each anchored to a starting
+// measure.  That anchor makes them roughly timed already, which is a much
+// cheaper starting point than running ASR over the audio.
+def dumpLyrics(song: GpxSong) {
+	var found = false;
+	for (ti < song.tracks.length) {
+		var tr = song.tracks[ti];
+		if (tr.lyrics == null) continue;
+		for (i < tr.lyrics.length) {
+			var l = tr.lyrics[i];
+			if (l.text == null || l.text.length == 0) continue;
+			if (!found) { System.puts("Lyrics:\n"); found = true; }
+			System.puts("  track "); System.puti(tr.number);
+			System.puts(" block "); System.puti(i);
+			System.puts(" from M"); System.puti(l.from); System.puts(":\n");
+			// The text uses \n for line breaks and may contain [] markers.
+			var one = Array<byte>.new(1);
+			System.puts("    ");
+			for (k < l.text.length) {
+				var c = l.text[k];
+				if (c == '\n') { System.puts("\n    "); }
+				else if (c == '\r') { }
+				else { one[0] = c; System.puts(one); }
+			}
+			System.ln();
+		}
+	}
+	if (!found) System.puts("Lyrics: (none)\n");
 }
 
 // ---- Beats ----
