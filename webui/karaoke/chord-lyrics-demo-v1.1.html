@@ -441,6 +441,42 @@
 
   .repeats i.spent { background: none; }
 
+  /* One box per eighth-note slot the player has to act on, straddling the top
+     edge of the chord row. Positioned in *time* — slot s of 32 sits at s/32
+     of the row — which is the same linear space the playhead sweeps, so the
+     ball crosses a box's centre exactly on the beat it belongs to. */
+  .beats {
+    position: absolute;
+    left: var(--pad);
+    width: var(--disp-w);
+    pointer-events: none;
+    z-index: 6;
+  }
+
+  .beat {
+    position: absolute;
+    top: 0;
+    height: 100%;
+    width: var(--bw);
+    display: grid;
+    place-items: center;
+    border: 2px solid var(--dim);
+    background: #050705;   /* opaque: the chord row's edge runs behind it */
+    color: var(--dim);
+    font-size: calc(var(--bh) * .62);
+    line-height: 1;
+    transform: translateX(-50%);
+  }
+
+  .beat.hit {
+    color: var(--fg);
+    border-color: var(--fg);
+    background: var(--hot);
+    text-shadow: 0 0 12px var(--fg);
+  }
+
+  :root[data-beats="off"] .beats { display: none; }
+
   /* ---- playhead ------------------------------------------------------- */
 
   .playhead {
@@ -537,6 +573,11 @@
         <div class="setting">
           <label for="s-playhead">Playhead</label>
           <input id="s-playhead" type="checkbox" data-setting="playhead" data-flag="playhead" checked>
+        </div>
+
+        <div class="setting">
+          <label for="s-beats">Beat boxes</label>
+          <input id="s-beats" type="checkbox" data-setting="beats" data-flag="beats" checked>
         </div>
 
         <div class="setting">
@@ -657,6 +698,7 @@
 
     <div id="main" class="main-row tinted"></div>
     <div id="preview" class="preview tinted"></div>
+    <div id="beats" class="beats tinted"></div>
 
     <div class="next tinted" id="next"><small>next</small><b id="nextChord"></b></div>
 
@@ -668,13 +710,14 @@
 
 <script>
 /* A strum pattern is one bar of eighth-note slots:
-     d down   u up   x muted (chunk)   o ring / no strike
+     d down   u up   x percussive hit   m mute   o ring / no strike
    The hand swings down-up once per beat, so even slots always fall on the way
    down and odd slots on the way back up — d/u are stated anyway, because the
-   glyph should come from the chart, not be inferred from the geometry. */
+   glyph should come from the chart, not be inferred from the geometry.
+   Every slot but "o" is something the player has to do, and gets a beat box. */
 const STRUM_DEFAULT = "doduoudu";   /* the ubiquitous D · DU · UDU */
 
-const STROKES = { d: "↓", u: "↑", x: "✕", o: "○" };
+const STROKES = { d: "↓", u: "↑", x: "✕", m: "M", o: "○" };
 
 /* Four bars to a group, plus how many times the group is played before
    moving on. A repeat is one more pass over the same four bars. */
@@ -682,7 +725,7 @@ const progression = [
   { chords: ["C", "Am", "F", "G"], repeat: 2 },
   { chords: ["Em", "Am", "Dm", "G"], repeat: 1 },
   { chords: ["C", "G/B", "Am", "Em"], repeat: 1 },
-  { chords: ["F", "C/E", "Dm", "G"], repeat: 3, strum: "doxudoxu" },
+  { chords: ["F", "C/E", "Dm", "G"], repeat: 3, strum: "doxudmxu" },
   { chords: ["C", "F", "C", "G"], repeat: 1, strum: "dodododo" },
   { chords: ["Am", "F", "C", "G"], repeat: 2 }
 ];
@@ -747,7 +790,7 @@ lines[0].promote = 0;   /* the loop point always shows the opening line */
 
 const $ = id => document.getElementById(id);
 const root = document.documentElement;
-const main = $("main"), preview = $("preview");
+const main = $("main"), preview = $("preview"), beats = $("beats");
 const lyrics = $("lyrics"), lyricCur = $("lyricCur");
 const lyricPrev = $("lyricPrev"), lyricNext = $("lyricNext"), lyricBall = $("lyricBall");
 const cue = $("cue");
@@ -770,14 +813,16 @@ const PHOSPHOR = { green: "#46ff7a", amber: "#ffb43c", red: "#ff4436" };
 const parts = {
   control: [document.querySelector("header")],
   lyrics: [lyrics],
-  chords: [main, preview, next, playhead]
+  chords: [main, preview, next, beats, playhead]
 };
 
 /* Tweakables from the settings panel, keyed by data-setting. */
 const settings = {
   brightness: 1, bounce: 1, scanlines: true, pitch: 2,
-  guide: true, past: true, playhead: true
+  guide: true, past: true, playhead: true, beats: true
 };
+
+const SLOTS = 32;   /* eighth-note slots in a four-bar group */
 
 const BALL = 34;
 const BALL_ZONE = 76;
@@ -799,6 +844,8 @@ let groupStart = performance.now();
 let preparedFirst = false;
 let lastMeasure = -1;
 let lastSlot = -1;
+let lastCell = null;
+let beatCells = [];   /* sparse: only slots the player acts on have a box */
 let lastLine = -1;
 let lastSyllable = -1;
 let lastCue = -1;
@@ -829,7 +876,17 @@ function layout() {
   const mainH = Math.max(90, Math.round(h * .3));
   const top = lyricH + BALL_ZONE + 8;   /* leave the chord ball its headroom */
 
-  geo = { mainH, top, bottom: top + mainH };
+  /* Beat boxes have to fit between adjacent eighth-note slots. */
+  const slotW = main.clientWidth / SLOTS;
+  const boxW = Math.min(34, Math.round(slotW * .82));
+  const boxH = Math.round(boxW * .78);
+
+  geo = { mainH, top, bottom: top + mainH, boxH };
+
+  beats.style.top = Math.round(top - boxH / 2) + "px";
+  beats.style.height = boxH + "px";
+  beats.style.setProperty("--bw", boxW + "px");
+  beats.style.setProperty("--bh", boxH + "px");
 
   lyrics.style.height = lyricH + "px";
   lyrics.style.setProperty("--hop-room", HOP_ROOM + "px");
@@ -885,10 +942,36 @@ function renderPreview() {
   preview.replaceChildren(...chords.map((chord, i) => makeMeasure(chord, i)));
 }
 
+/* A box for every slot that asks for something; nothing where the chord just
+   rings on. Placed by time, so slot s of SLOTS sits at s/SLOTS across. */
+function renderBeats() {
+  const pattern = thisGroup().strum || STRUM_DEFAULT;
+  const cells = [];
+
+  beatCells = [];
+  lastCell = null;
+  lastSlot = -1;
+
+  for (let s = 0; s < SLOTS; s++) {
+    const stroke = pattern[s % 8];
+    if (!stroke || stroke === "o") continue;
+
+    const cell = document.createElement("div");
+    cell.className = "beat";
+    cell.style.left = (s / SLOTS * 100) + "%";
+    cell.textContent = STROKES[stroke];
+    beatCells[s] = cell;
+    cells.push(cell);
+  }
+
+  beats.replaceChildren(...cells);
+}
+
 function renderAll(mainCells) {
   const { chords, repeat } = thisGroup();
   main.replaceChildren(...(mainCells || chords.map((c, i) => makeMeasure(c, i, repeat))));
   renderPreview();
+  renderBeats();
   preparedFirst = false;
   lastMeasure = -1;
 }
@@ -1106,31 +1189,38 @@ function updateMeasure(measure) {
 }
 
 /* --- chord guide ---------------------------------------------------------
-   Bounce: the ball lands on the beat, above the row.
-   Strum: the hand swings a full down-up per beat inside the row, and the beat
-   falls at the *middle* of the swing — the fast part, where the pick actually
-   crosses the strings — rather than at a turnaround. */
+   Both guides are keyed to the beat boxes, which straddle the top edge of the
+   chord row. Bounce lands the ball on top of them, once per slot. Strum swings
+   through them, crossing the box's centre line at the instant the stroke is
+   played — the fast part of the swing, where the pick crosses the strings. */
 
 const TAU = Math.PI * 2;
+const boxTop = () => BALL_ZONE - geo.boxH / 2;
 
 function bounceY(beatFloat) {
-  const lift = Math.abs(Math.sin(beatFloat * Math.PI)) * (BALL_ZONE - BALL - 8);
-  return BALL_ZONE - BALL - 4 - lift * settings.bounce;
+  const room = Math.max(0, boxTop() - BALL - 4);
+  const lift = Math.abs(Math.sin(beatFloat * TAU)) * clamp(room * settings.bounce, 0, room);
+  return boxTop() - BALL - lift;
 }
 
 function strumY(beatFloat) {
-  const room = geo.mainH / 2 - BALL / 2 - 6;
-  const swing = Math.sin(mod(beatFloat, 1) * TAU) * clamp(room * settings.bounce * .8, 0, room);
-  return BALL_ZONE + geo.mainH / 2 - BALL / 2 + swing;
+  const room = Math.min(BALL_ZONE - BALL / 2 - 4, geo.mainH * .35);
+  const reach = clamp(geo.boxH * 1.5 * settings.bounce, 0, room);
+  return BALL_ZONE - BALL / 2 + Math.sin(mod(beatFloat, 1) * TAU) * reach;
 }
 
-/* Eight slots to the bar; the glyph only changes at a slot boundary. */
-function updateStroke(beatFloat) {
-  const slot = Math.floor(mod(beatFloat, 4) * 2);
+/* Eight slots to the bar, thirty-two to the group. The glyph and the lit box
+   only change at a slot boundary, never per frame. */
+function updateBeat(beatFloat) {
+  const slot = Math.floor(mod(beatFloat, 16) * 2);
   if (slot === lastSlot) return;
 
+  lastCell?.classList.remove("hit");
+  lastCell = beatCells[slot] || null;
+  lastCell?.classList.add("hit");
+
   const pattern = thisGroup().strum || STRUM_DEFAULT;
-  ball.textContent = STROKES[pattern[slot]] || STROKES.o;
+  ball.textContent = chordMode === "strum" ? STROKES[pattern[slot % 8]] || STROKES.o : "";
   lastSlot = slot;
 }
 
@@ -1139,7 +1229,7 @@ function setChordMode(next) {
   chordButtons.forEach(b => b.classList.toggle("active", b.dataset.chord === chordMode));
   ball.classList.toggle("strum", chordMode === "strum");
   ball.textContent = "";
-  lastSlot = -1;
+  lastSlot = -1;   /* force the glyph and lit box to be re-evaluated */
 }
 
 function setMode(nextMode) {
@@ -1201,7 +1291,7 @@ function animate(now) {
 
     ball.style.left = cursor.style.left = `${p * 100}%`;
     ball.style.top = (chordMode === "strum" ? strumY : bounceY)(beatFloat) + "px";
-    if (chordMode === "strum") updateStroke(beatFloat);
+    updateBeat(beatFloat);
 
     /* The lyric ball runs off the same clock but its own phrase length, so
        the two balls drift against each other exactly as words drift against
