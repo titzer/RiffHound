@@ -62,8 +62,19 @@ bool ts_load(TsFile* f, const char* path) {
     char line[1024];
     while (fgets(line, sizeof(line), fp)) {
         // Split off the trailing comment; it carries provenance (~src, ~conf).
+        //
+        // A '#' only starts a comment at the start of a line or after
+        // whitespace.  Cutting at the first '#' unconditionally corrupts every
+        // sharp chord symbol -- "chord: F#m7" silently becomes "chord: F" --
+        // and nothing downstream can tell that it happened.
         char comment[128] = {};
-        char* hash = strchr(line, '#');
+        char* hash = nullptr;
+        for (char* p = line; *p; p++) {
+            if (*p == '#' && (p == line || p[-1] == ' ' || p[-1] == '\t')) {
+                hash = p;
+                break;
+            }
+        }
         if (hash) {
             const char* c = hash + 1;
             while (*c == ' ' || *c == '\t') c++;
