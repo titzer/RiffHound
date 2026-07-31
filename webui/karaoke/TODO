@@ -6,5 +6,12 @@
 Chord / lyrics demo
 
 - Show sheet music or piano roll for vocals
+- Show sheet music, piano roll, or tab for guitar
+- Show blow pattern harmonica
+- Show fingering for clarinet
+- Show chord fingering/voicing for guitar
 - Strumming motion for chords instead of bouncing ball (big/little down triangle, big/little up triangle, open circle, X)
-- Horizontal scrolling mode
+- Horizontal scrolling mode (everything scrolls in from right)
+- Singer: show vocal trainer
+- Guitarist: show rhythm, solo, or lead trainer
+- Drop into rhythm trainer / jam

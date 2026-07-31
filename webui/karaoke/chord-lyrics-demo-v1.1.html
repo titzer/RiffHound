@@ -1,0 +1,1235 @@
+<!doctype html>
+<html lang="en" data-theme="green">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Chord Scroller Modes</title>
+<style>
+  * { box-sizing: border-box; }
+
+  /* The theme hue lives on :root so every derived colour below is resolved
+     against the *current* --fg; deriving them anywhere else would freeze
+     them at the value --fg had on that element. */
+  :root[data-theme="green"] { --fg: #46ff7a; }
+  :root[data-theme="amber"] { --fg: #ffb43c; }
+  :root[data-theme="red"]   { --fg: #ff4436; }
+
+  :root {
+    --fg: #46ff7a;  /* fallback; the [data-theme] rules above win */
+    --pad: 16px;
+    --gap: 12px;
+    --next-w: clamp(110px, 15vw, 240px);
+    --disp-w: calc(100% - var(--pad) * 2 - var(--next-w));
+    --dim: color-mix(in srgb, var(--fg) 52%, #000);
+    --panel: color-mix(in srgb, var(--fg) 11%, #000);
+    --hot: color-mix(in srgb, var(--fg) 34%, #000);
+    --glow: color-mix(in srgb, var(--fg) 55%, transparent);
+    --scan-pitch: 2px;   /* both overwritten by the settings sliders */
+    --brightness: 100%;
+    --side-size: clamp(15px, 1.9vw, 25px);   /* past/next lyric lines */
+  }
+
+  body {
+    margin: 0;
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    color: var(--fg);
+    background: #040604;
+    font: 700 14px/1.4 ui-monospace, "SF Mono", Menlo, "Courier New", monospace;
+    letter-spacing: .1em;
+    text-shadow: 0 0 7px var(--glow);
+    filter: brightness(var(--brightness));
+  }
+
+  /* Chrome is upper-case CRT lettering; chord names keep their own case,
+     since "Am" and "AM" are not the same chord. */
+  header, .next small { text-transform: uppercase; }
+
+  /* A subtree with its own phosphor colour. JS sets --fg here; the shades
+     have to be mixed again at the same place, since the :root versions were
+     already resolved against the :root hue and only inherit their result. */
+  .tinted {
+    --dim: color-mix(in srgb, var(--fg) 52%, #000);
+    --panel: color-mix(in srgb, var(--fg) 11%, #000);
+    --hot: color-mix(in srgb, var(--fg) 34%, #000);
+    --glow: color-mix(in srgb, var(--fg) 55%, transparent);
+    color: var(--fg);
+    text-shadow: 0 0 7px var(--glow);
+  }
+
+  header {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 18px;
+    padding: 10px var(--pad);
+  }
+
+  h1 { margin: 0; font-size: 17px; }
+
+  button, input { font: inherit; letter-spacing: inherit; color: inherit; }
+
+  .switch { display: inline-flex; }
+
+  button {
+    padding: 6px 10px;
+    border: 1px solid var(--dim);
+    background: var(--panel);
+    color: var(--dim);
+    cursor: pointer;
+    text-shadow: inherit;
+  }
+
+  .switch button + button { border-left: 0; }
+
+  button.active, button:hover:not(:disabled) {
+    color: var(--fg);
+    background: var(--hot);
+    border-color: var(--fg);
+    text-shadow: 0 0 10px var(--fg);
+  }
+
+  /* The inactive half of play/stop reads as an unlit key on the panel. */
+  button:disabled {
+    opacity: .35;
+    cursor: default;
+  }
+
+  /* Big three-digit tempo readout, top right; type over it to set the tempo. */
+  .bpm {
+    margin-left: auto;
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    padding: 2px 10px;
+    border: 2px solid var(--dim);
+    background: var(--panel);
+  }
+
+  .bpm input {
+    width: 3ch;
+    padding: 0;
+    border: 0;
+    background: none;
+    outline: none;
+    text-align: center;
+    font-size: clamp(34px, 5vw, 52px);
+    text-shadow: 0 0 14px var(--fg);
+  }
+
+  .bpm input:focus { background: var(--hot); }
+  .bpm span { font-size: 12px; color: var(--dim); }
+
+  /* ---- settings menu --------------------------------------------------- */
+
+  .menu { position: relative; }
+
+  .menu-btn {
+    display: grid;
+    gap: 4px;
+    place-content: center;
+    width: 40px;
+    height: 34px;
+    padding: 0;
+  }
+
+  .menu-btn i { width: 20px; height: 3px; background: currentColor; }
+
+  .panel {
+    position: absolute;
+    top: calc(100% + 8px);
+    left: 0;
+    z-index: 30;
+    width: 320px;
+    display: grid;
+    gap: 14px;
+    padding: 14px;
+    border: 2px solid var(--fg);
+    background: #050705;
+    box-shadow: 0 0 24px -4px var(--fg);
+  }
+
+  .panel[hidden] { display: none; }
+
+  /* A row is a label (plus optional readout), then a full-width control. */
+  .setting { display: grid; grid-template-columns: 1fr auto; gap: 6px; font-size: 12px; }
+  .setting output { color: var(--fg); }
+  .setting .switch { grid-column: 1 / -1; }
+  .setting .switch button { flex: 1; padding: 6px 2px; font-size: 12px; }
+
+  input[type=checkbox] {
+    appearance: none;
+    width: 16px;
+    height: 16px;
+    margin: 0;
+    border: 2px solid var(--dim);
+    background: var(--panel);
+    cursor: pointer;
+  }
+
+  input[type=checkbox]:checked {
+    border-color: var(--fg);
+    background: var(--fg);
+    box-shadow: 0 0 10px var(--fg);
+  }
+
+  input[type=range] {
+    grid-column: 1 / -1;
+    appearance: none;
+    width: 100%;
+    height: 20px;
+    background: none;
+    cursor: pointer;
+  }
+
+  input[type=range]::-webkit-slider-runnable-track {
+    height: 8px;
+    border: 1px solid var(--dim);
+    background: repeating-linear-gradient(90deg, var(--dim) 0 3px, #0000 3px 8px);
+  }
+
+  input[type=range]::-webkit-slider-thumb {
+    appearance: none;
+    width: 14px;
+    height: 20px;
+    margin-top: -6px;
+    background: var(--fg);
+    box-shadow: 0 0 12px var(--fg);
+  }
+
+  input[type=range]::-moz-range-track {
+    height: 8px;
+    border: 1px solid var(--dim);
+    background: repeating-linear-gradient(90deg, var(--dim) 0 3px, #0000 3px 8px);
+  }
+
+  input[type=range]::-moz-range-thumb {
+    width: 14px;
+    height: 20px;
+    border: 0;
+    border-radius: 0;
+    background: var(--fg);
+    box-shadow: 0 0 12px var(--fg);
+  }
+
+  /* ---- stage ---------------------------------------------------------- */
+
+  .stage { position: relative; flex: 1; overflow: hidden; }
+
+  /* The CRT look is three independent pieces: the monochrome palette and the
+     text-shadow bloom above, a vignette (::before), and the scanline raster
+     (::after) — a repeating gradient of one transparent line and one dark
+     line, so --scan-pitch is the distance from one dark line to the next. */
+  .stage::before,
+  .stage::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+  }
+
+  .stage::before {
+    z-index: 19;
+    background: radial-gradient(120% 90% at 50% 45%, #0000 55%, #000c);
+  }
+
+  .stage::after {
+    z-index: 20;
+    background: repeating-linear-gradient(
+      #0000 0 calc(var(--scan-pitch) / 2),
+      #000000a0 calc(var(--scan-pitch) / 2) var(--scan-pitch));
+  }
+
+  :root[data-scan="off"] .stage::after { display: none; }
+
+  /* ---- lyrics --------------------------------------------------------- */
+
+  /* Three lines stacked at the top of the stage; the current one carries a
+     landing pad above every syllable, and the ball flies in the gap left
+     above it. JS sets the block's height. */
+  /* Left-justified, with a gutter wide enough for a full eight-dot cue: 8
+     dots + 7 gaps + the offset, in units of the side lines' font size. */
+  .lyrics {
+    position: absolute;
+    top: 0;
+    left: var(--pad);
+    width: var(--disp-w);
+    padding-left: calc(var(--side-size) * 4.8);
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    justify-content: flex-end;
+    gap: 4px;
+    z-index: 5;
+  }
+
+  .lyric { position: relative; white-space: nowrap; }
+
+  .lyric.side {
+    color: var(--dim);
+    font-size: var(--side-size);
+    opacity: .7;
+  }
+
+  .lyric.cur {
+    margin-top: var(--hop-room);
+    display: flex;
+    align-items: flex-start;
+    font-size: clamp(18px, 2.9vw, 38px);
+  }
+
+  /* A syllable is a column: landing pad on top, text below. */
+  .syl {
+    display: inline-flex;
+    flex-direction: column;
+    align-items: center;
+    color: var(--dim);
+    transition: color 90ms;
+  }
+
+  .syl.word { margin-left: .42em; }
+  .syl:first-child { margin-left: 0; }  /* keep the line flush with the others */
+  .syl.sung { color: var(--fg); }
+  .syl.hit { text-shadow: 0 0 18px var(--fg); }
+
+  .pad {
+    width: 100%;
+    height: 4px;
+    margin-bottom: .18em;
+    background: var(--dim);
+  }
+
+  /* A held syllable gets a narrower, broken pad — the ball bounces in place
+     on it instead of arcing away. */
+  .pad.sustain {
+    width: 48%;
+    background: repeating-linear-gradient(90deg, var(--dim) 0 4px, #0000 4px 8px);
+  }
+
+  .syl.sung .pad { background: var(--fg); }
+  .syl.sung .pad.sustain { background: repeating-linear-gradient(90deg, var(--fg) 0 4px, #0000 4px 8px); }
+  .syl.hit .pad { box-shadow: 0 0 12px var(--fg); }
+
+  /* Countdown to the next line: one dot per half beat, anchored by its right
+     edge to the left of the text, so dots vanish from the left and the lyric
+     itself never shifts. Dots are a third of the line's height. */
+  .cue {
+    position: absolute;
+    right: calc(100% + .6em);
+    top: 50%;
+    display: flex;
+    gap: .22em;
+    transform: translateY(-50%);
+  }
+
+  .dot {
+    width: .33em;
+    height: .33em;
+    border-radius: 50%;
+    background: var(--fg);
+    box-shadow: 0 0 6px var(--fg);
+  }
+
+  /* Guides off: plain karaoke, syllables still light up as they're sung. */
+  :root[data-guide="off"] .pad,
+  :root[data-guide="off"] .lyric-ball { display: none; }
+
+  /* The block is bottom-anchored, so dropping the past line hands its space
+     back to the lyrics rather than leaving a hole. */
+  :root[data-past="off"] #lyricPrev { display: none; }
+
+  .lyric-ball {
+    position: absolute;
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    background: var(--fg);
+    box-shadow: 0 0 20px var(--fg);
+    transform: translateX(-50%);
+  }
+
+  /* One chord row moves or lights up — the one being played. Everything else
+     about the chords is fixed, so no motion competes with now. */
+  .main-row {
+    position: absolute;
+    left: var(--pad);
+    width: var(--disp-w);
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: var(--gap);
+    z-index: 4;
+  }
+
+  /* The group queued up next: parked below the main row, left-justified,
+     small and quiet. Static — it only changes at a group boundary. */
+  .preview {
+    position: absolute;
+    left: var(--pad);
+    width: calc(var(--disp-w) * .38);
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 6px;
+    opacity: .5;
+  }
+
+  .preview .measure { border-width: 1px; }
+  .preview small { display: none; }
+
+  .measure {
+    position: relative;
+    height: var(--h);
+    display: grid;
+    place-items: center;
+    overflow: hidden;
+    border: 2px solid var(--dim);
+    background: var(--panel);
+    font-size: calc(var(--h) * .42);
+  }
+
+  .measure small {
+    position: absolute;
+    top: 4px;
+    left: 6px;
+    font-size: 11px;
+    opacity: .55;
+  }
+
+  .main-row .measure {
+    color: var(--dim);
+    font-size: calc(var(--h) * .58);
+    transition: background 120ms, border-color 120ms, color 120ms;
+  }
+
+  .main-row .measure.current {
+    color: var(--fg);
+    border-color: var(--fg);
+    background: var(--hot);
+    text-shadow: 0 0 16px var(--fg);
+  }
+
+  .main-row .measure.queued { border-style: dashed; }
+  .main-row .measure.snap { animation: snap-in 190ms steps(6, end); }
+
+  @keyframes snap-in {
+    from { transform: translateY(calc(var(--h) * .5)); opacity: .1; }
+    to   { transform: none; opacity: 1; }
+  }
+
+  /* Stagger by temporal order: later measures sit progressively lower. */
+  .staggered .main-row .measure { translate: 0 calc((var(--i) - 1.5) * 16px); }
+
+  /* Repeat counter in the last bar: one rectangle per pass, emptying from the
+     left as passes are spent. It follows the bar's own colour so it stays
+     part of the bar rather than a second thing to watch. */
+  .repeats {
+    position: absolute;
+    right: 8px;
+    bottom: 7px;
+    display: flex;
+    gap: 4px;
+  }
+
+  .repeats i {
+    width: 9px;
+    height: 13px;
+    border: 2px solid currentColor;
+    background: currentColor;
+  }
+
+  .repeats i.spent { background: none; }
+
+  /* ---- playhead ------------------------------------------------------- */
+
+  .playhead {
+    position: absolute;
+    left: var(--pad);
+    width: var(--disp-w);
+    pointer-events: none;
+    z-index: 8;
+  }
+
+  .cursor {
+    position: absolute;
+    top: var(--ball-zone);
+    bottom: 0;
+    border-left: 4px dashed var(--fg);
+    opacity: .6;
+    transform: translateX(-50%);
+  }
+
+  .ball {
+    position: absolute;
+    width: 34px;
+    height: 34px;
+    border-radius: 50%;
+    background: var(--fg);
+    box-shadow: 0 0 26px var(--fg);
+    transform: translateX(-50%);
+  }
+
+  /* Strum guide: the strumming hand keeps swinging whether or not it strikes,
+     so only the glyph changes — the motion never stops. */
+  .ball.strum {
+    display: grid;
+    place-items: center;
+    border-radius: 0;
+    background: none;
+    box-shadow: none;
+    font-size: 30px;
+    line-height: 1;
+    text-shadow: 0 0 14px var(--fg);
+  }
+
+  :root[data-playhead="off"] .playhead { display: none; }
+
+  /* ---- next-chord margin ---------------------------------------------- */
+
+  .next {
+    position: absolute;
+    right: var(--pad);
+    width: calc(var(--next-w) - var(--pad));
+    display: grid;
+    place-content: center;
+    gap: 6px;
+    text-align: center;
+    border: 2px dashed var(--dim);
+    color: var(--dim);
+    z-index: 6;
+    transition: color 150ms, border-color 150ms;
+  }
+
+  .next.lit {
+    color: var(--fg);
+    border-color: var(--fg);
+    border-style: solid;
+    background: var(--hot);
+    text-shadow: 0 0 16px var(--fg);
+  }
+
+  .next b { font-size: clamp(22px, 3.5vw, 44px); font-weight: inherit; }
+  .next small { font-size: 11px; opacity: .7; }
+
+</style>
+</head>
+<body>
+  <header>
+    <div class="menu">
+      <button class="menu-btn" id="menuBtn" aria-label="Settings" aria-expanded="false">
+        <i></i><i></i><i></i>
+      </button>
+
+      <!-- Each row is a label (plus an optional <output> readout) and one
+           full-width control. A slider row only needs data-setting and a
+           matching default in `settings`; the generic handler does the rest.
+           Labels carry their keyboard shortcut. -->
+      <div class="panel" id="panel" hidden>
+        <div class="setting">
+          <label>Chord guide</label>
+          <div class="switch" id="chordModes">
+            <button data-chord="bounce">Ball</button>
+            <button data-chord="strum">Strum</button>
+          </div>
+        </div>
+
+        <div class="setting">
+          <label for="s-playhead">Playhead</label>
+          <input id="s-playhead" type="checkbox" data-setting="playhead" data-flag="playhead" checked>
+        </div>
+
+        <div class="setting">
+          <label>Scroll mode</label>
+          <div class="switch" id="modes">
+            <button data-mode="snap">1 Snap</button>
+            <button data-mode="preview">2 Preview</button>
+            <button data-mode="staggered">3 Stagger</button>
+          </div>
+        </div>
+
+        <div class="setting">
+          <label>Lyric ball</label>
+          <div class="switch" id="ballModes">
+            <button data-ball="hop">Hop</button>
+            <button data-ball="sweep">Sweep</button>
+          </div>
+        </div>
+
+        <div class="setting">
+          <label for="s-guide">Ball + pads</label>
+          <input id="s-guide" type="checkbox" data-setting="guide" data-flag="guide" checked>
+        </div>
+
+        <div class="setting">
+          <label for="s-past">Past line</label>
+          <input id="s-past" type="checkbox" data-setting="past" data-flag="past" checked>
+        </div>
+
+        <div class="setting">
+          <label>Line cue</label>
+          <div class="switch" id="cueModes">
+            <button data-cue="off">Off</button>
+            <button data-cue="dots">Dots</button>
+          </div>
+        </div>
+
+        <!-- One phosphor per part. G / A / R set all three at once. -->
+        <div class="setting">
+          <label>Title colour</label>
+          <div class="switch" data-part="title">
+            <button data-theme="green">Green</button>
+            <button data-theme="amber">Amber</button>
+            <button data-theme="red">Red</button>
+          </div>
+        </div>
+
+        <div class="setting">
+          <label>Lyric colour</label>
+          <div class="switch" data-part="lyrics">
+            <button data-theme="green">Green</button>
+            <button data-theme="amber">Amber</button>
+            <button data-theme="red">Red</button>
+          </div>
+        </div>
+
+        <div class="setting">
+          <label>Chord colour</label>
+          <div class="switch" data-part="chords">
+            <button data-theme="green">Green</button>
+            <button data-theme="amber">Amber</button>
+            <button data-theme="red">Red</button>
+          </div>
+        </div>
+
+        <div class="setting">
+          <label for="s-bright">Brightness</label>
+          <output for="s-bright"></output>
+          <input id="s-bright" type="range" data-setting="brightness" data-scale="100"
+                 data-css="--brightness" data-unit="%" data-suffix="%"
+                 min="40" max="160" step="5" value="100">
+        </div>
+
+        <div class="setting">
+          <label for="s-bounce">Ball bounce</label>
+          <output for="s-bounce"></output>
+          <input id="s-bounce" type="range" data-setting="bounce" data-scale="100"
+                 data-suffix="%" min="0" max="200" step="5" value="100">
+        </div>
+
+        <div class="setting">
+          <label for="s-scan">Scanlines</label>
+          <input id="s-scan" type="checkbox" data-setting="scanlines" data-flag="scan" checked>
+        </div>
+
+        <div class="setting">
+          <label for="s-pitch">Scanline pitch</label>
+          <output for="s-pitch"></output>
+          <input id="s-pitch" type="range" data-setting="pitch" data-css="--scan-pitch"
+                 data-unit="px" data-suffix="px" min="2" max="16" step="1" value="2">
+        </div>
+      </div>
+    </div>
+
+    <div class="switch">
+      <button id="play">Play</button>
+      <button id="stop">Stop</button>
+    </div>
+
+    <h1 id="title" class="tinted">A Way To Say</h1>
+
+    <div class="bpm">
+      <input id="bpm" inputmode="numeric" maxlength="3" value="95" aria-label="Tempo in BPM">
+      <span>bpm</span>
+    </div>
+  </header>
+
+  <div class="stage" id="stage">
+    <div class="lyrics tinted" id="lyrics">
+      <div class="lyric side" id="lyricPrev"></div>
+      <div class="lyric cur" id="lyricCur"></div>
+      <div class="lyric side" id="lyricNext">
+        <span class="cue" id="cue"></span><span id="lyricNextText"></span>
+      </div>
+      <div class="lyric-ball" id="lyricBall"></div>
+    </div>
+
+    <div id="main" class="main-row tinted"></div>
+    <div id="preview" class="preview tinted"></div>
+
+    <div class="next tinted" id="next"><small>next</small><b id="nextChord"></b></div>
+
+    <div class="playhead tinted" id="playhead">
+      <div id="cursor" class="cursor"></div>
+      <div id="ball" class="ball"></div>
+    </div>
+  </div>
+
+<script>
+/* A strum pattern is one bar of eighth-note slots:
+     d down   u up   x muted (chunk)   o ring / no strike
+   The hand swings down-up once per beat, so even slots always fall on the way
+   down and odd slots on the way back up — d/u are stated anyway, because the
+   glyph should come from the chart, not be inferred from the geometry. */
+const STRUM_DEFAULT = "doduoudu";   /* the ubiquitous D · DU · UDU */
+
+const STROKES = { d: "↓", u: "↑", x: "✕", o: "○" };
+
+/* Four bars to a group, plus how many times the group is played before
+   moving on. A repeat is one more pass over the same four bars. */
+const progression = [
+  { chords: ["C", "Am", "F", "G"], repeat: 2 },
+  { chords: ["Em", "Am", "Dm", "G"], repeat: 1 },
+  { chords: ["C", "G/B", "Am", "Em"], repeat: 1 },
+  { chords: ["F", "C/E", "Dm", "G"], repeat: 3, strum: "doxudoxu" },
+  { chords: ["C", "F", "C", "G"], repeat: 1, strum: "dodododo" },
+  { chords: ["Am", "F", "C", "G"], repeat: 2 }
+];
+
+/* Ten lines about the job, four beats to the bar. Each entry is
+   [text, beats]; a "+" prefix glues the syllable to the previous one, so
+   ["clean",.5],["+est",.5] reads as one word with two landing pads. Beats
+   accumulate from the start of the line, and anything held for 1.5 beats or
+   more counts as a sustain. */
+const LINE_BEATS = 8;
+
+const song = [
+  [["We",1],["write",1],["the",.5],["loops",1.5],["that",.5],["no",.5],["one",.5],["sees",1.5]],
+  [["in",.5],["rooms",1],["lit",.5],["blue",1],["at",.5],["half",.5],["past",.5],["three",2]],
+  [["A",.5],["thou",.5],["+sand",.5],["tests",1.5],["a",.5],["sin",.5],["+gle",.5],["green",2]],
+  [["the",.5],["clean",.5],["+est",.5],["thing",1],["we've",.5],["ev",.5],["+er",.5],["seen",2]],
+  [["But",.5],["un",.5],["+der",.5],["all",.5],["the",.5],["stacks",1],["and",.5],["strings",2]],
+  [["there's",.5],["some",.5],["+one",.5],["wait",.5],["+ing",.5],["on",.5],["the",.5],["thing",2]],
+  [["So",.5],["name",1],["it",.5],["plain",1.5],["and",.5],["keep",.5],["it",.5],["kind",2]],
+  [["leave",1],["ev",.5],["+ery",.5],["com",.5],["+ment",.5],["you",.5],["would",.5],["find",2]],
+  [["'cause",.5],["code",1],["is",.5],["just",.5],["a",.5],["way",1],["to",.5],["say",2]],
+  [["I",.5],["thought",1],["of",.5],["you",.5],["a",.5],["+long",1],["the",.5],["way",2.5]]
+];
+
+const lines = song.map(raw => {
+  let at = 0;
+  return raw.map(([text, dur]) => {
+    const syl = {
+      text: text.replace(/^\+/, ""),
+      word: !text.startsWith("+"),
+      start: at,
+      dur,
+      sustain: dur >= 1.5
+    };
+    at += dur;
+    return syl;
+  });
+});
+
+const $ = id => document.getElementById(id);
+const root = document.documentElement;
+const main = $("main"), preview = $("preview");
+const lyrics = $("lyrics"), lyricCur = $("lyricCur");
+const lyricPrev = $("lyricPrev"), lyricNextText = $("lyricNextText"), lyricBall = $("lyricBall");
+const cue = $("cue");
+const ball = $("ball"), cursor = $("cursor"), playhead = $("playhead");
+const stage = $("stage"), next = $("next"), nextChord = $("nextChord");
+const play = $("play"), stop = $("stop"), bpm = $("bpm");
+const menuBtn = $("menuBtn"), panel = $("panel");
+const modeButtons = [...$("modes").children];
+const chordButtons = [...$("chordModes").children];
+const ballButtons = [...$("ballModes").children];
+const cueButtons = [...$("cueModes").children];
+const themeSwitches = [...panel.querySelectorAll("[data-part]")];
+
+const PHOSPHOR = { green: "#46ff7a", amber: "#ffb43c", red: "#ff4436" };
+
+/* Which elements carry each part's hue. Each one is .tinted, so setting --fg
+   on it re-mixes that subtree's shades. */
+const parts = {
+  title: [$("title")],
+  lyrics: [lyrics],
+  chords: [main, preview, next, playhead]
+};
+
+/* Tweakables from the settings panel, keyed by data-setting. */
+const settings = {
+  brightness: 1, bounce: 1, scanlines: true, pitch: 2,
+  guide: true, past: true, playhead: true
+};
+
+const BALL = 34;
+const BALL_ZONE = 76;
+const LYRIC_BALL = 22;
+const HOP_ROOM = 58;   /* clearance above the pads for the lyric ball's arc */
+const HOP_BEATS = 1;   /* time the lyric ball spends airborne between pads */
+const CUE_DOTS = 8;    /* longest countdown, one dot per half beat */
+const BPM_MIN = 40, BPM_MAX = 240;
+
+let groupIndex = 0;   /* which group of the progression is playing */
+let pass = 0;         /* which repetition of it, 0-based */
+let groupsPlayed = 0; /* monotonic, drives the lyric clock */
+let mode = "preview";
+let chordMode = "strum";
+let ballMode = "sweep";
+let cueMode = "dots";
+let playing = true;
+let groupStart = performance.now();
+let preparedFirst = false;
+let lastMeasure = -1;
+let lastSlot = -1;
+let lastLine = -1;
+let lastSyllable = -1;
+let lastCue = -1;
+let progress = 0;
+let tempo = 95;
+let geo = {};
+let pads = [];
+
+const mod = (n, m) => ((n % m) + m) % m;
+const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
+const beatDuration = () => 60000 / tempo;
+const groupDuration = () => beatDuration() * 16;
+
+const groupAt = i => progression[mod(i, progression.length)];
+const thisGroup = () => groupAt(groupIndex);
+
+/* What plays after this pass: the same group again if repeats are left over,
+   otherwise the next one along. */
+const nextGroup = () =>
+  groupAt(pass + 1 < thisGroup().repeat ? groupIndex : groupIndex + 1);
+
+/* Geometry is derived from the stage height so no media queries are needed:
+   lyrics on top, the one live chord row below them, and the parked preview
+   of the next group under that. */
+function layout() {
+  const h = stage.clientHeight;
+  const lyricH = Math.round(h * .32);
+  const mainH = Math.max(90, Math.round(h * .3));
+  const top = lyricH + BALL_ZONE + 8;   /* leave the chord ball its headroom */
+
+  geo = { mainH, top, bottom: top + mainH };
+
+  lyrics.style.height = lyricH + "px";
+  lyrics.style.setProperty("--hop-room", HOP_ROOM + "px");
+
+  main.style.top = top + "px";
+  main.style.setProperty("--h", mainH + "px");
+
+  preview.style.top = (top + mainH + 14) + "px";
+  preview.style.setProperty("--h", Math.round(mainH * .3) + "px");
+
+  playhead.style.top = (top - BALL_ZONE) + "px";
+  playhead.style.height = (BALL_ZONE + mainH) + "px";
+  playhead.style.setProperty("--ball-zone", BALL_ZONE + "px");
+
+  next.style.top = top + "px";
+  next.style.height = mainH + "px";
+
+  measurePads();
+}
+
+/* One rectangle per pass over the group, emptying from the left. Nothing is
+   drawn when the group plays once — there is no count to follow. */
+function repeatMarks(repeat) {
+  const box = document.createElement("div");
+  box.className = "repeats";
+  box.append(...Array.from({ length: repeat }, (_, k) => {
+    const mark = document.createElement("i");
+    if (k < pass) mark.className = "spent";
+    return mark;
+  }));
+  return box;
+}
+
+function makeMeasure(chord, i, repeat = 0, extra = "") {
+  const el = document.createElement("div");
+  el.className = `measure ${extra}`;
+  el.style.setProperty("--i", i);
+  el.innerHTML = `<small>${i + 1}</small>${chord}`;
+  if (i === 3 && repeat > 1) el.append(repeatMarks(repeat));
+  return el;
+}
+
+function renderPreview() {
+  const { chords } = nextGroup();
+  preview.replaceChildren(...chords.map((chord, i) => makeMeasure(chord, i)));
+}
+
+function renderAll(mainCells) {
+  const { chords, repeat } = thisGroup();
+  main.replaceChildren(...(mainCells || chords.map((c, i) => makeMeasure(c, i, repeat))));
+  renderPreview();
+  preparedFirst = false;
+  lastMeasure = -1;
+}
+
+function prepareNextFirst() {
+  if (mode !== "snap" || preparedFirst) return;
+  main.children[0].replaceWith(makeMeasure(nextGroup().chords[0], 0, 0, "snap queued"));
+  preparedFirst = true;
+}
+
+function completeGroup() {
+  const snapped = mode === "snap" && preparedFirst;
+
+  groupsPlayed++;
+  if (pass + 1 < thisGroup().repeat) pass++;
+  else { pass = 0; groupIndex++; }
+
+  const { chords, repeat } = thisGroup();
+
+  if (snapped) {
+    const first = main.children[0];
+    first.classList.remove("queued");
+    renderAll([first, ...chords.slice(1).map((c, k) => makeMeasure(c, k + 1, repeat, "snap"))]);
+  } else {
+    renderAll();
+  }
+}
+
+/* ---- lyrics ----------------------------------------------------------- */
+
+const lineAt = i => lines[mod(i, lines.length)];
+const lineText = syls => syls.map(s => (s.word ? " " : "") + s.text).join("").trim();
+
+function renderLine(index) {
+  lyricCur.replaceChildren(...lineAt(index).map(syl => {
+    const el = document.createElement("span");
+    el.className = `syl${syl.word ? " word" : ""}`;
+    el.innerHTML = `<b class="pad${syl.sustain ? " sustain" : ""}"></b>${syl.text}`;
+    return el;
+  }));
+
+  lyricPrev.textContent = lineText(lineAt(index - 1));
+  lyricNextText.textContent = lineText(lineAt(index + 1));
+  lastSyllable = -1;
+  measurePads();
+}
+
+/* One dot per half beat still to run in this line, so the last dot goes out
+   exactly as the line below becomes the current one. */
+function updateCue(t) {
+  const dots = cueMode === "dots"
+    ? clamp(Math.ceil((LINE_BEATS - t) * 2), 0, CUE_DOTS)
+    : 0;
+
+  if (dots === lastCue) return;
+
+  cue.replaceChildren(...Array.from({ length: dots }, () => {
+    const dot = document.createElement("i");
+    dot.className = "dot";
+    return dot;
+  }));
+
+  lastCue = dots;
+}
+
+/* Pad centres in .lyrics coordinates, remeasured whenever the line or the
+   window changes; the ball rides on top of them. */
+function measurePads() {
+  const base = lyrics.getBoundingClientRect();
+  pads = [...lyricCur.querySelectorAll(".pad")].map(pad => {
+    const r = pad.getBoundingClientRect();
+    return { x: r.left - base.left + r.width / 2, y: r.top - base.top };
+  });
+}
+
+const arc = t => 4 * t * (1 - t);                /* 0 → 1 → 0, apex at t = .5 */
+const ease = t => t * t * (3 - 2 * t);           /* slow off the pad, slow onto it */
+const lerp = (a, b, t) => a + (b - a) * t;
+
+/* Where the ball is, in .lyrics coordinates, at beat `t` within the line.
+   Vertical motion is always the same parabola; only the horizontal timing
+   bends, so the ball reads as landing exactly on each syllable's onset. */
+function ballAt(syls, t) {
+  const hop = HOP_ROOM * settings.bounce;
+  const last = pads.length - 1;
+
+  let i = 0;
+  while (i < last && syls[i + 1].start <= t) i++;
+
+  const here = pads[i];
+  const landed = t >= syls[i].start;
+  const nextStart = i < last ? syls[i + 1].start : LINE_BEATS;
+  const flight = Math.min(HOP_BEATS, nextStart - syls[i].start);
+  const takeoff = nextStart - flight;
+
+  /* Held (or trailing) note: small bounces in place on the sustain pad. */
+  if (t < takeoff || i === last) {
+    const phase = mod(t - syls[i].start, .5) / .5;
+    return { x: here.x, y: here.y - arc(phase) * hop * .22, i, landed };
+  }
+
+  const to = pads[i + 1];
+  const f = (t - takeoff) / flight;
+  return {
+    x: lerp(here.x, to.x, ease(f)),
+    y: lerp(here.y, to.y, f) - arc(f) * hop,
+    i,
+    landed
+  };
+}
+
+/* Steady metronome sweep: ignores the syllables, crosses the line once. */
+function sweepAt(t) {
+  const from = pads[0], to = pads[pads.length - 1];
+  const f = clamp(t / LINE_BEATS, 0, 1);
+  const x = lerp(from.x, to.x, f);
+
+  let i = 0;
+  while (i < pads.length - 1 && pads[i + 1].x <= x) i++;
+
+  return { x, y: from.y - arc(mod(t, 1)) * HOP_ROOM * settings.bounce * .6, i, landed: true };
+}
+
+function updateLyrics(beat) {
+  const index = Math.floor(beat / LINE_BEATS);
+  if (index !== lastLine) {
+    renderLine(index);
+    lastLine = index;
+  }
+
+  const t = mod(beat, LINE_BEATS);
+  updateCue(t);
+
+  if (!pads.length) return;
+
+  const pos = ballMode === "sweep" ? sweepAt(t) : ballAt(lineAt(index), t);
+
+  lyricBall.style.left = pos.x + "px";
+  lyricBall.style.top = (pos.y - LYRIC_BALL) + "px";
+
+  const reached = pos.landed ? pos.i : -1;
+  if (reached !== lastSyllable) {
+    [...lyricCur.children].forEach((el, k) => {
+      el.classList.toggle("sung", k <= reached);
+      el.classList.toggle("hit", k === reached);
+    });
+    lastSyllable = reached;
+  }
+}
+
+function setBallMode(next) {
+  ballMode = next;
+  ballButtons.forEach(b => b.classList.toggle("active", b.dataset.ball === ballMode));
+}
+
+function setCueMode(next) {
+  cueMode = next;
+  cueButtons.forEach(b => b.classList.toggle("active", b.dataset.cue === cueMode));
+  lastCue = -1;  /* force a rebuild on the next frame */
+}
+
+/* ---- chords ----------------------------------------------------------- */
+
+function updateMeasure(measure) {
+  [...main.children].forEach((cell, i) => {
+    cell.classList.toggle("current", i === measure && !(preparedFirst && i === 0));
+  });
+
+  /* The right margin always names the first chord of the *next group*, so it
+     holds still for the whole group; in preview mode it lights up while the
+     last measure is playing. */
+  nextChord.textContent = nextGroup().chords[0];
+  next.classList.toggle("lit", mode === "preview" && measure === 3);
+}
+
+/* --- chord guide ---------------------------------------------------------
+   Bounce: the ball lands on the beat, above the row.
+   Strum: the hand swings a full down-up per beat inside the row, and the beat
+   falls at the *middle* of the swing — the fast part, where the pick actually
+   crosses the strings — rather than at a turnaround. */
+
+const TAU = Math.PI * 2;
+
+function bounceY(beatFloat) {
+  const lift = Math.abs(Math.sin(beatFloat * Math.PI)) * (BALL_ZONE - BALL - 8);
+  return BALL_ZONE - BALL - 4 - lift * settings.bounce;
+}
+
+function strumY(beatFloat) {
+  const room = geo.mainH / 2 - BALL / 2 - 6;
+  const swing = Math.sin(mod(beatFloat, 1) * TAU) * clamp(room * settings.bounce * .8, 0, room);
+  return BALL_ZONE + geo.mainH / 2 - BALL / 2 + swing;
+}
+
+/* Eight slots to the bar; the glyph only changes at a slot boundary. */
+function updateStroke(beatFloat) {
+  const slot = Math.floor(mod(beatFloat, 4) * 2);
+  if (slot === lastSlot) return;
+
+  const pattern = thisGroup().strum || STRUM_DEFAULT;
+  ball.textContent = STROKES[pattern[slot]] || STROKES.o;
+  lastSlot = slot;
+}
+
+function setChordMode(next) {
+  chordMode = next;
+  chordButtons.forEach(b => b.classList.toggle("active", b.dataset.chord === chordMode));
+  ball.classList.toggle("strum", chordMode === "strum");
+  ball.textContent = "";
+  lastSlot = -1;
+}
+
+function setMode(nextMode) {
+  mode = nextMode;
+  stage.classList.toggle("staggered", mode === "staggered");
+  modeButtons.forEach(b => b.classList.toggle("active", b.dataset.mode === mode));
+  renderAll();  /* undo any half-prepared snap */
+}
+
+function setTheme(part, theme) {
+  parts[part].forEach(el => el.style.setProperty("--fg", PHOSPHOR[theme]));
+
+  const box = themeSwitches.find(s => s.dataset.part === part);
+  [...box.children].forEach(b => b.classList.toggle("active", b.dataset.theme === theme));
+}
+
+/* G / A / R: every part plus the chrome, which reads --fg from :root. */
+function setAllThemes(theme) {
+  root.dataset.theme = theme;
+  Object.keys(parts).forEach(part => setTheme(part, theme));
+}
+
+/* Change tempo without jumping the animation: keep the current position in
+   the group and re-anchor the start time against the new duration. */
+function setTempo(value, echo = true) {
+  const now = performance.now();
+  const p = playing ? (now - groupStart) / groupDuration() : 0;
+
+  tempo = clamp(Math.round(value), BPM_MIN, BPM_MAX);
+  if (echo) bpm.value = tempo;
+  if (playing) groupStart = now - p * groupDuration();
+}
+
+/* Step to the next/previous multiple of 5 BPM. */
+const nudgeTempo = dir => setTempo(dir > 0
+  ? Math.floor(tempo / 5) * 5 + 5
+  : Math.ceil(tempo / 5) * 5 - 5);
+
+function animate(now) {
+  if (playing) {
+    const duration = groupDuration();
+    let elapsed = now - groupStart;
+
+    while (elapsed >= duration) {
+      groupStart += duration;
+      elapsed -= duration;
+      completeGroup();
+    }
+
+    const p = progress = elapsed / duration;
+    const beatFloat = elapsed / beatDuration();
+    const measure = Math.min(3, Math.floor(beatFloat / 4));
+
+    if (measure === 3) prepareNextFirst();
+    if (measure !== lastMeasure) {
+      updateMeasure(measure);
+      lastMeasure = measure;
+    }
+
+    ball.style.left = cursor.style.left = `${p * 100}%`;
+    ball.style.top = (chordMode === "strum" ? strumY : bounceY)(beatFloat) + "px";
+    if (chordMode === "strum") updateStroke(beatFloat);
+
+    /* The lyric ball runs off the same clock but its own phrase length, so
+       the two balls drift against each other exactly as words drift against
+       a chord progression. */
+    updateLyrics(groupsPlayed * 16 + beatFloat);
+  }
+
+  requestAnimationFrame(animate);
+}
+
+/* Only one of the two transport buttons is live at a time. Resuming re-anchors
+   the clock to where the group left off, so both balls pick up mid-phrase
+   instead of jumping back to the downbeat. */
+function setPlaying(next) {
+  if (next === playing) return;
+  playing = next;
+  if (playing) groupStart = performance.now() - progress * groupDuration();
+  play.disabled = playing;
+  stop.disabled = !playing;
+}
+
+play.addEventListener("click", () => setPlaying(true));
+stop.addEventListener("click", () => setPlaying(false));
+
+/* Digits only, and don't fight the caret while the field has focus. */
+bpm.addEventListener("input", () => {
+  bpm.value = bpm.value.replace(/\D/g, "").slice(0, 3);
+  if (bpm.value) setTempo(Number(bpm.value), false);
+});
+
+bpm.addEventListener("blur", () => { bpm.value = tempo; });
+bpm.addEventListener("keydown", e => { if (e.key === "Enter") bpm.blur(); });
+bpm.addEventListener("focus", () => bpm.select());
+
+modeButtons.forEach(b => b.addEventListener("click", () => setMode(b.dataset.mode)));
+chordButtons.forEach(b => b.addEventListener("click", () => setChordMode(b.dataset.chord)));
+themeSwitches.forEach(box => box.addEventListener("click", e => {
+  if (e.target.dataset.theme) setTheme(box.dataset.part, e.target.dataset.theme);
+}));
+ballButtons.forEach(b => b.addEventListener("click", () => setBallMode(b.dataset.ball)));
+cueButtons.forEach(b => b.addEventListener("click", () => setCueMode(b.dataset.cue)));
+addEventListener("resize", layout);
+
+/* Settings panel: one generic handler drives every data-setting control, so a
+   new tweakable only needs a markup row plus a default in `settings`. */
+const settingInputs = [...panel.querySelectorAll("[data-setting]")];
+
+function readSetting(el) {
+  const { setting, scale = 1, suffix = "", css, unit = "", flag } = el.dataset;
+  const box = el.type === "checkbox";
+
+  settings[setting] = box ? el.checked : Number(el.value) / Number(scale);
+
+  /* A control can drive JS state, a CSS variable, or a root flag attribute. */
+  if (css) root.style.setProperty(css, el.value + unit);
+  if (flag) root.dataset[flag] = el.checked ? "on" : "off";
+
+  const out = panel.querySelector(`output[for="${el.id}"]`);
+  if (out) out.value = el.value + suffix;
+}
+
+function openMenu(open) {
+  panel.hidden = !open;
+  menuBtn.setAttribute("aria-expanded", open);
+  menuBtn.classList.toggle("active", open);
+}
+
+panel.addEventListener("input", e => {
+  readSetting(e.target);
+  measurePads();  /* hiding the pads reflows the line, so re-measure */
+});
+menuBtn.addEventListener("click", () => openMenu(panel.hidden));
+addEventListener("pointerdown", e => {
+  if (!panel.hidden && !e.target.closest(".menu")) openMenu(false);
+});
+
+addEventListener("keydown", e => {
+  if (e.target === bpm) return;  /* typing a tempo, not a shortcut */
+
+  const keyedMode = { "1": "snap", "2": "preview", "3": "staggered" }[e.key];
+  const keyedTheme = { g: "green", a: "amber", r: "red" }[e.key.toLowerCase()];
+
+  if (keyedMode) setMode(keyedMode);
+  else if (keyedTheme) setAllThemes(keyedTheme);
+  else if (e.key === "=" || e.key === "+") nudgeTempo(1);
+  else if (e.key === "-" || e.key === "_") nudgeTempo(-1);
+  else if (e.key === " ") setPlaying(!playing);
+  else if (e.key === "Escape") openMenu(false);
+  else return;
+  e.preventDefault();
+});
+
+setAllThemes("green");
+setMode("preview");
+setChordMode("strum");
+setBallMode("sweep");
+setCueMode("dots");
+play.disabled = playing;
+stop.disabled = !playing;
+renderLine(0);
+layout();
+settingInputs.forEach(readSetting);
+bpm.value = tempo;
+requestAnimationFrame(animate);
+</script>
+</body>
+</html>
