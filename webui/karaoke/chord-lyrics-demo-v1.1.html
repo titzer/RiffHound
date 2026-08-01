@@ -26,7 +26,8 @@
     --glow: color-mix(in srgb, var(--fg) 55%, transparent);
     --scan-pitch: 2px;   /* both overwritten by the settings sliders */
     --brightness: 100%;
-    --side-size: clamp(15px, 1.9vw, 25px);   /* past/next lyric lines */
+    --lyric-zoom: 100;                       /* per cent, from the settings */
+    --side-size: calc(clamp(15px, 1.9vw, 25px) * var(--lyric-zoom) / 100);
   }
 
   body {
@@ -67,7 +68,22 @@
     padding: 10px var(--pad);
   }
 
-  h1 { margin: 0; font-size: 17px; }
+  h1 { margin: 0; font-size: 21px; }
+
+  /* The title is a control, not just a heading: it opens the track menu. */
+  .track { position: relative; }
+
+  .title-btn,
+  .title-btn:hover:not(:disabled) {
+    padding: 0;
+    border: 0;
+    background: none;
+    color: var(--fg);
+  }
+
+  .title-btn { cursor: pointer; text-shadow: inherit; }
+  .title-btn:hover:not(:disabled) { text-shadow: 0 0 12px var(--fg); }
+  #titleTags { color: var(--dim); }
 
   button, input { font: inherit; letter-spacing: inherit; color: inherit; }
 
@@ -82,7 +98,10 @@
     text-shadow: inherit;
   }
 
-  .switch button + button { border-left: 0; }
+  /* Overlap the borders instead of dropping one: a button whose neighbour is
+     disabled (35% opacity) was left with no visible edge of its own. */
+  .switch button + button { margin-left: -1px; }
+  .switch button.active, .switch button:hover:not(:disabled) { position: relative; z-index: 1; }
 
   button.active, button:hover:not(:disabled) {
     color: var(--fg);
@@ -103,9 +122,7 @@
     display: flex;
     align-items: baseline;
     gap: 8px;
-    padding: 2px 10px;
-    border: 2px solid var(--dim);
-    background: var(--panel);
+    padding: 2px 4px;
   }
 
   .bpm input {
@@ -157,6 +174,42 @@
   .setting { display: grid; grid-template-columns: 1fr auto; gap: 6px; font-size: 12px; }
   .setting output { color: var(--fg); }
   .setting .switch { grid-column: 1 / -1; }
+
+  /* Second level: common settings first, then one collapsible group per
+     display. The group body is its own element so `details` keeps its
+     disclosure behaviour whatever display the panel grid gives it. */
+  .panel details { border-top: 1px solid var(--dim); padding-top: 10px; }
+
+  .panel summary {
+    cursor: pointer;
+    font-size: 12px;
+    letter-spacing: .14em;
+    color: var(--dim);
+  }
+
+  .panel details[open] summary { color: var(--fg); }
+  .group { display: grid; gap: 12px; padding-top: 12px; }
+
+  /* A readout paired with its reset button, in the row's right-hand cell. */
+  .val { display: flex; align-items: center; gap: 8px; }
+
+  .reset {
+    padding: 1px 6px;
+    font-size: 10px;
+    letter-spacing: .08em;
+  }
+
+  .search {
+    grid-column: 1 / -1;
+    padding: 6px 8px;
+    border: 1px solid var(--dim);
+    background: var(--panel);
+    outline: none;
+  }
+
+  .search:focus { border-color: var(--fg); }
+  .search::placeholder { color: var(--dim); opacity: .7; }
+  .note { grid-column: 1 / -1; font-size: 11px; color: var(--dim); opacity: .75; }
   .setting .switch button { flex: 1; padding: 6px 2px; font-size: 12px; }
 
   input[type=checkbox] {
@@ -277,7 +330,7 @@
     margin-top: var(--hop-room);
     display: flex;
     align-items: flex-start;
-    font-size: clamp(18px, 2.9vw, 38px);
+    font-size: calc(clamp(18px, 2.9vw, 38px) * var(--lyric-zoom) / 100);
   }
 
   /* A syllable is a column: landing pad on top, text below. */
@@ -287,6 +340,14 @@
     align-items: center;
     color: var(--dim);
     transition: color 90ms;
+  }
+
+  /* ♯ and ♭ sit too far from the letter, and the global letter-spacing pushes
+     them further; pull them back and drop the tracking on the glyph itself. */
+  .acc {
+    margin-left: -.16em;
+    margin-right: -.04em;
+    letter-spacing: 0;
   }
 
   .syl.word { margin-left: .42em; }
@@ -343,8 +404,8 @@
 
   .lyric-ball {
     position: absolute;
-    width: 22px;
-    height: 22px;
+    width: calc(22px * var(--lyric-zoom) / 100);
+    height: calc(22px * var(--lyric-zoom) / 100);
     border-radius: 50%;
     background: var(--fg);
     box-shadow: 0 0 20px var(--fg);
@@ -358,7 +419,7 @@
     left: var(--pad);
     width: var(--disp-w);
     display: grid;
-    grid-template-columns: repeat(4, 1fr);
+    grid-template-columns: repeat(var(--bars, 4), 1fr);
     gap: var(--gap);
     z-index: 4;
   }
@@ -370,7 +431,7 @@
     left: var(--pad);
     width: calc(var(--disp-w) * .38);
     display: grid;
-    grid-template-columns: repeat(4, 1fr);
+    grid-template-columns: repeat(var(--bars, 4), 1fr);
     gap: 6px;
     opacity: .5;
   }
@@ -388,6 +449,8 @@
     background: var(--panel);
     font-size: calc(var(--h) * .42);
   }
+
+  .name { white-space: nowrap; }
 
   .measure small {
     position: absolute;
@@ -409,17 +472,6 @@
     background: var(--hot);
     text-shadow: 0 0 16px var(--fg);
   }
-
-  .main-row .measure.queued { border-style: dashed; }
-  .main-row .measure.snap { animation: snap-in 190ms steps(6, end); }
-
-  @keyframes snap-in {
-    from { transform: translateY(calc(var(--h) * .5)); opacity: .1; }
-    to   { transform: none; opacity: 1; }
-  }
-
-  /* Stagger by temporal order: later measures sit progressively lower. */
-  .staggered .main-row .measure { translate: 0 calc((var(--i) - 1.5) * 16px); }
 
   /* Repeat counter in the last bar: one rectangle per pass, emptying from the
      left as passes are spent. It follows the bar's own colour so it stays
@@ -562,81 +614,10 @@
            matching default in `settings`; the generic handler does the rest.
            Labels carry their keyboard shortcut. -->
       <div class="panel" id="panel" hidden>
-        <div class="setting">
-          <label>Chord guide</label>
-          <div class="switch" id="chordModes">
-            <button data-chord="bounce">Ball</button>
-            <button data-chord="strum">Strum</button>
-          </div>
-        </div>
-
-        <div class="setting">
-          <label for="s-playhead">Playhead</label>
-          <input id="s-playhead" type="checkbox" data-setting="playhead" data-flag="playhead" checked>
-        </div>
-
-        <div class="setting">
-          <label for="s-beats">Beat boxes</label>
-          <input id="s-beats" type="checkbox" data-setting="beats" data-flag="beats" checked>
-        </div>
-
-        <div class="setting">
-          <label>Scroll mode</label>
-          <div class="switch" id="modes">
-            <button data-mode="snap">1 Snap</button>
-            <button data-mode="preview">2 Preview</button>
-            <button data-mode="staggered">3 Stagger</button>
-          </div>
-        </div>
-
-        <div class="setting">
-          <label>Lyric ball</label>
-          <div class="switch" id="ballModes">
-            <button data-ball="hop">Hop</button>
-            <button data-ball="sweep">Sweep</button>
-          </div>
-        </div>
-
-        <div class="setting">
-          <label for="s-guide">Ball + pads</label>
-          <input id="s-guide" type="checkbox" data-setting="guide" data-flag="guide" checked>
-        </div>
-
-        <div class="setting">
-          <label for="s-past">Past line</label>
-          <input id="s-past" type="checkbox" data-setting="past" data-flag="past" checked>
-        </div>
-
-        <div class="setting">
-          <label>Line cue</label>
-          <div class="switch" id="cueModes">
-            <button data-cue="off">Off</button>
-            <button data-cue="dots">Dots</button>
-          </div>
-        </div>
-
-        <!-- One phosphor per part. G / A / R set all three at once. -->
+        <!-- Common first, then one collapsible group per display. -->
         <div class="setting">
           <label>Control colour</label>
           <div class="switch" data-part="control">
-            <button data-theme="green">Green</button>
-            <button data-theme="amber">Amber</button>
-            <button data-theme="red">Red</button>
-          </div>
-        </div>
-
-        <div class="setting">
-          <label>Lyric colour</label>
-          <div class="switch" data-part="lyrics">
-            <button data-theme="green">Green</button>
-            <button data-theme="amber">Amber</button>
-            <button data-theme="red">Red</button>
-          </div>
-        </div>
-
-        <div class="setting">
-          <label>Chord colour</label>
-          <div class="switch" data-part="chords">
             <button data-theme="green">Green</button>
             <button data-theme="amber">Amber</button>
             <button data-theme="red">Red</button>
@@ -669,6 +650,78 @@
           <input id="s-pitch" type="range" data-setting="pitch" data-css="--scan-pitch"
                  data-unit="px" data-suffix="px" min="2" max="16" step="1" value="2">
         </div>
+
+        <details open>
+          <summary>Lyrics display</summary>
+          <div class="group">
+            <div class="setting">
+              <label>Lyric colour</label>
+              <div class="switch" data-part="lyrics">
+                <button data-theme="green">Green</button>
+                <button data-theme="amber">Amber</button>
+                <button data-theme="red">Red</button>
+              </div>
+            </div>
+
+            <div class="setting">
+              <label for="s-zoom">Zoom</label>
+              <output for="s-zoom"></output>
+              <input id="s-zoom" type="range" data-setting="zoom" data-scale="100"
+                     data-css="--lyric-zoom" data-suffix="%"
+                     min="60" max="200" step="5" value="100">
+            </div>
+
+            <div class="setting">
+              <label for="s-guide">Sing guide</label>
+              <input id="s-guide" type="checkbox" data-setting="guide" data-flag="guide" checked>
+            </div>
+
+            <div class="setting">
+              <label for="s-past">Past line</label>
+              <input id="s-past" type="checkbox" data-setting="past" data-flag="past" checked>
+            </div>
+
+            <div class="setting">
+              <label>Line cue</label>
+              <div class="switch" id="cueModes">
+                <button data-cue="off">Off</button>
+                <button data-cue="dots">Dots</button>
+              </div>
+            </div>
+          </div>
+        </details>
+
+        <details open>
+          <summary>Chord display</summary>
+          <div class="group">
+            <div class="setting">
+              <label>Chord colour</label>
+              <div class="switch" data-part="chords">
+                <button data-theme="green">Green</button>
+                <button data-theme="amber">Amber</button>
+                <button data-theme="red">Red</button>
+              </div>
+            </div>
+
+            <div class="setting">
+              <label>Chord guide</label>
+              <div class="switch" id="chordModes">
+                <button data-chord="bounce">Ball</button>
+                <button data-chord="strum">Strum</button>
+              </div>
+            </div>
+
+            <div class="setting">
+              <label for="s-playhead">Playhead</label>
+              <input id="s-playhead" type="checkbox" data-setting="playhead" data-flag="playhead" checked>
+            </div>
+
+            <div class="setting">
+              <label for="s-beats">Beat boxes</label>
+              <input id="s-beats" type="checkbox" data-setting="beats" data-flag="beats" checked>
+            </div>
+          </div>
+        </details>
       </div>
     </div>
 
@@ -677,7 +730,59 @@
       <button id="stop">Stop</button>
     </div>
 
-    <h1>A Way To Say</h1>
+    <div class="track">
+      <h1>
+        <button class="title-btn" id="titleBtn" aria-expanded="false"
+                aria-haspopup="true"><span id="titleText"></span><span id="titleTags"></span></button>
+      </h1>
+
+      <div class="panel" id="trackPanel" hidden>
+        <div class="setting">
+          <label for="search">Load track</label>
+          <input class="search" id="search" type="search" placeholder="search tracks…"
+                 autocomplete="off">
+          <div class="note">demo — nothing to load yet</div>
+        </div>
+
+        <details open>
+          <summary>Track</summary>
+          <div class="group">
+            <div class="setting">
+              <label>Original key</label>
+              <output id="origKey"></output>
+            </div>
+
+            <div class="setting">
+              <label>Original tempo</label>
+              <output id="origTempo"></output>
+            </div>
+
+            <div class="setting">
+              <label for="s-shift">Pitch</label>
+              <span class="val">
+                <output for="s-shift" id="shiftOut"></output>
+                <button class="reset" id="shiftReset">reset</button>
+              </span>
+              <input id="s-shift" type="range" min="-7" max="7" step="1" value="0">
+            </div>
+
+            <div class="setting">
+              <label for="s-transpose">Transpose chords</label>
+              <input id="s-transpose" type="checkbox" checked>
+            </div>
+
+            <div class="setting">
+              <label for="s-speed">Speed</label>
+              <span class="val">
+                <output for="s-speed" id="speedOut"></output>
+                <button class="reset" id="speedReset">reset</button>
+              </span>
+              <input id="s-speed" type="range" min="50" max="150" step="1" value="100">
+            </div>
+          </div>
+        </details>
+      </div>
+    </div>
 
     <div class="bpm">
       <input id="bpm" inputmode="numeric" maxlength="3" value="95" aria-label="Tempo in BPM">
@@ -709,6 +814,41 @@
   </div>
 
 <script>
+/* A track carries the key and tempo it was recorded in. The player can move
+   away from both; the title only mentions them once it has. */
+const track = { title: "A Way To Say", key: "C", tempo: 95 };
+
+/* Chords are stored as written and transposed on the way to the screen —
+   which is why they have to be parsed rather than treated as text. */
+const SHARPS = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
+const FLATS  = ["C", "Db", "D", "Eb", "E", "F", "Gb", "G", "Ab", "A", "Bb", "B"];
+const PITCH_CLASS = {
+  C: 0, "C#": 1, Db: 1, D: 2, "D#": 3, Eb: 3, E: 4, F: 5,
+  "F#": 6, Gb: 6, G: 7, "G#": 8, Ab: 8, A: 9, "A#": 10, Bb: 10, B: 11
+};
+
+/* "G/B" -> root and bass moved together, quality left alone. Capoing up spells
+   with sharps and down with flats, which is what a player writing the chart
+   out by hand would do. Names stay ASCII in the data; the glyphs are a
+   rendering step. */
+function transpose(name, semis) {
+  if (!semis) return name;
+  const scale = semis > 0 ? SHARPS : FLATS;
+  return name.split("/").map(part => {
+    const m = /^([A-G][#b]?)(.*)$/.exec(part);
+    if (!m || !(m[1] in PITCH_CLASS)) return part;
+    return scale[mod(PITCH_CLASS[m[1]] + semis, 12)] + m[2];
+  }).join("/");
+}
+
+/* Real accidental glyphs, each in a span so it can be kerned back against the
+   letter it belongs to — ♯ and ♭ carry far more side bearing than "#" or "b". */
+const accSpan = a => `<span class="acc">${a === "#" ? "\u266f" : "\u266d"}</span>`;
+
+const chordHtml = name => name
+  .replace(/([A-G])([#b])/g, (_, note, a) => note + accSpan(a))
+  .replace(/([#b])(\d)/g, (_, a, digit) => accSpan(a) + digit);
+
 /* A strum pattern is one bar of eighth-note slots:
      d down   u up   x percussive hit   m mute   o ring / no strike
    The hand swings down-up once per beat, so even slots always fall on the way
@@ -727,6 +867,8 @@ const progression = [
   { chords: ["C", "G/B", "Am", "Em"], repeat: 1 },
   { chords: ["F", "C/E", "Dm", "G"], repeat: 3, strum: "doxudmxu" },
   { chords: ["C", "F", "C", "G"], repeat: 1, strum: "dodododo" },
+  { chords: ["Dm", "G", "C"], repeat: 2, strum: "doduoudu" },
+  { chords: ["Am", "F", "C", "G", "Em", "Dm"], repeat: 1, strum: "doxudmxu" },
   { chords: ["Am", "F", "C", "G"], repeat: 2 }
 ];
 
@@ -798,9 +940,11 @@ const ball = $("ball"), cursor = $("cursor"), playhead = $("playhead");
 const stage = $("stage"), next = $("next"), nextChord = $("nextChord");
 const play = $("play"), stop = $("stop"), bpm = $("bpm");
 const menuBtn = $("menuBtn"), panel = $("panel");
-const modeButtons = [...$("modes").children];
+const titleBtn = $("titleBtn"), trackPanel = $("trackPanel");
+const titleText = $("titleText"), titleTags = $("titleTags");
+const shiftSlider = $("s-shift"), speedSlider = $("s-speed");
+const shiftOut = $("shiftOut"), speedOut = $("speedOut");
 const chordButtons = [...$("chordModes").children];
-const ballButtons = [...$("ballModes").children];
 const cueButtons = [...$("cueModes").children];
 const themeSwitches = [...panel.querySelectorAll("[data-part]")];
 
@@ -819,29 +963,25 @@ const parts = {
 /* Tweakables from the settings panel, keyed by data-setting. */
 const settings = {
   brightness: 1, bounce: 1, scanlines: true, pitch: 2,
-  guide: true, past: true, playhead: true, beats: true
+  guide: true, past: true, playhead: true, beats: true, zoom: 1
 };
-
-const SLOTS = 32;   /* eighth-note slots in a four-bar group */
 
 const BALL = 34;
 const BALL_ZONE = 76;
 const LYRIC_BALL = 22;
 const HOP_ROOM = 58;   /* clearance above the pads for the lyric ball's arc */
-const HOP_BEATS = 1;   /* time the lyric ball spends airborne between pads */
-const LEAD_STEP = 32;  /* how far left of the line the ball waits to come in */
+const LEAD_STEP = 52;  /* fallback wait offset when no countdown is showing */
 const BPM_MIN = 40, BPM_MAX = 240;
 
 let groupIndex = 0;   /* which group of the progression is playing */
 let pass = 0;         /* which repetition of it, 0-based */
-let groupsPlayed = 0; /* monotonic, drives the lyric clock */
-let mode = "preview";
+let songBeats = 0;    /* beats completed before this group; the lyric clock */
+let shift = 0;        /* playback pitch offset, in semitones */
+let transposeChords = true;
 let chordMode = "strum";
-let ballMode = "sweep";
 let cueMode = "dots";
 let playing = true;
 let groupStart = performance.now();
-let preparedFirst = false;
 let lastMeasure = -1;
 let lastSlot = -1;
 let lastCell = null;
@@ -849,18 +989,34 @@ let beatCells = [];   /* sparse: only slots the player acts on have a box */
 let lastLine = -1;
 let lastSyllable = -1;
 let lastCue = -1;
+let cueX = null;      /* head of the countdown, in .lyrics coords */
 let progress = 0;
 let tempo = 95;
 let geo = {};
 let pads = [];
 
 const mod = (n, m) => ((n % m) + m) % m;
+
+/* The lyric guides are sized in px but the text is zoomable, so every lyric
+   length scales with it: arc height, ball size, and the wait-off-to-the-left. */
+const zoom = () => settings.zoom;
+const hopRoom = () => HOP_ROOM * zoom();
+const ballSize = () => LYRIC_BALL * zoom();
 const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
 const beatDuration = () => 60000 / tempo;
-const groupDuration = () => beatDuration() * 16;
+const groupDuration = () => beatDuration() * groupBeats();
+
+const chordName = raw => transpose(raw, transposeChords ? shift : 0);
 
 const groupAt = i => progression[mod(i, progression.length)];
 const thisGroup = () => groupAt(groupIndex);
+
+/* Groups are not all four bars long, so everything downstream — the grid, the
+   beat-box count, the group's duration and the lyric clock — is derived from
+   the current group rather than assumed. */
+const bars = () => thisGroup().chords.length;
+const groupBeats = () => bars() * 4;
+const slots = () => bars() * 8;
 
 /* What plays after this pass: the same group again if repeats are left over,
    otherwise the next one along. */
@@ -877,7 +1033,7 @@ function layout() {
   const top = lyricH + BALL_ZONE + 8;   /* leave the chord ball its headroom */
 
   /* Beat boxes have to fit between adjacent eighth-note slots. */
-  const slotW = main.clientWidth / SLOTS;
+  const slotW = main.clientWidth / slots();
   const boxW = Math.min(34, Math.round(slotW * .82));
   const boxH = Math.round(boxW * .78);
 
@@ -889,7 +1045,7 @@ function layout() {
   beats.style.setProperty("--bh", boxH + "px");
 
   lyrics.style.height = lyricH + "px";
-  lyrics.style.setProperty("--hop-room", HOP_ROOM + "px");
+  lyrics.style.setProperty("--hop-room", hopRoom() + "px");
 
   main.style.top = top + "px";
   main.style.setProperty("--h", mainH + "px");
@@ -907,9 +1063,15 @@ function layout() {
   const bar = main.children[0]?.getBoundingClientRect().width || mainH;
   const nextH = Math.round(mainH * .7);
 
+  /* 70% of a bar, but never wider than the margin actually reserved for it —
+     on a wide window a bar gets big enough that 70% of one would reach back
+     over the chord row. main.offsetLeft is the page padding. */
+  const room = stage.clientWidth - main.offsetLeft * 2 - main.clientWidth - 12;
+  const nextW = Math.max(60, Math.min(Math.round(bar * .7), room));
+
   next.style.top = Math.round(top + (mainH - nextH) / 2) + "px";
   next.style.height = nextH + "px";
-  next.style.width = Math.round(bar * .7) + "px";
+  next.style.width = nextW + "px";
   next.style.setProperty("--h", nextH + "px");
 
   measurePads();
@@ -928,37 +1090,42 @@ function repeatMarks(repeat) {
   return box;
 }
 
-function makeMeasure(chord, i, repeat = 0, extra = "") {
+function makeMeasure(chord, i, repeat = 0, last = false) {
   const el = document.createElement("div");
-  el.className = `measure ${extra}`;
-  el.style.setProperty("--i", i);
-  el.innerHTML = `<small>${i + 1}</small>${chord}`;
-  if (i === 3 && repeat > 1) el.append(repeatMarks(repeat));
+  el.className = "measure";
+  /* One wrapper, because .measure is a grid: bare text plus an accidental
+     span would be two grid items and stack vertically instead of reading as
+     one word. */
+  el.innerHTML = `<small>${i + 1}</small>` +
+    `<span class="name">${chordHtml(chordName(chord))}</span>`;
+  if (last && repeat > 1) el.append(repeatMarks(repeat));
   return el;
 }
 
 function renderPreview() {
   const { chords } = nextGroup();
+  preview.style.setProperty("--bars", chords.length);
   preview.replaceChildren(...chords.map((chord, i) => makeMeasure(chord, i)));
 }
 
 /* A box for every slot that asks for something; nothing where the chord just
-   rings on. Placed by time, so slot s of SLOTS sits at s/SLOTS across. */
+   rings on. Placed by time, so slot s of n sits at s/n across the group. */
 function renderBeats() {
   const pattern = thisGroup().strum || STRUM_DEFAULT;
+  const n = slots();
   const cells = [];
 
   beatCells = [];
   lastCell = null;
   lastSlot = -1;
 
-  for (let s = 0; s < SLOTS; s++) {
+  for (let s = 0; s < n; s++) {
     const stroke = pattern[s % 8];
     if (!stroke || stroke === "o") continue;
 
     const cell = document.createElement("div");
     cell.className = "beat";
-    cell.style.left = (s / SLOTS * 100) + "%";
+    cell.style.left = (s / n * 100) + "%";
     cell.textContent = STROKES[stroke];
     beatCells[s] = cell;
     cells.push(cell);
@@ -967,37 +1134,24 @@ function renderBeats() {
   beats.replaceChildren(...cells);
 }
 
-function renderAll(mainCells) {
+function renderAll() {
   const { chords, repeat } = thisGroup();
-  main.replaceChildren(...(mainCells || chords.map((c, i) => makeMeasure(c, i, repeat))));
+  main.style.setProperty("--bars", chords.length);
+  main.replaceChildren(...chords.map((c, i) =>
+    makeMeasure(c, i, repeat, i === chords.length - 1)));
   renderPreview();
   renderBeats();
-  preparedFirst = false;
+  nextChord.innerHTML = chordHtml(chordName(nextGroup().chords[0]));
   lastMeasure = -1;
 }
 
-function prepareNextFirst() {
-  if (mode !== "snap" || preparedFirst) return;
-  main.children[0].replaceWith(makeMeasure(nextGroup().chords[0], 0, 0, "snap queued"));
-  preparedFirst = true;
-}
-
 function completeGroup() {
-  const snapped = mode === "snap" && preparedFirst;
+  songBeats += groupBeats();   /* count the group we just finished */
 
-  groupsPlayed++;
   if (pass + 1 < thisGroup().repeat) pass++;
   else { pass = 0; groupIndex++; }
 
-  const { chords, repeat } = thisGroup();
-
-  if (snapped) {
-    const first = main.children[0];
-    first.classList.remove("queued");
-    renderAll([first, ...chords.slice(1).map((c, k) => makeMeasure(c, k + 1, repeat, "snap"))]);
-  } else {
-    renderAll();
-  }
+  renderAll();
 }
 
 /* ---- lyrics ----------------------------------------------------------- */
@@ -1050,6 +1204,18 @@ function updateCue(line, local) {
     return dot;
   }));
 
+  /* Where the ball starts its run in. Captured once, when the countdown first
+     appears and is therefore at its widest; re-measuring as dots go out would
+     drag the ball sideways under it. */
+  if (dots > 0) {
+    if (lastCue <= 0) {
+      const r = cue.getBoundingClientRect(), base = lyrics.getBoundingClientRect();
+      cueX = r.left - base.left + r.width / (2 * dots);   /* first dot's centre */
+    }
+  } else {
+    cueX = null;
+  }
+
   lastCue = dots;
 }
 
@@ -1064,59 +1230,23 @@ function measurePads() {
 }
 
 const arc = t => 4 * t * (1 - t);                /* 0 → 1 → 0, apex at t = .5 */
-const ease = t => t * t * (3 - 2 * t);           /* slow off the pad, slow onto it */
 const lerp = (a, b, t) => a + (b - a) * t;
 
-/* Where the ball is, in .lyrics coordinates, at beat `t` within the line —
-   negative while the line is waiting to start, which parks the ball on the
-   first pad, bouncing, until the countdown runs out. Vertical motion is
-   always the same parabola; only the horizontal timing bends, so the ball
-   reads as landing exactly on each syllable's onset. */
-function ballAt(syls, t) {
-  const hop = HOP_ROOM * settings.bounce;
-  const last = pads.length - 1;
+/* Waiting out a countdown: the ball travels steadily from the head of the dots
+   to the first syllable, bouncing once a beat and touching down on each one, so
+   it arrives exactly as the last dot goes out. The glide is continuous — holding
+   x still between bounces made it jump sideways at every touchdown. Amplitude
+   and rate match the sweep that follows, so there is no seam at the line. */
+function leadInAt(t, lead) {
+  const from = cueX != null ? cueX : pads[0].x - LEAD_STEP * zoom();
+  const f = lead > 0 ? clamp(1 + t / lead, 0, 1) : 1;
 
-  let i = 0;
-  while (i < last && syls[i + 1].start <= t) i++;
-
-  const here = pads[i];
-  const landed = t >= syls[i].start;
-  const nextStart = i < last ? syls[i + 1].start : Infinity;
-  const flight = Math.min(HOP_BEATS, nextStart - syls[i].start);
-  const takeoff = nextStart - flight;
-
-  /* Held (or trailing) note: small bounces in place on the sustain pad. */
-  if (t < takeoff || i === last) {
-    const phase = mod(t - syls[i].start, .5) / .5;
-    return { x: here.x, y: here.y - arc(phase) * hop * .22, i, landed };
-  }
-
-  const to = pads[i + 1];
-  const f = (t - takeoff) / flight;
   return {
-    x: lerp(here.x, to.x, ease(f)),
-    y: lerp(here.y, to.y, f) - arc(f) * hop,
-    i,
-    landed
+    i: 0,
+    landed: false,
+    x: lerp(from, pads[0].x, f),
+    y: pads[0].y - arc(mod(t, 1)) * hopRoom() * settings.bounce * .6
   };
-}
-
-/* Waiting out a countdown: the ball bounces just left of the line, then takes
-   one ordinary hop in so it arrives on the first syllable exactly as the last
-   dot goes out. Shared by both ball modes — the wait is about the line, not
-   about how the ball travels once it is singing. */
-function leadInAt(t) {
-  const hop = HOP_ROOM * settings.bounce;
-  const from = pads[0].x - LEAD_STEP;
-  const base = { i: 0, landed: false };
-
-  if (t < -HOP_BEATS) {
-    const phase = mod(t, .5) / .5;
-    return { ...base, x: from, y: pads[0].y - arc(phase) * hop * .22 };
-  }
-
-  const f = (t + HOP_BEATS) / HOP_BEATS;
-  return { ...base, x: lerp(from, pads[0].x, ease(f)), y: pads[0].y - arc(f) * hop };
 }
 
 /* Steady metronome sweep: ignores the syllables, crosses the line once. */
@@ -1128,7 +1258,7 @@ function sweepAt(t, span) {
   let i = 0;
   while (i < pads.length - 1 && pads[i + 1].x <= x) i++;
 
-  return { x, y: from.y - arc(mod(t, 1)) * HOP_ROOM * settings.bounce * .6, i, landed: t >= 0 };
+  return { x, y: from.y - arc(mod(t, 1)) * hopRoom() * settings.bounce * .6, i, landed: t >= 0 };
 }
 
 function updateLyrics(beat) {
@@ -1146,12 +1276,10 @@ function updateLyrics(beat) {
 
   if (!pads.length) return;
 
-  const pos = t < 0 ? leadInAt(t)
-    : ballMode === "sweep" ? sweepAt(t, line.span)
-    : ballAt(line.syls, t);
+  const pos = t < 0 ? leadInAt(t, line.start - line.promote) : sweepAt(t, line.span);
 
   lyricBall.style.left = pos.x + "px";
-  lyricBall.style.top = (pos.y - LYRIC_BALL) + "px";
+  lyricBall.style.top = (pos.y - ballSize()) + "px";
 
   const reached = pos.landed ? pos.i : -1;
   if (reached !== lastSyllable) {
@@ -1161,11 +1289,6 @@ function updateLyrics(beat) {
     });
     lastSyllable = reached;
   }
-}
-
-function setBallMode(next) {
-  ballMode = next;
-  ballButtons.forEach(b => b.classList.toggle("active", b.dataset.ball === ballMode));
 }
 
 function setCueMode(next) {
@@ -1178,28 +1301,29 @@ function setCueMode(next) {
 
 function updateMeasure(measure) {
   [...main.children].forEach((cell, i) => {
-    cell.classList.toggle("current", i === measure && !(preparedFirst && i === 0));
+    cell.classList.toggle("current", i === measure);
   });
 
   /* The right margin always names the first chord of the *next group*, so it
-     holds still for the whole group; in preview mode it lights up while the
-     last measure is playing. */
-  nextChord.textContent = nextGroup().chords[0];
-  next.classList.toggle("lit", mode === "preview" && measure === 3);
+     holds still for the whole group, and lights up on the last bar. */
+  nextChord.innerHTML = chordHtml(chordName(nextGroup().chords[0]));
+  next.classList.toggle("lit", measure === bars() - 1);
 }
 
 /* --- chord guide ---------------------------------------------------------
    Both guides are keyed to the beat boxes, which straddle the top edge of the
-   chord row. Bounce lands the ball on top of them, once per slot. Strum swings
-   through them, crossing the box's centre line at the instant the stroke is
-   played — the fast part of the swing, where the pick crosses the strings. */
+   chord row. A bouncing ball always bounces on the beat, never on the eighths,
+   even where the strum guide is finer than that — so it lands on every fourth
+   box, not every box. Strum is not a bounce but a swing: a full down-up per
+   beat, crossing the box centre line at the instant a stroke is played, which
+   is the fast part of the travel where the pick crosses the strings. */
 
 const TAU = Math.PI * 2;
 const boxTop = () => BALL_ZONE - geo.boxH / 2;
 
 function bounceY(beatFloat) {
   const room = Math.max(0, boxTop() - BALL - 4);
-  const lift = Math.abs(Math.sin(beatFloat * TAU)) * clamp(room * settings.bounce, 0, room);
+  const lift = Math.abs(Math.sin(beatFloat * Math.PI)) * clamp(room * settings.bounce, 0, room);
   return boxTop() - BALL - lift;
 }
 
@@ -1212,7 +1336,7 @@ function strumY(beatFloat) {
 /* Eight slots to the bar, thirty-two to the group. The glyph and the lit box
    only change at a slot boundary, never per frame. */
 function updateBeat(beatFloat) {
-  const slot = Math.floor(mod(beatFloat, 16) * 2);
+  const slot = Math.floor(mod(beatFloat, groupBeats()) * 2);
   if (slot === lastSlot) return;
 
   lastCell?.classList.remove("hit");
@@ -1232,13 +1356,6 @@ function setChordMode(next) {
   lastSlot = -1;   /* force the glyph and lit box to be re-evaluated */
 }
 
-function setMode(nextMode) {
-  mode = nextMode;
-  stage.classList.toggle("staggered", mode === "staggered");
-  modeButtons.forEach(b => b.classList.toggle("active", b.dataset.mode === mode));
-  renderAll();  /* undo any half-prepared snap */
-}
-
 function setTheme(part, theme) {
   parts[part].forEach(el => el.style.setProperty("--fg", PHOSPHOR[theme]));
 
@@ -1252,6 +1369,30 @@ function setAllThemes(theme) {
   Object.keys(parts).forEach(part => setTheme(part, theme));
 }
 
+/* The title names the track, and then only what has been moved away from its
+   original: the key it now sounds in, and the speed relative to the record. */
+function updateTitle() {
+  const ratio = tempo / track.tempo;
+  const tags = [];
+
+  if (shift) tags.push(chordHtml(transpose(track.key, shift)));
+  if (Math.abs(ratio - 1) > .005) tags.push(ratio.toFixed(2) + "x");
+
+  titleText.textContent = track.title;
+  titleTags.innerHTML = tags.length ? " - " + tags.join(" - ") : "";
+
+  shiftOut.value = (shift > 0 ? "+" : "") + shift;
+  speedOut.value = ratio.toFixed(2) + "x";
+  if (document.activeElement !== speedSlider) speedSlider.value = Math.round(ratio * 100);
+}
+
+function setShift(semis) {
+  shift = clamp(semis, -7, 7);
+  shiftSlider.value = shift;
+  renderAll();      /* chord names may have moved */
+  updateTitle();
+}
+
 /* Change tempo without jumping the animation: keep the current position in
    the group and re-anchor the start time against the new duration. */
 function setTempo(value, echo = true) {
@@ -1261,6 +1402,7 @@ function setTempo(value, echo = true) {
   tempo = clamp(Math.round(value), BPM_MIN, BPM_MAX);
   if (echo) bpm.value = tempo;
   if (playing) groupStart = now - p * groupDuration();
+  updateTitle();
 }
 
 /* Step to the next/previous multiple of 5 BPM. */
@@ -1270,20 +1412,21 @@ const nudgeTempo = dir => setTempo(dir > 0
 
 function animate(now) {
   if (playing) {
-    const duration = groupDuration();
     let elapsed = now - groupStart;
+    let duration = groupDuration();
 
+    /* Groups differ in length, so the duration is re-read each time one ends. */
     while (elapsed >= duration) {
       groupStart += duration;
       elapsed -= duration;
       completeGroup();
+      duration = groupDuration();
     }
 
     const p = progress = elapsed / duration;
     const beatFloat = elapsed / beatDuration();
-    const measure = Math.min(3, Math.floor(beatFloat / 4));
+    const measure = Math.min(bars() - 1, Math.floor(beatFloat / 4));
 
-    if (measure === 3) prepareNextFirst();
     if (measure !== lastMeasure) {
       updateMeasure(measure);
       lastMeasure = measure;
@@ -1296,7 +1439,7 @@ function animate(now) {
     /* The lyric ball runs off the same clock but its own phrase length, so
        the two balls drift against each other exactly as words drift against
        a chord progression. */
-    updateLyrics(groupsPlayed * 16 + beatFloat);
+    updateLyrics(songBeats + beatFloat);
   }
 
   requestAnimationFrame(animate);
@@ -1333,12 +1476,10 @@ bpm.addEventListener("blur", () => { bpm.value = tempo; });
 bpm.addEventListener("keydown", e => { if (e.key === "Enter") bpm.blur(); });
 bpm.addEventListener("focus", () => bpm.select());
 
-modeButtons.forEach(b => b.addEventListener("click", () => setMode(b.dataset.mode)));
 chordButtons.forEach(b => b.addEventListener("click", () => setChordMode(b.dataset.chord)));
 themeSwitches.forEach(box => box.addEventListener("click", e => {
   if (e.target.dataset.theme) setTheme(box.dataset.part, e.target.dataset.theme);
 }));
-ballButtons.forEach(b => b.addEventListener("click", () => setBallMode(b.dataset.ball)));
 cueButtons.forEach(b => b.addEventListener("click", () => setCueMode(b.dataset.cue)));
 addEventListener("resize", layout);
 addEventListener("fullscreenchange", layout);   /* the stage changes height */
@@ -1365,38 +1506,60 @@ function openMenu(open) {
   panel.hidden = !open;
   menuBtn.setAttribute("aria-expanded", open);
   menuBtn.classList.toggle("active", open);
+  if (open) openTrack(false);
+}
+
+function openTrack(open) {
+  trackPanel.hidden = !open;
+  titleBtn.setAttribute("aria-expanded", open);
+  if (open) openMenu(false);
 }
 
 panel.addEventListener("input", e => {
   readSetting(e.target);
-  measurePads();  /* hiding the pads reflows the line, so re-measure */
+  layout();   /* zoom and the guide toggles both move the lyric line */
 });
 menuBtn.addEventListener("click", () => openMenu(panel.hidden));
+titleBtn.addEventListener("click", () => openTrack(trackPanel.hidden));
+
 addEventListener("pointerdown", e => {
   if (!panel.hidden && !e.target.closest(".menu")) openMenu(false);
+  if (!trackPanel.hidden && !e.target.closest(".track")) openTrack(false);
+});
+
+/* Track controls. Tempo stays the one source of truth: the speed slider sets
+   it and the ratio is read back out of it, so typing a BPM and dragging the
+   slider can never disagree. */
+shiftSlider.addEventListener("input", () => setShift(Number(shiftSlider.value)));
+$("shiftReset").addEventListener("click", () => setShift(0));
+speedSlider.addEventListener("input", () =>
+  setTempo(track.tempo * Number(speedSlider.value) / 100));
+$("speedReset").addEventListener("click", () => setTempo(track.tempo));
+
+$("s-transpose").addEventListener("change", e => {
+  transposeChords = e.target.checked;
+  renderAll();
 });
 
 addEventListener("keydown", e => {
-  if (e.target === bpm) return;  /* typing a tempo, not a shortcut */
+  /* Don't steal keys from the tempo field or the track search box. */
+  if (e.target.tagName === "INPUT" && /^(text|search)$/.test(e.target.type)) return;
 
-  const keyedMode = { "1": "snap", "2": "preview", "3": "staggered" }[e.key];
   const keyedTheme = { g: "green", a: "amber", r: "red" }[e.key.toLowerCase()];
 
-  if (keyedMode) setMode(keyedMode);
-  else if (keyedTheme) setAllThemes(keyedTheme);
+  if (keyedTheme) setAllThemes(keyedTheme);
   else if (e.key === "=" || e.key === "+") nudgeTempo(1);
   else if (e.key === "-" || e.key === "_") nudgeTempo(-1);
   else if (e.key === " ") setPlaying(!playing);
   else if (e.key.toLowerCase() === "f") toggleFullscreen();
-  else if (e.key === "Escape") openMenu(false);
+  else if (e.key === "Escape") { openMenu(false); openTrack(false); }
   else return;
   e.preventDefault();
 });
 
 setAllThemes("green");
-setMode("preview");
+renderAll();
 setChordMode("strum");
-setBallMode("sweep");
 setCueMode("dots");
 play.disabled = playing;
 stop.disabled = !playing;
@@ -1404,6 +1567,9 @@ renderLine(0);
 layout();
 settingInputs.forEach(readSetting);
 bpm.value = tempo;
+$("origKey").innerHTML = chordHtml(track.key);
+$("origTempo").value = track.tempo + " bpm";
+updateTitle();
 requestAnimationFrame(animate);
 </script>
 </body>

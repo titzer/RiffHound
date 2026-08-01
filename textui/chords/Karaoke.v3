@@ -1,0 +1,608 @@
+// Karaoke.v3
+// A VT100/VT102 sketch of the RiffHound karaoke screen: three lyric lines with
+// a bouncing ball, a strum row, four big chord boxes in block-art, and a
+// preview of the group coming next. 80 columns, 20 rows, 16 colours.
+//
+//   ./Karaoke          run it
+//   ./Karaoke -still   draw one frame and exit (no raw mode; for piping)
+//
+// The chord font is Calvin S, a 3-line FIGlet font drawn in box-drawing
+// characters (patorjk.com/software/taag). Picked over the taller ANSI fonts
+// because it has real lowercase -- Am and AM are different chords -- and
+// because three chars fit a 15-column bar at 3 columns each.
+
+def T: Vt100;
+
+// ── layout, in terminal cells ────────────────────────────────────────
+def LEFT     = 3;    // left margin
+def DISP     = 74;   // width the whole four-bar group spans
+def BOX_W    = 17;   // one chord box
+def BOX_GAP  = 2;
+def GLYPH_H  = FONT_H;  // rows of chord art
+def BOX_PAD  = 1;       // blank rows inside the box, above the art
+
+def ROW_PAST    = 3;
+def ROW_APEX    = 4;   // lyric ball, top of its arc
+def ROW_LAND    = 5;   // lyric ball, on the syllable
+def ROW_CUR     = 6;
+def ROW_NEXT    = 7;
+def ROW_HEAD    = 9;   // chord playhead
+def ROW_STRUM   = 10;
+def ROW_BOX     = 11;  // top border; glyphs at +1..+4, bottom border at +5
+def ROW_PREVIEW = 18;
+def ROW_STATUS  = 20;
+
+def SLOTS = 32;  // eighth-note slots in a four-bar group
+
+// ── box drawing ─────────────────────────────────────────────────────
+def BOX_HZ = "\xe2\x94\x80";  // ─
+def BOX_VT = "\xe2\x94\x82";  // │
+def BOX_TL = "\xe2\x94\x8c";  // ┌
+def BOX_TR = "\xe2\x94\x90";  // ┐
+def BOX_BL = "\xe2\x94\x94";  // └
+def BOX_BR = "\xe2\x94\x98";  // ┘
+def DBL_HZ = "\xe2\x95\x90";  // ═
+def DBL_VT = "\xe2\x95\x91";  // ║
+def DBL_TL = "\xe2\x95\x94";  // ╔
+def DBL_TR = "\xe2\x95\x97";  // ╗
+def DBL_BL = "\xe2\x95\x9a";  // ╚
+def DBL_BR = "\xe2\x95\x9d";  // ╝
+
+def MARK_HEAD = "\xe2\x96\xbc";  // ▼ chord playhead
+def MARK_BALL = "\xe2\x97\x8f";  // ● lyric ball
+def STROKE_D  = "\xe2\x86\x93";  // ↓
+def STROKE_U  = "\xe2\x86\x91";  // ↑
+def STROKE_X  = "\xe2\x9c\x95";  // ✕
+def STROKE_M  = "M";
+
+// ── chord font ──────────────────────────────────────────────────────
+// Calvin S, indexed by ch - 0x20. Rows are pre-padded to FONT_W columns, so
+// a row's display width is FONT_W even though the bytes are UTF-8.
+def FONT_BASE = 0x20;
+def FONT_H = 3;
+def FONT_W: Array<int> = [
+    2, 1, 2, 5, 3, 2, 3, 2, 1, 1, 3, 3, 1, 3, 1, 3, 3, 1, 3, 3, 3, 3, 3, 3,
+    3, 3, 2, 2, 2, 2, 2, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 1, 2, 3, 3, 3, 3, 3,
+    3, 4, 3, 3, 3, 3, 4, 3, 4, 3, 3, 2, 2, 2, 2, 4, 2, 3, 3, 3, 3, 3, 3, 3,
+    3, 1, 2, 3, 3, 3, 3, 3, 3, 4, 3, 3, 3, 3, 4, 3, 4, 3, 3, 2, 2, 2, 2
+];
+def FONT: Array<Array<string>> = [
+    ["\x20\x20", "\x20\x20", "\x20\x20"],  // space
+    ["\xe2\x94\xac", "\xe2\x94\x82", "\x6f"],  // !
+    ["\x20\x20", "\x20\x20", "\x20\x20"],  // "
+    ["\xe2\x94\x80\xe2\x94\xbc\xe2\x94\x80\xe2\x94\xbc\xe2\x94\x80", "\xe2\x94\x80\xe2\x94\xbc\xe2\x94\x80\xe2\x94\xbc\xe2\x94\x80", "\x20\x20\x20\x20\x20"],  // #
+    ["\xe2\x94\x8c\xe2\x94\xbc\xe2\x94\x90", "\xe2\x94\x94\xe2\x94\xbc\xe2\x94\x90", "\xe2\x94\x94\xe2\x94\xbc\xe2\x94\x98"],  // $
+    ["\x4f\xe2\x94\xac", "\xe2\x94\x8c\xe2\x94\x98", "\xe2\x94\xb4\x4f"],  // %
+    ["\x20\xe2\x94\xac\x20", "\xe2\x94\x8c\xe2\x94\xbc\xe2\x94\x80", "\xe2\x94\x94\xe2\x94\x98\x20"],  // &
+    ["\x20\x20", "\x20\x20", "\x20\x20"],  // '
+    ["\xe2\x95\xad", "\xe2\x94\x82", "\xe2\x95\xb0"],  // (
+    ["\xe2\x95\xae", "\xe2\x94\x82", "\xe2\x95\xaf"],  // )
+    ["\x5c\xe2\x94\x82\x2f", "\xe2\x94\x80\x20\xe2\x94\x80", "\x2f\xe2\x94\x82\x5c"],  // *
+    ["\x20\x20\x20", "\xe2\x94\x80\xe2\x94\xbc\xe2\x94\x80", "\x20\x20\x20"],  // +
+    ["\x20", "\x20", "\xe2\x94\x98"],  // ,
+    ["\x20\x20\x20", "\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80", "\x20\x20\x20"],  // -
+    ["\x20", "\x20", "\x6f"],  // .
+    ["\x20\x20\xe2\x95\xb1", "\x20\xe2\x95\xb1\x20", "\xe2\x95\xb1\x20\x20"],  // /
+    ["\xe2\x95\x94\xe2\x95\x90\xe2\x95\x97", "\xe2\x95\x91\xe2\x97\x86\xe2\x95\x91", "\xe2\x95\x9a\xe2\x95\x90\xe2\x95\x9d"],  // 0
+    ["\xe2\x95\x97", "\xe2\x95\x91", "\xe2\x95\xa9"],  // 1
+    ["\xe2\x95\x92\xe2\x95\x90\xe2\x95\x97", "\xe2\x95\x94\xe2\x95\x90\xe2\x95\x9d", "\xe2\x95\x9a\xe2\x95\x90\xe2\x95\x9b"],  // 2
+    ["\xe2\x95\x92\xe2\x95\x90\xe2\x95\x97", "\x20\xe2\x95\x90\xe2\x95\xa3", "\xe2\x95\x98\xe2\x95\x90\xe2\x95\x9d"],  // 3
+    ["\xe2\x95\xa5\x20\xe2\x95\xa5", "\xe2\x95\x9a\xe2\x95\x90\xe2\x95\xa3", "\x20\x20\xe2\x95\xa8"],  // 4
+    ["\xe2\x95\x94\xe2\x95\x90\xe2\x95\x95", "\xe2\x95\x9a\xe2\x95\x90\xe2\x95\x97", "\xe2\x95\x98\xe2\x95\x90\xe2\x95\x9d"],  // 5
+    ["\xe2\x95\x94\xe2\x95\x90\xe2\x95\x95", "\xe2\x95\xa0\xe2\x95\x90\xe2\x95\x97", "\xe2\x95\x9a\xe2\x95\x90\xe2\x95\x9d"],  // 6
+    ["\xe2\x95\x92\xe2\x95\x90\xe2\x95\x97", "\x20\x20\xe2\x95\x91", "\x20\x20\xe2\x95\xa8"],  // 7
+    ["\x20\xe2\x95\x94\xe2\x95\x97", "\xe2\x95\x94\xe2\x95\xa9\xe2\x95\xa3", "\xe2\x95\x9a\xe2\x95\x90\xe2\x95\x9d"],  // 8
+    ["\xe2\x95\x94\xe2\x95\x90\xe2\x95\x97", "\xe2\x95\x9a\xe2\x95\x90\xe2\x95\xa3", "\x20\x20\xe2\x95\xa8"],  // 9
+    ["\x20\x20", "\x20\x20", "\x20\x20"],  // :
+    ["\x20\x20", "\x20\x20", "\x20\x20"],  // ;
+    ["\x20\x20", "\x20\x20", "\x20\x20"],  // <
+    ["\x20\x20", "\x20\x20", "\x20\x20"],  // =
+    ["\x20\x20", "\x20\x20", "\x20\x20"],  // >
+    ["\xe2\x94\x8c\xe2\x94\x80\xe2\x94\x90", "\x20\xe2\x94\x8c\xe2\x94\x98", "\x20\x6f\x20"],  // ?
+    ["\xe2\x94\x8c\xe2\x94\x80\xe2\x94\x90", "\xe2\x94\x82\xe2\x94\x94\xe2\x94\x98", "\xe2\x94\x94\xe2\x94\x80\xe2\x94\x80"],  // @
+    ["\xe2\x95\x94\xe2\x95\x90\xe2\x95\x97", "\xe2\x95\xa0\xe2\x95\x90\xe2\x95\xa3", "\xe2\x95\xa9\x20\xe2\x95\xa9"],  // A
+    ["\xe2\x95\x94\xe2\x95\x97\x20", "\xe2\x95\xa0\xe2\x95\xa9\xe2\x95\x97", "\xe2\x95\x9a\xe2\x95\x90\xe2\x95\x9d"],  // B
+    ["\xe2\x95\x94\xe2\x95\x90\xe2\x95\x97", "\xe2\x95\x91\x20\x20", "\xe2\x95\x9a\xe2\x95\x90\xe2\x95\x9d"],  // C
+    ["\xe2\x95\x94\xe2\x95\xa6\xe2\x95\x97", "\x20\xe2\x95\x91\xe2\x95\x91", "\xe2\x95\x90\xe2\x95\xa9\xe2\x95\x9d"],  // D
+    ["\xe2\x95\x94\xe2\x95\x90\xe2\x95\x97", "\xe2\x95\x91\xe2\x95\xa3\x20", "\xe2\x95\x9a\xe2\x95\x90\xe2\x95\x9d"],  // E
+    ["\xe2\x95\x94\xe2\x95\x90\xe2\x95\x97", "\xe2\x95\xa0\xe2\x95\xa3\x20", "\xe2\x95\x9a\x20\x20"],  // F
+    ["\xe2\x95\x94\xe2\x95\x90\xe2\x95\x97", "\xe2\x95\x91\x20\xe2\x95\xa6", "\xe2\x95\x9a\xe2\x95\x90\xe2\x95\x9d"],  // G
+    ["\xe2\x95\xa6\x20\xe2\x95\xa6", "\xe2\x95\xa0\xe2\x95\x90\xe2\x95\xa3", "\xe2\x95\xa9\x20\xe2\x95\xa9"],  // H
+    ["\xe2\x95\xa6", "\xe2\x95\x91", "\xe2\x95\xa9"],  // I
+    ["\x20\xe2\x95\xa6", "\x20\xe2\x95\x91", "\xe2\x95\x9a\xe2\x95\x9d"],  // J
+    ["\xe2\x95\xa6\xe2\x95\x94\xe2\x95\x90", "\xe2\x95\xa0\xe2\x95\xa9\xe2\x95\x97", "\xe2\x95\xa9\x20\xe2\x95\xa9"],  // K
+    ["\xe2\x95\xa6\x20\x20", "\xe2\x95\x91\x20\x20", "\xe2\x95\xa9\xe2\x95\x90\xe2\x95\x9d"],  // L
+    ["\xe2\x95\x94\xe2\x95\xa6\xe2\x95\x97", "\xe2\x95\x91\xe2\x95\x91\xe2\x95\x91", "\xe2\x95\xa9\x20\xe2\x95\xa9"],  // M
+    ["\xe2\x95\x94\xe2\x95\x97\xe2\x95\x94", "\xe2\x95\x91\xe2\x95\x91\xe2\x95\x91", "\xe2\x95\x9d\xe2\x95\x9a\xe2\x95\x9d"],  // N
+    ["\xe2\x95\x94\xe2\x95\x90\xe2\x95\x97", "\xe2\x95\x91\x20\xe2\x95\x91", "\xe2\x95\x9a\xe2\x95\x90\xe2\x95\x9d"],  // O
+    ["\xe2\x95\x94\xe2\x95\x90\xe2\x95\x97", "\xe2\x95\xa0\xe2\x95\x90\xe2\x95\x9d", "\xe2\x95\xa9\x20\x20"],  // P
+    ["\xe2\x95\x94\xe2\x95\x90\xe2\x95\x97\x20", "\xe2\x95\x91\xe2\x95\x90\xe2\x95\xac\xe2\x95\x97", "\xe2\x95\x9a\xe2\x95\x90\xe2\x95\x9d\xe2\x95\x9a"],  // Q
+    ["\xe2\x95\xa6\xe2\x95\x90\xe2\x95\x97", "\xe2\x95\xa0\xe2\x95\xa6\xe2\x95\x9d", "\xe2\x95\xa9\xe2\x95\x9a\xe2\x95\x90"],  // R
+    ["\xe2\x95\x94\xe2\x95\x90\xe2\x95\x97", "\xe2\x95\x9a\xe2\x95\x90\xe2\x95\x97", "\xe2\x95\x9a\xe2\x95\x90\xe2\x95\x9d"],  // S
+    ["\xe2\x95\x94\xe2\x95\xa6\xe2\x95\x97", "\x20\xe2\x95\x91\x20", "\x20\xe2\x95\xa9\x20"],  // T
+    ["\xe2\x95\xa6\x20\xe2\x95\xa6", "\xe2\x95\x91\x20\xe2\x95\x91", "\xe2\x95\x9a\xe2\x95\x90\xe2\x95\x9d"],  // U
+    ["\xe2\x95\xa6\x20\x20\xe2\x95\xa6", "\xe2\x95\x9a\xe2\x95\x97\xe2\x95\x94\xe2\x95\x9d", "\x20\xe2\x95\x9a\xe2\x95\x9d\x20"],  // V
+    ["\xe2\x95\xa6\x20\xe2\x95\xa6", "\xe2\x95\x91\xe2\x95\x91\xe2\x95\x91", "\xe2\x95\x9a\xe2\x95\xa9\xe2\x95\x9d"],  // W
+    ["\xe2\x95\x90\xe2\x95\x97\x20\xe2\x95\xa6", "\xe2\x95\x94\xe2\x95\xa9\xe2\x95\xa6\xe2\x95\x9d", "\xe2\x95\xa9\x20\xe2\x95\x9a\xe2\x95\x90"],  // X
+    ["\xe2\x95\xa6\x20\xe2\x95\xa6", "\xe2\x95\x9a\xe2\x95\xa6\xe2\x95\x9d", "\x20\xe2\x95\xa9\x20"],  // Y
+    ["\xe2\x95\x94\xe2\x95\x90\xe2\x95\x97", "\xe2\x95\x94\xe2\x95\x90\xe2\x95\x9d", "\xe2\x95\x9a\xe2\x95\x90\xe2\x95\x9d"],  // Z
+    ["\xe2\x94\x8c\xe2\x94\x80", "\xe2\x94\x82\x20", "\xe2\x94\x94\xe2\x94\x80"],  // [
+    ["\x20\x20", "\x20\x20", "\x20\x20"],  // \
+    ["\xe2\x94\x80\xe2\x94\x90", "\x20\xe2\x94\x82", "\xe2\x94\x80\xe2\x94\x98"],  // ]
+    ["\x2f\x5c", "\x20\x20", "\x20\x20"],  // ^
+    ["\x20\x20\x20\x20", "\x20\x20\x20\x20", "\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80"],  // _
+    ["\x20\x20", "\x20\x20", "\x20\x20"],  // `
+    ["\xe2\x94\x8c\xe2\x94\x80\xe2\x94\x90", "\xe2\x94\x9c\xe2\x94\x80\xe2\x94\xa4", "\xe2\x94\xb4\x20\xe2\x94\xb4"],  // a
+    ["\xe2\x94\x8c\xe2\x94\x90\x20", "\xe2\x94\x9c\xe2\x94\xb4\xe2\x94\x90", "\xe2\x94\x94\xe2\x94\x80\xe2\x94\x98"],  // b
+    ["\xe2\x94\x8c\xe2\x94\x80\xe2\x94\x90", "\xe2\x94\x82\x20\x20", "\xe2\x94\x94\xe2\x94\x80\xe2\x94\x98"],  // c
+    ["\xe2\x94\x8c\xe2\x94\xac\xe2\x94\x90", "\x20\xe2\x94\x82\xe2\x94\x82", "\xe2\x94\x80\xe2\x94\xb4\xe2\x94\x98"],  // d
+    ["\xe2\x94\x8c\xe2\x94\x80\xe2\x94\x90", "\xe2\x94\x9c\xe2\x94\xa4\x20", "\xe2\x94\x94\xe2\x94\x80\xe2\x94\x98"],  // e
+    ["\xe2\x94\x8c\xe2\x94\x80\xe2\x94\x90", "\xe2\x94\x9c\xe2\x94\xa4\x20", "\xe2\x94\x94\x20\x20"],  // f
+    ["\xe2\x94\x8c\xe2\x94\x80\xe2\x94\x90", "\xe2\x94\x82\x20\xe2\x94\xac", "\xe2\x94\x94\xe2\x94\x80\xe2\x94\x98"],  // g
+    ["\xe2\x94\xac\x20\xe2\x94\xac", "\xe2\x94\x9c\xe2\x94\x80\xe2\x94\xa4", "\xe2\x94\xb4\x20\xe2\x94\xb4"],  // h
+    ["\xe2\x94\xac", "\xe2\x94\x82", "\xe2\x94\xb4"],  // i
+    ["\x20\xe2\x94\xac", "\x20\xe2\x94\x82", "\xe2\x94\x94\xe2\x94\x98"],  // j
+    ["\xe2\x94\xac\xe2\x94\x8c\xe2\x94\x80", "\xe2\x94\x9c\xe2\x94\xb4\xe2\x94\x90", "\xe2\x94\xb4\x20\xe2\x94\xb4"],  // k
+    ["\xe2\x94\xac\x20\x20", "\xe2\x94\x82\x20\x20", "\xe2\x94\xb4\xe2\x94\x80\xe2\x94\x98"],  // l
+    ["\xe2\x94\x8c\xe2\x94\xac\xe2\x94\x90", "\xe2\x94\x82\xe2\x94\x82\xe2\x94\x82", "\xe2\x94\xb4\x20\xe2\x94\xb4"],  // m
+    ["\xe2\x94\x8c\xe2\x94\x90\xe2\x94\x8c", "\xe2\x94\x82\xe2\x94\x82\xe2\x94\x82", "\xe2\x94\x98\xe2\x94\x94\xe2\x94\x98"],  // n
+    ["\xe2\x94\x8c\xe2\x94\x80\xe2\x94\x90", "\xe2\x94\x82\x20\xe2\x94\x82", "\xe2\x94\x94\xe2\x94\x80\xe2\x94\x98"],  // o
+    ["\xe2\x94\x8c\xe2\x94\x80\xe2\x94\x90", "\xe2\x94\x9c\xe2\x94\x80\xe2\x94\x98", "\xe2\x94\xb4\x20\x20"],  // p
+    ["\xe2\x94\x8c\xe2\x94\x80\xe2\x94\x90\x20", "\xe2\x94\x82\xe2\x94\x80\xe2\x94\xbc\xe2\x94\x90", "\xe2\x94\x94\xe2\x94\x80\xe2\x94\x98\xe2\x94\x94"],  // q
+    ["\xe2\x94\xac\xe2\x94\x80\xe2\x94\x90", "\xe2\x94\x9c\xe2\x94\xac\xe2\x94\x98", "\xe2\x94\xb4\xe2\x94\x94\xe2\x94\x80"],  // r
+    ["\xe2\x94\x8c\xe2\x94\x80\xe2\x94\x90", "\xe2\x94\x94\xe2\x94\x80\xe2\x94\x90", "\xe2\x94\x94\xe2\x94\x80\xe2\x94\x98"],  // s
+    ["\xe2\x94\x8c\xe2\x94\xac\xe2\x94\x90", "\x20\xe2\x94\x82\x20", "\x20\xe2\x94\xb4\x20"],  // t
+    ["\xe2\x94\xac\x20\xe2\x94\xac", "\xe2\x94\x82\x20\xe2\x94\x82", "\xe2\x94\x94\xe2\x94\x80\xe2\x94\x98"],  // u
+    ["\xe2\x94\xac\x20\x20\xe2\x94\xac", "\xe2\x94\x94\xe2\x94\x90\xe2\x94\x8c\xe2\x94\x98", "\x20\xe2\x94\x94\xe2\x94\x98\x20"],  // v
+    ["\xe2\x94\xac\x20\xe2\x94\xac", "\xe2\x94\x82\xe2\x94\x82\xe2\x94\x82", "\xe2\x94\x94\xe2\x94\xb4\xe2\x94\x98"],  // w
+    ["\xe2\x94\x80\xe2\x94\x90\x20\xe2\x94\xac", "\xe2\x94\x8c\xe2\x94\xb4\xe2\x94\xac\xe2\x94\x98", "\xe2\x94\xb4\x20\xe2\x94\x94\xe2\x94\x80"],  // x
+    ["\xe2\x94\xac\x20\xe2\x94\xac", "\xe2\x94\x94\xe2\x94\xac\xe2\x94\x98", "\x20\xe2\x94\xb4\x20"],  // y
+    ["\xe2\x94\x8c\xe2\x94\x80\xe2\x94\x90", "\xe2\x94\x8c\xe2\x94\x80\xe2\x94\x98", "\xe2\x94\x94\xe2\x94\x80\xe2\x94\x98"],  // z
+    ["\x20\x20", "\x20\x20", "\x20\x20"],  // {
+    ["\x20\x20", "\x20\x20", "\x20\x20"],  // |
+    ["\x20\x20", "\x20\x20", "\x20\x20"],  // }
+    ["\x20\x20", "\x20\x20", "\x20\x20"],  // ~
+];
+
+def glyphOf(ch: byte) -> Array<string> {
+    var i = ch - FONT_BASE;
+    if (i < 0 || i >= FONT.length) return null;
+    return FONT[i];
+}
+
+def widthOf(ch: byte) -> int {
+    var i = ch - FONT_BASE;
+    if (i < 0 || i >= FONT_W.length) return 0;
+    return FONT_W[i];
+}
+
+// Display width of a chord name, one blank column between characters.
+def artWidth(name: string) -> int {
+    var w = 0;
+    for (i < name.length) {
+        if (i > 0) w++;
+        w = w + widthOf(name[i]);
+    }
+    return w;
+}
+
+def putArtRow(name: string, row: int) {
+    for (i < name.length) {
+        if (i > 0) T.putc(' ');
+        var g = glyphOf(name[i]);
+        if (g == null) for (k < widthOf(name[i])) T.putc(' ');
+        else T.puts(g[row]);
+    }
+}
+
+// ── the song ─────────────────────────────────────────────────────────
+// Four bars to a group, a repeat count, and one bar of eighth-note strum
+// slots: d down, u up, x percussive hit, m mute, o ring / no strike.
+def GROUPS: Array<Array<string>> = [
+    ["C", "Am", "F", "G"],
+    ["Em", "Am", "Dm", "G"],
+    ["C", "G/B", "Am", "Em"],
+    ["F", "C/E", "Dm", "G"],
+    ["C", "F", "C", "G"],
+    ["Am", "F", "C", "G"]
+];
+def REPEATS: Array<int> = [2, 1, 1, 3, 1, 2];
+def STRUMS: Array<string> = [
+    "doduoudu", "doduoudu", "doduoudu", "doxudmxu", "dodododo", "doduoudu"
+];
+
+// Lyrics. Syllable start times are in eighth notes from the top of the line,
+// which in a terminal is the whole of the layout problem: a syllable's column
+// is just the sum of the lengths before it.
+def LYRIC_TEXT: Array<Array<string>> = [
+    ["We ", "write ", "the ", "loops ", "that ", "no ", "one ", "sees"],
+    ["in ", "rooms ", "lit ", "blue ", "at ", "half ", "past ", "three"],
+    ["A ", "thou", "sand ", "tests, ", "a ", "sin", "gle ", "green"],
+    ["the ", "clean", "est ", "thing ", "we've ", "ev", "er ", "seen"],
+    ["But ", "un", "der ", "all ", "the ", "stacks ", "and ", "strings"],
+    ["there's ", "some", "one ", "wait", "ing ", "on ", "the ", "thing"]
+];
+def LYRIC_AT: Array<Array<int>> = [
+    [0, 2, 4, 5, 8, 9, 10, 11],
+    [0, 1, 3, 4, 6, 7, 8, 9],
+    [0, 1, 2, 3, 6, 7, 8, 9],
+    [0, 1, 2, 3, 5, 6, 7, 8],
+    [0, 1, 2, 3, 4, 5, 7, 8],
+    [0, 1, 2, 3, 4, 5, 6, 7]
+];
+def LINE_SLOTS = 16;  // eighths per lyric line
+
+// ── phosphor ─────────────────────────────────────────────────────────
+var phosphor = 0;  // 0 green, 1 amber, 2 red
+
+def dim() {
+    if (phosphor == 0) T.fgGreen();
+    else if (phosphor == 1) T.fgBrown();
+    else T.fgRed();
+}
+def lit() {
+    if (phosphor == 0) T.fgBrightGreen();
+    else if (phosphor == 1) T.fgYellow();
+    else T.fgBrightRed();
+}
+def faint() { T.fgDarkgray(); }
+
+// ── clock ────────────────────────────────────────────────────────────
+var tempo = 95;          // bpm
+var playing = true;
+var elapsedUs: u32 = 0;  // into the current group
+var groupsPlayed = 0;
+var groupIndex = 0;
+var pass = 0;
+
+def eighthUs() -> u32 { return u32.!(30000000 / tempo); }
+def groupUs() -> u32  { return eighthUs() * u32.!(SLOTS); }
+
+// Position within the group, in 1/256ths of an eighth-note slot.
+def posFine() -> int { return int.!((elapsedUs * 256u) / eighthUs()); }
+def slotNow() -> int { return posFine() / 256; }
+
+// ── redraw bookkeeping ───────────────────────────────────────────────
+var lastSlot = -1;
+var lastBar = -1;
+var lastHeadCol = -1;
+var lastBallCol = -1;
+var lastBallRow = -1;
+var lastSyl = -1;
+var lastLine = -1;
+
+def barLeft(i: int) -> int { return LEFT + i * (BOX_W + BOX_GAP); }
+
+// Column for a position given in 1/256ths of a slot.
+def colFor(fine: int) -> int {
+    return LEFT + (fine * DISP) / (SLOTS * 256);
+}
+
+// ── chord boxes ──────────────────────────────────────────────────────
+def drawBox(bar: int, isLit: bool) {
+    var col = barLeft(bar);
+    var name = GROUPS[groupIndex][bar];
+    var tl = if(isLit, DBL_TL, BOX_TL), tr = if(isLit, DBL_TR, BOX_TR);
+    var bl = if(isLit, DBL_BL, BOX_BL), br = if(isLit, DBL_BR, BOX_BR);
+    var hz = if(isLit, DBL_HZ, BOX_HZ), vt = if(isLit, DBL_VT, BOX_VT);
+
+    if (isLit) lit(); else dim();
+
+    T.moveCursor(ROW_BOX, col);
+    T.puts(tl);
+    for (i < BOX_W - 2) T.puts(hz);
+    T.puts(tr);
+
+    // Blank rows between the border and the art, so a 3-line font still
+    // fills a box the same height as the rest of the layout expects.
+    for (i < BOX_PAD) {
+        T.moveCursor(ROW_BOX + 1 + i, col);
+        T.puts(vt);
+        for (k < BOX_W - 2) T.putc(' ');
+        T.puts(vt);
+    }
+
+    var pad = (BOX_W - 2 - artWidth(name)) / 2;
+    for (r < GLYPH_H) {
+        T.moveCursor(ROW_BOX + 1 + BOX_PAD + r, col);
+        T.puts(vt);
+        for (i < pad) T.putc(' ');
+        if (isLit) lit(); else faint();
+        putArtRow(name, r);
+        if (isLit) lit(); else dim();
+        for (i < BOX_W - 2 - pad - artWidth(name)) T.putc(' ');
+        T.puts(vt);
+    }
+
+    T.moveCursor(ROW_BOX + 1 + BOX_PAD + GLYPH_H, col);
+    T.puts(bl);
+    for (i < BOX_W - 2) T.puts(hz);
+    T.puts(br);
+
+    // Repeat counter, sitting on the bottom border of the last bar like a
+    // repeat sign on a barline: one mark per pass, hollow once spent.
+    if (bar == 3 && REPEATS[groupIndex] > 1) {
+        var marks = REPEATS[groupIndex];
+        T.moveCursor(ROW_BOX + 1 + BOX_PAD + GLYPH_H, col + BOX_W - 2 - marks);
+        for (k < marks) T.puts(if(k < pass, "\xe2\x96\xa1", "\xe2\x96\xa0"));  // □ ■
+    }
+    T.fgNorm();
+}
+
+def drawBoxes() {
+    var bar = slotNow() / 8;
+    for (i < 4) drawBox(i, i == bar);
+    lastBar = bar;
+}
+
+// ── strum row ────────────────────────────────────────────────────────
+def strokeAt(slot: int) -> string {
+    var ch = STRUMS[groupIndex][slot % 8];
+    if (ch == 'd') return STROKE_D;
+    if (ch == 'u') return STROKE_U;
+    if (ch == 'x') return STROKE_X;
+    if (ch == 'm') return STROKE_M;
+    return null;  // "o": nothing to do, so nothing to draw
+}
+
+def drawStrum() {
+    T.moveCursor(ROW_STRUM, 1);
+    T.eraseToEndOfLine();
+    var here = slotNow();
+    for (s < SLOTS) {
+        var g = strokeAt(s);
+        if (g == null) continue;
+        T.moveCursor(ROW_STRUM, colFor(s * 256));
+        if (s == here) lit(); else faint();
+        T.puts(g);
+    }
+    T.fgNorm();
+}
+
+// ── lyrics ───────────────────────────────────────────────────────────
+def lineOf(i: int) -> int {
+    var n = LYRIC_TEXT.length;
+    return ((i % n) + n) % n;
+}
+
+// Column of syllable {k} on the current line.
+def sylCol(line: int, k: int) -> int {
+    var col = LEFT;
+    for (i < k) col = col + LYRIC_TEXT[line][i].length;
+    return col;
+}
+
+def curLine() -> int { return lineOf(groupsPlayed * 2 + slotNow() / LINE_SLOTS); }
+
+def drawLyricLine(row: int, line: int, sung: int) {
+    T.moveCursor(row, 1);
+    T.eraseToEndOfLine();
+    T.moveCursor(row, LEFT);
+    for (i < LYRIC_TEXT[line].length) {
+        if (sung < 0) faint();
+        else if (i <= sung) lit();
+        else dim();
+        T.puts(LYRIC_TEXT[line][i]);
+    }
+    T.fgNorm();
+}
+
+def drawLyrics() {
+    var line = curLine();
+    drawLyricLine(ROW_PAST, lineOf(line - 1), -1);
+    drawLyricLine(ROW_NEXT, lineOf(line + 1), -1);
+    drawLyricLine(ROW_CUR, line, lastSyl);
+    lastLine = line;
+}
+
+// The ball hops between syllables: on ROW_LAND at the onset, up on ROW_APEX
+// through the middle of the hop. Two rows is all the arc a terminal needs.
+def drawBall() {
+    var line = curLine();
+    var at = LYRIC_AT[line];
+    var slot = slotNow() % LINE_SLOTS;
+    var fine = posFine() % (LINE_SLOTS * 256);
+
+    var k = 0;
+    for (i < at.length) if (at[i] <= slot) k = i;
+
+    var nextAt = if(k + 1 < at.length, at[k + 1], LINE_SLOTS);
+    var from = sylCol(line, k);
+    var to = if(k + 1 < at.length, sylCol(line, k + 1), from);
+
+    // Airborne for the last slot before the next onset.
+    var takeoff = (nextAt - 1) * 256;
+    var col = from, row = ROW_LAND;
+    if (fine >= takeoff && nextAt > at[k]) {
+        var f = fine - takeoff;                       // 0..255 across the hop
+        col = from + ((to - from) * f) / 256;
+        if (f > 40 && f < 216) row = ROW_APEX;
+    }
+
+    if (col != lastBallCol || row != lastBallRow) {
+        if (lastBallRow >= 0) {
+            T.moveCursor(lastBallRow, lastBallCol);
+            T.putc(' ');
+        }
+        T.moveCursor(row, col);
+        lit();
+        T.puts(MARK_BALL);
+        T.fgNorm();
+        lastBallCol = col;
+        lastBallRow = row;
+    }
+
+    if (k != lastSyl) {
+        lastSyl = k;
+        drawLyricLine(ROW_CUR, line, k);
+    }
+}
+
+// ── chrome ───────────────────────────────────────────────────────────
+def drawHead() {
+    var col = colFor(posFine());
+    if (col == lastHeadCol) return;
+    if (lastHeadCol >= 0) {
+        T.moveCursor(ROW_HEAD, lastHeadCol);
+        T.putc(' ');
+    }
+    T.moveCursor(ROW_HEAD, col);
+    lit();
+    T.puts(MARK_HEAD);
+    T.fgNorm();
+    lastHeadCol = col;
+}
+
+def drawPreview() {
+    var n = (groupIndex + if(pass + 1 < REPEATS[groupIndex], 0, 1)) % GROUPS.length;
+    T.moveCursor(ROW_PREVIEW, 1);
+    T.eraseToEndOfLine();
+    T.moveCursor(ROW_PREVIEW, LEFT);
+    faint();
+    T.puts("next  ");
+    dim();
+    for (i < 4) {
+        T.puts(GROUPS[n][i]);
+        T.puts("   ");
+    }
+    T.fgNorm();
+}
+
+def drawStatus() {
+    T.moveCursor(1, LEFT);
+    lit();
+    T.puts("A WAY TO SAY");
+    faint();
+    T.puts("                                        ");
+    dim();
+    T.puti(tempo);
+    faint();
+    T.puts(" BPM  ");
+    if (playing) T.puts("play "); else T.puts("stop ");
+    T.eraseToEndOfLine();
+
+    T.moveCursor(ROW_STATUS, LEFT);
+    faint();
+    T.puts("space play/stop   - = tempo   g a r phosphor   q quit");
+    T.fgNorm();
+}
+
+def drawAll() {
+    drawStatus();
+    drawLyrics();
+    drawStrum();
+    drawBoxes();
+    drawPreview();
+}
+
+// ── group advance ────────────────────────────────────────────────────
+def completeGroup() {
+    groupsPlayed++;
+    if (pass + 1 < REPEATS[groupIndex]) pass++;
+    else {
+        pass = 0;
+        groupIndex = (groupIndex + 1) % GROUPS.length;
+    }
+    lastSyl = -1;
+    drawAll();
+}
+
+// ── animation ────────────────────────────────────────────────────────
+def onAnimate(us: u32) {
+    if (!playing) return;
+    elapsedUs = elapsedUs + us;
+    while (elapsedUs >= groupUs()) {
+        elapsedUs = elapsedUs - groupUs();
+        completeGroup();
+    }
+
+    var slot = slotNow();
+    if (slot != lastSlot) {
+        if (slot / 8 != lastBar) drawBoxes();
+        drawStrum();
+        lastSlot = slot;
+    }
+    if (curLine() != lastLine) {
+        lastSyl = -1;
+        drawLyrics();
+    }
+    drawHead();
+    drawBall();
+}
+
+var anim: Animator;
+
+// Step to the next/previous multiple of five.
+def nudgeTempo(dir: int) {
+    var r = tempo % 5;
+    if (dir > 0) tempo = tempo + 5 - r;
+    else tempo = if(r == 0, tempo - 5, tempo - r);
+    if (tempo < 40) tempo = 40;
+    if (tempo > 240) tempo = 240;
+    drawStatus();
+}
+
+def onKey(ch: int) {
+    if (ch == ' ') { playing = !playing; drawStatus(); }
+    else if (ch == '=' || ch == '+') nudgeTempo(1);
+    else if (ch == '-' || ch == '_') nudgeTempo(-1);
+    else if (ch == 'g') { phosphor = 0; drawAll(); }
+    else if (ch == 'a') { phosphor = 1; drawAll(); }
+    else if (ch == 'r') { phosphor = 2; drawAll(); }
+    else if (ch == 'q') anim.stop();
+}
+
+def strEq(a: string, b: string) -> bool {
+    if (a.length != b.length) return false;
+    for (i < a.length) if (a[i] != b[i]) return false;
+    return true;
+}
+
+// Hand the terminal back exactly as it was found: cooked mode, cursor
+// visible, colours reset, cursor parked below the display. Because raw mode
+// clears ISIG, ^C arrives as byte 0x03 and the animator stops, so this runs on
+// the ^C path too rather than the process being killed mid-frame.
+def cleanup() {
+    RawStdin.restore();
+    T.fgNorm();
+    T.showCursor();
+    T.moveCursor(ROW_STATUS + 2, 1);
+    T.eraseToEndOfLine();
+}
+
+def main(args: Array<string>) -> int {
+    var still = args.length > 0 && strEq(args[0], "-still");
+    // Optional group number after -still, to check a particular set of chords.
+    if (still && args.length > 1 && args[1].length > 0) {
+        var d = args[1][0] - '0';
+        if (d >= 0 && d < GROUPS.length) groupIndex = d;
+    }
+
+    T.eraseScreen();
+    if (still) {
+        // One frame, part-way through the second bar, then get out.
+        elapsedUs = eighthUs() * 11u;
+        drawAll();
+        drawHead();
+        drawBall();
+        T.moveCursor(ROW_STATUS + 2, 1);
+        return 0;
+    }
+
+    if (!RawStdin.enable()) {
+        T.fgNorm();
+        T.puts("Karaoke: stdin is not a terminal, or raw mode was refused.\n");
+        T.puts("Keys would not work; run it from a terminal.\n");
+        return 1;
+    }
+
+    T.hideCursor();
+    drawAll();
+
+    anim = Animator.new(onAnimate, onKey);
+    anim.setFPS(30u);
+    anim.run();
+
+    cleanup();
+    return 0;
+}

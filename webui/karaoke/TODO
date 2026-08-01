@@ -15,3 +15,68 @@ Chord / lyrics demo
 - Singer: show vocal trainer
 - Guitarist: show rhythm, solo, or lead trainer
 - Drop into rhythm trainer / jam
+
+Library server
+==============
+
+Problem: reaching local disk from the web UI is clunky (directory handles,
+re-granting permission, nothing persists, no way for a phone on a music stand
+to see the same files). Fix: run a small local server over the music folder and
+have every client - web, native, terminal - speak to it instead of the disk.
+
+- one server, three clients. The protocol is the only thing they share; nothing
+  client-side needs a filesystem. A phone at the far end of the room and the
+  laptop driving the PA both hit the same URL.
+- filesystem stays the source of truth. song.mp3 + song.txt sidecars as now;
+  the server parses and normalises. An index (sqlite or a json cache) is a
+  derived artifact that can always be rebuilt by rescanning. No lock-in, no
+  import step, files stay editable by hand.
+- stable ids from content hash, not path, so charts survive renames and moves.
+
+- endpoints, roughly:
+    GET  /library                list: id, title, artist, secs, tempo, key,
+                                 which sidecars exist
+    GET  /song/{id}              metadata + chart + lyric timing
+    GET  /audio/{id}             media, must support Range for seeking
+    GET  /art/{id}
+    PUT  /song/{id}/chart        beatmapper and hand edits write back
+    GET  /search?q=
+    GET  /setlist  PUT /setlist/{id}
+    GET  /events                 SSE: file added/changed, analysis finished
+
+- offer line-oriented variants of the read endpoints (/library.tsv) beside the
+  json. A terminal or embedded client should not need a json parser to list
+  songs - one split per line and it is done. Cheap to serve, cheap to consume.
+
+- analysis belongs on the server, not the client. Beat/key detection and stem
+  separation are exactly what a browser cannot do and a local machine can:
+    POST /analyze/{id}           -> job id
+    GET  /job/{id}               -> progress, then result written as a sidecar
+  Long jobs need progress reporting, and results are cached as files so a
+  rescan doesn't redo them.
+
+- watch the directory and push changes over /events, so the library updates
+  live while you're editing charts in another window.
+
+- discovery: advertise _riffhound._tcp over mDNS so clients find the server
+  without anyone typing an IP. This is the same lookup the jam-along QR code
+  wants - joining a jam and finding the library are the same problem.
+
+- auth: nothing on localhost. A PIN or token for LAN, since "everyone in the
+  room" is the threat model, not the internet.
+
+- the jam session is the same server. Song, position, tempo, key and section
+  marks are session state; the library is what you pick from. One connection,
+  and the host is whoever is already serving the music.
+
+Native + terminal clients
+=========================
+
+The web stack is too heavy for old or small machines, and a fast native UI
+would be nice regardless. See textui/chords for the VT100 sketch.
+
+- keep the wire format small enough that a client with no json parser and no
+  audio decoder is still useful: tsv endpoints, and a way to ask the server for
+  decoded PCM or just let it drive playback locally.
+- a terminal client that only renders chart + position (server plays the audio)
+  is a genuinely small program and covers the music-stand case.

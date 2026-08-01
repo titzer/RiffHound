@@ -18,12 +18,20 @@
 //   offset 64: c_ospeed (u64)
 //   total: 72 bytes
 
+// The x86-64-darwin runtime defines DarwinConst.SYS_ioctl as 0x20000FE, which
+// is BSD syscall 254; ioctl is syscall 54. Calling 254 does nothing and
+// reports nothing, so the terminal stays in cooked mode, keystrokes stay line
+// buffered, and none of them ever reach the animator. Use the right number.
+def SYS_ioctl = 0x2000036;       // 0x2000000 | 54
+
 def TIOCGETA: int = 0x40487413;  // get termios struct (72-byte)
 def TIOCSETA: int = 0x80487414;  // set termios struct immediately
 
-def LFLAG_OFF  = 24;          // byte offset of c_lflag in the 72-byte struct
-def MASK_ICANON: long = 0x100; // canonical-mode flag in c_lflag
-def MASK_ECHO:   long = 0x8;   // echo flag in c_lflag
+def LFLAG_OFF  = 24;           // byte offset of c_lflag in the 72-byte struct
+def MASK_ICANON: long = 0x100; // canonical mode
+def MASK_ECHO:   long = 0x8;   // echo input
+def MASK_ISIG:   long = 0x80;  // ^C and ^Z raise signals
+def MASK_IEXTEN: long = 0x400; // extended processing (^V, ^O)
 
 // Two 72-byte buffers: saved state and our modified copy.
 def saved_t = Array<byte>.new(72);
@@ -41,33 +49,41 @@ component RawStdin {
     def poll(timeout_ms: int) -> int {
         pfds[0] = 0;       // stdin fd
         pfds[1] = 0x0040;  // POLLRDNORM
+        // The x86-64 darwin kernel op returns (rax, rdx) with no carry flag,
+        // so a failed poll is indistinguishable from "n fds ready". Errors on
+        // a valid fd are not expected; treat any positive result as ready.
         var r = Darwin.syscall(DarwinConst.SYS_poll,
             (Pointer.atContents(pfds), 1, timeout_ms));
         if (r.0 > 0) return System.fileRead(fd);
         return -1;
     }
 
-    // Put the terminal into raw mode (no echo, no line buffering).
-    def enable() {
-        if (rawmode) return;
-        // Read current settings into saved_t.
-        Darwin.syscall(DarwinConst.SYS_ioctl,
-            (fd, TIOCGETA, Pointer.atContents(saved_t)));
-        // Copy to raw_t, then clear ICANON and ECHO from c_lflag.
+    // Put the terminal into raw mode. Returns false if the terminal could not
+    // be reconfigured, e.g. stdin is a pipe rather than a tty.
+    def enable() -> bool {
+        if (rawmode) return true;
+        // ioctl returns 0 on success; on failure rax holds the errno.
+        var g = Darwin.syscall(SYS_ioctl, (fd, TIOCGETA, Pointer.atContents(saved_t)));
+        if (g.0 != 0) return false;
+
+        // Clear canonical mode and echo so keys arrive one at a time, and
+        // clear ISIG so ^C arrives as byte 0x03 instead of killing us
+        // mid-draw -- that is what lets the exit path restore the terminal.
         for (i < 72) raw_t[i] = saved_t[i];
         var lflag = rdU64(raw_t, LFLAG_OFF);
-        lflag = lflag & (~MASK_ICANON) & (~MASK_ECHO);
+        lflag = lflag & ~(MASK_ICANON | MASK_ECHO | MASK_ISIG | MASK_IEXTEN);
         wrU64(raw_t, LFLAG_OFF, lflag);
-        Darwin.syscall(DarwinConst.SYS_ioctl,
-            (fd, TIOCSETA, Pointer.atContents(raw_t)));
+
+        var s = Darwin.syscall(SYS_ioctl, (fd, TIOCSETA, Pointer.atContents(raw_t)));
+        if (s.0 != 0) return false;
         rawmode = true;
+        return true;
     }
 
     // Restore the terminal to its original settings.
     def restore() {
         if (!rawmode) return;
-        Darwin.syscall(DarwinConst.SYS_ioctl,
-            (fd, TIOCSETA, Pointer.atContents(saved_t)));
+        Darwin.syscall(SYS_ioctl, (fd, TIOCSETA, Pointer.atContents(saved_t)));
         rawmode = false;
     }
 
@@ -79,7 +95,9 @@ component RawStdin {
     }
 
     // Write a little-endian u64 to {buf} at byte offset {off}.
+    // byte.! is a *checked* cast and throws on anything above 255, which any
+    // real c_lflag is; byte.view truncates, which is what is wanted here.
     private def wrU64(buf: Array<byte>, off: int, val: long) {
-        for (i < 8) buf[off + i] = byte.!(val >> byte.!(i * 8));
+        for (i < 8) buf[off + i] = byte.view(val >>> byte.view(i * 8));
     }
 }
