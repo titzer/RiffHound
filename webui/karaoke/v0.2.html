@@ -804,6 +804,56 @@
   .result b { font-weight: inherit; }
   .result i { font-style: normal; color: var(--dim); font-size: 11px; }
   .result.on b::after { content: " \25c2"; }
+
+  /* ---- transport bar --------------------------------------------------- */
+
+  .timeline {
+    flex: 1;
+    min-width: 90px;
+    height: 14px;
+    position: relative;
+    border: 1px solid var(--dim);
+    background: var(--panel);
+    cursor: pointer;
+  }
+
+  .tl-fill { position: absolute; inset: 0 auto 0 0; width: 0; background: var(--hot); }
+
+  .tl-head {
+    position: absolute;
+    top: -3px;
+    bottom: -3px;
+    width: 3px;
+    background: var(--fg);
+    box-shadow: 0 0 10px var(--fg);
+    transform: translateX(-50%);
+  }
+
+  .clock { font-size: 12px; color: var(--dim); white-space: nowrap; }
+  .seek { padding: 4px 7px; font-size: 11px; }
+
+  /* ---- loader ---------------------------------------------------------- */
+
+  .sources { display: flex; gap: 6px; width: 100%; }
+  .sources button { flex: 1; font-size: 11px; padding: 6px 4px; }
+
+  .dirs { display: grid; gap: 3px; width: 100%; }
+
+  .dir {
+    display: grid;
+    grid-template-columns: 1fr auto auto;
+    gap: 8px;
+    align-items: baseline;
+    font-size: 11px;
+    color: var(--dim);
+  }
+
+  .dir button { padding: 1px 6px; font-size: 10px; }
+  .badge { font-size: 10px; color: var(--dim); opacity: .75; }
+
+  /* The one line being sung. No syllable map yet, so the whole line lights. */
+  .lyric.cur .line { color: var(--dim); transition: color 90ms; }
+  .lyric.cur.on .line { color: var(--fg); text-shadow: 0 0 18px var(--fg); }
 </style>
 </head>
 <body>
@@ -836,24 +886,31 @@
       <div class="panel" id="trackPanel" hidden></div>
     </div>
 
-    <div class="bpm">
-      <input id="bpm" inputmode="numeric" maxlength="3" aria-label="Tempo in BPM">
-      <span>bpm</span>
+    <button class="seek" id="back5" title="Back 5 seconds">−5</button>
+    <div class="timeline" id="timeline">
+      <div class="tl-fill" id="tlFill"></div>
+      <div class="tl-head" id="tlHead"></div>
     </div>
+    <button class="seek" id="fwd5" title="Forward 5 seconds">+5</button>
+    <span class="clock" id="clock">0:00 / 0:00</span>
+    <span class="clock" id="bpmOut"></span>
   </header>
+
+  <!-- Fallbacks for browsers without the File System Access API. These work
+       everywhere, including from file://, but hold files only for the session. -->
+  <input type="file" id="pickDir" webkitdirectory multiple hidden>
+  <input type="file" id="pickFiles" multiple hidden>
 
   <div class="stage" id="stage">
     <div class="lyrics tinted" id="lyrics">
       <div class="lyric side" id="lyricPrev"></div>
-      <!-- The countdown belongs to whichever line is about to start, which is
-           always the current one, so the cue lives here and is re-appended
-           after each render. -->
       <div class="lyric cur" id="lyricCur"><span class="cue" id="cue"></span></div>
       <div id="lyricAhead"></div>
       <div class="lyric-ball" id="lyricBall"></div>
       <span class="catcher" id="lyricCatch">↵</span>
     </div>
 
+    <!-- Present but empty: the beatmaps have no chords yet. -->
     <div id="main" class="main-row tinted"></div>
     <div id="preview" class="preview tinted"></div>
     <div id="beats" class="beats tinted"></div>
@@ -868,18 +925,16 @@
   </div>
 <script>
 /* ===========================================================================
-   A practice shell: notation on the left of the wire, panels on the right.
+   Karaoke v0.2 — the v1.2 shell over v0.1's loading and playback.
 
-   State comes in three kinds, and they have three different lifetimes:
+   The demo ran on a beat clock because it owned its own notation. A real
+   beatmap has none of that yet: no tempo, no key, no chords, and lyrics timed
+   in seconds. So this runs on seconds, taken from the audio element, and the
+   chord surfaces are present but empty until the maps carry chords.
 
-     display settings   per user, saved globally, survive a track change
-     track settings     per track, saved against the track's id
-     transport          position, playing, loop — never saved, and the part a
-                        server drives
-
-   Everything that changes any of them goes through command(). The UI, the URL,
-   restored storage and (later) a socket are all just callers, so nothing in the
-   drawing code has to know where a change came from.
+   State still comes in three kinds with three lifetimes — display settings
+   saved globally, track settings saved per track, transport never saved — and
+   everything that changes any of them still goes through command().
    =========================================================================== */
 
 const $ = id => document.getElementById(id);
@@ -887,99 +942,97 @@ const root = document.documentElement;
 const mod = (n, m) => ((n % m) + m) % m;
 const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
 const lerp = (a, b, t) => a + (b - a) * t;
-const arc = t => 4 * t * (1 - t);          /* 0 → 1 → 0, apex at t = .5 */
+const arc = t => 4 * t * (1 - t);
 const TAU = Math.PI * 2;
 
-/* ── the library ────────────────────────────────────────────────────────
-   A sketch of what the server will serve. Every track carries the key and
-   tempo it was recorded in; the player can move away from both. */
-const TRACKS = [
-  { id: "a-way-to-say",  title: "A Way To Say",  artist: "",          key: "C",  tempo: 95 },
-  { id: "no-computer",   title: "No Computer",   artist: "",          key: "Am", tempo: 89 },
-  { id: "half-past-3",   title: "Half Past Three", artist: "",        key: "G",  tempo: 112 },
-  { id: "cleanest-thing", title: "The Cleanest Thing", artist: "",    key: "D",  tempo: 78 }
-];
+const fmtTime = s => {
+  if (!isFinite(s) || s < 0) s = 0;
+  return Math.floor(s / 60) + ":" + String(Math.floor(s % 60)).padStart(2, "0");
+};
 
-/* ── notation ───────────────────────────────────────────────────────────
-   Four bars to a group, plus how many times the group is played before
-   moving on. A repeat is one more pass over the same four bars. */
-const progression = [
-  { chords: ["C", "Am", "F", "G"], repeat: 2, strum: "doduoududoduouxu" },
-  { chords: ["Em", "Am", "Dm", "G"], repeat: 1 },
-  { chords: ["C", "G/B", "Am", "Em"], repeat: 1 },
-  { chords: ["F", "C/E", "Dm", "G"], repeat: 3, strum: "doxudmxu" },
-  { chords: ["C", "F", "C", "G"], repeat: 1, strum: "dodododo" },
-  { chords: ["Dm", "G", "C"], repeat: 2, strum: "doduoudu" },
-  { chords: ["Am", "F", "C", "G", "Em", "Dm"], repeat: 1, strum: "doxudmxu" },
-  { chords: ["Am", "F", "C", "G"], repeat: 2 }
-];
+/* ── timing, in seconds ─────────────────────────────────────────────────
+   With no tempo there is nothing to beat against, so the guides run on a
+   fixed rate: one bounce every half second, and a countdown that starts four
+   seconds out at one dot per half second. When beatmaps carry a tempo these
+   become derived rather than assumed. */
+const BOUNCE = 0.5;         /* seconds per bounce */
+const CUE_DOTS = 8;
+const CUE_STEP = 0.5;       /* seconds per dot */
+const CUE_LEAD = CUE_DOTS * CUE_STEP;
+const CUE_MIN = 1.2;        /* a shorter gap isn't worth counting down */
 
-/* A strum pattern is eighth-note slots, any whole number of bars long:
-     d down   u up   x percussive hit   m mute   o ring / no strike
-   The hand swings down-up once per beat, so even slots always fall on the way
-   down and odd slots on the way back up. */
-const STRUM_DEFAULT = "doduoudu";
-const STROKES = { d: "↓", u: "↑", x: "✕", m: "M", o: "○" };
+const SECTION_KINDS = ["intro", "verse", "chorus", "bridge", "solo", "outro",
+                       "instrumental", "interlude", "pre-chorus", "refrain"];
 
-const CUE_DOTS = 8;               /* longest countdown, one dot per half beat */
-const CUE_BEATS = CUE_DOTS / 2;
-const CUE_MIN = 2;                /* a shorter gap isn't worth counting down */
-const SONG_BEATS = 104;
+/* v0.1's parser, unchanged in behaviour: "t_start t_end event", with lyric:
+   lines and section keywords. Beat-relative times (B45) are still skipped —
+   they need a beatmap to resolve, which is the next thing to arrive. */
+function parseTimeseries(text) {
+  const lyrics = [], sections = [], beats = [], chords = [];
 
-const song = [
-  { at: 4,    syls: [["We",1],["write",1],["the",.5],["loops",1.5],["that",.5],["no",.5],["one",.5],["sees",1.5]] },
-  { at: 12,   syls: [["in",.5],["rooms",1],["lit",.5],["blue",1],["at",.5],["half",.5],["past",.5],["three",2]] },
-  { at: 24,   syls: [["A",.5],["thou",.5],["+sand",.5],["tests",1.5],["a",.5],["sin",.5],["+gle",.5],["green",2]] },
-  { at: 32,   syls: [["the",.5],["clean",.5],["+est",.5],["thing",1],["we've",.5],["ev",.5],["+er",.5],["seen",2]] },
-  { at: 44,   syls: [["But",.5],["un",.5],["+der",.5],["all",.5],["the",.5],["stacks",1],["and",.5],["strings",2]] },
-  { at: 51.5, syls: [["there's",.5],["some",.5],["+one",.5],["wait",.5],["+ing",.5],["on",.5],["the",.5],["thing",2]] },
-  { at: 64,   syls: [["So",.5],["name",1],["it",.5],["plain",1.5],["and",.5],["keep",.5],["it",.5],["kind",2]] },
-  { at: 72,   syls: [["leave",1],["ev",.5],["+ery",.5],["com",.5],["+ment",.5],["you",.5],["would",.5],["find",2]] },
-  { at: 84,   syls: [["'cause",.5],["code",1],["is",.5],["just",.5],["a",.5],["way",1],["to",.5],["say",2]] },
-  { at: 92,   syls: [["I",.5],["thought",1],["of",.5],["you",.5],["a",.5],["+long",1],["the",.5],["way",2.5]] }
-];
+  for (const rawLine of text.split("\n")) {
+    const ci = rawLine.indexOf("#");
+    const line = (ci >= 0 ? rawLine.slice(0, ci) : rawLine).trim();
+    if (!line) continue;
 
-const lines = song.map(({ at, syls }) => {
-  let cursor = 0;
-  const parsed = syls.map(([text, dur]) => {
-    const syl = { text: text.replace(/^\+/, ""), word: !text.startsWith("+"),
-                  start: cursor, dur, sustain: dur >= 1.5 };
-    cursor += dur;
-    return syl;
+    const m = line.match(/^(\S+)\s+(\S+)\s+(.*)/);
+    if (!m) continue;
+    if (/^B/i.test(m[1]) || /^B/i.test(m[2])) continue;
+
+    const t_start = parseFloat(m[1]), t_end = parseFloat(m[2]);
+    const event = m[3].trim();
+    if (!isFinite(t_start) || !isFinite(t_end) || t_end < t_start) continue;
+
+    /* A bare B is a beat marker: the recorded grid, drift and all. */
+    if (event === "B") { beats.push(t_start); continue; }
+
+    if (event.startsWith("lyric:")) {
+      const text = event.slice(6).trim();
+      if (text) lyrics.push({ t_start, t_end, text });
+      continue;
+    }
+
+    if (event.startsWith("chord:")) {
+      const name = event.slice(6).trim();
+      if (name) chords.push({ t_start, t_end, name });
+      continue;
+    }
+    for (const kind of SECTION_KINDS) {
+      if (event === kind || event.startsWith(kind + ":") || event.startsWith(kind + " ")) {
+        sections.push({ t_start, t_end, kind,
+                        label: event.slice(kind.length).replace(/^[\s:]+/, "").trim() });
+        break;
+      }
+    }
+  }
+
+  lyrics.sort((a, b) => a.t_start - b.t_start);
+  sections.sort((a, b) => a.t_start - b.t_start);
+  chords.sort((a, b) => a.t_start - b.t_start);
+  beats.sort((a, b) => a - b);
+
+  /* When a line should appear, and whether that lead-in is long enough to
+     count down: the same rule the demo used, in seconds. */
+  lyrics.forEach((l, i) => {
+    const earliest = Math.max(i ? lyrics[i - 1].t_end : 0, l.t_start - CUE_LEAD);
+    l.cued = l.t_start - earliest >= CUE_MIN;
+    l.promote = l.cued ? earliest : l.t_start;
   });
-  return { start: at, end: at + cursor, span: cursor, syls: parsed };
-});
+  if (lyrics.length) lyrics[0].promote = 0;
 
-/* A line appears as soon as the one before it stops singing, but never more
-   than CUE_BEATS early — exactly as much lead-in as the dots can show. */
-lines.forEach((line, i) => {
-  const earliest = Math.max(i ? lines[i - 1].end : 0, line.start - CUE_BEATS);
-  line.cued = line.start - earliest >= CUE_MIN;
-  line.promote = line.cued ? earliest : line.start;
-});
-lines[0].promote = 0;
-
-/* ── chord spelling ─────────────────────────────────────────────────────
-   Names stay ASCII in the data; the glyphs are a rendering step. */
-const SHARPS = ["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"];
-const FLATS  = ["C","Db","D","Eb","E","F","Gb","G","Ab","A","Bb","B"];
-const PITCH_CLASS = { C:0,"C#":1,Db:1,D:2,"D#":3,Eb:3,E:4,F:5,"F#":6,Gb:6,
-                      G:7,"G#":8,Ab:8,A:9,"A#":10,Bb:10,B:11 };
-
-function transpose(name, semis) {
-  if (!semis) return name;
-  const scale = semis > 0 ? SHARPS : FLATS;
-  return name.split("/").map(part => {
-    const m = /^([A-G][#b]?)(.*)$/.exec(part);
-    if (!m || !(m[1] in PITCH_CLASS)) return part;
-    return scale[mod(PITCH_CLASS[m[1]] + semis, 12)] + m[2];
-  }).join("/");
+  return { lyrics, sections, beats, chords };
 }
 
+/* Real accidental glyphs, kerned back against the letter they belong to. */
 const accSpan = a => `<span class="acc">${a === "#" ? "♯" : "♭"}</span>`;
-const chordHtml = name => name
+const chordHtml = name => String(name)
   .replace(/([A-G])([#b])/g, (_, note, a) => note + accSpan(a))
   .replace(/([#b])(\d)/g, (_, a, digit) => accSpan(a) + digit);
+
+const PHOSPHOR = { green: "#46ff7a", amber: "#ffb43c", red: "#ff4436" };
+const COLOURS = [{ v: "green", label: "Green" },
+                 { v: "amber", label: "Amber" },
+                 { v: "red", label: "Red" }];
 
 /* ── icons ──────────────────────────────────────────────────────────────
    One grammar: the wave is the marker's path through a bar, the circle is the
@@ -1012,30 +1065,18 @@ const ICO = {
     '<rect class="fr" x="1.5" y="3.5" width="29" height="9"/></svg>'
 };
 
-const PHOSPHOR = { green: "#46ff7a", amber: "#ffb43c", red: "#ff4436" };
-const COLOURS = [{ v: "green", label: "Green" },
-                 { v: "amber", label: "Amber" },
-                 { v: "red", label: "Red" }];
 
 /* ── the settings registry ──────────────────────────────────────────────
-   Every setting is a row of data: what it is called, where it belongs, how it
-   is edited, and what it drives. The panel is built from this list, so adding
-   a control — for a harmonica lane, a pitch trace, whatever — is one entry
-   here and nothing else.
-
-     scope   "display" (per user) or "track" (per track)
-     css     writes the raw value + unit to a custom property
-     flag    writes the value to a data- attribute on :root, for CSS to switch
-     scale   divides for JS use, so 150 in the UI is 1.5 in the maths
-     after   what to redo once it changes
-     apply   anything that does not fit the above */
+   One row of data per setting: what it is called, where it belongs, how it is
+   edited, and what it drives. The panel is built from this, so a control for a
+   future lane is one entry here and nothing else. */
 const SETTINGS = [
   { name: "controlColour", scope: "display", group: "common", label: "Control colour",
     type: "choice", def: "red", options: COLOURS, apply: v => tint("control", v) },
   { name: "brightness", scope: "display", group: "common", label: "Brightness",
     type: "range", def: 100, min: 40, max: 160, step: 5, unit: "%", css: "--brightness" },
   { name: "bounce", scope: "display", group: "common", label: "Ball bounce",
-    type: "range", def: 150, min: 75, max: 250, step: 5, unit: "%", scale: 100 },
+    type: "range", def: 150, min: 75, max: 250, step: 5, suffix: "%", scale: 100 },
   { name: "scanlines", scope: "display", group: "common", label: "Scanlines",
     type: "toggle", def: true, flag: "scan" },
   { name: "scanPitch", scope: "display", group: "common", label: "Scanline pitch",
@@ -1045,8 +1086,6 @@ const SETTINGS = [
     type: "choice", def: "amber", options: COLOURS, apply: v => tint("lyrics", v) },
   { name: "zoom", scope: "display", group: "lyrics", label: "Zoom",
     type: "range", def: 100, min: 60, max: 200, step: 5, scale: 100,
-    /* suffix, not unit: the readout says "120%" but the variable must stay a
-       bare number, because the stylesheet does the dividing by 100. */
     suffix: "%", css: "--lyric-zoom", after: "layout" },
   { name: "singGuide", scope: "display", group: "lyrics", label: "Sing guide",
     type: "toggle", def: true, flag: "guide", after: "layout" },
@@ -1069,7 +1108,7 @@ const SETTINGS = [
               { v: "boxes", label: "Boxes", icon: ICO.boxes },
               { v: "hand", label: "Hand", icon: ICO.hand }] },
   { name: "strumPane", scope: "display", group: "chords", label: "Strum pane",
-    type: "choice", def: "split", flag: "pane", after: "pane",
+    type: "choice", def: "off", flag: "pane", after: "layout",
     options: [{ v: "off", label: "Off", icon: ICO.off },
               { v: "split", label: "Split", icon: ICO.split },
               { v: "hand", label: "Hand", icon: ICO.hand }] },
@@ -1078,41 +1117,26 @@ const SETTINGS = [
     options: [{ v: "boxes", label: "Boxes", icon: ICO.frameBoxes },
               { v: "pane", label: "Pane", icon: ICO.framePane }] },
   { name: "playhead", scope: "display", group: "chords", label: "Playhead",
-    type: "toggle", def: true, flag: "playhead" },
+    type: "toggle", def: true, flag: "playhead" }
 
-  /* Per track, so a song remembers that you play it a step down. */
-  { name: "shift", scope: "track", group: "track", label: "Pitch",
-    type: "range", def: 0, min: -7, max: 7, step: 1, reset: 0,
-    format: v => (v > 0 ? "+" : "") + v, after: "chords,title" },
-  { name: "transposeChords", scope: "track", group: "track", label: "Transpose chords",
-    type: "toggle", def: true, after: "chords" },
-  { name: "speed", scope: "track", group: "track", label: "Speed",
-    type: "range", def: 100, min: 50, max: 150, step: 1, scale: 100, reset: 100,
-    format: v => (v / 100).toFixed(2) + "x", after: "title" }
-
-  /* Coming: a lane per instrument — harmonica holes, clarinet fingering, a
-     piano roll or engraved staff for the vocal — plus a live pitch trace over
-     whichever of those is showing. Each is one PANELS entry and one or two
-     rows here; none of them needs anything else to change. */
+  /* Track settings return with the maps: pitch and speed need a key and a
+     tempo to be relative to, and neither is in the beatmaps yet. */
 ];
 
 const DEF = Object.fromEntries(SETTINGS.map(d => [d.name, d]));
-const state = {};                       /* name -> raw value, as the UI holds it */
+const state = {};
 const num = name => state[name] / (DEF[name].scale || 1);
 
-/* ── stores ─────────────────────────────────────────────────────────────
-   Versioned, and unknown keys are ignored rather than thrown at: a newer build
-   must be able to read an older browser's saved settings and the reverse. */
-const STORE = "riffhound.v1";
+/* ── stores ───────────────────────────────────────────────────────────── */
+const STORE = "riffhound.karaoke.v1";
 const store = { display: {}, tracks: {}, stats: {} };
 
 function load() {
   try {
     const saved = JSON.parse(localStorage.getItem(STORE) || "{}");
-    if (saved.display) Object.assign(store.display, saved.display);
-    if (saved.tracks) Object.assign(store.tracks, saved.tracks);
-    if (saved.stats) Object.assign(store.stats, saved.stats);
-  } catch (e) { /* corrupt or unavailable: fall back to defaults */ }
+    for (const k of ["display", "tracks", "stats"])
+      if (saved[k]) Object.assign(store[k], saved[k]);
+  } catch (e) {}
 }
 
 let saveTimer = 0;
@@ -1123,104 +1147,114 @@ function save() {
   }, 250);
 }
 
-/* ── elements ───────────────────────────────────────────────────────────── */
-const main = $("main"), preview = $("preview"), beats = $("beats"), spane = $("spane");
+/* ── elements ─────────────────────────────────────────────────────────── */
 const lyrics = $("lyrics"), lyricCur = $("lyricCur"), lyricPrev = $("lyricPrev");
 const lyricAhead = $("lyricAhead"), lyricBall = $("lyricBall");
 const cue = $("cue"), lyricCatch = $("lyricCatch");
+const main = $("main"), preview = $("preview"), beats = $("beats"), spane = $("spane");
 const ball = $("ball"), cursor = $("cursor"), playhead = $("playhead");
-const stage = $("stage"), next = $("next"), nextChord = $("nextChord");
-const play = $("play"), stop = $("stop"), bpm = $("bpm");
+const stage = $("stage"), next = $("next");
+const play = $("play"), stop = $("stop");
 const menuBtn = $("menuBtn"), panel = $("panel");
 const titleBtn = $("titleBtn"), trackPanel = $("trackPanel");
 const titleText = $("titleText"), titleTags = $("titleTags");
+const timeline = $("timeline"), tlFill = $("tlFill"), tlHead = $("tlHead");
+const clockOut = $("clock"), bpmOut = $("bpmOut");
 const header = document.querySelector("header");
 
-/* Which elements wear each part's phosphor. Each is .tinted, so setting --fg
-   on it re-mixes that subtree's shades. Group elements are added once the
-   panel has been built. */
 const parts = {
   control: [header],
   lyrics: [lyrics],
   chords: [main, preview, next, beats, spane, playhead]
 };
-
-function tint(part, colour) {
+const tint = (part, colour) =>
   parts[part].forEach(el => el && el.style.setProperty("--fg", PHOSPHOR[colour]));
-}
 
 /* ── transport ──────────────────────────────────────────────────────────
-   Position is one number. Everything else about where we are is derived from
-   it, which is what makes seeking, looping and a server telling us where to be
-   all the same operation. */
-const player = { beat: 0, playing: true, loop: null };
-let track = TRACKS[0];
+   Position is one number again, but now the audio owns it: when a track is
+   loaded the element is the clock and we only read it. That is the honest
+   arrangement — the sound cannot be made to follow us. */
+const player = { time: 0, duration: 0, playing: false, loop: null };
+let track = { id: null, title: "No track loaded" };
+let audio = null, audioUrl = null;
 
-const BALL = 34, BALL_ZONE = 76, LYRIC_BALL = 22, HOP_ROOM = 46, LEAD_STEP = 52;
-const BPM_MIN = 40, BPM_MAX = 240;
-
-const tempo = () => clamp(Math.round(track.tempo * num("speed")), BPM_MIN, BPM_MAX);
-const beatMs = () => 60000 / tempo();
+const LYRIC_BALL = 22, HOP_ROOM = 46, LEAD_STEP = 52, BALL = 34, BALL_ZONE = 76;
 
 const zoom = () => num("zoom");
 const hopRoom = () => HOP_ROOM * zoom();
 const ballSize = () => LYRIC_BALL * zoom();
 const paneOn = () => state.strumPane !== "off";
-const boxesOn = () => state.chordCue === "boxes" || state.chordCue === "hand";
+const chordsOn = () => state.chordPanel;
 const zone = () => (state.chordCue === "off" ? 14 : BALL_ZONE);
 
-/* One pass through the whole progression, repeats expanded. */
-const CYCLE = progression.reduce((n, g) => n + g.chords.length * 4 * g.repeat, 0);
+let lyricLines = [], sections = [], beatGrid = [], chordLine = [];
 
-/* Absolute beat -> which group, which pass, and how far into it. Pure, so it
-   can answer for any beat, not just the next one. */
-function locate(beat) {
-  let b = mod(beat, CYCLE);
-  for (let i = 0; i < progression.length; i++) {
-    const g = progression[i], len = g.chords.length * 4;
-    for (let p = 0; p < g.repeat; p++) {
-      if (b < len) return { index: i, pass: p, t: b, group: g, len };
-      b -= len;
-    }
+/* The beatmap's own grid, when it has one. Bouncing on recorded beats rather
+   than a fixed rate is the difference between following the record and
+   following a metronome that happens to start in the right place. */
+function beatIndex(t) {
+  let lo = 0, hi = beatGrid.length - 1;
+  if (hi < 0 || t < beatGrid[0]) return -1;
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >> 1;
+    if (beatGrid[mid] <= t) lo = mid; else hi = mid - 1;
   }
-  return { index: 0, pass: 0, t: 0, group: progression[0], len: 16 };
+  return lo;
 }
 
-let here = locate(0);                    /* refreshed once per frame */
-const bars = () => here.group.chords.length;
-const groupBeats = () => bars() * 4;
-const slots = () => bars() * 8;
-const pattern = () => here.group.strum || STRUM_DEFAULT;
-const patternBeats = () => pattern().length / 2;
-
-/* What plays after this pass: the same group again if repeats are left. */
-function nextGroup() {
-  const g = here.group;
-  return here.pass + 1 < g.repeat ? g : progression[(here.index + 1) % progression.length];
+/* The typical gap, taken as the median so a couple of wild intervals — or a
+   long unmarked stretch — cannot drag it. */
+let beatPeriod = 0;
+function analyseBeats() {
+  const gaps = [];
+  for (let i = 1; i < beatGrid.length; i++) gaps.push(beatGrid[i] - beatGrid[i - 1]);
+  gaps.sort((a, b) => a - b);
+  beatPeriod = gaps.length ? gaps[gaps.length >> 1] : 0;
 }
 
-const chordName = raw => transpose(raw, state.transposeChords ? state.shift : 0);
+/* Most maps mark only the opening: Margaritaville has 150 beats over three
+   and a half minutes. So: bounce on real beats where they are written, and
+   where they run out — or a gap is too long to be one beat — carry on at the
+   established period, in phase from the last beat actually marked. That keeps
+   the bounce honest for as long as the map is, then plausible after. */
+const GAP_FACTOR = 1.6;
+
+function beatPhase(t) {
+  const p = beatPeriod || BOUNCE;
+  if (!beatGrid.length) return mod(t, p) / p;
+
+  const i = beatIndex(t);
+  if (i < 0) return mod(t - beatGrid[0], p) / p;
+  if (i >= beatGrid.length - 1) return mod(t - beatGrid[i], p) / p;
+
+  const d = beatGrid[i + 1] - beatGrid[i];
+  return d > p * GAP_FACTOR ? mod(t - beatGrid[i], p) / p : (t - beatGrid[i]) / d;
+}
+
+function bpmAt(t) {
+  if (!beatPeriod) return 0;
+  const i = beatIndex(t);
+  if (i < 0 || i >= beatGrid.length - 1) return Math.round(60 / beatPeriod);
+
+  /* Averaged over four beats so the readout doesn't jitter on human timing. */
+  const j = Math.min(beatGrid.length - 1, i + 4);
+  const local = (beatGrid[j] - beatGrid[i]) / (j - i);
+  return Math.round(60 / (local > beatPeriod * GAP_FACTOR ? beatPeriod : local));
+}
 
 /* ── panels ─────────────────────────────────────────────────────────────
-   The stage is a stack of bands. Each panel says how tall it wants to be and
-   where to put itself; layout walks them in order. A new lane — harmonica,
-   fingering, a staff, a pitch trace — is one more entry, and nothing else in
-   here has to know about it. */
-const chordsOn = () => state.chordPanel;
-
+   A stack of bands: each says how tall it wants to be and where to put
+   itself. The chord surfaces are still here, and still sized, so that when
+   the maps grow chords there is nowhere new to put them. */
 const PANELS = [
-  /* Lyrics ask for as much as their lines actually need — the sizes are the
-     same clamps the stylesheet uses — and get capped at what is left. Asking
-     rather than taking is what keeps the stack at the top of the stage, with
-     any slack below it instead of pushed between the panels. */
   { id: "lyrics", flex: true, place: placeLyrics, want: () => {
-      const vw = root.clientWidth;      /* what the stylesheet's vw resolves to */
+      const vw = root.clientWidth;
       const side = clamp(vw * .019, 15, 25) * zoom();
       const cur = clamp(vw * .029, 18, 38) * zoom();
       const rows = (state.pastLine ? 1 : 0) + state.nextLines;
       return Math.round(hopRoom() + cur * 1.3 + rows * side * 1.45 + 22);
     } },
-  { id: "strum",  gap: () => 16, place: placePane,
+  { id: "strum", gap: () => 16, place: placePane,
     height: h => (paneOn() ? Math.round(h * .17) : 0) },
   { id: "chords", gap: () => zone() + 8, place: placeChords,
     height: h => (chordsOn() ? Math.max(90, Math.round(h * (paneOn() ? .27 : .3))) : 0) },
@@ -1259,69 +1293,35 @@ function placeLyrics(y, band) {
 }
 
 function placeChords(y, band) {
-  geo.top = y;
-  geo.mainH = band;
-  geo.bottom = y + band;
-
-  /* Beat boxes have to fit between adjacent eighth-note slots. */
-  const boxW = Math.min(34, Math.round(main.clientWidth / slots() * .82));
-  geo.boxH = Math.round(boxW * .78);
-
+  geo.top = y; geo.mainH = band; geo.bottom = y + band; geo.boxH = 20;
   main.style.top = y + "px";
   main.style.setProperty("--h", band + "px");
-
   beats.style.top = Math.round(y - geo.boxH / 2) + "px";
   beats.style.height = geo.boxH + "px";
-  beats.style.setProperty("--bw", boxW + "px");
-  beats.style.setProperty("--bh", geo.boxH + "px");
-
   playhead.style.top = (y - geo.zone) + "px";
   playhead.style.height = (geo.zone + band) + "px";
   playhead.style.setProperty("--ball-zone", geo.zone + "px");
 
-  /* 70% of a bar, but never wider than the margin actually reserved for it —
-     on a wide window a bar gets big enough that 70% of one would reach back
-     over the chord row. main.offsetLeft is the page padding. */
-  const bar = main.children[0]?.getBoundingClientRect().width || band;
   const nextH = Math.round(band * .7);
+  const bar = main.clientWidth / 4;
   const room = stage.clientWidth - main.offsetLeft * 2 - main.clientWidth - 12;
-
   next.style.top = Math.round(y + (band - nextH) / 2) + "px";
   next.style.height = nextH + "px";
   next.style.width = Math.max(60, Math.min(Math.round(bar * .7), room)) + "px";
   next.style.setProperty("--h", nextH + "px");
 }
 
-/* The pane splits into a stroke band and a count band beneath it. Rows sit
-   symmetrically inside the stroke band, and the hand's travel plus its own
-   width covers 95% of that band. Ball mode puts upstrokes on the top row and
-   downstrokes on the bottom, so a ball bouncing once a beat is lowest on the
-   beat and highest on the "and" — exactly where the two kinds of stroke are.
-   paneRise is the gap it must cover, fixed by the rows rather than by the
-   bounce setting: the ball has to actually land on the glyphs. */
 function placePane(y, band) {
-  const countH = Math.round(band * .2);
-  const bandH = band - countH;
-  const upY = Math.round(bandH * .24), downY = Math.round(bandH * .76);
-  const markSize = Math.round(band * .16);
-  const countSize = Math.round(band * .13);
-
-  geo.paneRise = downY - upY;
-  geo.paneSwing = Math.round((bandH * .95 - markSize) / 2);
-
+  const countH = Math.round(band * .2), bandH = band - countH;
   spane.style.top = y + "px";
   spane.style.height = band + "px";
-  spane.style.setProperty("--up-y", upY + "px");
+  spane.style.setProperty("--up-y", Math.round(bandH * .24) + "px");
   spane.style.setProperty("--mid-y", Math.round(bandH * .5) + "px");
-  spane.style.setProperty("--down-y", downY + "px");
+  spane.style.setProperty("--down-y", Math.round(bandH * .76) + "px");
   spane.style.setProperty("--count-y", Math.round(bandH + countH * .5) + "px");
   spane.style.setProperty("--sglyph", Math.round(band * .3) + "px");
-  spane.style.setProperty("--scount", countSize + "px");
-  spane.style.setProperty("--smark", markSize + "px");
-
-  /* Side margins wide enough that a stroke box at either end sits inside the
-     frame rather than straddling it. Everything in the pane is placed through
-     paneX(), so the strokes and the marker share one mapping. */
+  spane.style.setProperty("--scount", Math.round(band * .13) + "px");
+  spane.style.setProperty("--smark", Math.round(band * .16) + "px");
   spane.style.setProperty("--sm", Math.round(band * .225 + 6) + "px");
 }
 
@@ -1330,263 +1330,77 @@ function placePreview(y, band) {
   preview.style.setProperty("--h", band + "px");
 }
 
-/* ── chord row, preview, beat boxes ─────────────────────────────────────── */
-let lastMeasure = -1, lastSlot = -1, lastCell = null, beatCells = [];
-
-function repeatMarks(repeat) {
-  const box = document.createElement("div");
-  box.className = "repeats";
-  box.append(...Array.from({ length: repeat }, (_, k) => {
-    const mark = document.createElement("i");
-    if (k < here.pass) mark.className = "spent";
-    return mark;
-  }));
-  return box;
-}
-
-function makeMeasure(chord, i, repeat = 0, last = false) {
-  const el = document.createElement("div");
-  el.className = "measure";
-  /* One wrapper, because .measure is a grid: bare text plus an accidental
-     span would be two grid items and stack vertically. */
-  el.innerHTML = `<small>${i + 1}</small>` +
-    `<span class="name">${chordHtml(chordName(chord))}</span>`;
-  if (last && repeat > 1) el.append(repeatMarks(repeat));
-  return el;
-}
-
-function renderChords() {
-  const { chords, repeat } = here.group;
-  main.style.setProperty("--bars", chords.length);
-  main.replaceChildren(...chords.map((c, i) =>
-    makeMeasure(c, i, repeat, i === chords.length - 1)));
-
-  const upcoming = nextGroup();
-  preview.style.setProperty("--bars", upcoming.chords.length);
-  preview.replaceChildren(...upcoming.chords.map((c, i) => makeMeasure(c, i)));
-  nextChord.innerHTML = chordHtml(chordName(upcoming.chords[0]));
-
-  renderBeats();
-  renderPane();
-  lastMeasure = -1;
-}
-
-/* A box for every slot that asks for something; nothing where the chord just
-   rings on. Placed by time, so slot s of n sits at s/n across the group. */
-function renderBeats() {
-  const pat = pattern(), n = slots(), cells = [];
-  beatCells = [];
-  lastCell = null;
-  lastSlot = -1;
-
-  for (let s = 0; s < n; s++) {
-    const stroke = pat[s % pat.length];
-    if (!stroke || stroke === "o") continue;
-    const cell = document.createElement("div");
-    cell.className = "beat";
-    cell.style.left = (s / n * 100) + "%";
-    cell.textContent = STROKES[stroke];
-    beatCells[s] = cell;
-    cells.push(cell);
-  }
-  beats.replaceChildren(...cells);
-}
-
-function updateMeasure(measure) {
-  [...main.children].forEach((cell, i) =>
-    cell.classList.toggle("current", i === measure));
-  next.classList.toggle("lit", measure === bars() - 1);
-}
-
-/* A bouncing ball always bounces on the beat, never on the eighths, even where
-   the strum guide is finer — so it lands on every fourth box, not every box.
-   Hand is not a bounce but a swing: a full down-up per beat, crossing the box
-   centre line at the instant a stroke is played. */
-const boxTop = () => geo.zone - (boxesOn() ? geo.boxH / 2 : 0);
-
-function bounceY(t) {
-  const room = Math.max(0, boxTop() - BALL - 4);
-  return boxTop() - BALL -
-    Math.abs(Math.sin(t * Math.PI)) * clamp(room * .62 * num("bounce"), 0, room);
-}
-
-function strumY(t) {
-  const room = Math.min(geo.zone - BALL / 2 - 4, geo.mainH * .35);
-  return geo.zone - BALL / 2 +
-    Math.sin(mod(t, 1) * TAU) * clamp(geo.boxH * 1.5 * num("bounce"), 0, room);
-}
-
-function updateBeat(t) {
-  const slot = Math.floor(mod(t, groupBeats()) * 2);
-  if (slot === lastSlot) return;
-
-  lastCell?.classList.remove("hit");
-  lastCell = beatCells[slot] || null;
-  lastCell?.classList.add("hit");
-
-  const pat = pattern();
-  ball.textContent = state.chordCue === "hand"
-    ? STROKES[pat[slot % pat.length]] || STROKES.o : "";
-  lastSlot = slot;
-}
-
-/* ── strum pane ─────────────────────────────────────────────────────────── */
-let paneSlots = [], paneMark = null, paneCursor = null, paneCatch = null;
-let lastPaneSlot = -1, lastPaneCell = null, paneMarks = [], lastPaneLoop = -1;
-
-/* Fraction f of the pattern, as a position inside the pane's margins. Slots,
-   dividers, the catcher and the marker all go through here, so nothing can
-   land off the grid the others are on. */
-const paneX = f => `calc(var(--sm) + (100% - 2 * var(--sm)) * ${f})`;
-
-function renderPane() {
-  const pat = pattern(), n = pat.length, kids = [];
-  paneSlots = [];
-  lastPaneSlot = -1;
-  lastPaneCell = null;
-
-  for (let s = 0; s < n; s++) {
-    const x = paneX(s / n), stroke = pat[s];
-
-    if (stroke && stroke !== "o") {
-      const el = document.createElement("div");
-      /* Placement follows the hand, not the glyph: an up-muted chunk still
-         happens on the way up. */
-      el.className = "sslot " + (s % 2 ? "up" : "down");
-      el.style.left = x;
-      el.textContent = STROKES[stroke];
-      paneSlots[s] = el;
-      kids.push(el);
-    }
-
-    const count = document.createElement("div");
-    count.className = "scount";
-    count.style.left = x;
-    count.textContent = s % 2 ? "&" : String(s / 2 % 4 + 1);
-    kids.push(count);
-  }
-
-  for (let b = 1; b < n / 8; b++) {
-    const rule = document.createElement("div");
-    rule.className = "sbar";
-    rule.style.left = paneX(b * 8 / n);
-    kids.push(rule);
-  }
-
-  /* How many times this pattern comes round before the chords move on. */
-  const loops = Math.round(groupBeats() / patternBeats());
-  paneMarks = [];
-  lastPaneLoop = -1;
-  if (loops > 1) {
-    const box = document.createElement("div");
-    box.className = "repeats";
-    for (let k = 0; k < loops; k++)
-      paneMarks.push(box.appendChild(document.createElement("i")));
-    kids.push(box);
-  }
-
-  paneCatch = document.createElement("div");
-  paneCatch.className = "catcher scatch";
-  paneCatch.style.left = paneX(1);        /* the wrap point, where the marker ends */
-  paneCatch.textContent = "↵";
-  paneCursor = document.createElement("div");
-  paneCursor.className = "scursor";
-  paneMark = document.createElement("div");
-  paneMark.className = "smark";
-
-  spane.dataset.rows = state.strumPane;
-  spane.replaceChildren(...kids, paneCatch, paneCursor, paneMark);
-}
-
-function updatePane(t) {
-  if (!paneMark) return;
-
-  const period = patternBeats();
-  const local = mod(t, period);
-  const x = paneX(local / period);
-  const phase = mod(t, 1);
-
-  paneCursor.style.left = x;
-  paneMark.style.left = x;
-  paneMark.style.top = state.strumPane === "hand"
-    ? `calc(var(--mid-y) + ${(Math.sin(phase * TAU) * geo.paneSwing).toFixed(1)}px)`
-    : `calc(var(--down-y) - ${(arc(phase) * geo.paneRise).toFixed(1)}px)`;
-
-  const loop = Math.floor(t / period);
-  if (loop !== lastPaneLoop) {
-    paneMarks.forEach((m, k) => m.classList.toggle("spent", k < loop));
-    lastPaneLoop = loop;
-  }
-
-  const slot = Math.floor(local * 2);
-  if (slot === lastPaneSlot) return;
-  lastPaneCell?.classList.remove("hit");
-  lastPaneCell = paneSlots[slot] || null;
-  lastPaneCell?.classList.add("hit");
-  lastPaneSlot = slot;
-}
-
-/* ── lyrics ─────────────────────────────────────────────────────────────── */
-let pads = [], lastLine = -1, lastSyllable = -1, lastCue = -1;
+/* ── lyrics ─────────────────────────────────────────────────────────────
+   No syllable map yet, so a line is one span: it lights while its own range
+   is running, and the ball sweeps across it in that time. When the maps carry
+   syllables this becomes the same landing-pad code the demo has. */
+let pads = [], lastLine = -1, lastLit = null, lastCue = -1;
 let cueRight = null, cuePitch = 0;
 
-const lineAt = i => lines[mod(i, lines.length)];
-const lineText = syls => syls.map(s => (s.word ? " " : "") + s.text).join("").trim();
+const lineAt = i => lyricLines[clamp(i, 0, lyricLines.length - 1)];
+const lineText = i =>
+  (i >= 0 && i < lyricLines.length ? lyricLines[i].text : "");
 
-/* Beats from a line appearing until it is replaced. The ball keeps sweeping
-   for all of it, so this is what says where its last bounce lands. */
-function lineHold(index) {
-  const i = mod(index, lines.length);
-  const nxt = lines[mod(index + 1, lines.length)];
-  const promote = i === lines.length - 1 ? nxt.promote + SONG_BEATS : nxt.promote;
-  return promote - lines[i].start;
+/* Which line is on screen: the last one to have been promoted. */
+function lineNow(t) {
+  if (!lyricLines.length) return -1;
+  let i = lyricLines.length - 1;
+  while (i > 0 && t < lyricLines[i].promote) i--;
+  return t < lyricLines[0].promote ? -1 : i;
 }
 
-function placeCatcher(index) {
-  if (!pads.length) return;
-  const span = lineAt(index).span;
-  const f = span > 0 ? Math.floor(lineHold(index)) / span : 1;
-  lyricCatch.style.left = lerp(pads[0].x, pads[pads.length - 1].x, f) + "px";
+/* Seconds from a line appearing until it is replaced — where the ball's last
+   bounce lands. */
+function lineHold(i) {
+  const nxt = i + 1 < lyricLines.length ? lyricLines[i + 1].promote
+                                        : lyricLines[i].t_end + 2;
+  return nxt - lyricLines[i].t_start;
+}
+
+function placeCatcher(i) {
+  if (!pads.length || i < 0) return;
+  const l = lyricLines[i];
+  const span = Math.max(.2, l.t_end - l.t_start);
+  const f = lineHold(i) / span;
+  lyricCatch.style.left = lerp(pads[0].x, pads[1].x, f) + "px";
   lyricCatch.style.top = pads[0].y + "px";
 }
 
-function lineNow(beat) {
-  const cycle = Math.floor(beat / SONG_BEATS);
-  const local = beat - cycle * SONG_BEATS;
-  let i = lines.length - 1;
-  while (i > 0 && local < lines[i].promote) i--;
-  return { index: cycle * lines.length + i, base: cycle * SONG_BEATS };
-}
+function renderLine(i) {
+  const span = document.createElement("span");
+  span.className = "line";
+  span.textContent = lineText(i) || " ";
+  lyricCur.replaceChildren(span, cue);
+  lyricPrev.textContent = lineText(i - 1);
 
-function renderLine(index) {
-  const syls = lineAt(index).syls.map(syl => {
-    const el = document.createElement("span");
-    el.className = `syl${syl.word ? " word" : ""}`;
-    el.innerHTML = `<b class="pad${syl.sustain ? " sustain" : ""}"></b>${syl.text}`;
-    return el;
-  });
-
-  lyricCur.replaceChildren(...syls, cue);   /* cue is absolute; takes no column */
-  lyricPrev.textContent = lineText(lineAt(index - 1).syls);
-  /* However many lines ahead the player asked for. */
   lyricAhead.replaceChildren(...Array.from({ length: state.nextLines }, (_, k) => {
     const el = document.createElement("div");
     el.className = "lyric side";
-    el.textContent = lineText(lineAt(index + k + 1).syls);
+    el.textContent = lineText(i + k + 1);
     return el;
   }));
-  lastSyllable = -1;
+
+  lastLit = null;
   lastCue = -1;
   measurePads();
-  placeCatcher(index);
+  placeCatcher(i);
 }
 
-/* One dot per half beat until this line starts singing, so the last dot goes
-   out on its first syllable. Only lines that arrived early are counted down. */
-function updateCue(line, local) {
-  const waiting = line.start - local;
-  const dots = state.lineCue === "dots" && line.cued && waiting > 0
-    ? clamp(Math.ceil(waiting * 2), 0, CUE_DOTS) : 0;
+/* Two points rather than a pad per syllable: where the line starts and where
+   it ends. The ball rides between them. */
+function measurePads() {
+  const base = lyrics.getBoundingClientRect();
+  const line = lyricCur.querySelector(".line");
+  if (!line) { pads = []; return; }
+  const r = line.getBoundingClientRect();
+  const y = r.top - base.top;
+  pads = [{ x: r.left - base.left, y }, { x: r.right - base.left, y }];
+}
+
+function updateCue(line, t) {
+  const waiting = line ? line.t_start - t : 0;
+  const dots = state.lineCue === "dots" && line && line.cued && waiting > 0
+    ? clamp(Math.ceil(waiting / CUE_STEP), 0, CUE_DOTS) : 0;
 
   if (dots === lastCue) return;
 
@@ -1596,9 +1410,6 @@ function updateCue(line, local) {
     return dot;
   }));
 
-  /* Measured once, when the countdown first appears at its widest. The group
-     is anchored on its right, so that edge and one dot's width are enough to
-     say where the head of the remaining dots is at any moment. */
   if (dots > 0) {
     if (lastCue <= 0) {
       const r = cue.getBoundingClientRect(), base = lyrics.getBoundingClientRect();
@@ -1611,177 +1422,403 @@ function updateCue(line, local) {
   lastCue = dots;
 }
 
-/* Pad centres in .lyrics coordinates; the ball rides on top of them. */
-function measurePads() {
-  const base = lyrics.getBoundingClientRect();
-  pads = [...lyricCur.querySelectorAll(".pad")].map(pad => {
-    const r = pad.getBoundingClientRect();
-    return { x: r.left - base.left + r.width / 2, y: r.top - base.top };
-  });
-}
-
-/* Waiting out a countdown: the ball rides the dots out, then takes one hop
-   across on the final beat. Anything smoother has it inside the words before
-   they start; anything more stepped jumps sideways at each touchdown. */
-function leadInAt(t, lead) {
-  const head = w => cueRight - (w * 2 - .5) * cuePitch;
+/* Riding the countdown out, then one hop onto the first word so the ball
+   arrives exactly as the line starts. */
+function leadInAt(dt, lead) {
+  const head = w => cueRight - (w / CUE_STEP - .5) * cuePitch;
   const x = cueRight == null
-    ? lerp(pads[0].x - LEAD_STEP * zoom(), pads[0].x, clamp(1 + t / (lead || 1), 0, 1))
-    : t < -1 ? head(-t)
-    : lerp(head(1), pads[0].x, clamp(t + 1, 0, 1));
+    ? lerp(pads[0].x - LEAD_STEP * zoom(), pads[0].x, clamp(1 + dt / (lead || 1), 0, 1))
+    : dt < -BOUNCE ? head(-dt)
+    : lerp(head(BOUNCE), pads[0].x, clamp(dt / BOUNCE + 1, 0, 1));
 
-  return { i: 0, landed: false, x,
-           y: pads[0].y - arc(mod(t, 1)) * hopRoom() * num("bounce") * .6 };
+  return { x, y: pads[0].y - bob() };
 }
 
-/* Steady sweep across the line. Travel is not clamped at the last syllable —
-   once the words run out the ball keeps its rate and bounces away to the
-   right, into the return box, rather than hovering over the final word. */
-function sweepAt(t, span) {
-  const from = pads[0], to = pads[pads.length - 1];
-  const x = lerp(from.x, to.x, span > 0 ? t / span : 1);
-  let i = 0;
-  while (i < pads.length - 1 && pads[i + 1].x <= x) i++;
-  return { x, y: from.y - arc(mod(t, 1)) * hopRoom() * num("bounce") * .6,
-           i, landed: t >= 0 };
+function sweepAt(dt, span) {
+  return { x: lerp(pads[0].x, pads[1].x, span > 0 ? dt / span : 1),
+           y: pads[0].y - bob() };
 }
 
-function updateLyrics(beat) {
-  const { index, base } = lineNow(beat);
-  if (index !== lastLine) {
-    renderLine(index);
-    lastLine = index;
-  }
+/* Both balls bounce on the same grid, so they agree about where the beat is. */
+const bob = () => arc(beatPhase(player.time)) * hopRoom() * num("bounce") * .6;
 
-  const line = lineAt(index);
-  const local = beat - base;
-  const t = local - line.start;         /* negative while the line waits */
+function updateLyrics(t) {
+  const i = lineNow(t);
+  if (i !== lastLine) { renderLine(i); lastLine = i; }
+  if (i < 0 || !pads.length) return;
 
-  updateCue(line, local);
-  if (!pads.length) return;
+  const line = lyricLines[i];
+  const dt = t - line.t_start;
+  const span = Math.max(.2, line.t_end - line.t_start);
 
-  const pos = t < 0 ? leadInAt(t, line.start - line.promote) : sweepAt(t, line.span);
+  updateCue(line, t);
+
+  const pos = dt < 0 ? leadInAt(dt, line.t_start - line.promote) : sweepAt(dt, span);
   lyricBall.style.left = pos.x + "px";
   lyricBall.style.top = (pos.y - ballSize()) + "px";
 
-  const reached = pos.landed ? pos.i : -1;
-  if (reached !== lastSyllable) {
-    [...lyricCur.children].forEach((el, k) => {
-      el.classList.toggle("sung", k <= reached);
-      el.classList.toggle("hit", k === reached);
-    });
-    lastSyllable = reached;
+  const lit = dt >= 0 && t <= line.t_end;
+  if (lit !== lastLit) {
+    lyricCur.classList.toggle("on", lit);
+    lastLit = lit;
   }
+}
+
+/* ── chords ─────────────────────────────────────────────────────────────
+   A window of four chords, each box as wide as the chord is long, so the
+   cursor can sweep the row linearly in time and still line up with the boxes.
+   That is the proportional sizing an off-beat change needs; it comes free once
+   the boxes stop being equal quarters of a bar. */
+const CHORD_WIN = 4;
+let chordGroups = [], groupAt = -1;
+
+/* Chords are grouped once, on load, and the row then holds a whole group at a
+   time instead of shuffling along at every change. Groups never straddle a
+   section, so what you memorise is "the four that open the chorus" rather than
+   an arbitrary window that happened to line up that way. */
+function groupChords() {
+  chordGroups = [];
+  let run = [];
+  const flush = () => { if (run.length) chordGroups.push(run); run = []; };
+
+  const sectionOf = t => sections.findIndex(s => t >= s.t_start && t < s.t_end);
+  let inSection = -1;
+
+  for (const c of chordLine) {
+    const sec = sectionOf(c.t_start);
+    if (sec !== inSection) { flush(); inSection = sec; }
+    run.push(c);
+    if (run.length === CHORD_WIN) flush();
+  }
+  flush();
+
+  /* A group of one is a straggler at a section's end; fold it back. */
+  for (let i = chordGroups.length - 1; i > 0; i--)
+    if (chordGroups[i].length === 1 && chordGroups[i - 1].length < CHORD_WIN) {
+      chordGroups[i - 1].push(...chordGroups.splice(i, 1)[0]);
+    }
+
+  chordGroups.forEach((g, i) => { g.at = g[0].t_start; g.to = g[g.length - 1].t_end; g.i = i; });
+  spanMax = Math.max(1, ...chordGroups.map(g => g.to - g.at));
+}
+
+function chordBox(c, i) {
+  const el = document.createElement("div");
+  el.className = "measure";
+  el.innerHTML = `<small>${fmtTime(c.t_start)}</small>` +
+    `<span class="name">${chordHtml(c.name)}</span>`;
+  return el;
+}
+
+/* One seconds-per-pixel for the whole track, set by the longest group. A
+   shorter group simply stops early and leaves the rest of the row empty,
+   rather than being stretched to fill it — so the cursor crosses the screen at
+   the same rate all the way through, and a two-second chord looks like a
+   two-second chord wherever it appears. */
+let spanMax = 1;
+
+function sizeRow(el, group) {
+  const cols = group.map(c => Math.max(.15, c.t_end - c.t_start));
+  const rest = spanMax - cols.reduce((a, b) => a + b, 0);
+  if (rest > .05) cols.push(rest);          /* the empty tail */
+  el.style.gridTemplateColumns = cols.map(d => d.toFixed(3) + "fr").join(" ");
+}
+
+function renderGroup(i) {
+  const g = chordGroups[i], ahead = chordGroups[i + 1];
+  main.replaceChildren(...(g || []).map(chordBox));
+  sizeRow(main, g || []);
+  preview.replaceChildren(...(ahead || []).map(chordBox));
+  sizeRow(preview, ahead || []);
+  $("nextChord").innerHTML = ahead ? chordHtml(ahead[0].name) : "";
+}
+
+function updateChords(t) {
+  if (!chordGroups.length) return;
+
+  let i = 0;
+  while (i < chordGroups.length - 1 && t >= chordGroups[i].to) i++;
+  if (i !== groupAt) { renderGroup(i); groupAt = i; }
+
+  const g = chordGroups[i];
+  /* Against the fixed scale, not the group's own length. */
+  const f = clamp((t - g.at) / spanMax, 0, 1);
+  ball.style.left = cursor.style.left = (f * 100) + "%";
+  ball.style.top = bounceY(t) + "px";
+
+  /* Which chord of the group is sounding. */
+  let k = 0;
+  while (k < g.length - 1 && t >= g[k].t_end) k++;
+  [...main.children].forEach((el, j) =>
+    el.classList.toggle("current", j === k && t >= g[0].t_start));
+}
+
+/* The chord ball bounces on the map's beats, so it drifts with the record. */
+function bounceY(t) {
+  const room = Math.max(0, geo.zone - BALL - 4);
+  return geo.zone - BALL -
+    arc(beatPhase(t)) * clamp(room * .62 * num("bounce"), 0, room);
+}
+
+/* ── audio ──────────────────────────────────────────────────────────────
+   The element is the clock. Everything else reads it. */
+function attachAudio(url) {
+  if (audio) { audio.pause(); audio.src = ""; }
+  audio = null;
+  player.time = 0;
+  player.duration = 0;
+  transport(false);
+
+  if (!url) return;
+
+  audio = new Audio(url);
+  audio.preload = "auto";
+  audio.addEventListener("loadedmetadata", () => {
+    player.duration = audio.duration || 0;
+    drawTransport();
+  });
+  audio.addEventListener("play", () => transport(true));
+  audio.addEventListener("pause", () => transport(false));
+  audio.addEventListener("ended", () => transport(false));
+  audio.addEventListener("error", () => {
+    titleText.textContent = "⚠ could not play " + track.title;
+  });
+}
+
+function seek(to) {
+  const t = clamp(to, 0, player.duration || 0);
+  player.time = t;
+  if (audio) audio.currentTime = t;
+  /* Jumping backwards must not leave the old line on screen. */
+  lastLine = -2;
+  drawTransport();
+}
+
+function transport(on) {
+  if (on !== player.playing) {
+    player.playing = on;
+    if (!on) save();
+  }
+  play.disabled = player.playing || !audio;
+  stop.disabled = !player.playing;
+}
+
+function drawTransport() {
+  const d = player.duration || 0;
+  const f = d ? clamp(player.time / d, 0, 1) : 0;
+  tlFill.style.width = (f * 100) + "%";
+  tlHead.style.left = (f * 100) + "%";
+  clockOut.textContent = `${fmtTime(player.time)} / ${fmtTime(d)}`;
+
+  /* Tempo is read off the grid rather than declared, so it tracks the take. */
+  const bpm = bpmAt(player.time);
+  bpmOut.textContent = bpm ? bpm + " bpm" : "";
 }
 
 /* ── the frame ──────────────────────────────────────────────────────────── */
-let lastKey = "";
+function frame() {
+  if (audio) player.time = audio.currentTime;
+  if (player.loop && player.time >= player.loop.to) seek(player.loop.from);
 
-function frame(now) {
-  const dt = now - (frame.last || now);
-  frame.last = now;
-
-  if (player.playing) {
-    player.beat += dt / beatMs();
-
-    /* A training loop is just a bound on the one number. */
-    if (player.loop && player.beat >= player.loop.to)
-      player.beat = player.loop.from + (player.beat - player.loop.to);
-
-    practiced(dt);
-  }
-
-  here = locate(player.beat);
-  const key = here.index + ":" + here.pass;
-  if (key !== lastKey) {
-    renderChords();
-    lastKey = key;
-  }
-
-  const t = here.t;
-  const measure = Math.min(bars() - 1, Math.floor(t / 4));
-  if (measure !== lastMeasure) {
-    updateMeasure(measure);
-    lastMeasure = measure;
-  }
-
-  ball.style.left = cursor.style.left = `${t / here.len * 100}%`;
-  ball.style.top = (state.chordCue === "hand" ? strumY : bounceY)(t) + "px";
-  updateBeat(t);
-  updatePane(t);
-
-  /* The lyric clock is the same number, on its own phrase length, so words and
-     chords drift against each other exactly as they do on a lead sheet. */
-  updateLyrics(player.beat);
-
+  if (player.playing) practised();
+  updateLyrics(player.time);
+  updateChords(player.time);
+  drawTransport();
   requestAnimationFrame(frame);
 }
 
-/* ── practice log ───────────────────────────────────────────────────────
-   How long, and how recently. Kept per track id so the library can put what
-   you have been working on at the top. */
-function practiced(ms) {
+/* How long, and how recently — per track, so the library can put what you have
+   been working on at the top. */
+let lastTick = 0;
+function practised() {
+  const now = Date.now();
+  const dt = lastTick ? now - lastTick : 0;
+  lastTick = now;
+  if (!track.id || dt <= 0 || dt > 1000) return;
+
   const s = store.stats[track.id] || (store.stats[track.id] = { secs: 0, last: 0 });
-  s.secs += ms / 1000;
-  s.last = Date.now();
+  s.secs += dt / 1000;
+  s.last = now;
   if (Math.floor(s.secs) % 10 === 0) save();
 }
 
 const ago = t => {
   if (!t) return "";
   const d = (Date.now() - t) / 86400000;
-  return d < 1 ? "today" : d < 2 ? "yesterday" : Math.floor(d) + "d ago";
+  return d < 1 ? "today" : d < 2 ? "yesterday" : Math.floor(d) + "d";
 };
-
-const spent = s => !s || s < 60 ? "" : Math.round(s / 60) + "m";
+const spent = s => (!s || s < 60 ? "" : Math.round(s / 60) + "m");
 
 /* ── commands ───────────────────────────────────────────────────────────
-   The single door in. A click, a URL parameter, a restored setting and a
-   server push all arrive here, which is why none of the drawing code needs to
-   know which of those happened. */
+   The single door in: clicks, keys, the URL, and later a socket. */
 function command(msg) {
   const { cmd } = msg;
-
   if (cmd === "set") return set(msg.name, msg.value);
-  if (cmd === "play") return transport(true);
-  if (cmd === "stop") return transport(false);
-  if (cmd === "seek") { player.beat = Number(msg.beat) || 0; return; }
-  if (cmd === "tempo")
-    return set("speed", Math.round(Number(msg.bpm) / track.tempo * 100));
+  if (cmd === "play") return audio && audio.play().catch(() => {});
+  if (cmd === "stop") return audio && audio.pause();
+  if (cmd === "seek") return seek(Number(msg.time) || 0);
+  if (cmd === "nudge") return seek(player.time + Number(msg.by));
   if (cmd === "loop") {
-    player.loop = msg.from == null ? null : { from: Number(msg.from), to: Number(msg.to) };
-    if (player.loop) player.beat = player.loop.from;
+    player.loop = msg.from == null ? null
+      : { from: Number(msg.from), to: Number(msg.to) };
+    if (player.loop) seek(player.loop.from);
     return;
   }
-  if (cmd === "track") return loadTrack(msg.id);
+  if (cmd === "track") return openTrackByKey(msg.key);
 }
 
-function transport(on) {
-  /* The guard protects the state change, not the reflection: calling this with
-     the value it already has is how the buttons get their initial state. */
-  if (on !== player.playing) {
-    player.playing = on;
-    if (!on) save();
-  }
-  play.disabled = player.playing;
-  stop.disabled = !player.playing;
-}
-
-/* ── a server, when there is one ────────────────────────────────────────
-   Nothing here yet but the seam: messages are commands, so a session that
-   tells four screens what to play and where to be needs no other hooks. */
 const net = {
   socket: null,
   connect(url) {
     this.socket = new WebSocket(url);
-    this.socket.onmessage = e => {
-      try { command(JSON.parse(e.data)); } catch (err) {}
-    };
+    this.socket.onmessage = e => { try { command(JSON.parse(e.data)); } catch (err) {} };
   },
   send(msg) {
-    if (this.socket && this.socket.readyState === 1)
-      this.socket.send(JSON.stringify(msg));
+    if (this.socket && this.socket.readyState === 1) this.socket.send(JSON.stringify(msg));
   }
+};
+
+/* ── the library ────────────────────────────────────────────────────────
+   v0.1's loading, unchanged in behaviour: a directory handle kept in
+   IndexedDB so the folder survives a reload, a file picker for one-offs, and
+   pairing by filename stem — a track is a media file with a .txt beside it.
+   This is the piece the server will eventually replace, endpoint for
+   endpoint, without the rest of the app noticing. */
+const MEDIA_RE = /\.(mp3|ogg|wav|flac|m4a|mp4|m4v|webm)$/i;
+let _db = null, dirs = [], picked = [];
+
+function dbOpen() {
+  if (_db) return Promise.resolve(_db);
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open("riffhound-karaoke", 1);
+    req.onupgradeneeded = e => {
+      const db = e.target.result;
+      if (!db.objectStoreNames.contains("dirs"))
+        db.createObjectStore("dirs", { keyPath: "id", autoIncrement: true });
+    };
+    req.onsuccess = e => { _db = e.target.result; resolve(_db); };
+    req.onerror = e => reject(e.target.error);
+  });
+}
+
+function dbRun(mode, fn) {
+  return dbOpen().then(db => new Promise((resolve, reject) => {
+    const tx = db.transaction("dirs", mode);
+    const req = fn(tx.objectStore("dirs"));
+    tx.oncomplete = () => resolve(req ? req.result : undefined);
+    tx.onerror = e => reject(e.target.error);
+  }));
+}
+
+const dbAdd = rec => dbRun("readwrite", s => s.add(rec));
+const dbAll = () => dbRun("readonly", s => s.getAll());
+const dbDel = id => dbRun("readwrite", s => s.delete(id));
+
+const canDir = () => typeof showDirectoryPicker === "function";
+const canFiles = () => typeof showOpenFilePicker === "function";
+
+async function perm(handle) {
+  try {
+    if (await handle.queryPermission({ mode: "read" }) === "granted") return true;
+    return await handle.requestPermission({ mode: "read" }) === "granted";
+  } catch { return false; }
+}
+
+async function enumerate(handle) {
+  const files = [];
+  try {
+    for await (const [name, h] of handle.entries())
+      if (h.kind === "file") files.push({ name, handle: h });
+  } catch {}
+  return files.sort((a, b) => a.name.localeCompare(b.name));
+}
+
+/* Pair a media file with the .txt of the same stem. Only pairs are tracks. */
+function pairUp(files, source) {
+  const stems = {};
+  for (const f of files) {
+    const name = f.name || f.file?.name || "";
+    const stem = name.replace(/\.[^/.]+$/, "");
+    if (MEDIA_RE.test(name)) (stems[stem] ||= {}).media = f;
+    else if (/\.txt$/i.test(name)) (stems[stem] ||= {}).txt = f;
+  }
+  return Object.entries(stems)
+    .filter(([, p]) => p.media)
+    .map(([stem, p]) => ({
+      id: source + "/" + stem,
+      title: (stem.includes("/") ? stem.split("/").pop() : stem).replace(/[_\-]+/g, " "),
+      source, media: p.media, txt: p.txt || null
+    }));
+}
+
+async function refreshDirs() {
+  dirs = [];
+  if (!canDir()) return;
+  let rows = [];
+  try { rows = await dbAll(); } catch { return; }
+  for (const row of rows) {
+    const ok = await perm(row.handle);
+    dirs.push({ id: row.id, name: row.handle.name, handle: row.handle,
+                files: ok ? await enumerate(row.handle) : [], ok });
+  }
+}
+
+function library() {
+  const out = [];
+  for (const d of dirs) if (d.ok) out.push(...pairUp(d.files, d.name));
+  out.push(...pairUp(picked, "picked"));
+  return out;
+}
+
+/* Subsequence match, as v0.1 did: every letter of the query in order. */
+function fuzzy(q, s) {
+  if (!q) return true;
+  q = q.toLowerCase(); s = s.toLowerCase();
+  let qi = 0;
+  for (let i = 0; i < s.length && qi < q.length; i++) if (s[i] === q[qi]) qi++;
+  return qi === q.length;
+}
+
+async function openTrack(entry) {
+  const getFile = async h => (h && "getFile" in h ? await h.getFile() : h);
+
+  let text = "";
+  if (entry.txt) {
+    try { text = await (await getFile(entry.txt.handle || entry.txt.file || entry.txt)).text(); }
+    catch (e) { console.warn("lyrics:", e); }
+  }
+
+  const parsed = parseTimeseries(text);
+  lyricLines = parsed.lyrics;
+  sections = parsed.sections;
+  beatGrid = parsed.beats;
+  analyseBeats();
+  chordLine = parsed.chords;
+  groupChords();
+  groupAt = -1;
+  main.replaceChildren();
+  preview.replaceChildren();
+
+  if (audioUrl) { URL.revokeObjectURL(audioUrl); audioUrl = null; }
+  let url = null;
+  try {
+    const file = await getFile(entry.media.handle || entry.media.file || entry.media);
+    url = audioUrl = URL.createObjectURL(file);
+  } catch (e) { console.warn("media:", e); }
+
+  track = { id: entry.id, title: entry.title };
+  titleText.textContent = track.title;
+  titleTags.innerHTML = lyricLines.length ? "" : " - no lyrics";
+
+  lastLine = -2;
+  attachAudio(url);
+  renderResults(searchBox.value);
+  layout();
+}
+
+const openTrackByKey = key => {
+  const found = library().find(e => e.id === key || e.title === key);
+  if (found) openTrack(found);
 };
 
 /* ── set / sync ─────────────────────────────────────────────────────────
@@ -1791,10 +1828,7 @@ const net = {
 const controls = {};                       /* name -> the element to reflect into */
 const AFTER = {
   layout: () => layout(),
-  pane:   () => { renderPane(); layout(); },
-  chords: () => renderChords(),
-  lyrics: () => { if (lastLine >= 0) renderLine(lastLine); layout(); },
-  title:  () => updateTitle()
+  lyrics: () => { renderLine(lastLine); layout(); }
 };
 
 function coerce(def, v) {
@@ -1817,7 +1851,7 @@ function set(name, value, opts = {}) {
   sync(name);
   if (!opts.quiet) {
     (def.after || "").split(",").filter(Boolean).forEach(a => AFTER[a]?.());
-    (def.scope === "track" ? trackStore() : store.display)[name] = v;
+    store.display[name] = v;
     save();
   }
 }
@@ -1837,8 +1871,6 @@ function sync(name) {
   const out = el.closest(".setting")?.querySelector("output");
   if (out) out.value = def.format ? def.format(v) : v + (def.suffix || def.unit || "");
 }
-
-const trackStore = () => store.tracks[track.id] || (store.tracks[track.id] = {});
 
 /* ── the panel, built from the registry ─────────────────────────────────── */
 function rowFor(def) {
@@ -1912,8 +1944,9 @@ function buildPanel() {
   parts.chords.push($("chordsGroup"));
 }
 
-/* ── the track panel, and loading ───────────────────────────────────────── */
-let results = null, searchBox = null;
+
+/* ── the load dialog ────────────────────────────────────────────────────── */
+let searchBox = null, results = null, dirList = null;
 
 function buildTrackPanel() {
   const row = document.createElement("div");
@@ -1928,79 +1961,125 @@ function buildTrackPanel() {
   results = document.createElement("div");
   results.className = "results";
 
-  const orig = document.createElement("div");
-  orig.className = "setting";
-  orig.innerHTML = `<label>Recorded in</label><output id="origInfo"></output>`;
+  const sources = document.createElement("div");
+  sources.className = "sources";
+  const dirBtn = document.createElement("button");
+  dirBtn.textContent = "Open folder…";
+  dirBtn.onclick = addFolder;
+  const fileBtn = document.createElement("button");
+  fileBtn.textContent = "Open files…";
+  fileBtn.onclick = addFiles;
+  sources.append(dirBtn, fileBtn);
 
-  row.append(searchBox, results);
-  trackPanel.replaceChildren(row,
-    group("Track", null, SETTINGS.filter(d => d.group === "track")));
-  trackPanel.querySelector(".group").prepend(orig);
+  dirList = document.createElement("div");
+  dirList.className = "dirs";
+
+  row.append(searchBox, results, sources, dirList);
+  trackPanel.replaceChildren(row);
   renderResults("");
+  renderDirs();
 }
 
-/* What the library endpoint will fill in. Sorted by what you touched last, and
-   showing how long you have spent on it, since that is the thing you want when
-   you sit down to practise. */
-function renderResults(query = "") {
-  const q = String(query).trim().toLowerCase();
-  const rows = TRACKS
-    .filter(t => !q || (t.title + " " + t.artist).toLowerCase().includes(q))
+function renderResults(query) {
+  const q = String(query || "").trim();
+  const rows = library()
+    .filter(e => fuzzy(q, e.title) || fuzzy(q, e.source))
     .sort((a, b) => (store.stats[b.id]?.last || 0) - (store.stats[a.id]?.last || 0))
-    .map(t => {
-      const s = store.stats[t.id] || {};
+    .slice(0, 60)
+    .map(e => {
+      const s = store.stats[e.id] || {};
       const b = document.createElement("button");
-      b.className = "result" + (t.id === track.id ? " on" : "");
-      b.innerHTML = `<b>${t.title}</b><i>${spent(s.secs)}</i><i>${ago(s.last)}</i>`;
-      b.onclick = () => command({ cmd: "track", id: t.id });
+      b.className = "result" + (e.id === track.id ? " on" : "");
+      b.innerHTML = `<b>${e.title}</b><i>${e.txt ? "" : "no lyrics"} ${spent(s.secs)}</i>` +
+                    `<i>${ago(s.last)}</i>`;
+      b.onclick = () => { openTrack(e); openTrackPanel(false); };
       return b;
     });
 
-  results.replaceChildren(...(rows.length ? rows :
-    [Object.assign(document.createElement("div"), { className: "note", textContent: "nothing found" })]));
+  results.replaceChildren(...(rows.length ? rows : [Object.assign(
+    document.createElement("div"),
+    { className: "note",
+      textContent: dirs.length || picked.length ? "nothing found"
+                                                : "open a folder of tracks to begin" })]));
 }
 
-function loadTrack(id) {
-  const found = TRACKS.find(t => t.id === id);
-  if (!found) return;
+function renderDirs() {
+  const rows = dirs.map(d => {
+    const el = document.createElement("div");
+    el.className = "dir";
+    const n = document.createElement("span");
+    n.textContent = d.name + (d.ok ? "" : " (no permission)");
+    const c = document.createElement("span");
+    c.className = "badge";
+    c.textContent = d.ok ? pairUp(d.files, d.name).length + " tracks" : "";
+    const x = document.createElement("button");
+    x.textContent = "forget";
+    x.onclick = async () => { await dbDel(d.id); await refreshDirs(); renderDirs(); renderResults(searchBox.value); };
+    el.append(n, c, x);
+    return el;
+  });
 
-  track = found;
-  /* Track settings are per track: restore this one's, defaulting where it has
-     none. Only the notation is still shared — the demo has one song's worth. */
-  const saved = trackStore();
-  SETTINGS.filter(d => d.scope === "track")
-          .forEach(d => set(d.name, saved[d.name] ?? d.def, { quiet: true }));
-
-  player.beat = 0;
-  lastKey = "";
-  $("origInfo").value = `${track.key} · ${track.tempo} bpm`;
-  renderResults(searchBox.value);
-  updateTitle();
-  renderChords();
+  if (picked.length) {
+    const el = document.createElement("div");
+    el.className = "dir";
+    el.innerHTML = `<span>picked files</span>` +
+      `<span class="badge">${pairUp(picked, "picked").length} tracks · this session</span>`;
+    rows.push(el);
+  }
+  dirList.replaceChildren(...rows);
 }
 
-/* The title names the track, and then only what has been moved away from its
-   original: the key it now sounds in, and the speed relative to the record. */
-function updateTitle() {
-  const ratio = num("speed");
-  const tags = [];
-  if (state.shift) tags.push(chordHtml(transpose(track.key, state.shift)));
-  if (Math.abs(ratio - 1) > .005) tags.push(ratio.toFixed(2) + "x");
-
-  titleText.textContent = track.title;
-  titleTags.innerHTML = tags.length ? " - " + tags.join(" - ") : "";
-  if (document.activeElement !== bpm) bpm.value = tempo();
+/* Prefer the File System Access API, because a handle can be kept and the
+   folder is still there after a reload. Where it is missing — Safari, Firefox,
+   and Chrome from a file:// page — fall back to a plain file input, which
+   works everywhere but only for the session. */
+async function addFolder() {
+  if (!canDir()) return $("pickDir").click();
+  try {
+    const handle = await showDirectoryPicker({ mode: "read" });
+    if (!handle) return;
+    await dbAdd({ handle });
+    await refreshDirs();
+    renderDirs();
+    renderResults(searchBox.value);
+  } catch (e) {
+    if (e.name === "AbortError") return;
+    console.warn(e);
+    $("pickDir").click();          /* blocked rather than absent: try the input */
+  }
 }
 
-/* ── menus ──────────────────────────────────────────────────────────────── */
+async function addFiles() {
+  if (!canFiles()) return $("pickFiles").click();
+  try {
+    const handles = await showOpenFilePicker({ multiple: true });
+    for (const h of handles) picked.push({ name: h.name, handle: h });
+    renderResults(searchBox.value);
+  } catch (e) {
+    if (e.name === "AbortError") return;
+    console.warn(e);
+    $("pickFiles").click();
+  }
+}
+
+function takeFiles(list) {
+  for (const f of list) picked.push({ name: f.webkitRelativePath || f.name, file: f });
+  renderResults(searchBox ? searchBox.value : "");
+  renderDirs();
+}
+
+$("pickDir").onchange = e => takeFiles(e.target.files);
+$("pickFiles").onchange = e => takeFiles(e.target.files);
+
+/* ── menus and transport bar ────────────────────────────────────────────── */
 function openMenu(open) {
   panel.hidden = !open;
   menuBtn.setAttribute("aria-expanded", open);
   menuBtn.classList.toggle("active", open);
-  if (open) openTrack(false);
+  if (open) openTrackPanel(false);
 }
 
-function openTrack(open) {
+function openTrackPanel(open) {
   trackPanel.hidden = !open;
   titleBtn.setAttribute("aria-expanded", open);
   if (open) { renderResults(searchBox.value); openMenu(false); }
@@ -2011,15 +2090,30 @@ function toggleFullscreen() {
   else document.documentElement.requestFullscreen().catch(() => {});
 }
 
+const seekFromPointer = e => {
+  const r = timeline.getBoundingClientRect();
+  command({ cmd: "seek", time: (e.clientX - r.left) / r.width * (player.duration || 0) });
+};
+
+timeline.addEventListener("pointerdown", e => {
+  timeline.setPointerCapture(e.pointerId);
+  seekFromPointer(e);
+});
+timeline.addEventListener("pointermove", e => {
+  if (e.buttons & 1) seekFromPointer(e);
+});
+
+$("back5").onclick = () => command({ cmd: "nudge", by: -5 });
+$("fwd5").onclick = () => command({ cmd: "nudge", by: 5 });
 play.onclick = () => command({ cmd: "play" });
 stop.onclick = () => command({ cmd: "stop" });
 menuBtn.onclick = () => openMenu(panel.hidden);
+titleBtn.onclick = () => openTrackPanel(trackPanel.hidden);
 $("fsBtn").onclick = toggleFullscreen;
-titleBtn.onclick = () => openTrack(trackPanel.hidden);
 
 addEventListener("pointerdown", e => {
   if (!panel.hidden && !e.target.closest(".menu")) openMenu(false);
-  if (!trackPanel.hidden && !e.target.closest(".track")) openTrack(false);
+  if (!trackPanel.hidden && !e.target.closest(".track")) openTrackPanel(false);
 });
 addEventListener("resize", layout);
 addEventListener("fullscreenchange", () => {
@@ -2027,67 +2121,70 @@ addEventListener("fullscreenchange", () => {
   layout();
 });
 
-/* Digits only, and don't fight the caret while the field has focus. */
-bpm.addEventListener("input", () => {
-  bpm.value = bpm.value.replace(/\D/g, "").slice(0, 3);
-  if (bpm.value) command({ cmd: "tempo", bpm: bpm.value });
-});
-bpm.addEventListener("blur", () => { bpm.value = tempo(); });
-bpm.addEventListener("keydown", e => { if (e.key === "Enter") bpm.blur(); });
-bpm.addEventListener("focus", () => bpm.select());
-
 addEventListener("keydown", e => {
   /* Never shadow a browser or system shortcut: Cmd-R, Cmd-L, Cmd-F and the
      rest all arrive here as plain letters otherwise. Shift is left alone, so
      an upper-case letter still works. */
   if (e.metaKey || e.ctrlKey || e.altKey) return;
-  /* Don't steal keys from the tempo field or the track search box. */
   if (e.target.tagName === "INPUT" && /^(text|search)$/.test(e.target.type)) return;
 
   const colour = { g: "green", a: "amber", r: "red" }[e.key.toLowerCase()];
   if (colour) ["controlColour", "lyricColour", "chordColour"]
     .forEach(n => command({ cmd: "set", name: n, value: colour }));
-  else if (e.key === "=" || e.key === "+") nudge(1);
-  else if (e.key === "-" || e.key === "_") nudge(-1);
   else if (e.key === " ") command({ cmd: player.playing ? "stop" : "play" });
+  else if (e.key === "ArrowLeft") command({ cmd: "nudge", by: -5 });
+  else if (e.key === "ArrowRight") command({ cmd: "nudge", by: 5 });
   else if (e.key.toLowerCase() === "f") toggleFullscreen();
-  else if (e.key === "Escape") { openMenu(false); openTrack(false); }
+  else if (e.key.toLowerCase() === "z") cycleZoom();
+  else if (e.key.toLowerCase() === "l") openTrackPanel(trackPanel.hidden);
+  else if (e.key.toLowerCase() === "c")
+    command({ cmd: "set", name: "chordPanel", value: !state.chordPanel });
+  else if (e.key.toLowerCase() === "s") togglePane();
+  else if (e.key === "Escape") { openMenu(false); openTrackPanel(false); }
   else return;
   e.preventDefault();
 });
 
-/* Step to the next/previous multiple of five bpm. */
-function nudge(dir) {
-  const t = tempo(), r = t % 5;
-  command({ cmd: "tempo", bpm: dir > 0 ? t + 5 - r : (r === 0 ? t - 5 : t - r) });
+/* Zoom steps through five sizes and comes back round, so Z alone is enough to
+   find a size from across the room without hunting for the slider. */
+function cycleZoom() {
+  const d = DEF.zoom, steps = 5;
+  const inc = (d.max - d.min) / (steps - 1);
+  const i = Math.round((state.zoom - d.min) / inc);
+  command({ cmd: "set", name: "zoom", value: d.min + mod(i + 1, steps) * inc });
 }
 
-/* ── boot ───────────────────────────────────────────────────────────────
-   Defaults, then saved settings, then the URL — each layer allowed to override
-   the one before, all of them going through the same door. */
+/* The pane is a choice, not a switch, so toggling it has to remember which
+   kind of pane you had. */
+let lastPane = "split";
+function togglePane() {
+  if (state.strumPane !== "off") lastPane = state.strumPane;
+  command({ cmd: "set", name: "strumPane",
+            value: state.strumPane === "off" ? lastPane : "off" });
+}
+
+/* ── boot ───────────────────────────────────────────────────────────────── */
 load();
 buildPanel();
 buildTrackPanel();
 
 SETTINGS.forEach(d => set(d.name, d.def, { quiet: true }));
-SETTINGS.filter(d => d.scope === "display")
-        .forEach(d => d.name in store.display && set(d.name, store.display[d.name], { quiet: true }));
-loadTrack(TRACKS[0].id);
+SETTINGS.forEach(d => d.name in store.display && set(d.name, store.display[d.name], { quiet: true }));
 
-/* ?beat=32&tempo=104&play=0&set.zoom=140 — the same commands a socket sends. */
+titleText.textContent = track.title;
+renderLine(-1);
+layout();
+transport(false);
+drawTransport();
+
+refreshDirs().then(() => { renderDirs(); renderResults(""); });
+
 new URLSearchParams(location.search).forEach((v, k) => {
   if (k.startsWith("set.")) command({ cmd: "set", name: k.slice(4), value: v });
-  else if (k === "track") command({ cmd: "track", id: v });
-  else if (k === "beat") command({ cmd: "seek", beat: v });
-  else if (k === "tempo") command({ cmd: "tempo", bpm: v });
-  else if (k === "loop") { const [f, t] = v.split(",");
-                           command({ cmd: "loop", from: f, to: t }); }
-  else if (k === "play") command({ cmd: v === "0" ? "stop" : "play" });
+  else if (k === "track") command({ cmd: "track", key: v });
+  else if (k === "t") command({ cmd: "seek", time: v });
 });
 
-renderLine(0);
-layout();
-transport(player.playing);
 requestAnimationFrame(frame);
 </script>
 </body>
