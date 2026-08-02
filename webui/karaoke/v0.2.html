@@ -829,7 +829,10 @@
     transform: translateX(-50%);
   }
 
-  .clock { font-size: 12px; color: var(--dim); white-space: nowrap; }
+  /* flex: none — otherwise these shrink away when the header gets tight and
+     the timeline, which is flex: 1, takes the room. */
+  .clock { flex: none; font-size: 12px; color: var(--dim); white-space: nowrap; }
+  #bpmOut { color: var(--fg); }
   .seek { padding: 4px 7px; font-size: 11px; }
 
   /* ---- loader ---------------------------------------------------------- */
@@ -969,6 +972,7 @@ const SECTION_KINDS = ["intro", "verse", "chorus", "bridge", "solo", "outro",
    they need a beatmap to resolve, which is the next thing to arrive. */
 function parseTimeseries(text) {
   const lyrics = [], sections = [], beats = [], chords = [];
+  let gid = 0;
 
   for (const rawLine of text.split("\n")) {
     const ci = rawLine.indexOf("#");
@@ -992,15 +996,33 @@ function parseTimeseries(text) {
       continue;
     }
 
-    if (event.startsWith("chord:")) {
-      const name = event.slice(6).trim();
-      if (name) chords.push({ t_start, t_end, name });
+    /* "chords: G D C E" is a bar per chord across the span, and one group on
+       screen. It is both shorthand and the grouping mechanism: what is written
+       on one line is what you see on one row, which is the unit you actually
+       memorise. A lone "chord:" keeps its explicit span, for changes that do
+       not land on bar lines. */
+    /* One keyword, however many names: "chords: G D C E" is a bar each across
+       the span, and "chord: A A" is two bars of A rather than a chord called
+       "A A". A single name is a plain span, and consecutive singles are free to
+       share a row; anything written with several names is a row of its own. */
+    if (event.startsWith("chord:") || event.startsWith("chords:")) {
+      const names = event.slice(event.indexOf(":") + 1).trim().split(/\s+/).filter(Boolean);
+      if (!names.length) continue;
+
+      const d = (t_end - t_start) / names.length;
+      names.forEach((name, k) => chords.push({
+        t_start: t_start + k * d, t_end: t_start + (k + 1) * d, name,
+        group: names.length > 1 ? gid : -1
+      }));
+      if (names.length > 1) gid++;
       continue;
     }
     for (const kind of SECTION_KINDS) {
       if (event === kind || event.startsWith(kind + ":") || event.startsWith(kind + " ")) {
-        sections.push({ t_start, t_end, kind,
-                        label: event.slice(kind.length).replace(/^[\s:]+/, "").trim() });
+        const rest = event.slice(kind.length).replace(/^[\s:]+/, "").trim();
+        const meter = /@(\d+)\s*\/\s*(\d+)/.exec(rest);
+        sections.push({ t_start, t_end, kind, label: rest,
+                        beatsPerBar: meter ? +meter[1] : 4 });
         break;
       }
     }
@@ -1469,37 +1491,46 @@ function updateLyrics(t) {
    cursor can sweep the row linearly in time and still line up with the boxes.
    That is the proportional sizing an off-beat change needs; it comes free once
    the boxes stop being equal quarters of a bar. */
-const CHORD_WIN = 4;
-let chordGroups = [], groupAt = -1;
+const BARS_PER_ROW = 4;
+let chordGroups = [], groupAt = -1, barLen = 2;
 
 /* Chords are grouped once, on load, and the row then holds a whole group at a
    time instead of shuffling along at every change. Groups never straddle a
    section, so what you memorise is "the four that open the chorus" rather than
    an arbitrary window that happened to line up that way. */
 function groupChords() {
+  /* One row is BARS_PER_ROW bars of time — always, for every group. That is
+     what makes the cursor cross at one rate and a short group simply stop
+     early instead of being stretched. Runs are broken to fit rather than
+     counted, because four chords can be four bars or eight. */
+  const beats = sections[0]?.beatsPerBar || 4;
+  barLen = (beatPeriod || BOUNCE) * beats;
+
   chordGroups = [];
   let run = [];
   const flush = () => { if (run.length) chordGroups.push(run); run = []; };
+  const bars = r => (r[r.length - 1].t_end - r[0].t_start) / barLen;
 
   const sectionOf = t => sections.findIndex(s => t >= s.t_start && t < s.t_end);
-  let inSection = -1;
+  let inSection = -1, inGroup = -1;
 
   for (const c of chordLine) {
     const sec = sectionOf(c.t_start);
-    if (sec !== inSection) { flush(); inSection = sec; }
+    const grp = c.group >= 0 ? c.group : -1;
+
+    if (grp !== inGroup || sec !== inSection) { flush(); inGroup = grp; inSection = sec; }
+
+    /* Adding this one would overrun the row, so start a new one first. */
+    if (run.length && bars([...run, c]) > BARS_PER_ROW + .05) flush();
     run.push(c);
-    if (run.length === CHORD_WIN) flush();
+    if (bars(run) >= BARS_PER_ROW - .05) flush();
   }
   flush();
 
-  /* A group of one is a straggler at a section's end; fold it back. */
-  for (let i = chordGroups.length - 1; i > 0; i--)
-    if (chordGroups[i].length === 1 && chordGroups[i - 1].length < CHORD_WIN) {
-      chordGroups[i - 1].push(...chordGroups.splice(i, 1)[0]);
-    }
-
   chordGroups.forEach((g, i) => { g.at = g[0].t_start; g.to = g[g.length - 1].t_end; g.i = i; });
-  spanMax = Math.max(1, ...chordGroups.map(g => g.to - g.at));
+
+  /* Fixed, not the widest group: the row is a ruler, not a container. */
+  spanMax = BARS_PER_ROW * barLen;
 }
 
 function chordBox(c, i) {
