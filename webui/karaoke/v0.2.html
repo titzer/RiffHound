@@ -117,29 +117,35 @@
     cursor: default;
   }
 
-  /* Big three-digit tempo readout, top right; type over it to set the tempo. */
+  /* Big three-digit tempo readout, top right, as the prototype had it: the one
+     number you play to should be legible from where you are standing, not set
+     in the small print beside the clock. It is read off the beat grid rather
+     than typed, so it is a readout and not an input any more, and it goes
+     without a "bpm" beside it — three digits that size, next to a clock that
+     is plainly a clock, are not going to be read as anything else, and the
+     header has better uses for the width.
+     flex: none, or it is the first thing squeezed out when the header gets
+     tight and the timeline, which is flex: 1, takes the room. Tabular figures,
+     or the row twitches as 99 becomes 100. */
   .bpm {
-    margin-left: auto;
+    flex: none;
     display: flex;
     align-items: baseline;
-    gap: 6px;
+    gap: 5px;
     padding: 0 4px;
   }
 
-  .bpm input {
-    width: 3ch;
-    padding: 0;
-    border: 0;
-    background: none;
-    outline: none;
-    text-align: center;
-    font-size: clamp(26px, 3.6vw, 40px);
-    line-height: 1.1;
+  .bpm-num {
+    font-size: clamp(30px, 4.4vw, 48px);
+    line-height: .9;
+    color: var(--fg);
     text-shadow: 0 0 14px var(--fg);
+    font-variant-numeric: tabular-nums;
   }
 
-  .bpm input:focus { background: var(--hot); }
-  .bpm span { font-size: 12px; color: var(--dim); }
+  /* Playing off the record's own speed is worth saying out loud: it is what
+     explains a readout that disagrees with the sleeve. */
+  .bpm-rate { font-size: 12px; color: var(--fg); }
 
   /* ---- settings menu --------------------------------------------------- */
 
@@ -832,7 +838,6 @@
   /* flex: none — otherwise these shrink away when the header gets tight and
      the timeline, which is flex: 1, takes the room. */
   .clock { flex: none; font-size: 12px; color: var(--dim); white-space: nowrap; }
-  #bpmOut { color: var(--fg); }
   .seek { padding: 4px 7px; font-size: 11px; }
 
   /* ---- loader ---------------------------------------------------------- */
@@ -896,7 +901,10 @@
     </div>
     <button class="seek" id="fwd5" title="Forward 5 seconds">+5</button>
     <span class="clock" id="clock">0:00 / 0:00</span>
-    <span class="clock" id="bpmOut"></span>
+    <div class="bpm" title="Tempo — - and = change speed, \ back to the record">
+      <span class="bpm-num" id="bpmOut"></span>
+      <span class="bpm-rate" id="rateOut"></span>
+    </div>
   </header>
 
   <!-- Fallbacks for browsers without the File System Access API. These work
@@ -975,7 +983,11 @@ function parseTimeseries(text) {
   let gid = 0;
 
   for (const rawLine of text.split("\n")) {
-    const ci = rawLine.indexOf("#");
+    /* A '#' only starts a comment at the start of a line or after whitespace.
+       Cutting at the first '#' unconditionally eats every sharp: "chord: F#m7"
+       silently becomes "chord: F", and nothing downstream can tell. Same rule
+       as the C loader in lib/riffdsp/timeseries.cpp. */
+    const ci = rawLine.search(/(^|[ \t])#/);
     const line = (ci >= 0 ? rawLine.slice(0, ci) : rawLine).trim();
     if (!line) continue;
 
@@ -1139,10 +1151,15 @@ const SETTINGS = [
     options: [{ v: "boxes", label: "Boxes", icon: ICO.frameBoxes },
               { v: "pane", label: "Pane", icon: ICO.framePane }] },
   { name: "playhead", scope: "display", group: "chords", label: "Playhead",
-    type: "toggle", def: true, flag: "playhead" }
+    type: "toggle", def: true, flag: "playhead" },
 
-  /* Track settings return with the maps: pitch and speed need a key and a
-     tempo to be relative to, and neither is in the beatmaps yet. */
+  /* Pitch still waits on the maps — transposing needs a key to be relative to,
+     and the beatmaps do not carry one. Speed needs nothing: three quarters of
+     the record's speed is meaningful without knowing what the record's speed
+     was, so it can land now. */
+  { name: "speed", scope: "display", group: "playback", label: "Speed",
+    type: "range", def: 100, min: 50, max: 150, step: 5, scale: 100, reset: 100,
+    format: v => (v / 100).toFixed(2) + "×", apply: () => applyRate() }
 ];
 
 const DEF = Object.fromEntries(SETTINGS.map(d => [d.name, d]));
@@ -1181,7 +1198,7 @@ const menuBtn = $("menuBtn"), panel = $("panel");
 const titleBtn = $("titleBtn"), trackPanel = $("trackPanel");
 const titleText = $("titleText"), titleTags = $("titleTags");
 const timeline = $("timeline"), tlFill = $("tlFill"), tlHead = $("tlHead");
-const clockOut = $("clock"), bpmOut = $("bpmOut");
+const clockOut = $("clock"), bpmOut = $("bpmOut"), rateOut = $("rateOut");
 const header = document.querySelector("header");
 
 const parts = {
@@ -1515,8 +1532,14 @@ function groupChords() {
   let inSection = -1, inGroup = -1;
 
   for (const c of chordLine) {
-    const sec = sectionOf(c.t_start);
     const grp = c.group >= 0 ? c.group : -1;
+    /* Chords written on one line are a row the author already decided on, so
+       the whole run takes the section of its first chord. Sections are marked
+       by ear and land a fraction of a bar off the changes they introduce —
+       reading each chord's own section would let that fraction shear "Em C G D"
+       into "Em" and "C G D" at every boundary. Loose chords still break on a
+       section, which is what keeps "the four that open the chorus" a row. */
+    const sec = grp >= 0 && grp === inGroup ? inSection : sectionOf(c.t_start);
 
     if (grp !== inGroup || sec !== inSection) { flush(); inGroup = grp; inSection = sec; }
 
@@ -1529,8 +1552,14 @@ function groupChords() {
 
   chordGroups.forEach((g, i) => { g.at = g[0].t_start; g.to = g[g.length - 1].t_end; g.i = i; });
 
-  /* Fixed, not the widest group: the row is a ruler, not a container. */
-  spanMax = BARS_PER_ROW * barLen;
+  /* The widest row, not a fixed four bars. Still one ruler for the whole
+     track — every row is the same seconds per pixel, so a two-second chord is
+     the same width wherever it appears — but a song whose rows are all two
+     bars gets a ruler two bars long instead of spending half the screen on a
+     tail that is empty for the entire song. The packing above bounds this to
+     about BARS_PER_ROW, so one long line cannot squash the rest. */
+  spanMax = chordGroups.reduce((w, g) => Math.max(w, g.to - g.at), 0)
+            || BARS_PER_ROW * barLen;
 }
 
 function chordBox(c, i) {
@@ -1594,7 +1623,13 @@ function bounceY(t) {
 /* ── audio ──────────────────────────────────────────────────────────────
    The element is the clock. Everything else reads it. */
 function attachAudio(url) {
-  if (audio) { audio.pause(); audio.src = ""; }
+  /* Tearing the old element down must not look like a failure. Assigning
+     src = "" makes the browser resolve the empty string against the page and
+     try to decode the HTML as media, which fires `error` a task later — by
+     which time the handler below would blame the track just loaded, so every
+     reload ended in "could not play" over a track that plays fine. Dropping
+     the attribute and re-running load() abandons the resource silently. */
+  if (audio) { audio.pause(); audio.removeAttribute("src"); audio.load(); }
   audio = null;
   player.time = 0;
   player.duration = 0;
@@ -1602,18 +1637,44 @@ function attachAudio(url) {
 
   if (!url) return;
 
-  audio = new Audio(url);
-  audio.preload = "auto";
-  audio.addEventListener("loadedmetadata", () => {
-    player.duration = audio.duration || 0;
+  const el = audio = new Audio(url);
+  el.preload = "auto";
+  applyRate();                     /* a new element starts at 1× otherwise */
+  /* A discarded element can still report pause or error after the swap, and
+     what it has to say is about a track no longer on screen. */
+  const live = fn => () => { if (el === audio) fn(); };
+  el.addEventListener("loadedmetadata", live(() => {
+    player.duration = el.duration || 0;
     drawTransport();
-  });
-  audio.addEventListener("play", () => transport(true));
-  audio.addEventListener("pause", () => transport(false));
-  audio.addEventListener("ended", () => transport(false));
-  audio.addEventListener("error", () => {
+  }));
+  el.addEventListener("play", live(() => transport(true)));
+  el.addEventListener("pause", live(() => transport(false)));
+  el.addEventListener("ended", live(() => transport(false)));
+  el.addEventListener("error", live(() => {
     titleText.textContent = "⚠ could not play " + track.title;
-  });
+  }));
+}
+
+/* Speed without pitch.
+   Web Audio's playbackRate is a resampler: it plays the same samples on a
+   different clock, so 0.75× also drops the track five semitones and you end up
+   practising against an instrument that is out of tune with your own. The
+   media element's own stretcher is the one that does what practising slowly
+   means — preservesPitch keeps the key and stretches time — so the element
+   stays the clock and this is a property on it rather than a graph.
+   It is the default in every current browser; set it anyway, because a browser
+   that has quietly turned it off would be silently transposing the track. */
+const rate = () => num("speed");
+
+function applyRate() {
+  /* Before the early return: the readout answers for the speed whether or not
+     there is a track loaded to apply it to. */
+  drawTransport();
+  if (!audio) return;
+  audio.preservesPitch = true;
+  if ("mozPreservesPitch" in audio) audio.mozPreservesPitch = true;
+  if ("webkitPreservesPitch" in audio) audio.webkitPreservesPitch = true;
+  audio.playbackRate = rate();
 }
 
 function seek(to) {
@@ -1641,9 +1702,13 @@ function drawTransport() {
   tlHead.style.left = (f * 100) + "%";
   clockOut.textContent = `${fmtTime(player.time)} / ${fmtTime(d)}`;
 
-  /* Tempo is read off the grid rather than declared, so it tracks the take. */
+  /* Tempo is read off the grid rather than declared, so it tracks the take —
+     and then off the speed as well, because what the readout is for is the
+     count you are playing to, not the one on the record. */
+  const r = rate();
   const bpm = bpmAt(player.time);
-  bpmOut.textContent = bpm ? bpm + " bpm" : "";
+  bpmOut.textContent = bpm ? Math.round(bpm * r) : "";
+  rateOut.textContent = r === 1 ? "" : "×" + String(+r.toFixed(2));
 }
 
 /* ── the frame ──────────────────────────────────────────────────────────── */
@@ -1812,8 +1877,11 @@ function fuzzy(q, s) {
 }
 
 /* Returns what could be read: a reload needs to tell "the file has no lyrics"
-   apart from "the file could not be read", which look identical on screen. */
-async function openTrack(entry) {
+   apart from "the file could not be read", which look identical on screen.
+   opts.reload marks the one caller that is re-reading the track already up,
+   which keeps the few things that belong to the practice session rather than
+   to the track — see the speed below. */
+async function openTrack(entry, opts = {}) {
   const getFile = async h => (h && "getFile" in h ? await h.getFile() : h);
   const ok = { text: true, media: true };
 
@@ -1845,6 +1913,12 @@ async function openTrack(entry) {
   titleText.textContent = track.title;
   titleTags.innerHTML = lyricLines.length ? "" : " - no lyrics";
 
+  /* A new track starts at the record's own speed. Half time belongs to the
+     passage you were working on, not to the library, and inheriting last
+     night's 0.6× is the kind of thing you only notice a verse in. A reload is
+     the same track mid-practice, so it keeps the speed you set. */
+  if (!opts.reload) command({ cmd: "set", name: "speed", value: DEF.speed.def });
+
   lastLine = -2;
   attachAudio(url);
   renderResults(searchBox.value);
@@ -1869,7 +1943,7 @@ async function reloadTrack() {
   const entry = library().find(e => e.id === track.id);
   if (!entry) { renderResults(searchBox ? searchBox.value : ""); return "gone"; }
 
-  const ok = await openTrack(entry);
+  const ok = await openTrack(entry, { reload: true });
 
   /* seek() clamps against player.duration, and that stays 0 until the fresh
      audio reports its metadata — seeking any earlier lands at bar one. Wait
@@ -2004,6 +2078,7 @@ function group(title, id, defs) {
 function buildPanel() {
   const of = g => SETTINGS.filter(d => d.group === g);
   panel.replaceChildren(
+    group("Playback", null, of("playback")),
     group("Display", null, of("common")),
     group("Lyrics", "lyricsGroup", of("lyrics")),
     group("Chords", "chordsGroup", of("chords")));
@@ -2233,6 +2308,12 @@ addEventListener("keydown", e => {
   else if (e.key.toLowerCase() === "c")
     command({ cmd: "set", name: "chordPanel", value: !state.chordPanel });
   else if (e.key.toLowerCase() === "s") togglePane();
+  /* The shifted faces of the same two keys count too: reaching for "faster"
+     and landing on + is the same intent, and the guard above has already let
+     shifted keys through. */
+  else if (e.key === "-" || e.key === "_") nudgeSpeed(-1);
+  else if (e.key === "=" || e.key === "+") nudgeSpeed(1);
+  else if (e.key === "\\") command({ cmd: "set", name: "speed", value: DEF.speed.reset });
   else if (e.key === "Escape") { openMenu(false); openTrackPanel(false); }
   else return;
   e.preventDefault();
@@ -2246,6 +2327,11 @@ function cycleZoom() {
   const i = Math.round((state.zoom - d.min) / inc);
   command({ cmd: "set", name: "zoom", value: d.min + mod(i + 1, steps) * inc });
 }
+
+/* Speed moves in the slider's own step, so the keys and the slider can never
+   land on values the other cannot reach. set() clamps to the range. */
+const nudgeSpeed = dir =>
+  command({ cmd: "set", name: "speed", value: state.speed + dir * DEF.speed.step });
 
 /* The pane is a choice, not a switch, so toggling it has to remember which
    kind of pane you had. */
