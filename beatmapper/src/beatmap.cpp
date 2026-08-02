@@ -261,6 +261,29 @@ void beatmap_commit(BeatMap* bm) {
         bm->beats[i].interp = false;
 }
 
+// --- beat coordinates ----------------------------------------------------
+
+double beatmap_beat_pos(const BeatMap* bm, double t) {
+    if (bm->count < 2) return 0.0;
+    int lo = 0, hi = bm->count;
+    while (lo < hi) { int m = (lo + hi) / 2; if (bm->beats[m].time < t) lo = m + 1; else hi = m; }
+    int i = lo - 1;
+    if (i < 0)             i = 0;
+    if (i > bm->count - 2) i = bm->count - 2;
+    double d = bm->beats[i+1].time - bm->beats[i].time;
+    if (d <= 0.0) return (double)i;
+    return (double)i + (t - bm->beats[i].time) / d;
+}
+
+double beatmap_time_at(const BeatMap* bm, double beat) {
+    if (bm->count < 2) return 0.0;
+    int i = (int)floor(beat);
+    if (i < 0)             i = 0;
+    if (i > bm->count - 2) i = bm->count - 2;
+    double d = bm->beats[i+1].time - bm->beats[i].time;
+    return bm->beats[i].time + (beat - (double)i) * d;
+}
+
 // --- selection helpers ---------------------------------------------------
 
 void beatmap_clear_selection(BeatMap* bm) {

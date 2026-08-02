@@ -44,6 +44,17 @@ static double snap_to_beat(double t, const BeatMap* bm,
     return best;
 }
 
+// Snap a paste anchor to the nearest beat when it lands within `frac` of one.
+// snap_to_beat()'s pixel tolerance means nothing for a keyboard paste, and an
+// anchor deliberately placed mid-beat (beyond frac) is still honoured.
+static double snap_anchor_to_beat(double t, const BeatMap* bm, double frac = 0.35) {
+    if (bm->count < 2) return t;
+    double b  = beatmap_beat_pos(bm, t);
+    double nb = floor(b + 0.5);
+    if (fabs(b - nb) > frac) return t;
+    return beatmap_time_at(bm, nb);
+}
+
 static double nice_interval(double span, int target_major_ticks, int* minor_div) {
     static const double candidates[] = {
         0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 1800, 3600
@@ -719,8 +730,18 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
     static double s_misc_hdrag_t0     = 0.0;   // pre-drag bounds, to detect no-ops
     static double s_misc_hdrag_t1     = 0.0;
     static int    s_misc_selected     = -1;
+    static bool   s_misc_rect_sel     = false;  // shift+drag rubber-band select
+    static float  s_misc_rect_x0      = 0.0f;
+    static bool   s_misc_body_drag    = false;  // translate the selection
+    static double s_misc_body_grab    = 0.0;    // cursor_t - t_start at grab
+    static double s_misc_body_t0      = 0.0;    // grabbed entry's t_start at grab
+    static double s_misc_body_delta   = 0.0;    // applied to the whole selection
+    static int    s_misc_sync         = -1;     // last value stamped into the map
+    // undo_pop() clears selected_idx behind our back; adopt an outside change
+    // instead of stamping a stale focus index back over it.
+    if (miscmap->selected_idx != s_misc_sync) s_misc_selected = miscmap->selected_idx;
     if (s_misc_selected >= miscmap->count) s_misc_selected = -1;
-    miscmap->selected_idx = s_misc_selected;  // keep struct in sync
+    miscmap->selected_idx = s_misc_sync = s_misc_selected;  // keep struct in sync
     static int    s_misc_inline_edit  = -1;     // misc index being inline-edited
     static bool   s_rect_sel        = false;  // rect selection in progress
     static float  s_rect_x0         = 0.0f, s_rect_y0 = 0.0f;
@@ -771,8 +792,11 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
             s_lyr_selected    = -1;
             s_lyr_inline_edit = -1;
         }
-        // Any click outside the misc strip clears misc selection and inline edit.
+        // Any click outside the misc strip clears misc selection and inline
+        // edit.  The clipboard is unaffected, so copy-here / seek / paste-there
+        // survives the seek click.
         if (!s_drag_in_misc) {
+            miscmap_clear_selection(miscmap);
             s_misc_selected    = -1;
             s_misc_inline_edit = -1;
         }
@@ -977,18 +1001,16 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
                     s_lyr_hdrag_t1      = lyricmap->lyrics[hit].t_end;
                     undo_push(undo, nullptr, lyricmap);
                 } else {
-                    // Body click: if already selected, enter inline edit on double-click
-                    // or second click; otherwise just select.
-                    bool already_sel = (s_lyr_selected == hit);
+                    // Body click: arm a translate drag.  A click that never
+                    // moves is a no-op on release, so arming costs nothing and
+                    // a lyric stays draggable after it has been selected.
                     s_lyr_hdrag             = false;
-                    s_lyr_body_drag         = !already_sel;  // only drag if not already selected
-                    s_lyr_body_drag_idx     = already_sel ? -1 : hit;
-                    if (!already_sel) {
-                        s_lyr_body_drag_dur = lyricmap->lyrics[hit].t_end
+                    s_lyr_body_drag         = true;
+                    s_lyr_body_drag_idx     = hit;
+                    s_lyr_body_drag_dur     = lyricmap->lyrics[hit].t_end
                                              - lyricmap->lyrics[hit].t_start;
-                        s_lyr_body_drag_dt  = t_raw - lyricmap->lyrics[hit].t_start;
-                        s_lyr_body_new_t0   = lyricmap->lyrics[hit].t_start;
-                    }
+                    s_lyr_body_drag_dt      = t_raw - lyricmap->lyrics[hit].t_start;
+                    s_lyr_body_new_t0       = lyricmap->lyrics[hit].t_start;
                     if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
                         // Double-click: enter inline text edit
                         s_lyr_inline_edit = hit;
@@ -1123,27 +1145,65 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
                 if (mx > mx0 && mx < mx1)          { hit = i; hit_end = 2; break; }
             }
             if (hit >= 0) {
-                s_misc_selected = hit;
-                s_misc_drag     = false;
-                if (hit_end < 2) {
-                    s_misc_hdrag     = true;
-                    s_misc_hdrag_idx = hit;
-                    s_misc_hdrag_end = hit_end;
-                    s_misc_hdrag_t0  = miscmap->entries[hit].t_start;
-                    s_misc_hdrag_t1  = miscmap->entries[hit].t_end;
-                    undo_push(undo, nullptr, nullptr, nullptr, miscmap);
+                s_misc_drag = false;
+                if (io.KeyShift) {
+                    // Shift+click toggles group membership -- no edge drag, no
+                    // inline edit, so a group can be assembled click by click.
+                    bool on = !miscmap->entries[hit].selected;
+                    miscmap->entries[hit].selected = on;
+                    s_misc_selected    = on ? hit : -1;
+                    s_misc_inline_edit = -1;
+                    s_misc_hdrag       = false;
+                    s_misc_body_drag   = false;
                 } else {
-                    s_misc_hdrag = false;
-                    if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left))
-                        s_misc_inline_edit = hit;
+                    // Clicking a member keeps the group (so it can be copied
+                    // right after); clicking a non-member replaces it.
+                    if (!miscmap->entries[hit].selected) {
+                        miscmap_clear_selection(miscmap);
+                        miscmap->entries[hit].selected = true;
+                    }
+                    s_misc_selected = hit;
+                    if (hit_end < 2) {
+                        s_misc_hdrag     = true;
+                        s_misc_hdrag_idx = hit;
+                        s_misc_hdrag_end = hit_end;
+                        s_misc_hdrag_t0  = miscmap->entries[hit].t_start;
+                        s_misc_hdrag_t1  = miscmap->entries[hit].t_end;
+                        s_misc_body_drag = false;
+                        undo_push(undo, nullptr, nullptr, nullptr, miscmap);
+                    } else {
+                        // Body: arm a translate drag of the whole selection.
+                        // A click that never moves is a no-op on release.
+                        s_misc_hdrag      = false;
+                        s_misc_body_drag  = true;
+                        s_misc_body_t0    = miscmap->entries[hit].t_start;
+                        s_misc_body_grab  = t_raw - s_misc_body_t0;
+                        s_misc_body_delta = 0.0;
+                        if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
+                            s_misc_inline_edit = hit;
+                            s_misc_body_drag   = false;
+                        }
+                    }
                 }
+            } else if (io.KeyShift) {
+                // Shift+drag over empty strip rubber-bands a group instead of
+                // creating an annotation.
+                s_misc_rect_sel    = true;
+                s_misc_rect_x0     = io.MousePos.x;
+                s_misc_selected    = -1;
+                s_misc_inline_edit = -1;
+                s_misc_drag        = false;
+                s_misc_hdrag       = false;
+                s_misc_body_drag   = false;
             } else {
+                miscmap_clear_selection(miscmap);
                 s_misc_selected    = -1;
                 s_misc_inline_edit = -1;
                 s_misc_drag        = true;
                 s_misc_drag_t0     = t_snap;
                 s_misc_drag_t1     = t_snap;
                 s_misc_hdrag       = false;
+                s_misc_body_drag   = false;
             }
         }
     }
@@ -1311,7 +1371,10 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
         double t_cursor = (la_w > 0 && span > 0)
             ? editor->view_start + (double)(io.MousePos.x - la_x) / la_w * span
             : editor->view_start;
-        double new_t0 = t_cursor - s_lyr_body_drag_dt;
+        // Snap the leading edge, as the resize drags do -- a lyric that lands
+        // a few ms off its beat reads as sloppy in every client downstream.
+        double new_t0 = snap_to_beat(t_cursor - s_lyr_body_drag_dt, beatmap,
+                                      editor->view_start, editor->view_end, la_w);
         if (new_t0 < 0.0) new_t0 = 0.0;
         if (new_t0 + s_lyr_body_drag_dur > editor->duration)
             new_t0 = editor->duration - s_lyr_body_drag_dur;
@@ -1363,6 +1426,46 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
                                        editor->view_start, editor->view_end, misc_w);
     }
 
+    // Misc body drag: translate the whole selection while the mouse is held.
+    // The map itself is untouched until release -- moving in place would
+    // re-sort the array under the indices this drag is holding.
+    if (s_misc_body_drag && s_drag_in_misc &&
+        ImGui::IsMouseDragging(ImGuiMouseButton_Left)) {
+        double span     = editor->view_end - editor->view_start;
+        double t_cursor = (misc_w > 0 && span > 0)
+            ? editor->view_start + (double)(io.MousePos.x - misc_x) / misc_w * span
+            : editor->view_start;
+        double d = snap_to_beat(t_cursor - s_misc_body_grab, beatmap,
+                                 editor->view_start, editor->view_end, misc_w)
+                   - s_misc_body_t0;
+        // Clamp so no member of the group is dragged off the track.
+        double lo = 0.0, hi = 0.0;
+        bool   any = false;
+        for (int i = 0; i < miscmap->count; i++) {
+            if (!miscmap->entries[i].selected) continue;
+            if (!any || miscmap->entries[i].t_start < lo) lo = miscmap->entries[i].t_start;
+            if (!any || miscmap->entries[i].t_end   > hi) hi = miscmap->entries[i].t_end;
+            any = true;
+        }
+        if (any) {
+            if (lo + d < 0.0)              d = -lo;
+            if (hi + d > editor->duration) d = editor->duration - hi;
+        }
+        s_misc_body_delta = d;
+    }
+
+    // Misc body drag release: commit the move and re-sort
+    if (s_misc_body_drag && !ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+        if (fabs(s_misc_body_delta) > 1e-6 && miscmap_selected_count(miscmap) > 0) {
+            undo_push(undo, nullptr, nullptr, nullptr, miscmap);
+            int focus = s_misc_selected;
+            miscmap_move_selection(miscmap, s_misc_body_delta, &focus);
+            s_misc_selected = focus;
+        }
+        s_misc_body_drag  = false;
+        s_misc_body_delta = 0.0;
+    }
+
     // Misc handle drag: resize selected annotation
     if (s_misc_hdrag && ImGui::IsMouseDragging(ImGuiMouseButton_Left)) {
         if (s_misc_hdrag_idx >= 0 && s_misc_hdrag_idx < miscmap->count) {
@@ -1389,6 +1492,7 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
             undo_push(undo, nullptr, nullptr, nullptr, miscmap);
             int idx = miscmap_add(miscmap, pt0, pt1, "");
             if (idx >= 0) {
+                miscmap->entries[idx].selected = true;
                 s_misc_selected    = idx;
                 s_misc_inline_edit = idx;  // immediately enter text editing
             } else {
@@ -1410,14 +1514,67 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
         s_misc_hdrag_idx = -1;
     }
 
-    // Delete key: remove selected misc annotation
+    // Misc rubber-band release: everything overlapping the swept x range joins
+    // the selection (shift is held, so it adds rather than replaces).
+    if (s_misc_rect_sel && !ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+        float rx0 = s_misc_rect_x0 < io.MousePos.x ? s_misc_rect_x0 : io.MousePos.x;
+        float rx1 = s_misc_rect_x0 < io.MousePos.x ? io.MousePos.x : s_misc_rect_x0;
+        for (int i = 0; i < miscmap->count; i++) {
+            float mx0 = time_to_x(miscmap->entries[i].t_start,
+                                   editor->view_start, editor->view_end, misc_x, misc_w);
+            float mx1 = time_to_x(miscmap->entries[i].t_end,
+                                   editor->view_start, editor->view_end, misc_x, misc_w);
+            if (mx1 >= rx0 && mx0 <= rx1) miscmap->entries[i].selected = true;
+        }
+        s_misc_rect_sel = false;
+    }
+
+    // Delete key: remove the whole misc selection
     if (!ImGui::IsAnyItemActive() &&
             (ImGui::IsKeyPressed(ImGuiKey_Delete) || ImGui::IsKeyPressed(ImGuiKey_Backspace))) {
-        if (s_misc_selected >= 0 && s_misc_selected < miscmap->count) {
+        if (s_misc_selected >= 0 && s_misc_selected < miscmap->count)
+            miscmap->entries[s_misc_selected].selected = true;
+        if (miscmap_selected_count(miscmap) > 0) {
             undo_push(undo, nullptr, nullptr, nullptr, miscmap);
-            miscmap_remove(miscmap, s_misc_selected);
+            for (int i = miscmap->count - 1; i >= 0; i--)
+                if (miscmap->entries[i].selected) miscmap_remove(miscmap, i);
             s_misc_selected    = -1;
             s_misc_inline_edit = -1;
+        }
+    }
+
+    // Ctrl/Cmd+C / X / V: copy, cut and paste a group of misc annotations.
+    // Paste lands the group's first annotation at the playhead, snapped to the
+    // nearest beat, with the rest of the group at their original beat offsets.
+    if (show_misc && !ImGui::IsAnyItemActive() && s_misc_inline_edit < 0 &&
+            (io.KeyCtrl || io.KeySuper)) {
+        bool want_copy  = ImGui::IsKeyPressed(ImGuiKey_C);
+        bool want_cut   = ImGui::IsKeyPressed(ImGuiKey_X);
+        bool want_paste = ImGui::IsKeyPressed(ImGuiKey_V);
+
+        if (want_copy || want_cut) {
+            // The focused entry counts as the selection when nothing else is.
+            if (s_misc_selected >= 0 && s_misc_selected < miscmap->count)
+                miscmap->entries[s_misc_selected].selected = true;
+            if (miscmap_selected_count(miscmap) > 0) {
+                miscmap_copy_selection(miscmap, beatmap);
+                if (want_cut) {
+                    undo_push(undo, nullptr, nullptr, nullptr, miscmap);
+                    for (int i = miscmap->count - 1; i >= 0; i--)
+                        if (miscmap->entries[i].selected) miscmap_remove(miscmap, i);
+                    s_misc_selected    = -1;
+                    s_misc_inline_edit = -1;
+                }
+            }
+        } else if (want_paste && miscmap_clipboard_count() > 0) {
+            double t_anchor = snap_anchor_to_beat(audio_get_position(audio), beatmap);
+            undo_push(undo, nullptr, nullptr, nullptr, miscmap);
+            if (miscmap_paste(miscmap, beatmap, t_anchor) > 0) {
+                s_misc_selected    = -1;   // the pasted group is selected, no focus
+                s_misc_inline_edit = -1;
+            } else {
+                undo_drop_last(undo);
+            }
         }
     }
 
@@ -2650,8 +2807,21 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
         dl->AddRect(ImVec2(misc_x, misc_y),
                     ImVec2(misc_x + misc_w, misc_y + MISC_STRIP_H),
                     IM_COL32(60, 55, 80, 255));
+        // Header carries the selection and clipboard counts -- otherwise a
+        // group cut is invisible until something is pasted.
+        char misc_hdr[64] = "Misc";
+        {
+            int nsel = miscmap_selected_count(miscmap);
+            int nclip = miscmap_clipboard_count();
+            if (nsel > 1 && nclip > 0)
+                snprintf(misc_hdr, sizeof(misc_hdr), "Misc  %d sel  %d copied", nsel, nclip);
+            else if (nsel > 1)
+                snprintf(misc_hdr, sizeof(misc_hdr), "Misc  %d sel", nsel);
+            else if (nclip > 0)
+                snprintf(misc_hdr, sizeof(misc_hdr), "Misc  %d copied", nclip);
+        }
         dl->AddText(ImVec2(cx + 4.0f, misc_y + 3.0f),
-                    IM_COL32(120, 110, 150, 160), "Misc");
+                    IM_COL32(120, 110, 150, 160), misc_hdr);
 
         dl->PushClipRect(ImVec2(misc_x, misc_y),
                          ImVec2(misc_x + misc_w, misc_y + MISC_STRIP_H), true);
@@ -2659,12 +2829,16 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
         float my0 = misc_y + MISC_PAD, my1 = misc_y + MISC_STRIP_H - MISC_PAD;
         for (int i = 0; i < miscmap->count; i++) {
             const MiscAnnotation& ma = miscmap->entries[i];
-            float mx0 = time_to_x(ma.t_start, editor->view_start, editor->view_end,
+            // A body drag is only virtual until release, so draw the moving
+            // group at its dragged position.
+            double vd = (s_misc_body_drag && ma.selected) ? s_misc_body_delta : 0.0;
+            float mx0 = time_to_x(ma.t_start + vd, editor->view_start, editor->view_end,
                                    misc_x, misc_w);
-            float mx1 = time_to_x(ma.t_end,   editor->view_start, editor->view_end,
+            float mx1 = time_to_x(ma.t_end   + vd, editor->view_start, editor->view_end,
                                    misc_x, misc_w);
             if (mx1 <= misc_x || mx0 >= misc_x + misc_w) continue;
-            bool sel = (i == s_misc_selected);
+            bool sel   = ma.selected || (i == s_misc_selected);
+            bool focus = (i == s_misc_selected);
             dl->AddRectFilled(ImVec2(mx0, my0), ImVec2(mx1, my1),
                               sel ? IM_COL32(90, 55, 130, 180) : IM_COL32(65, 40, 95, 140));
             dl->AddRect(ImVec2(mx0, my0), ImVec2(mx1, my1),
@@ -2683,8 +2857,9 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
                     dl->PopClipRect();
                 }
             }
-            // Resize handles for selected annotation
-            if (sel) {
+            // Resize handles for the focused annotation only -- an edge drag
+            // acts on one entry, so the rest of the group must not offer them.
+            if (focus) {
                 float hmy = my0 + (my1 - my0) * 0.5f;
                 dl->AddRectFilled(ImVec2(mx0 - 3.0f, hmy - 7.0f),
                                   ImVec2(mx0 + 3.0f, hmy + 7.0f),
@@ -2706,6 +2881,15 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
                 dl->AddRect(ImVec2(dx0, my0), ImVec2(dx1, my1),
                             IM_COL32(170, 120, 220, 200), 0.0f, 0, 1.5f);
             }
+        }
+        // Rubber-band select preview
+        if (s_misc_rect_sel) {
+            float rx0 = s_misc_rect_x0 < io.MousePos.x ? s_misc_rect_x0 : io.MousePos.x;
+            float rx1 = s_misc_rect_x0 < io.MousePos.x ? io.MousePos.x : s_misc_rect_x0;
+            dl->AddRectFilled(ImVec2(rx0, misc_y), ImVec2(rx1, misc_y + MISC_STRIP_H),
+                              IM_COL32(160, 140, 220, 40));
+            dl->AddRect(ImVec2(rx0, misc_y), ImVec2(rx1, misc_y + MISC_STRIP_H),
+                        IM_COL32(180, 160, 240, 160));
         }
         dl->PopClipRect();
     }  // end show_misc_strip

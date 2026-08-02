@@ -1696,6 +1696,7 @@ function command(msg) {
     return;
   }
   if (cmd === "track") return openTrackByKey(msg.key);
+  if (cmd === "reload") return reloadTrack();
 }
 
 const net = {
@@ -1810,13 +1811,16 @@ function fuzzy(q, s) {
   return qi === q.length;
 }
 
+/* Returns what could be read: a reload needs to tell "the file has no lyrics"
+   apart from "the file could not be read", which look identical on screen. */
 async function openTrack(entry) {
   const getFile = async h => (h && "getFile" in h ? await h.getFile() : h);
+  const ok = { text: true, media: true };
 
   let text = "";
   if (entry.txt) {
     try { text = await (await getFile(entry.txt.handle || entry.txt.file || entry.txt)).text(); }
-    catch (e) { console.warn("lyrics:", e); }
+    catch (e) { console.warn("lyrics:", e); ok.text = false; }
   }
 
   const parsed = parseTimeseries(text);
@@ -1835,7 +1839,7 @@ async function openTrack(entry) {
   try {
     const file = await getFile(entry.media.handle || entry.media.file || entry.media);
     url = audioUrl = URL.createObjectURL(file);
-  } catch (e) { console.warn("media:", e); }
+  } catch (e) { console.warn("media:", e); ok.media = false; }
 
   track = { id: entry.id, title: entry.title };
   titleText.textContent = track.title;
@@ -1845,6 +1849,41 @@ async function openTrack(entry) {
   attachAudio(url);
   renderResults(searchBox.value);
   layout();
+  return ok;
+}
+
+/* Re-read the current track from disk. The beatmapper writes annotations while
+   this page is open, so edit-and-hear is the loop that matters; the playhead
+   and the playing state survive a reload, because being sent back to bar one
+   every time would make it useless mid-practice. */
+async function reloadTrack() {
+  if (!track.id) return "no track";
+
+  const at = player.time, was = player.playing;
+  if (was) command({ cmd: "stop" });
+
+  /* Re-enumerate first: a .txt written since the folder was opened is not in
+     the cached listing, so a track can gain annotations between reloads. */
+  await refreshDirs();
+  renderDirs();
+  const entry = library().find(e => e.id === track.id);
+  if (!entry) { renderResults(searchBox ? searchBox.value : ""); return "gone"; }
+
+  const ok = await openTrack(entry);
+
+  /* seek() clamps against player.duration, and that stays 0 until the fresh
+     audio reports its metadata — seeking any earlier lands at bar one. Wait
+     for it, but never longer than a few seconds: a file that will not decode
+     must not leave the button stuck. */
+  if (audio && !player.duration) await new Promise(done => {
+    audio.addEventListener("loadedmetadata", done, { once: true });
+    audio.addEventListener("error", done, { once: true });
+    setTimeout(done, 4000);
+  });
+  if (at > 0) seek(at);
+  if (was) command({ cmd: "play" });
+
+  return ok.text && ok.media ? "ok" : "unreadable";
 }
 
 const openTrackByKey = key => {
@@ -1977,7 +2016,7 @@ function buildPanel() {
 
 
 /* ── the load dialog ────────────────────────────────────────────────────── */
-let searchBox = null, results = null, dirList = null;
+let searchBox = null, results = null, dirList = null, reloadBtn = null;
 
 function buildTrackPanel() {
   const row = document.createElement("div");
@@ -2000,7 +2039,29 @@ function buildTrackPanel() {
   const fileBtn = document.createElement("button");
   fileBtn.textContent = "Open files…";
   fileBtn.onclick = addFiles;
-  sources.append(dirBtn, fileBtn);
+
+  reloadBtn = document.createElement("button");
+  reloadBtn.textContent = "Reload";
+  reloadBtn.title = "Re-read this track's audio and annotations from disk";
+  reloadBtn.onclick = async () => {
+    const label = "Reload";
+    reloadBtn.dataset.busy = "1";        /* openTrack re-renders and would re-enable it */
+    reloadBtn.disabled = true;
+    reloadBtn.textContent = "Reading…";
+    /* "Could not read" is mostly the picked-files path: a file chosen through
+       the plain input is a snapshot the browser refuses to re-read once it has
+       changed on disk. Better to say so than to show minutes-old annotations
+       as though they were fresh. */
+    const r = await reloadTrack();
+    reloadBtn.textContent = { ok: "Reloaded ✓", gone: "Not on disk",
+                              unreadable: "Could not read" }[r] || label;
+    setTimeout(() => {
+      reloadBtn.textContent = label;
+      delete reloadBtn.dataset.busy;
+      reloadBtn.disabled = !track.id;
+    }, 1400);
+  };
+  sources.append(dirBtn, fileBtn, reloadBtn);
 
   dirList = document.createElement("div");
   dirList.className = "dirs";
@@ -2013,6 +2074,7 @@ function buildTrackPanel() {
 
 function renderResults(query) {
   const q = String(query || "").trim();
+  if (reloadBtn) reloadBtn.disabled = !track.id || reloadBtn.dataset.busy === "1";
   const rows = library()
     .filter(e => fuzzy(q, e.title) || fuzzy(q, e.source))
     .sort((a, b) => (store.stats[b.id]?.last || 0) - (store.stats[a.id]?.last || 0))

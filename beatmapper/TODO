@@ -15,6 +15,15 @@
   - insert measure(s) 4,8,12 beats
 - Chord progressions per section
   - Simple chord change cue?
+  - DONE: misc annotations select as a group (shift+click, shift+drag) and
+    cut/copy/paste with Ctrl+X/C/V; paste anchors the group at the playhead
+    (snapped to the nearest beat) and carries beat offsets, not seconds, so a
+    verse copied onto a drifting live take still lands on its beats
+  - DONE: lyric and misc blocks drag in time (edges still resize); a misc drag
+    moves the whole selected group.  Lyric body drag had never worked -- its
+    arming condition compared the selection to the entry it had just selected
+  - next: the same for whole sections, and "chords from the first verse" as a
+    reference rather than a copy
 - Tool assist using audio analysis:
   - lyric find / align: analyze audio to find vocals, line up to lyrics
 - Lyric mode: larger, higher resolution font

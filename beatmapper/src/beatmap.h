@@ -46,6 +46,16 @@ void beatmap_commit(BeatMap* bm);
 // e.g. /path/to/track.mp3  →  /path/to/track.txt
 void beatmap_path_for_audio(const char* audio_path, char* out, int out_size);
 
+// --- beat coordinates ----------------------------------------------------
+// A fractional beat index for a time, and its inverse, by linear interpolation
+// between neighbouring beats; outside the map both extrapolate with the
+// nearest interval, and they are exact inverses of each other.  Copying
+// material from one verse to the next only lands correctly if its offsets
+// travel in beats: a hand-tapped map of a live recording drifts, so the same
+// offsets in seconds do not line up.  Both return 0 for a map of < 2 beats.
+double beatmap_beat_pos(const BeatMap* bm, double t);
+double beatmap_time_at (const BeatMap* bm, double beat);
+
 // --- selection helpers ---------------------------------------------------
 
 void   beatmap_clear_selection(BeatMap* bm);

@@ -49,6 +49,13 @@ static const HelpRow s_rows[] = {
     { "Double-click section", "Set the section as the loop region" },
     { "Drag lyric strip",     "Create a lyric; double-click to edit its text" },
     { "Drag misc strip",      "Create a free-text annotation" },
+    { "Drag a lyric / misc",  "Move it in time; drag its edges to resize" },
+    { "Drag a misc group",    "Moves every selected annotation together" },
+    { "Shift+click misc",     "Add / remove one annotation from the selection" },
+    { "Shift+drag misc",      "Rubber-band select a group of annotations" },
+    { "Ctrl+C / Ctrl+X",      "Copy / cut the selected misc annotations" },
+    { "Ctrl+V",               "Paste them at the playhead, snapped to the beat" },
+    { "Delete",               "Remove the selected misc annotations" },
 };
 
 void ui_help_render(EditorState* editor) {
