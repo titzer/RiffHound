@@ -131,9 +131,16 @@ bool beatmap_load(BeatMap* bm, SectionMap* sm, LyricMap* lm, MiscMap* mm, const 
 
     char line[512];
     while (fgets(line, sizeof(line), f)) {
-        // Strip inline comments
-        char* comment = strchr(line, '#');
-        if (comment) *comment = '\0';
+        // Strip inline comments.  A '#' only starts one at the start of a line
+        // or after whitespace: cutting at the first '#' unconditionally eats
+        // every sharp, turning "chord: F#m7" into "chord: F" with nothing
+        // downstream able to tell.  Same rule as lib/riffdsp/timeseries.cpp.
+        for (char* c = line; *c; c++) {
+            if (*c == '#' && (c == line || c[-1] == ' ' || c[-1] == '\t')) {
+                *c = '\0';
+                break;
+            }
+        }
 
         char* p = line;
         while (*p == ' ' || *p == '\t') p++;

@@ -1,5 +1,6 @@
 #include "miscmap.h"
 #include "beatmap.h"
+#include <math.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -22,6 +23,8 @@ void miscmap_clear(MiscMap* mm) {
     mm->count        = 0;
     mm->dirty        = false;
     mm->selected_idx = -1;
+    // The annotations a run was tiling against are gone with the old track.
+    miscmap_paste_chain_reset();
 }
 
 int miscmap_add(MiscMap* mm, double t_start, double t_end, const char* text) {
@@ -129,6 +132,7 @@ int miscmap_clipboard_count() { return s_clip_count; }
 int miscmap_copy_selection(const MiscMap* mm, const BeatMap* bm) {
     if (miscmap_selected_count(mm) == 0) return 0;  // keep what is already held
 
+    miscmap_paste_chain_reset();  // a new clipboard starts a new run
     s_clip_count = 0;
     s_clip_beats = (bm && bm->count >= 2);
     double t0 = 0.0, b0 = 0.0;
@@ -172,6 +176,57 @@ int miscmap_paste(MiscMap* mm, const BeatMap* bm, double t_anchor) {
         if (idx < 0) break;
         mm->entries[idx].selected = true;
         pasted++;
+    }
+    return pasted;
+}
+
+// --- paste chaining -------------------------------------------------------
+
+static bool   s_chain_live = false;  // the next paste continues a run
+static double s_chain_from = 0.0;    // anchor the caller asked for last time
+static double s_chain_next = 0.0;    // where the continued paste lands
+
+// Two anchors this close are the same playhead: the transport advances by
+// milliseconds per frame, so anything under this is float noise rather than
+// the user deliberately moving somewhere else.
+static const double CHAIN_EPS = 1e-4;
+
+void miscmap_paste_chain_reset() { s_chain_live = false; }
+
+// Where a paste anchored at `anchor` would end, from the clipboard alone.
+// Mirrors miscmap_paste()'s choice of beats over seconds so the run tiles on
+// the same grid the annotations themselves land on.
+static double clip_group_end(const BeatMap* bm, double anchor) {
+    bool   use_beats = s_clip_beats && bm && bm->count >= 2;
+    double b_anchor  = use_beats ? beatmap_beat_pos(bm, anchor) : 0.0;
+
+    double end = anchor;
+    for (int i = 0; i < s_clip_count; i++) {
+        double te = use_beats ? beatmap_time_at(bm, b_anchor + s_clip[i].db_end)
+                              : anchor + s_clip[i].dt_end;
+        if (te > end) end = te;
+    }
+    return end;
+}
+
+int miscmap_paste_chained(MiscMap* mm, const BeatMap* bm, double t_anchor) {
+    if (s_clip_count == 0) return 0;
+
+    bool   chained = s_chain_live && fabs(t_anchor - s_chain_from) < CHAIN_EPS;
+    double anchor  = chained ? s_chain_next : t_anchor;
+
+    int pasted = miscmap_paste(mm, bm, anchor);
+
+    // A short paste means miscmap_add() gave out, so there is no group edge to
+    // tile against; so does a clipboard with no extent, where every paste of
+    // the run would stack on the one before.  Both end the run.
+    double end = clip_group_end(bm, anchor);
+    if (pasted == s_clip_count && end > anchor) {
+        s_chain_live = true;
+        s_chain_from = t_anchor;
+        s_chain_next = end;
+    } else {
+        s_chain_live = false;
     }
     return pasted;
 }

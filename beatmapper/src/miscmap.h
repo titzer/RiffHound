@@ -54,4 +54,19 @@ int miscmap_copy_selection(const MiscMap* mm, const BeatMap* bm);
 // pasted group becomes the selection.  Returns the number pasted.
 int miscmap_paste(MiscMap* mm, const BeatMap* bm, double t_anchor);
 
+// Paste, but tile a run of them.  The first paste lands at t_anchor; each
+// paste that follows with the same anchor starts where the previous one ended,
+// so a copied bar of chords can be laid down four times with four keystrokes
+// instead of four seek-and-paste round trips.
+//
+// The run breaks -- the next paste going back to t_anchor -- when the caller
+// asks for a different anchor (the playhead moved, including while the
+// transport rolls), when the clipboard is replaced, and on
+// miscmap_paste_chain_reset().  A clipboard of instantaneous annotations has
+// no extent to tile against, so it never chains.
+//
+// Returns the number pasted.
+int  miscmap_paste_chained(MiscMap* mm, const BeatMap* bm, double t_anchor);
+void miscmap_paste_chain_reset();
+
 int miscmap_clipboard_count();

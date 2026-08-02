@@ -55,6 +55,7 @@ static const HelpRow s_rows[] = {
     { "Shift+drag misc",      "Rubber-band select a group of annotations" },
     { "Ctrl+C / Ctrl+X",      "Copy / cut the selected misc annotations" },
     { "Ctrl+V",               "Paste them at the playhead, snapped to the beat" },
+    { "Ctrl+V again",         "Tiles the next copy after the last, until you move" },
     { "Delete",               "Remove the selected misc annotations" },
 };
 

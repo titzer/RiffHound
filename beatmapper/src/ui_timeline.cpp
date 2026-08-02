@@ -1546,6 +1546,9 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
     // Ctrl/Cmd+C / X / V: copy, cut and paste a group of misc annotations.
     // Paste lands the group's first annotation at the playhead, snapped to the
     // nearest beat, with the rest of the group at their original beat offsets.
+    // Holding the playhead still and pasting again tiles the next copy after
+    // the last one, so laying a copied bar of chords across eight bars is eight
+    // keystrokes rather than eight seek-and-paste round trips.
     if (show_misc && !ImGui::IsAnyItemActive() && s_misc_inline_edit < 0 &&
             (io.KeyCtrl || io.KeySuper)) {
         bool want_copy  = ImGui::IsKeyPressed(ImGuiKey_C);
@@ -1569,7 +1572,7 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
         } else if (want_paste && miscmap_clipboard_count() > 0) {
             double t_anchor = snap_anchor_to_beat(audio_get_position(audio), beatmap);
             undo_push(undo, nullptr, nullptr, nullptr, miscmap);
-            if (miscmap_paste(miscmap, beatmap, t_anchor) > 0) {
+            if (miscmap_paste_chained(miscmap, beatmap, t_anchor) > 0) {
                 s_misc_selected    = -1;   // the pasted group is selected, no focus
                 s_misc_inline_edit = -1;
             } else {

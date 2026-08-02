@@ -114,6 +114,9 @@ bool undo_pop(UndoStack* us, BeatMap* bm, LyricMap* lm,
     }
 
     if (mm && s.has_misc) {
+        // Undoing a paste takes back the group a run was tiling against, so
+        // the next paste starts over at the playhead.
+        miscmap_paste_chain_reset();
         free(mm->entries);
         mm->entries      = s.misc;
         mm->count        = s.misc_count;
