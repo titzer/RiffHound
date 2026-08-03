@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Chord Scroller Modes</title>
+<title>Guitar / Voice Karaoke v0.2</title>
 <style>
   * { box-sizing: border-box; }
 
@@ -859,6 +859,25 @@
   .dir button { padding: 1px 6px; font-size: 10px; }
   .badge { font-size: 10px; color: var(--dim); opacity: .75; }
 
+  /* Why the track would not load. Full width of the panel and left-aligned:
+     these are sentences, not labels. */
+  .problems { display: grid; gap: 6px; width: 100%; }
+
+  .problem {
+    display: grid;
+    gap: 2px;
+    padding: 6px 8px;
+    border: 1px solid var(--fg);
+    background: var(--hot);
+    font-size: 11px;
+    text-align: left;
+  }
+
+  .problem b { font-weight: inherit; color: var(--fg); }
+  /* --dim is tuned for reading against the page's near-black, and these lines
+     sit on --hot instead, where it sinks into the background. */
+  .problem span { color: color-mix(in srgb, var(--fg) 80%, #000); }
+
   /* The one line being sung. No syllable map yet, so the whole line lights. */
   .lyric.cur .line { color: var(--dim); transition: color 90ms; }
   .lyric.cur.on .line { color: var(--fg); text-shadow: 0 0 18px var(--fg); }
@@ -1651,7 +1670,10 @@ function attachAudio(url) {
   el.addEventListener("pause", live(() => transport(false)));
   el.addEventListener("ended", live(() => transport(false)));
   el.addEventListener("error", live(() => {
-    titleText.textContent = "⚠ could not play " + track.title;
+    const why = MEDIA_ERR[el.error?.code] || "the browser gave no reason";
+    const said = el.error?.message;
+    noteProblem("Could not play " + track.title,
+                { message: said ? `${why} — ${said}` : why });
   }));
 }
 
@@ -1781,7 +1803,10 @@ const net = {
    pairing by filename stem — a track is a media file with a .txt beside it.
    This is the piece the server will eventually replace, endpoint for
    endpoint, without the rest of the app noticing. */
-const MEDIA_RE = /\.(mp3|ogg|wav|flac|m4a|mp4|m4v|webm)$/i;
+/* .mov is here for one reason: it is the only container that holds raw MP3
+   frames in a way Apple's decoder accepts, which is what a VBR track remuxed
+   for accurate seeking has to be if Safari is ever going to play it. */
+const MEDIA_RE = /\.(mp3|ogg|wav|flac|m4a|mp4|m4v|mov|webm)$/i;
 let _db = null, dirs = [], picked = [];
 
 function dbOpen() {
@@ -1876,6 +1901,66 @@ function fuzzy(q, s) {
   return qi === q.length;
 }
 
+/* ── what went wrong ────────────────────────────────────────────────────
+   A track that will not load used to put "⚠ could not play <title>" in the
+   header and stop there, which says nothing you could act on and costs you the
+   title as well. The header now carries the warning sign alone, and the reason
+   lives in the panel the title already opens — where there is room to name the
+   file, quote the browser, and say what to do about it. */
+let problems = [];
+
+const fileName = f => f?.name || f?.file?.name || f?.handle?.name || "the file";
+
+/* The four MediaError codes, in the terms of this app rather than the spec. */
+const MEDIA_ERR = {
+  1: "loading was aborted",
+  2: "the file could not be read to the end",
+  3: "the audio is damaged, or in a form this browser cannot decode",
+  4: "this browser will not play this file's format"
+};
+
+/* Two failures are worth naming, because both mean "the library moved under
+   you" and both are fixed the same way. */
+const HINTS = {
+  NotFoundError:    "The file is not there any more. Re-open the folder to pick up its current contents.",
+  NotReadableError: "The file changed on disk after the folder was opened. Re-open the folder to re-read it.",
+  SecurityError:    "The browser withdrew permission for this folder. Re-open it to grant access again."
+};
+
+function clearProblems() { problems = []; showProblems(); }
+
+function noteProblem(what, err) {
+  const name = err?.name || "";
+  const said = err?.message || (err == null ? "" : String(err));
+  problems.push({ what, said: name && said && !said.startsWith(name) ? `${name}: ${said}` : (said || name),
+                  hint: HINTS[name] || "" });
+  showProblems();
+}
+
+function renderTitle() {
+  titleText.textContent = (problems.length ? "⚠ " : "") + (track.title || "");
+}
+
+function showProblems() {
+  renderTitle();
+  if (!problemBox) return;
+  problemBox.replaceChildren(...problems.map(p => {
+    const box = document.createElement("div");
+    box.className = "problem";
+    const what = document.createElement("b");
+    what.textContent = p.what;
+    box.append(what);
+    for (const line of [p.said, p.hint]) {
+      if (!line) continue;
+      const el = document.createElement("span");
+      el.textContent = line;
+      box.append(el);
+    }
+    return box;
+  }));
+  problemBox.hidden = !problems.length;
+}
+
 /* Returns what could be read: a reload needs to tell "the file has no lyrics"
    apart from "the file could not be read", which look identical on screen.
    opts.reload marks the one caller that is re-reading the track already up,
@@ -1885,10 +1970,19 @@ async function openTrack(entry, opts = {}) {
   const getFile = async h => (h && "getFile" in h ? await h.getFile() : h);
   const ok = { text: true, media: true };
 
+  /* Name the track before clearing, because clearing repaints the title and
+     the title it should paint is this one, not the one on its way out. */
+  track = { id: entry.id, title: entry.title };
+  clearProblems();
+
   let text = "";
   if (entry.txt) {
     try { text = await (await getFile(entry.txt.handle || entry.txt.file || entry.txt)).text(); }
-    catch (e) { console.warn("lyrics:", e); ok.text = false; }
+    catch (e) {
+      console.warn("lyrics:", e);
+      ok.text = false;
+      noteProblem("Could not read " + fileName(entry.txt), e);
+    }
   }
 
   const parsed = parseTimeseries(text);
@@ -1906,11 +2000,22 @@ async function openTrack(entry, opts = {}) {
   let url = null;
   try {
     const file = await getFile(entry.media.handle || entry.media.file || entry.media);
-    url = audioUrl = URL.createObjectURL(file);
-  } catch (e) { console.warn("media:", e); ok.media = false; }
+    /* Read the bytes here rather than handing the File straight to
+       createObjectURL. A File is a snapshot of a path: once the file behind it
+       has been moved or rewritten — which is the normal state of affairs when
+       something else on the machine is editing this library — the read fails.
+       Deferring it means the failure arrives later, as a bare media error on
+       the element with no name and no file attached to it. Reading now turns
+       the same failure into an exception that can say which file and why, and
+       the copy in memory cannot go stale underneath a track already playing. */
+    const bytes = await file.arrayBuffer();
+    url = audioUrl = URL.createObjectURL(new Blob([bytes], { type: file.type || "" }));
+  } catch (e) {
+    console.warn("media:", e);
+    ok.media = false;
+    noteProblem("Could not read " + fileName(entry.media), e);
+  }
 
-  track = { id: entry.id, title: entry.title };
-  titleText.textContent = track.title;
   titleTags.innerHTML = lyricLines.length ? "" : " - no lyrics";
 
   /* A new track starts at the record's own speed. Half time belongs to the
@@ -1941,7 +2046,15 @@ async function reloadTrack() {
   await refreshDirs();
   renderDirs();
   const entry = library().find(e => e.id === track.id);
-  if (!entry) { renderResults(searchBox ? searchBox.value : ""); return "gone"; }
+  if (!entry) {
+    /* The listing was just refreshed, so this is the folder's own answer: the
+       track is not in it any more, under that name. */
+    noteProblem(track.title + " is no longer in the folder",
+                { message: "Nothing there pairs a media file with that name. "
+                         + "It may have been renamed, moved, or given a different extension." });
+    renderResults(searchBox ? searchBox.value : "");
+    return "gone";
+  }
 
   const ok = await openTrack(entry, { reload: true });
 
@@ -2091,12 +2204,18 @@ function buildPanel() {
 
 
 /* ── the load dialog ────────────────────────────────────────────────────── */
-let searchBox = null, results = null, dirList = null, reloadBtn = null;
+let searchBox = null, results = null, dirList = null, reloadBtn = null, problemBox = null;
 
 function buildTrackPanel() {
   const row = document.createElement("div");
   row.className = "setting";
   row.innerHTML = `<label for="search">Load track</label>`;
+
+  /* First thing in the panel, because when it has anything to say it is the
+     reason the panel was opened. */
+  problemBox = document.createElement("div");
+  problemBox.className = "problems";
+  problemBox.hidden = true;
 
   searchBox = document.createElement("input");
   Object.assign(searchBox, { id: "search", className: "search", type: "search",
@@ -2142,9 +2261,11 @@ function buildTrackPanel() {
   dirList.className = "dirs";
 
   row.append(searchBox, results, sources, dirList);
+  row.prepend(problemBox);        /* above the label, not below it */
   trackPanel.replaceChildren(row);
   renderResults("");
   renderDirs();
+  showProblems();          /* anything noted before the panel existed */
 }
 
 function renderResults(query) {
@@ -2350,7 +2471,7 @@ buildTrackPanel();
 SETTINGS.forEach(d => set(d.name, d.def, { quiet: true }));
 SETTINGS.forEach(d => d.name in store.display && set(d.name, store.display[d.name], { quiet: true }));
 
-titleText.textContent = track.title;
+renderTitle();
 renderLine(-1);
 layout();
 transport(false);
