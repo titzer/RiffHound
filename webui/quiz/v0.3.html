@@ -1,0 +1,2089 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Music Quiz</title>
+  <style>
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 14px; }
+    .row { display: flex; gap: 10px; align-items: flex-start; flex-wrap: wrap; }
+    .card { border: 1px solid #ddd; border-radius: 10px; padding: 12px 14px; }
+    .big { font-size: 18px; }
+    button { padding: 8px 10px; border-radius: 8px; border: 1px solid #ccc; background: #f7f7f7; cursor: pointer; font-size: 14px; }
+    button:hover:not(:disabled) { background: #f0f0f0; }
+    button:disabled { cursor: default; opacity: 0.75; }
+    .hint { color: #666; font-size: 13px; }
+    .good { color: #0a7a2f; font-weight: 600; }
+    .bad  { color: #b32020; font-weight: 600; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
+    #boardWrap { width: min(980px, 98vw); }
+    #board { width: 100%; height: auto; display: block; }
+    /* Score card: last-10 squares + a streak line. Plain .sq is an unused slot. */
+    .squares { display: flex; gap: 5px; margin-top: 12px; }
+    .sq { flex: 1; max-width: 26px; aspect-ratio: 1; box-sizing: border-box;
+          border-radius: 5px; background: #fafafa; border: 1px solid #ececec;
+          display: flex; align-items: center; justify-content: center;
+          font: 700 12px/1 system-ui, sans-serif; color: #fff; }  /* colour is for the "H" */
+    .sq.grey { background: #c8c8c8; border-color: #b8b8b8; color: #555; }  /* asked but unanswered */
+    .sq.pass { background: #0a7a2f; border-color: #0a7a2f; }
+    .sq.fail { background: #b32020; border-color: #b32020; }
+    .sq.tight { font-size: 10px; letter-spacing: -0.5px; }  /* two glyphs, e.g. "3H" */
+    /* Last, so the in-progress ring wins over the fill colours above. */
+    .sq.live { border: 2px solid #4a90d9; box-shadow: 0 0 0 3px rgba(74,144,217,0.20); }
+    .streak-line { margin-top: 12px; font-size: 14px; color: #444; }
+    .streak-line .mono { font-size: 17px; font-weight: 600; color: #111; }
+    .active-mode { background: #d0e8ff; border-color: #4a90d9; }
+    .selected-btn { background: #d0e8ff; border-color: #4a90d9; }
+    .choice-btn {
+      display: flex; flex-direction: column; align-items: center; gap: 4px;
+      padding: 8px; flex: 1; min-width: 90px;
+      border: 1px solid #ccc; border-radius: 10px; background: #f7f7f7; cursor: pointer;
+    }
+    .choice-btn:hover:not(:disabled) { background: #e8f0ff; border-color: #aac; }
+    .choice-num { align-self: flex-start; font-size: 12px; font-weight: 700; color: #888; line-height: 1; }
+    .choice-btn.correct { border-color: #0a7a2f; background: #e6f4ec; }
+    .choice-btn.wrong   { border-color: #b32020; background: #fde8e8; }
+    /* Transient answer flash, applied to whatever control took the answer.
+       !important because it has to beat :hover (the pointer is still on the
+       button you just clicked) and .selected-btn on the key-quiz buttons. */
+    .flash-good { background: #cdeed8 !important; border-color: #0a7a2f !important; }
+    .flash-bad  { background: #fbd5d5 !important; border-color: #b32020 !important; }
+    /* --- normalized quiz card: controls, prompt, body, then a fixed footer --- */
+    #controlBar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 10px; }
+    #promptLine { display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; margin-bottom: 10px; min-height: 24px; }
+    /* Held open so the ✓/✗ and the answer confirmation never reflow the card. */
+    #feedbackArea { min-height: 30px; margin-top: 8px; }
+    #hintLine { min-height: 20px; margin-top: 6px; font-size: 15px; }
+    /* Tall enough for the rhythm beat ruler, so showing the hint shifts nothing. */
+    #rhythmHintArea { min-height: 78px; margin-bottom: 10px; }
+    /* updateUI clears the inline display to show it, so the layout lives here. */
+    #seqLenWrap { display: flex; gap: 10px; align-items: center; }
+    .ladder { width: 100%; height: 52px; display: block; }
+    .ladder .step { stroke: #4a90d9; stroke-width: 2; fill: none; }
+  </style>
+</head>
+<body>
+
+<!-- ===== HEADER: title + MIDI, then the quiz types ===== -->
+<div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+  <h2 style="margin:0;">Music Quiz</h2>
+  <span id="midiStatus" class="hint">MIDI: —</span>
+  <button id="midiRetryBtn" style="font-size:12px;padding:3px 7px;">↺</button>
+</div>
+
+<!-- One button per quiz type: the note and key quizzes are split by modality -->
+<div style="margin:8px 0 10px 0; display:flex; gap:6px; align-items:center; flex-wrap:wrap;">
+  <button class="quiz-btn active-mode" data-quiz="note-sheet">Note · Sheet</button>
+  <button class="quiz-btn" data-quiz="note-ear">Note · Ear</button>
+  <button class="quiz-btn" data-quiz="note-tab">Note · Tab</button>
+  <button class="quiz-btn" data-quiz="key-sheet">Key · Sheet</button>
+  <button class="quiz-btn" data-quiz="key-ear">Key · Ear</button>
+  <button class="quiz-btn" data-quiz="rhythm">Rhythm</button>
+  <!-- Note-quiz sequence length; carries its own separator so both hide together -->
+  <span id="seqLenWrap" class="hint">
+    <span style="color:#bbb;">|</span>
+    <label>Seq: <select id="seqLen"
+      style="padding:2px 4px;font-size:13px;border-radius:4px;border:1px solid #ccc">
+      <option value="1" selected>1</option>
+      <option value="2">2</option>
+      <option value="3">3</option>
+      <option value="4">4</option>
+    </select></label>
+  </span>
+</div>
+
+<!-- Key filter (key quiz only) -->
+<div id="keyOpts" style="display:none; margin-bottom:8px; gap:10px; align-items:center; flex-wrap:wrap;" class="hint">
+  <strong>Keys:</strong>
+  <label><input type="checkbox" class="letter-cb" data-letter="A" checked> A</label>
+  <label><input type="checkbox" class="letter-cb" data-letter="B" checked> B</label>
+  <label><input type="checkbox" class="letter-cb" data-letter="C" checked> C</label>
+  <label><input type="checkbox" class="letter-cb" data-letter="D" checked> D</label>
+  <label><input type="checkbox" class="letter-cb" data-letter="E" checked> E</label>
+  <label><input type="checkbox" class="letter-cb" data-letter="F" checked> F</label>
+  <label><input type="checkbox" class="letter-cb" data-letter="G" checked> G</label>
+  <span style="color:#bbb; margin:0 2px;">|</span>
+  <label><input type="checkbox" id="cbKeySharps" checked> Sharps</label>
+  <label><input type="checkbox" id="cbKeyFlats"  checked> Flats</label>
+  <label><input type="checkbox" id="cbKeyMinor"  checked> Minor</label>
+</div>
+
+<!-- Tab position selector (tab mode only) -->
+<div id="tabOpts" style="display:none; margin-bottom:8px; gap:6px; align-items:center; flex-wrap:wrap;" class="hint">
+  <strong>Position:</strong>
+  <button class="tabpos-btn selected-btn" data-pos="0">Open</button>
+  <button class="tabpos-btn" data-pos="1">3–6</button>
+  <button class="tabpos-btn" data-pos="2">6–10</button>
+  <button class="tabpos-btn" data-pos="3">10–14</button>
+  <button class="tabpos-btn" data-pos="4">12–17</button>
+</div>
+
+<!-- Ear-note options (ear + note only) -->
+<div id="earOpts" style="display:none; margin-bottom:8px; gap:10px; align-items:center; flex-wrap:wrap;" class="hint">
+  <label>Key: <select id="earKey" style="padding:2px 4px;font-size:13px;border-radius:4px;border:1px solid #ccc">
+    <option>C</option><option>G</option><option>D</option><option>A</option>
+    <option>E</option><option>F</option><option>Bb</option>
+  </select> major</label>
+  <label style="margin-left:4px;">Octave: <input id="earOctave" type="number" min="3" max="5" value="4"
+    style="width:46px;padding:2px 4px;font-size:13px;border-radius:4px;border:1px solid #ccc"></label>
+  <label style="margin-left:4px;">Length: <input id="earLen" type="number" min="2" max="5" value="3"
+    style="width:46px;padding:2px 4px;font-size:13px;border-radius:4px;border:1px solid #ccc"></label>
+  <label style="margin-left:4px;">Choices: <input id="earChoices" type="number" min="2" max="6" value="4"
+    style="width:46px;padding:2px 4px;font-size:13px;border-radius:4px;border:1px solid #ccc"></label>
+</div>
+
+<!-- Rhythm trainer options (rhythm mode only) -->
+<div id="rhythmOpts" style="display:none; margin-bottom:8px; gap:10px; align-items:center; flex-wrap:wrap;" class="hint">
+  <div style="display:flex; gap:6px; align-items:flex-end;">
+    <strong style="line-height:1.8;">Notes:</strong>
+    <label style="display:flex;flex-direction:column;align-items:center;gap:1px;font-size:12px;"><input type="checkbox" class="rhythmcount-cb" data-count="1">1</label>
+    <label style="display:flex;flex-direction:column;align-items:center;gap:1px;font-size:12px;"><input type="checkbox" class="rhythmcount-cb" data-count="2" checked>2</label>
+    <label style="display:flex;flex-direction:column;align-items:center;gap:1px;font-size:12px;"><input type="checkbox" class="rhythmcount-cb" data-count="3" checked>3</label>
+    <label style="display:flex;flex-direction:column;align-items:center;gap:1px;font-size:12px;"><input type="checkbox" class="rhythmcount-cb" data-count="4" checked>4</label>
+    <label style="display:flex;flex-direction:column;align-items:center;gap:1px;font-size:12px;"><input type="checkbox" class="rhythmcount-cb" data-count="5" checked>5</label>
+    <label style="display:flex;flex-direction:column;align-items:center;gap:1px;font-size:12px;"><input type="checkbox" class="rhythmcount-cb" data-count="6" checked>6</label>
+    <label style="display:flex;flex-direction:column;align-items:center;gap:1px;font-size:12px;"><input type="checkbox" class="rhythmcount-cb" data-count="7">7</label>
+    <label style="display:flex;flex-direction:column;align-items:center;gap:1px;font-size:12px;"><input type="checkbox" class="rhythmcount-cb" data-count="8">8</label>
+  </div>
+  <label>BPM: <input id="rhythmBpm" type="range" min="100" max="1000" step="50" value="150"
+    style="width:130px; vertical-align:middle;"> <span id="rhythmBpmVal">150</span></label>
+  <span style="color:#bbb; margin:0 2px;">|</span>
+  <div style="display:flex; gap:5px; align-items:flex-end;">
+    <strong style="line-height:1.8;">Tones:</strong>
+    <label style="display:flex;flex-direction:column;align-items:center;gap:1px;font-size:12px;"><input type="checkbox" class="rhythmnote-cb" data-note="C" checked>C</label>
+    <label style="display:flex;flex-direction:column;align-items:center;gap:1px;font-size:12px;"><input type="checkbox" class="rhythmnote-cb" data-note="D" checked>D</label>
+    <label style="display:flex;flex-direction:column;align-items:center;gap:1px;font-size:12px;"><input type="checkbox" class="rhythmnote-cb" data-note="E" checked>E</label>
+    <label style="display:flex;flex-direction:column;align-items:center;gap:1px;font-size:12px;"><input type="checkbox" class="rhythmnote-cb" data-note="F" checked>F</label>
+    <label style="display:flex;flex-direction:column;align-items:center;gap:1px;font-size:12px;"><input type="checkbox" class="rhythmnote-cb" data-note="G" checked>G</label>
+    <label style="display:flex;flex-direction:column;align-items:center;gap:1px;font-size:12px;"><input type="checkbox" class="rhythmnote-cb" data-note="A" checked>A</label>
+    <label style="display:flex;flex-direction:column;align-items:center;gap:1px;font-size:12px;"><input type="checkbox" class="rhythmnote-cb" data-note="B" checked>B</label>
+    <label style="display:flex;flex-direction:column;align-items:center;gap:1px;font-size:12px;border-left:1px solid #ccc;padding-left:5px;"><input type="checkbox" class="rhythmnote-cb" data-note="C'" checked><em>C</em></label>
+    <label style="margin-left:4px;">Oct: <select id="rhythmOctave" style="padding:2px 4px;font-size:13px;border-radius:4px;border:1px solid #ccc">
+      <option value="2">2</option>
+      <option value="3">3</option>
+      <option value="4" selected>4</option>
+      <option value="5">5</option>
+      <option value="6">6</option>
+    </select></label>
+  </div>
+  <span style="color:#bbb; margin:0 2px;">|</span>
+  <strong>Rhythm:</strong>
+  <button id="rhythmConstantBtn" class="selected-btn">Constant</button>
+  <label><input type="checkbox" class="rhythmdur-cb" data-dur="16th"> 16th</label>
+  <label><input type="checkbox" class="rhythmdur-cb" data-dur="8th"> 8th</label>
+  <label><input type="checkbox" class="rhythmdur-cb" data-dur="4th"> 4th</label>
+  <label><input type="checkbox" class="rhythmdur-cb" data-dur="triplet"> Triplet</label>
+  <label><input type="checkbox" id="rhythmRestCb"> 8th rest</label>
+  <span style="color:#bbb; margin:0 2px;">|</span>
+  <label><input type="checkbox" id="rhythmHintAlways"> Always hint</label>
+  <label><input type="checkbox" id="rhythmSoundFb" checked> Ding/buzz</label>
+</div>
+
+<div class="row">
+  <!-- ===== MAIN QUIZ CARD ===== -->
+  <div class="card" id="mainArea" style="flex:2; min-width:280px;">
+
+    <!-- Same controls in the same place for every quiz type -->
+    <div id="controlBar">
+      <button id="playBtn" style="font-size:16px;min-width:80px;min-height:44px;background:#4a90d9;color:#fff;border-color:#357ab8;">&#9654; Play</button>
+      <button id="skipBtn" style="font-size:16px;min-width:80px;min-height:44px;">Skip</button>
+      <button id="hintBtn" style="font-size:16px;min-width:80px;min-height:44px;">Hint</button>
+    </div>
+
+    <!-- What the quiz is asking for -->
+    <div id="promptLine">
+      <span id="promptText" class="big"></span>
+      <span id="earLabel" class="hint"></span>
+    </div>
+
+    <!-- Sheet music SVG -->
+    <div id="boardWrap">
+      <svg id="board" viewBox="0 20 1000 450" xmlns="http://www.w3.org/2000/svg" aria-label="Music staff"></svg>
+    </div>
+
+    <!-- Ear training area -->
+    <div id="earArea" style="display:none;">
+      <!-- Rhythm hint: space is held open so activating it doesn't shift the choices -->
+      <div id="rhythmHintArea">
+        <div id="rhythmBeats" style="margin-bottom:4px;"></div>
+        <div id="rhythmHintText" class="hint" style="font-size:15px;"></div>
+      </div>
+      <div id="choicesArea" style="display:flex; gap:8px; flex-wrap:wrap;"></div>
+    </div>
+
+    <!-- Note letter buttons A-G (sheet mode only) -->
+    <!-- TODO: factor out all font adjustments for buttons to CSS -->
+    <div id="noteBtns" style="display:flex; gap:6px; margin-top:6px; flex-wrap:wrap;">
+      <button class="note-btn" data-note="A" style="font-size:20px;font-weight:600;min-width:44px;min-height:44px;">A</button>
+      <button class="note-btn" data-note="B" style="font-size:20px;font-weight:600;min-width:44px;min-height:44px;">B</button>
+      <button class="note-btn" data-note="C" style="font-size:20px;font-weight:600;min-width:44px;min-height:44px;">C</button>
+      <button class="note-btn" data-note="D" style="font-size:20px;font-weight:600;min-width:44px;min-height:44px;">D</button>
+      <button class="note-btn" data-note="E" style="font-size:20px;font-weight:600;min-width:44px;min-height:44px;">E</button>
+      <button class="note-btn" data-note="F" style="font-size:20px;font-weight:600;min-width:44px;min-height:44px;">F</button>
+      <button class="note-btn" data-note="G" style="font-size:20px;font-weight:600;min-width:44px;min-height:44px;">G</button>
+    </div>
+
+    <!-- Key quiz extra buttons (sheet + key only) -->
+    <div id="keyBtns" style="display:none;">
+      <div style="display:flex; gap:6px; margin-top:4px; flex-wrap:wrap;">
+        <button class="acc-btn" data-acc=""  style="font-size:20px;min-width:44px;min-height:44px;">&#9838;</button>
+        <button class="acc-btn" data-acc="-" style="font-size:20px;min-width:44px;min-height:44px;">&#9837;</button>
+        <button class="acc-btn" data-acc="#" style="font-size:20px;min-width:44px;min-height:44px;">&#9839;</button>
+      </div>
+      <div style="display:flex; gap:6px; margin-top:4px; flex-wrap:wrap;">
+        <button class="qual-btn" data-quality="M" style="font-size:16px;min-width:80px;min-height:44px;">Major</button>
+        <button class="qual-btn" data-quality="m" style="font-size:16px;min-width:80px;min-height:44px;">minor</button>
+        <button id="submitKeyBtn" style="font-size:16px;min-width:80px;min-height:44px;background:#4a90d9;color:#fff;border-color:#357ab8;">Submit</button>
+      </div>
+    </div>
+
+    <!-- Answer readout (key quiz only) -->
+    <div class="big" id="answerRow" style="margin-top:8px;">Answer: <span id="typed" class="mono">_</span></div>
+
+    <!-- Footer: both lines hold their height so nothing below them jumps -->
+    <div id="hintLine" class="hint"></div>
+    <div id="feedbackArea"><span id="feedback" class="big" aria-live="polite"></span></div>
+  </div>
+
+  <!-- ===== SCORE CARD ===== -->
+  <div class="card" style="min-width:250px; flex:1;">
+    <div class="row" style="align-items:center;">
+      <div class="big">Score</div>
+      <button id="resetBtn" style="margin-left:auto;">Reset</button>
+    </div>
+    <div class="squares" id="lastTen"></div>
+    <div class="streak-line">
+      Streak <span class="mono" id="statStreak">0</span>
+      &nbsp;·&nbsp; Longest <span class="mono" id="statBest">0</span>
+    </div>
+  </div>
+</div>
+
+<script>
+(() => {
+// =====================================================================
+// SHARED STATE
+// =====================================================================
+// One entry per quiz type. `mode`/`modality` are the pair the rest of the code
+// still branches on; the buttons pick a whole type rather than two axes.
+//   play   — has ear training, so it gets a Play button
+//   prompt — what the quiz is asking, phrased as a question
+const QUIZ_TYPES = {
+  "note-sheet": {mode:"note",   modality:"sheet", play:false, prompt:"Which note is on the staff?"},
+  "note-ear":   {mode:"note",   modality:"ear",   play:true,  prompt:"Which melody did you hear?"},
+  "note-tab":   {mode:"note",   modality:"tab",   play:false, prompt:"Which note is at the marked fret?"},
+  "key-sheet":  {mode:"key",    modality:"sheet", play:false, prompt:"Which key is this signature?"},
+  "key-ear":    {mode:"key",    modality:"ear",   play:true,  prompt:"Which key did you hear?"},
+  "rhythm":     {mode:"rhythm", modality:"ear",   play:true,  prompt:"How many notes did you hear?"},
+};
+let quizType  = "note-sheet";
+let quizMode  = "note";  // derived from quizType — "note" | "key" | "rhythm"
+let modality  = "sheet"; // derived from quizType — "sheet" | "ear" | "tab"
+
+// Append-only log of settled questions: {state: "pass"|"fail"|"skip", hint}.
+// `pending` is the question currently on screen — it owns the last square
+// (ringed) until it settles, so a quiz that keeps asking until you get it right
+// stays on it. `hint` only marks the square with an H; it doesn't affect scoring.
+let results = [];
+let pending = null;
+let waitingForNext = false;
+
+// Sheet + Note
+let sheetNoteCurrent = null;
+let trebleEnabled = true, bassEnabled = true;
+
+// Sheet + Key
+let sheetKeyCurrent = null;
+let keyBuf = "";
+let keySharpsEnabled = true, keyFlatsEnabled = true, keyMinorEnabled = true;
+let keyLettersEnabled = new Set(["A","B","C","D","E","F","G"]);
+
+// Ear (shared between ear+note and ear+key, different shapes)
+let earCurrent = null;
+
+// Rhythm trainer
+let rhythmCurrent = null;
+let rhythmDurSet       = new Set();                                               // checked note values → complex; empty → constant
+let rhythmRestEnabled  = false;
+let rhythmEnabledCounts = new Set([2, 3, 4, 5, 6]);                              // which note counts are active
+let rhythmEnabledNotes  = new Set(["C","D","E","F","G","A","B","C'"]);           // which pitches are active
+
+const RHYTHM_DUR_BEATS = { "16th": 0.25, "8th": 0.5, "4th": 1.0, "triplet": 1/3 };
+
+// =====================================================================
+// GUITAR TAB STATE
+// =====================================================================
+const GUITAR_STRINGS = [
+  { stringNum:1, letter:'E', octave:4, openMidi:64 },  // high e
+  { stringNum:2, letter:'B', octave:3, openMidi:59 },
+  { stringNum:3, letter:'G', octave:3, openMidi:55 },
+  { stringNum:4, letter:'D', octave:3, openMidi:50 },
+  { stringNum:5, letter:'A', octave:2, openMidi:45 },
+  { stringNum:6, letter:'E', octave:2, openMidi:40 },  // low E
+];
+const TAB_POSITIONS = [
+  { label:'Open',  minFret:0,  maxFret:4  },
+  { label:'3–6',   minFret:3,  maxFret:6  },
+  { label:'6–10',  minFret:6,  maxFret:10 },
+  { label:'10–14', minFret:10, maxFret:14 },
+  { label:'12–17', minFret:12, maxFret:17 },
+];
+let tabPositionIdx = 0;
+let tabCurrent = null;
+const TAB_STR_Y = [80, 143, 206, 269, 332, 395]; // y per string, index 0 = high e
+const TAB_LEFT = 90, TAB_RIGHT = 950;
+
+// =====================================================================
+// MUSIC THEORY
+// =====================================================================
+const LETTERS = ["C","D","E","F","G","A","B"];
+const letterToStep = new Map(LETTERS.map((L,i) => [L,i]));
+function diatonicIndex(letter, octave) { return octave * 7 + letterToStep.get(letter); }
+function noteFromIndex(idx) { return { letter: LETTERS[idx % 7], octave: Math.floor(idx / 7) }; }
+function noteName(n) { return `${n.letter}${n.octave}`; }
+function parseNoteName(s) { return { letter: s[0], octave: Number(s.slice(1)) }; }
+
+const MID_C_IDX   = diatonicIndex("C", 4);
+const trebleLineIdx = ["E4","G4","B4","D5","F5"].map(parseNoteName).map(n => diatonicIndex(n.letter, n.octave));
+const bassLineIdx   = ["G2","B2","D3","F3","A3"].map(parseNoteName).map(n => diatonicIndex(n.letter, n.octave));
+
+// Semitone offsets from C for each letter (natural)
+const SEMI = { C:0, D:2, E:4, F:5, G:7, A:9, B:11 };
+const SEMI_INV = new Map(Object.entries(SEMI).map(([l,s]) => [s,l])); // semitone → letter
+
+// Ear training helpers
+const MAJOR_SCALE_ST = [0,2,4,5,7,9,11];
+const KEY_TO_SEMITONES = { C:0, G:7, D:2, A:9, E:4, F:5, Bb:10 };
+const NOTE_ORDER = ["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"];
+function midiToFreq(midi) { return 440 * Math.pow(2, (midi - 69) / 12); }
+
+function buildMajorScale(keyName, octave) {
+  const ts = KEY_TO_SEMITONES[keyName];
+  const tonicMidi = 12 * (octave + 1) + ts;
+  return {
+    scaleMidi:  MAJOR_SCALE_ST.map(st => tonicMidi + st),
+    scaleNames: MAJOR_SCALE_ST.map(st => NOTE_ORDER[(ts + st) % 12])
+  };
+}
+
+function generateSequence(len, maxStep, allowDown) {
+  const degrees = [0];
+  while (degrees.length < len) {
+    const step = Math.ceil(Math.random() * maxStep);
+    const dir  = allowDown ? (Math.random() < 0.5 ? -1 : 1) : 1;
+    let next = degrees[degrees.length - 1] + dir * step;
+    next = Math.max(0, Math.min(6, next));
+    if (next === degrees[degrees.length - 1]) continue;
+    degrees.push(next);
+  }
+  return degrees;
+}
+
+function makeDistractors(correct, count) {
+  const out = new Set();
+  const key = arr => arr.join("-");
+  out.add(key(correct));
+  const n = correct.length;
+  const tryPush = arr => { const k = key(arr); if (!out.has(k)) out.add(k); };
+  for (let i = 1; i < n; i++) {
+    const delta = correct[i] - correct[i-1];
+    if (delta !== 0) { const a = correct.slice(); a[i] = correct[i-1] - delta; if (a[i] >= 0 && a[i] <= 6) tryPush(a); }
+  }
+  for (let i = 1; i < n; i++) for (const d of [-1,+1]) {
+    const a = correct.slice(); a[i] = Math.max(0, Math.min(6, a[i] + d)); tryPush(a);
+  }
+  for (let i = 1; i < n; i++) for (let j = i+1; j < n; j++) for (const di of [-1,+1]) {
+    const a = correct.slice();
+    a[i] = Math.max(0, Math.min(6, a[i] + di));
+    a[j] = Math.max(0, Math.min(6, a[j] - di));
+    tryPush(a);
+  }
+  if (n > 2) tryPush([correct[0], ...correct.slice(1).reverse()]);
+  const all = [...out].map(s => s.split("-").map(Number)).filter(a => key(a) !== key(correct));
+  for (let i = all.length-1; i > 0; i--) { const j = Math.floor(Math.random()*(i+1)); [all[i],all[j]] = [all[j],all[i]]; }
+  return all.slice(0, count);
+}
+
+// Key signatures
+const KEY_SIGNATURES = [
+  {letter:"C",acc:"", quality:"major",sharps:0,flats:0},
+  {letter:"G",acc:"", quality:"major",sharps:1,flats:0},
+  {letter:"D",acc:"", quality:"major",sharps:2,flats:0},
+  {letter:"A",acc:"", quality:"major",sharps:3,flats:0},
+  {letter:"E",acc:"", quality:"major",sharps:4,flats:0},
+  {letter:"B",acc:"", quality:"major",sharps:5,flats:0},
+  {letter:"F",acc:"#",quality:"major",sharps:6,flats:0},
+  {letter:"F",acc:"", quality:"major",sharps:0,flats:1},
+  {letter:"B",acc:"-",quality:"major",sharps:0,flats:2},
+  {letter:"E",acc:"-",quality:"major",sharps:0,flats:3},
+  {letter:"A",acc:"-",quality:"major",sharps:0,flats:4},
+  {letter:"D",acc:"-",quality:"major",sharps:0,flats:5},
+  {letter:"G",acc:"-",quality:"major",sharps:0,flats:6},
+  {letter:"A",acc:"", quality:"minor",sharps:0,flats:0},
+  {letter:"E",acc:"", quality:"minor",sharps:1,flats:0},
+  {letter:"B",acc:"", quality:"minor",sharps:2,flats:0},
+  {letter:"F",acc:"#",quality:"minor",sharps:3,flats:0},
+  {letter:"C",acc:"#",quality:"minor",sharps:4,flats:0},
+  {letter:"G",acc:"#",quality:"minor",sharps:5,flats:0},
+  {letter:"D",acc:"#",quality:"minor",sharps:6,flats:0},
+  {letter:"D",acc:"", quality:"minor",sharps:0,flats:1},
+  {letter:"G",acc:"", quality:"minor",sharps:0,flats:2},
+  {letter:"C",acc:"", quality:"minor",sharps:0,flats:3},
+  {letter:"F",acc:"", quality:"minor",sharps:0,flats:4},
+  {letter:"B",acc:"-",quality:"minor",sharps:0,flats:5},
+  {letter:"E",acc:"-",quality:"minor",sharps:0,flats:6},
+];
+const TREBLE_SHARP_POS = [38,35,39,36,33,37,34];
+const TREBLE_FLAT_POS  = [34,37,33,36,32,35,31];
+const KEY_ROOT_IDX     = {C:35,D:29,E:30,F:31,G:32,A:33,B:34};
+
+function keyDisplayName(k) {
+  const dispAcc = k.acc === "-" ? "b" : k.acc;
+  return k.letter + dispAcc + " " + (k.quality === "major" ? "Major" : "minor");
+}
+
+function buildKeyPool() {
+  const pool = KEY_SIGNATURES.filter(k => {
+    if (!keyLettersEnabled.has(k.letter))           return false;
+    if (!keySharpsEnabled && k.sharps > 0)            return false;
+    if (!keyFlatsEnabled  && k.flats  > 0)           return false;
+    if (!keyMinorEnabled  && k.quality === "minor") return false;
+    return true;
+  });
+  return pool.length > 0 ? pool : KEY_SIGNATURES;
+}
+
+// =====================================================================
+// AUDIO
+// =====================================================================
+class Synth {
+  constructor() { this.ctx = null; this.master = null; this.seqGain = null; this.wave = "sine"; this.vol = 0.25; }
+  ensure() {
+    if (!this.ctx) {
+      const ctx = new (window.AudioContext || window.webkitAudioContext)();
+      const m = ctx.createGain(); m.gain.value = this.vol; m.connect(ctx.destination);
+      this.ctx = ctx; this.master = m;
+    }
+  }
+  get now() { this.ensure(); return this.ctx.currentTime; }
+  // Disconnect the current sequence gain node — instantly silences all routed notes.
+  // New sequences get their own gain node so playByLetter feedback is unaffected.
+  newSeqGain() {
+    if (this.seqGain) { try { this.seqGain.disconnect(); } catch(e) {} }
+    this.seqGain = this.ctx.createGain();
+    this.seqGain.connect(this.master);
+    return this.seqGain;
+  }
+  playNote(freq, start, dur, sustain = 0.6, sink) {
+    this.ensure();
+    const ctx = this.ctx;
+    const osc = ctx.createOscillator(), gain = ctx.createGain();
+    osc.type = this.wave; osc.frequency.value = freq;
+    osc.connect(gain); gain.connect(sink || this.master);
+    const a = 0.01, d = 0.05, r = 0.1;
+    gain.gain.setValueAtTime(0.0001, start);
+    gain.gain.exponentialRampToValueAtTime(1.0, start + a);
+    gain.gain.exponentialRampToValueAtTime(sustain, start + a + d);
+    gain.gain.setValueAtTime(sustain, start + dur);
+    gain.gain.exponentialRampToValueAtTime(0.0001, start + dur + r);
+    osc.start(start); osc.stop(start + dur + r + 0.05);
+  }
+  playMidi(midiNotes, bpm = 90, sustainRatio = 0.6) {
+    this.ensure();
+    const sg = this.newSeqGain();
+    const beatSec = 60 / bpm;
+    const t0 = this.now + 0.05;
+    midiNotes.forEach((m, i) => this.playNote(midiToFreq(m), t0 + i * beatSec, beatSec, sustainRatio, sg));
+  }
+  playByLetter(letter, octave, dur = 0.45) {
+    this.ensure();
+    const midi = 12 + octave * 12 + SEMI[letter];
+    this.playNote(midiToFreq(midi), this.now + 0.02, dur, 0.6); // goes to master, not seqGain
+  }
+  playNoteSeq(seqNotes) {
+    this.ensure();
+    const sg = this.newSeqGain();
+    const noteDur = 0.5, gap = 0.65;
+    const t0 = this.now;
+    seqNotes.forEach(({note}, i) => {
+      const midi = 12 + note.octave * 12 + SEMI[note.letter];
+      this.playNote(midiToFreq(midi), t0 + 0.05 + i * gap, noteDur, 0.6, sg);
+    });
+  }
+  playChord(midiNotes, dur = 1.5, sustain = 0.4) {
+    this.ensure();
+    const sg = this.newSeqGain();
+    const t0 = this.now + 0.05;
+    midiNotes.forEach(m => this.playNote(midiToFreq(m), t0, dur, sustain, sg));
+  }
+}
+const synth = new Synth();
+
+// =====================================================================
+// SVG DRAWING
+// =====================================================================
+const svg = document.getElementById("board");
+const staffX0 = 140, staffX1 = 900;
+const lineSpacing = 26, step = lineSpacing / 2;
+const yMidC = 260;
+
+function yForIndex(idx) { return yMidC - (idx - MID_C_IDX) * step; }
+function clearSvg() { while (svg.firstChild) svg.removeChild(svg.firstChild); }
+function el(name, attrs) {
+  const n = document.createElementNS("http://www.w3.org/2000/svg", name);
+  for (const [k,v] of Object.entries(attrs)) n.setAttribute(k, String(v));
+  return n;
+}
+function drawStaffLines(lineIdxs) {
+  for (const idx of lineIdxs) {
+    const y = yForIndex(idx);
+    svg.appendChild(el("line", {x1:staffX0,y1:y,x2:staffX1,y2:y,stroke:"#111","stroke-width":2}));
+  }
+}
+function drawTrebleClef() {
+  const yG4 = yForIndex(diatonicIndex("G",4));
+  const scale = 1.1, clefH = 122.88 * scale;
+  const g = el("g", {transform:`translate(${staffX0-12-43.52*scale},${yG4-8-clefH*0.55}) scale(${scale})`});
+  g.appendChild(el("path",{d:"M11.35,45.61q3.72-4.22,7.69-8a45.71,45.71,0,0,1-2.19-12c-.23-7.24.88-14.93,5-21C23,2.79,25-.25,27.17,0,29,.24,30,2.83,30.72,4.32c4.92,10,5.93,20.54.25,31.93a46,46,0,0,1-7.84,10.8l2.38,12.12a8.74,8.74,0,0,1,.87-.14,14.2,14.2,0,0,1,8.56,1.41c5.6,3,9.08,10.57,8.52,16.83-.5,5.5-3,9.3-7.15,12.63a23.92,23.92,0,0,1-4.24,2.78l2.87,14.62a28.07,28.07,0,0,1,.12,3.74c-.35,7.71-6.35,12.16-13.78,11.82-5.72-.36-11.67-4.9-11.7-10.64-.06-11.13,15-10.6,13.9-.42-.32,3-2.51,5.65-7.21,5.82,3.79,6.28,15.51,1.79,16.31-6.44a17.52,17.52,0,0,0-.69-6.24L29.72,93.65a17.7,17.7,0,0,1-3.07.67A23.71,23.71,0,0,1,8.5,88.66a26,26,0,0,1-8-24.34C2,56.69,6.39,51.26,11.35,45.61Zm9.81-9.53C19.09,28.55,19.4,19,24.73,12.76S35.94,15,28.18,27.42a48.8,48.8,0,0,1-7,8.66Zm0,13c-.67.67-1.36,1.34-2.06,2-4,3.85-8,7.52-11,13a20.65,20.65,0,0,0-1.5,17.23c2.4,7.49,14,12.21,22.65,9.94L24.72,67.63a9.82,9.82,0,0,0-7.09,8,8.7,8.7,0,0,0,3.08,7.81,16.74,16.74,0,0,0,1.81,1.36c1.24.82.63,1.41-.53,1.06-3.87-1.3-6.19-3.44-7.43-6.17-3.67-8.08.83-17.08,8.66-19.92L21.16,49.07ZM31.63,90.43,27.09,67.24a9,9,0,0,1,4.53,1,12,12,0,0,1,6.62,8.23c1.2,5.57-1.7,11.72-6.49,13.94l-.12.05Z",fill:"#111","fill-rule":"evenodd"}));
+  svg.appendChild(g);
+}
+function drawBassClef() {
+  const yF3 = yForIndex(diatonicIndex("F",3));
+  const sy = 0.1875, sx = sy * 0.70;
+  const xT = (staffX0-4) - 583.59*sx, yT = yF3 - 429.745*sy;
+  const g = el("g", {transform:`translate(${xT.toFixed(1)},${yT.toFixed(1)}) scale(${sx},${sy})`});
+  g.appendChild(el("path",{d:"m190.85 451.25c11.661 14.719 32.323 24.491 55.844 24.491 36.401 0 65.889-23.372 65.889-52.214s-29.488-52.214-65.889-52.214c-20.314 4.1522-28.593 9.0007-33.143-2.9091 17.976-54.327 46.918-66.709 96.546-66.709 65.914 0 96.969 59.897 96.969 142.97-18.225 190.63-205.95 286.75-246.57 316.19 5.6938 13.103 5.3954 12.631 5.3954 12.009 189.78-86.203 330.69-204.43 330.69-320.74 0-92.419-58.579-175.59-187.72-172.8-77.575 0-170.32 86.203-118 171.93zm328.1-89.88c0 17.852 14.471 32.323 32.323 32.323s32.323-14.471 32.323-32.323-14.471-32.323-32.323-32.323-32.323 14.471-32.323 32.323zm0 136.75c0 17.852 14.471 32.323 32.323 32.323s32.323-14.471 32.323-32.323-14.471-32.323-32.323-32.323-32.323 14.471-32.323 32.323z",fill:"#111","fill-rule":"evenodd"}));
+  svg.appendChild(g);
+}
+function drawLedgerLinesFor(idx, xC) {
+  const [tt,tb,bt,bb] = [trebleLineIdx[4],trebleLineIdx[0],bassLineIdx[4],bassLineIdx[0]];
+  const x0 = xC-22, x1 = xC+22;
+  const useTreble = idx >= MID_C_IDX;
+  const ref = useTreble ? [tt,tb] : [bt,bb];
+  if (idx > ref[0]) for (let k=ref[0]+2; k<=idx; k+=2)
+    svg.appendChild(el("line",{x1:x0,y1:yForIndex(k),x2:x1,y2:yForIndex(k),stroke:"#111","stroke-width":2}));
+  else if (idx < ref[1]) for (let k=ref[1]-2; k>=idx; k-=2)
+    svg.appendChild(el("line",{x1:x0,y1:yForIndex(k),x2:x1,y2:yForIndex(k),stroke:"#111","stroke-width":2}));
+  if (idx === MID_C_IDX)
+    svg.appendChild(el("line",{x1:x0,y1:yMidC,x2:x1,y2:yMidC,stroke:"#111","stroke-width":2}));
+}
+function noteXPositions(n) {
+  if (n === 1) return [220];
+  return Array.from({length:n}, (_,i) => Math.round(200 + i * 450 / (n-1)));
+}
+function drawNote(idx, x, color, label) {
+  const y = yForIndex(idx);
+  drawLedgerLinesFor(idx, x);
+  svg.appendChild(el("ellipse",{cx:x,cy:y,rx:16,ry:12,fill:color,transform:`rotate(-18 ${x} ${y})`}));
+  const midTreble = diatonicIndex("B",4), midBass = diatonicIndex("D",3);
+  const stemDown = (idx >= MID_C_IDX) ? (idx >= midTreble) : (idx >= midBass);
+  if (stemDown) svg.appendChild(el("line",{x1:x-14,y1:y,x2:x-14,y2:y+74,stroke:color,"stroke-width":4,"stroke-linecap":"round"}));
+  else          svg.appendChild(el("line",{x1:x+14,y1:y,x2:x+14,y2:y-74,stroke:color,"stroke-width":4,"stroke-linecap":"round"}));
+  if (label) {
+    const lx = x+30, ly = y+6;
+    svg.appendChild(el("rect",{x:lx-3,y:ly-18,width:label.length*13+6,height:24,fill:"white",rx:2}));
+    const t = el("text",{x:lx,y:ly,fill:color,"font-size":22,"font-weight":"bold"});
+    t.textContent = label; svg.appendChild(t);
+  }
+}
+function drawBothStaves() {
+  drawStaffLines(trebleLineIdx); drawStaffLines(bassLineIdx);
+  drawTrebleClef(); drawBassClef();
+  const trebleMidY = (yForIndex(trebleLineIdx[0]) + yForIndex(trebleLineIdx[4])) / 2;
+  const bassMidY   = (yForIndex(bassLineIdx[0])   + yForIndex(bassLineIdx[4]))   / 2;
+  const foT = el("foreignObject",{x:2,y:trebleMidY-14,width:82,height:28});
+  foT.innerHTML = `<label xmlns="http://www.w3.org/1999/xhtml" style="font:13px system-ui;cursor:pointer;display:flex;align-items:center;gap:3px;"><input type="checkbox" id="cbTreble"${trebleEnabled?" checked":""}>Treble</label>`;
+  svg.appendChild(foT);
+  const foB = el("foreignObject",{x:2,y:bassMidY-14,width:82,height:28});
+  foB.innerHTML = `<label xmlns="http://www.w3.org/1999/xhtml" style="font:13px system-ui;cursor:pointer;display:flex;align-items:center;gap:3px;"><input type="checkbox" id="cbBass"${bassEnabled?" checked":""}>Bass</label>`;
+  svg.appendChild(foB);
+  setTimeout(() => {
+    const cbT = document.getElementById("cbTreble"), cbB = document.getElementById("cbBass");
+    if (cbT) cbT.addEventListener("change", () => { trebleEnabled = cbT.checked; });
+    if (cbB) cbB.addEventListener("change", () => { bassEnabled   = cbB.checked; });
+  }, 0);
+}
+function drawKeySignatureOnStaff(sharps, flats, xStart) {
+  if (!sharps && !flats) return;
+  const [count, positions, char] = sharps > 0
+    ? [sharps, TREBLE_SHARP_POS, "\u266F"]
+    : [flats,  TREBLE_FLAT_POS,  "\u266D"];
+  for (let i = 0; i < count; i++) {
+    const x = xStart + i*22, y = yForIndex(positions[i]) + 36*0.38;
+    const t = el("text",{x,y,fill:"#111","font-size":36,"font-family":"serif"});
+    t.textContent = char; svg.appendChild(t);
+  }
+}
+function drawChordNotehead(idx, x, color) {
+  drawLedgerLinesFor(idx, x);
+  const y = yForIndex(idx);
+  svg.appendChild(el("ellipse",{cx:x,cy:y,rx:16,ry:12,fill:color,transform:`rotate(-18 ${x} ${y})`}));
+}
+function drawTriad(rootIdx, x, color) {
+  const fifth = rootIdx + 4;
+  drawChordNotehead(rootIdx,   x, color);
+  drawChordNotehead(rootIdx+2, x, color);
+  drawChordNotehead(fifth,     x, color);
+  const yTop = yForIndex(fifth);
+  svg.appendChild(el("line",{x1:x+14,y1:yTop,x2:x+14,y2:yTop-80,stroke:color,"stroke-width":4,"stroke-linecap":"round"}));
+}
+
+// =====================================================================
+// SHEET + NOTE QUIZ
+// =====================================================================
+const MIDDLE_LO = diatonicIndex("B",3), MIDDLE_HI = diatonicIndex("D",4);
+const TREBLE_LO = diatonicIndex("E",4), TREBLE_HI = diatonicIndex("E",6);
+const BASS_LO   = diatonicIndex("C",2), BASS_HI   = diatonicIndex("A",3);
+
+function buildNotePool() {
+  const pool = [];
+  for (let i = MIDDLE_LO; i <= MIDDLE_HI; i++) pool.push(i);
+  if (trebleEnabled) for (let i = TREBLE_LO; i <= TREBLE_HI; i++) pool.push(i);
+  if (bassEnabled)   for (let i = BASS_LO;   i <= BASS_HI;   i++) pool.push(i);
+  return pool;
+}
+
+function randomInt(lo, hi) { return lo + Math.floor(Math.random() * (hi - lo + 1)); }
+
+function renderSheetNoteBoard() {
+  clearSvg(); svg.setAttribute("viewBox","0 20 1000 450");
+  drawBothStaves();
+  const c = sheetNoteCurrent, xPos = noteXPositions(c.seqNotes.length);
+  c.seqNotes.forEach(({idx}, i) => {
+    const color = i < c.seqPos ? "#0a7a2f" : i === c.seqPos ? "#111" : "#aaa";
+    drawNote(idx, xPos[i], color);
+  });
+}
+
+function newSheetNoteQuestion() {
+  const pool = buildNotePool();
+  const seqLen = Number(document.getElementById("seqLen").value) || 1;
+  const firstIdx = pool[randomInt(0, pool.length-1)];
+  let octPool = pool.filter(i => i >= firstIdx && i <= firstIdx+6);
+  if (octPool.length < 2) octPool = pool.filter(i => Math.abs(i-firstIdx) <= 6);
+  const seqNotes = [{idx:firstIdx,note:noteFromIndex(firstIdx),clef:firstIdx>=MID_C_IDX?"treble":"bass"}];
+  for (let i = 1; i < seqLen; i++) {
+    const idx = octPool[randomInt(0, octPool.length-1)];
+    seqNotes.push({idx, note:noteFromIndex(idx), clef:idx>=MID_C_IDX?"treble":"bass"});
+  }
+  sheetNoteCurrent = {seqNotes, seqPos:0, answered:[], tries:0, totalTries:0, hintUsed:false};
+  waitingForNext = false; beginQuestion();
+  updateTypedDisplay(); clearFeedback();
+  renderSheetNoteBoard();
+  synth.playNoteSeq(seqNotes);
+}
+
+function updateTypedDisplay() {
+  const c = sheetNoteCurrent;
+  const parts = c.seqNotes.map((_, i) => c.answered[i] || "_");
+  document.getElementById("typed").textContent = c.seqNotes.length === 1 ? parts[0] : parts.join(" ");
+}
+
+function closestOctaveFor(letter, idx) {
+  let bestOct = 2, bestDist = Infinity;
+  for (let oct = 1; oct <= 7; oct++) {
+    const d = Math.abs(diatonicIndex(letter, oct) - idx);
+    if (d < bestDist) { bestDist = d; bestOct = oct; }
+  }
+  return bestOct;
+}
+
+function handleSheetNoteGuess(letter) {
+  if (waitingForNext || !sheetNoteCurrent) return;
+  const c = sheetNoteCurrent;
+  const {idx, note} = c.seqNotes[c.seqPos];
+  synth.playByLetter(letter, closestOctaveFor(letter, idx), 0.4);
+  c.tries++; c.totalTries++;
+  flashNoteBtn(letter, letter === note.letter);
+  if (letter === note.letter) {
+    c.answered.push(letter); updateTypedDisplay();
+    if (c.seqPos + 1 < c.seqNotes.length) {
+      c.seqPos++; c.tries = 0;
+      setFeedback("✓","good"); renderSheetNoteBoard();
+      setTimeout(() => { if (!waitingForNext) clearFeedback(); }, 500);
+    } else {
+      setFeedback("✓","good");
+      recordResult(c.totalTries === c.seqNotes.length, c.totalTries);
+      clearSvg(); svg.setAttribute("viewBox","0 20 1000 450"); drawBothStaves();
+      const xPos = noteXPositions(c.seqNotes.length);
+      c.seqNotes.forEach(({idx:ni,note:nn},i) => drawNote(ni,xPos[i],"#0a7a2f",noteName(nn)));
+      waitingForNext = true;
+      setTimeout(newSheetNoteQuestion, 1500);
+    }
+  } else {
+    setFeedback("✗","bad"); markWrong();
+  }
+}
+
+// =====================================================================
+// SHEET + KEY QUIZ
+// =====================================================================
+function renderSheetKeyBoard() {
+  clearSvg(); svg.setAttribute("viewBox","0 90 1000 210");
+  drawStaffLines(trebleLineIdx); drawTrebleClef();
+  if (!sheetKeyCurrent) return;
+  const {key, answered} = sheetKeyCurrent;
+  const numSigns = key.sharps || key.flats;
+  const sigX = staffX0 + 4;
+  drawKeySignatureOnStaff(key.sharps, key.flats, sigX);
+  const triadX = sigX + numSigns*22 + 130;
+  const rootIdx = KEY_ROOT_IDX[key.letter];
+  const color = answered ? "#0a7a2f" : "#111";
+  drawTriad(rootIdx, triadX, color);
+  if (answered) {
+    const label = keyDisplayName(key);
+    const lx = triadX+34, ly = yForIndex(rootIdx)+6;
+    svg.appendChild(el("rect",{x:lx-3,y:ly-18,width:label.length*13+6,height:24,fill:"white",rx:2}));
+    const t = el("text",{x:lx,y:ly,fill:"#0a7a2f","font-size":22,"font-weight":"bold"});
+    t.textContent = label; svg.appendChild(t);
+  }
+}
+
+function newSheetKeyQuestion() {
+  const pool = buildKeyPool();
+  sheetKeyCurrent = {key:pool[randomInt(0,pool.length-1)], answered:false, tries:0, hintUsed:false};
+  keyBuf = ""; waitingForNext = false; beginQuestion();
+  updateKeyTypedDisplay(); updateKeyBtnHighlights(); clearFeedback();
+  renderSheetKeyBoard();
+}
+
+function getKeyBufParts() {
+  let i = 0;
+  const letter = keyBuf[i++] || "";
+  let acc = "";
+  if (keyBuf[i] === "#" || keyBuf[i] === "-") acc = keyBuf[i++];
+  const quality = keyBuf[i] || "";
+  return {letter, acc, quality};
+}
+
+function updateKeyTypedDisplay() {
+  const d = keyBuf.length === 0 ? "_" : keyBuf.replace("-","b") + (keyBuf.length < 3 ? "_" : "");
+  document.getElementById("typed").textContent = d;
+}
+
+function updateKeyBtnHighlights() {
+  const {letter, acc, quality} = getKeyBufParts();
+  document.querySelectorAll(".note-btn").forEach(btn =>
+    btn.classList.toggle("selected-btn", quizMode === "key" && btn.dataset.note === letter));
+  document.querySelectorAll(".acc-btn").forEach(btn =>
+    btn.classList.toggle("selected-btn", btn.dataset.acc === acc && letter !== ""));
+  document.querySelectorAll(".qual-btn").forEach(btn =>
+    btn.classList.toggle("selected-btn", btn.dataset.quality === quality && quality !== ""));
+}
+
+function handleSheetKeyGuess() {
+  if (waitingForNext || !sheetKeyCurrent) return;
+  const {key} = sheetKeyCurrent;
+  let i = 0;
+  const letter = keyBuf[i++] || "";
+  if (!letter) return;
+  let acc = ""; if (keyBuf[i]=== "#" || keyBuf[i] === "-") acc = keyBuf[i++];
+  const quality = keyBuf[i] || "";
+  sheetKeyCurrent.tries++;
+  const correct = letter === key.letter && acc === key.acc &&
+    ((quality === "M" && key.quality === "major") ||
+     (quality === "m" && key.quality === "minor") ||
+     (quality === "" && key.quality === "major"));
+  flashEl(document.getElementById("submitKeyBtn"), correct);
+  if (correct) {
+    sheetKeyCurrent.answered = true;
+    setFeedback("✓","good");
+    recordResult(sheetKeyCurrent.tries === 1, sheetKeyCurrent.tries);
+    renderSheetKeyBoard();
+    waitingForNext = true;
+    setTimeout(newSheetKeyQuestion, 1800);
+  } else {
+    setFeedback("✗","bad"); markWrong();
+    keyBuf = ""; updateKeyTypedDisplay(); updateKeyBtnHighlights();
+  }
+}
+
+// =====================================================================
+// EAR + NOTE QUIZ
+// =====================================================================
+const earOptKey = degs => degs.join("-");
+let prevEarNoteKeys = [];   // slot layout of the previous question's choices
+
+// Any choice the player just saw keeps the slot it was in, so "it's the second
+// one" stays meaningful from question to question. Genuinely new choices are
+// shuffled into whatever slots are left over.
+function arrangeByPrevPosition(items, prevKeys, keyOf) {
+  const n = items.length;
+  const slots = new Array(n).fill(null);
+  const leftovers = [];
+  for (const it of items) {
+    const p = prevKeys.indexOf(keyOf(it));
+    if (p >= 0 && p < n && slots[p] === null) slots[p] = it;
+    else leftovers.push(it);
+  }
+  for (let i = leftovers.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [leftovers[i], leftovers[j]] = [leftovers[j], leftovers[i]];
+  }
+  let r = 0;
+  for (let i = 0; i < n; i++) if (slots[i] === null) slots[i] = leftovers[r++];
+  return slots;
+}
+
+function newEarNoteQuestion() {
+  const keyName = document.getElementById("earKey").value;
+  const octave  = Number(document.getElementById("earOctave").value);
+  const len     = Number(document.getElementById("earLen").value) || 3;
+  const numCh   = Math.max(2, Number(document.getElementById("earChoices").value));
+  const {scaleMidi, scaleNames} = buildMajorScale(keyName, octave);
+  const degrees = generateSequence(len, 2, true);
+  const midi    = degrees.map(d => scaleMidi[d]);
+  const names   = degrees.map(d => scaleNames[d]);
+  const distractors = makeDistractors(degrees, numCh - 1);
+  const options = arrangeByPrevPosition([degrees, ...distractors], prevEarNoteKeys, earOptKey);
+  prevEarNoteKeys = options.map(earOptKey);
+  const correctIndex = options.findIndex(o => o.join("-") === degrees.join("-"));
+  earCurrent = {
+    kind:"note", degrees, midi, names, scaleNames,
+    options: options.map(dd => ({degrees:dd, names:dd.map(d => scaleNames[d])})),
+    correctIndex, answered:false, tries:0
+  };
+  waitingForNext = false; beginQuestion();
+  document.getElementById("earLabel").textContent = `Key: ${keyName} major`;
+  renderEarNoteChoices();
+  clearFeedback();
+  synth.playMidi(midi, 90, 0.6);
+}
+
+function renderEarNoteChoices() {
+  const area = document.getElementById("choicesArea");
+  area.innerHTML = "";
+  earCurrent.options.forEach((opt, idx) => {
+    const btn = document.createElement("button");
+    btn.className = "choice-btn";
+    const numDiv = document.createElement("div");   // matches the 1–6 keyboard shortcut
+    numDiv.className = "choice-num";
+    numDiv.textContent = String(idx + 1);
+    btn.appendChild(numDiv);
+    const svgEl = document.createElementNS("http://www.w3.org/2000/svg","svg");
+    svgEl.setAttribute("viewBox","0 0 200 52");
+    svgEl.setAttribute("preserveAspectRatio","xMidYMid meet");
+    svgEl.classList.add("ladder");
+    renderStepLadder(svgEl, opt.degrees);
+    btn.appendChild(svgEl);
+    const nameDiv = document.createElement("div");
+    nameDiv.style.cssText = "font-size:11px;color:#444;margin-top:2px;";
+    nameDiv.textContent = opt.names.join(" – ");
+    btn.appendChild(nameDiv);
+    btn.addEventListener("click", () => handleEarNoteAnswer(idx));
+    area.appendChild(btn);
+  });
+}
+
+function renderStepLadder(svgEl, degrees) {
+  while (svgEl.firstChild) svgEl.removeChild(svgEl.firstChild);
+  const W=200, H=52, pl=6, pr=6, pt=6, pb=6;
+  const plotW=W-pl-pr, plotH=H-pt-pb;
+  const xStep = plotW / degrees.length;
+  const yForDeg = d => pt + plotH * (1 - d/6);
+  const path = document.createElementNS("http://www.w3.org/2000/svg","path");
+  path.setAttribute("class","step");
+  let d = "";
+  degrees.forEach((deg, i) => {
+    const y=yForDeg(deg), xL=pl+i*xStep, xR=pl+(i+1)*xStep;
+    if (i===0) d += `M${xL},${y}`;
+    d += ` H${xR}`;
+    if (i < degrees.length-1) d += ` V${yForDeg(degrees[i+1])}`;
+  });
+  path.setAttribute("d", d);
+  svgEl.appendChild(path);
+}
+
+// Keeps asking until you get it right, like the sheet and rhythm quizzes. A miss
+// buzzes, flashes red and bumps the attempt count, then leaves the question up.
+function handleEarNoteAnswer(idx) {
+  if (!earCurrent || earCurrent.answered || waitingForNext) return;
+  earCurrent.tries++;
+  const correct = idx === earCurrent.correctIndex;
+  if (correct) playFeedbackDing(); else playFeedbackBuzz();
+  // On a pass, hold the green until the next question re-renders the choices.
+  flashEl(document.getElementById("choicesArea").children[idx], correct, correct ? 0 : FLASH_MS);
+  if (correct) {
+    earCurrent.answered = true;
+    recordResult(earCurrent.tries === 1, earCurrent.tries);
+    waitingForNext = true;
+    setTimeout(newEarNoteQuestion, 900);
+  } else {
+    markWrong();  // the question stays up for another go
+    // Replay once the buzz has cleared, unless the question moved on meanwhile.
+    const q = earCurrent;
+    setTimeout(() => {
+      if (earCurrent === q && !q.answered) synth.playMidi(q.midi, 90, 0.6);
+    }, 500);
+  }
+}
+
+// =====================================================================
+// EAR + KEY QUIZ
+// =====================================================================
+function keyToMidi(letter, acc, octave) {
+  let semi = SEMI[letter];
+  if (acc === "#") semi++;
+  else if (acc === "-") semi--;
+  return 12 + octave * 12 + semi;
+}
+
+function playEarKeySequence(key) {
+  const root = keyToMidi(key.letter, key.acc, 4);
+  const third = key.quality === "minor" ? 3 : 4;
+  synth.playChord([root, root+third, root+7, root+12]);
+}
+
+function newEarKeyQuestion() {
+  const pool = buildKeyPool();
+  const key  = pool[randomInt(0, pool.length-1)];
+  const distPool = pool.filter(k => k !== key);
+  for (let i = distPool.length-1; i > 0; i--) {
+    const j = Math.floor(Math.random()*(i+1)); [distPool[i],distPool[j]] = [distPool[j],distPool[i]];
+  }
+  function chromIdx(k) {
+    let s = SEMI[k.letter];
+    if (k.acc === "#") s++;
+    else if (k.acc === "-") s--;
+    return (s + 12) % 12;
+  }
+  // Enharmonic spellings sound the same — F# Major and Gb Major produce identical
+  // notes, as do D# minor and Eb minor. Offering both makes the question
+  // unanswerable, so only one choice per distinct sounding chord gets in.
+  const heardAs = k => `${chromIdx(k)}|${k.quality}`;
+  const taken = new Set([heardAs(key)]);
+  const distractors = [];
+  for (const k of distPool) {
+    if (distractors.length === 3) break;
+    const sig = heardAs(k);
+    if (taken.has(sig)) continue;
+    taken.add(sig);
+    distractors.push(k);
+  }
+  const options = [key, ...distractors].sort((a, b) => chromIdx(a) - chromIdx(b));
+  const correctIndex = options.indexOf(key); // reference equality — always finds the right entry
+  earCurrent = {kind:"key", key, options, correctIndex, answered:false, tries:0};
+  waitingForNext = false; beginQuestion();
+  document.getElementById("earLabel").textContent = "";
+  renderEarKeyChoices();
+  clearFeedback();
+  playEarKeySequence(key);
+}
+
+function renderEarKeyChoices() {
+  const area = document.getElementById("choicesArea");
+  area.innerHTML = "";
+  earCurrent.options.forEach((k, idx) => {
+    const btn = document.createElement("button");
+    btn.className = "choice-btn";
+    btn.style.cssText = "font-size:16px;font-weight:600;min-width:90px;min-height:44px;";
+    const numDiv = document.createElement("div");   // matches the 1–6 keyboard shortcut
+    numDiv.className = "choice-num";
+    numDiv.textContent = String(idx + 1);
+    btn.appendChild(numDiv);
+    const labelDiv = document.createElement("div");
+    labelDiv.textContent = keyDisplayName(k);
+    btn.appendChild(labelDiv);
+    btn.addEventListener("click", () => handleEarKeyAnswer(idx));
+    area.appendChild(btn);
+  });
+}
+
+// Same flow as the note/ear quiz: a miss buzzes, flashes the pressed button red
+// and counts an attempt, but the question stays up and the chord replays.
+function handleEarKeyAnswer(idx) {
+  if (!earCurrent || earCurrent.answered || waitingForNext) return;
+  earCurrent.tries++;
+  const correct = idx === earCurrent.correctIndex;
+  if (correct) playFeedbackDing(); else playFeedbackBuzz();
+  // On a pass, hold the green until the next question re-renders the choices.
+  flashEl(document.getElementById("choicesArea").children[idx], correct, correct ? 0 : FLASH_MS);
+  if (correct) {
+    earCurrent.answered = true;
+    setFeedback("✓  " + keyDisplayName(earCurrent.key), "good");
+    recordResult(earCurrent.tries === 1, earCurrent.tries);
+    waitingForNext = true;
+    setTimeout(newEarKeyQuestion, 900);
+  } else {
+    markWrong();  // no label on a miss — the answer is still to be found
+    const q = earCurrent;
+    setTimeout(() => {
+      if (earCurrent === q && !q.answered) playEarKeySequence(q.key);
+    }, 500);
+  }
+}
+
+function lockChoiceButtons(chosen, correct) {
+  const btns = Array.from(document.getElementById("choicesArea").children);
+  btns.forEach((b, i) => {
+    b.classList.toggle("correct", i === correct);
+    if (i === chosen && i !== correct) b.classList.add("wrong");
+    b.disabled = true;
+  });
+}
+
+// =====================================================================
+// RHYTHM TRAINER QUIZ
+// =====================================================================
+function rhythmLiveBpm() {
+  return Math.max(60, Math.min(1000, Number(document.getElementById("rhythmBpm").value) || 150));
+}
+
+function buildRhythmNotePool() {
+  const oct = Number(document.getElementById("rhythmOctave").value) || 4;
+  const pool = [];
+  for (const n of rhythmEnabledNotes) {
+    const o = n === "C'" ? oct + 1 : oct;
+    const letter = n === "C'" ? "C" : n;
+    pool.push(12 + o * 12 + SEMI[letter]);
+  }
+  return pool.length > 0 ? pool : [12 + oct * 12 + SEMI["C"]];
+}
+
+function scheduleRhythmHighlights() {
+  const { events } = rhythmCurrent;
+  const bpm = rhythmLiveBpm();
+  const beatMs = (60 / bpm) * 1000;
+  const beatsEl = document.getElementById("rhythmBeats");
+  beatsEl.innerHTML = "";
+
+  const totalBeats = events.reduce((s, ev) => s + ev.dur, 0);
+
+  const PAD = 10;
+  const avail = Math.max(160, beatsEl.offsetWidth - 4);
+  const pxPerBeat = (avail - 2 * PAD) / 8;  // 8 quarter beats fills the container width
+  // Layout: notes float above baseline; ticks descend below baseline.
+  //   y=0..BASE  → note symbols (head cy, stem top)
+  //   y=BASE     → baseline rule
+  //   y=BASE..H  → tick marks
+  const H = 70, BASE = 42;
+  const svgW = Math.ceil(totalBeats * pxPerBeat) + 2 * PAD;
+  const xFor = b => PAD + b * pxPerBeat;
+
+  const ruler = el("svg", { width: svgW, height: H });
+  ruler.style.display = "block";
+
+  // Baseline rule
+  ruler.appendChild(el("line", {
+    x1: PAD, y1: BASE, x2: svgW - PAD, y2: BASE,
+    stroke: "#bbb", "stroke-width": 1.5
+  }));
+
+  // Tick marks descending from baseline; quarter-note ticks taller
+  let t = 0;
+  while (t <= totalBeats + 0.001) {
+    const isQuarter = Math.round(t * 16) % 4 === 0;
+    const tickH = isQuarter ? 20 : 7;
+    const x = xFor(t);
+    ruler.appendChild(el("line", {
+      x1: x, y1: BASE, x2: x, y2: BASE + tickH,
+      stroke: isQuarter ? "#888" : "#ccc",
+      "stroke-width": isQuarter ? 1.5 : 1
+    }));
+    t = Math.round((t + 0.25) * 16384) / 16384;
+  }
+
+  // ── Note/rest symbol helpers ──────────────────────────────────────────
+  // Note geometry: head is a small rotated ellipse; stem goes straight up.
+  const NCY = 31, NRX = 7, NRY = 5;    // head centre-y, x-radius, y-radius
+  const SX = 6;                          // stem x-offset (right edge of head)
+  const STOP = 10;                       // y of stem top
+  const BEAM_H = 4;                      // beam bar height
+
+  function isBeamable(dur) {
+    return Math.abs(dur - 0.25) < 0.01 ||   // 16th
+           Math.abs(dur - 0.5)  < 0.01 ||   // 8th
+           Math.abs(dur - 1/3)  < 0.01;     // triplet
+  }
+
+  // Draw an 8th rest; returns the array of animatable SVG elements.
+  // Shape: filled dot at top + thick diagonal stroke + small bottom curl.
+  function drawRest8th(x) {
+    const dot  = el("circle", { cx: x, cy: 13, r: 3.5, fill: "#bbb" });
+    const diag = el("line", {
+      x1: x + 3, y1: 17, x2: x - 4, y2: 32,
+      stroke: "#bbb", "stroke-width": 3.5, "stroke-linecap": "round"
+    });
+    const curl = el("path", {
+      d: `M ${x-4} 32 Q ${x-1} 37 ${x+3} 34`,
+      fill: "none", stroke: "#bbb", "stroke-width": 3, "stroke-linecap": "round"
+    });
+    ruler.appendChild(dot);
+    ruler.appendChild(diag);
+    ruler.appendChild(curl);
+    return [dot, diag, curl];
+  }
+
+  // ── Pre-compute x positions and elapsed start times ───────────────────
+  const evData = [];
+  {
+    let elapsed = 0;
+    for (const ev of events) {
+      evData.push({ ev, x: xFor(elapsed), elapsed });
+      elapsed += ev.dur;
+    }
+  }
+
+  // ── Identify beaming groups ───────────────────────────────────────────
+  // A group is a consecutive run of ≥2 beamable (non-rest) events.
+  const groupOf = new Array(events.length).fill(-1);
+  const groups  = [];
+  {
+    let gi = 0;
+    while (gi < evData.length) {
+      const { ev } = evData[gi];
+      if (!ev.rest && isBeamable(ev.dur)) {
+        let gj = gi + 1;
+        while (gj < evData.length && !evData[gj].ev.rest && isBeamable(evData[gj].ev.dur)) gj++;
+        if (gj - gi >= 2) {
+          const gIdx = groups.length;
+          const grp = [];
+          for (let k = gi; k < gj; k++) { groupOf[k] = gIdx; grp.push(k); }
+          groups.push(grp);
+        }
+        gi = gj;
+      } else {
+        gi++;
+      }
+    }
+  }
+
+  // ── Pass 1: draw stems for all pitched notes ──────────────────────────
+  for (let k = 0; k < evData.length; k++) {
+    const { ev, x } = evData[k];
+    if (!ev.rest) {
+      const sx = x + SX;
+      ruler.appendChild(el("line", {
+        x1: sx, y1: NCY, x2: sx, y2: STOP,
+        stroke: "#aaa", "stroke-width": 1.5, "stroke-linecap": "round"
+      }));
+    }
+  }
+
+  // ── Pass 2: draw beams for groups; flags for isolated beamable notes ──
+  for (const grp of groups) {
+    const bx0 = evData[grp[0]].x + SX;
+    const bx1 = evData[grp[grp.length - 1]].x + SX;
+
+    // Primary beam — connects all notes in the group
+    ruler.appendChild(el("rect", { x: bx0, y: STOP - 2, width: bx1 - bx0, height: BEAM_H, fill: "#aaa" }));
+
+    // Secondary beam — spans consecutive runs of 16th notes within the group
+    let runStart = -1;
+    for (let i = 0; i <= grp.length; i++) {
+      const is16 = i < grp.length && Math.abs(evData[grp[i]].ev.dur - 0.25) < 0.01;
+      if (is16) {
+        if (runStart === -1) runStart = i;
+      } else {
+        if (runStart !== -1) {
+          if (i - runStart >= 2) {
+            // Full secondary beam across this run
+            const r0 = evData[grp[runStart]].x + SX;
+            const r1 = evData[grp[i - 1]].x + SX;
+            ruler.appendChild(el("rect", { x: r0, y: STOP + 6, width: r1 - r0, height: BEAM_H, fill: "#aaa" }));
+          } else {
+            // Single isolated 16th: stub toward its group neighbor
+            const sx16 = evData[grp[runStart]].x + SX;
+            if (runStart === grp.length - 1) {
+              const prevSX = evData[grp[runStart - 1]].x + SX;
+              const stubW  = Math.min(8, (sx16 - prevSX) * 0.45);
+              ruler.appendChild(el("rect", { x: sx16 - stubW, y: STOP + 6, width: stubW, height: BEAM_H, fill: "#aaa" }));
+            } else {
+              const nextSX = evData[grp[runStart + 1]].x + SX;
+              const stubW  = Math.min(8, (nextSX - sx16) * 0.45);
+              ruler.appendChild(el("rect", { x: sx16, y: STOP + 6, width: stubW, height: BEAM_H, fill: "#aaa" }));
+            }
+          }
+          runStart = -1;
+        }
+      }
+    }
+
+    // Triplet label: "3" centred above the group
+    const allTriplet = grp.every(k => Math.abs(evData[k].ev.dur - 1/3) < 0.01);
+    if (allTriplet) {
+      const midX = (bx0 + bx1) / 2;
+      const lbl = el("text", {
+        x: midX, y: STOP - 4,
+        "font-size": 11, "font-weight": 700, "font-family": "system-ui",
+        fill: "#aaa", "text-anchor": "middle"
+      });
+      lbl.textContent = "3";
+      ruler.appendChild(lbl);
+    }
+  }
+
+  // Flags for isolated beamable notes (not in any group)
+  for (let k = 0; k < evData.length; k++) {
+    const { ev, x } = evData[k];
+    if (!ev.rest && groupOf[k] === -1 && isBeamable(ev.dur)) {
+      const isTriplet = Math.abs(ev.dur - 1/3) < 0.01;
+      const is16th    = Math.abs(ev.dur - 0.25) < 0.01;
+      const nFlags    = is16th ? 2 : 1;
+      const sx        = x + SX;
+      for (let f = 0; f < nFlags; f++) {
+        const fy = STOP + f * 7;
+        ruler.appendChild(el("path", {
+          d: `M ${sx} ${fy} C ${sx+11} ${fy+4} ${sx+11} ${fy+10} ${sx+6} ${fy+15}`,
+          fill: "none", stroke: "#aaa", "stroke-width": 2, "stroke-linecap": "round"
+        }));
+      }
+      if (isTriplet) {
+        const lbl = el("text", {
+          x: sx + 2, y: STOP - 4,
+          "font-size": 11, "font-weight": 700, "font-family": "system-ui", fill: "#aaa"
+        });
+        lbl.textContent = "3";
+        ruler.appendChild(lbl);
+      }
+    }
+  }
+
+  // ── Pass 3: draw note heads and rests; build animation list ──────────
+  // Heads drawn last so they sit on top of stems and beams.
+  const animItems = [];
+  for (let k = 0; k < evData.length; k++) {
+    const { ev, x, elapsed } = evData[k];
+    if (ev.rest) {
+      const restEls = drawRest8th(x);
+      animItems.push({ isRest: true, restEls, startMs: elapsed * beatMs, durMs: ev.dur * beatMs });
+    } else {
+      const head = el("ellipse", {
+        cx: x, cy: NCY, rx: NRX, ry: NRY,
+        fill: "#ccc", transform: `rotate(-15, ${x}, ${NCY})`
+      });
+      ruler.appendChild(head);
+      animItems.push({ isRest: false, head, startMs: elapsed * beatMs, durMs: ev.dur * beatMs });
+    }
+  }
+
+  beatsEl.appendChild(ruler);
+
+  // ── Animate: inactive (#bbb/#ccc) → blue (onset) → green (done) ──────
+  const setColor = (item, fill, stroke) => {
+    if (item.isRest) {
+      item.restEls.forEach(e => {
+        if (e.tagName === "circle") e.setAttribute("fill", fill);
+        else { e.setAttribute("stroke", stroke); }
+      });
+    } else {
+      item.head.setAttribute("fill", fill);
+    }
+  };
+  animItems.forEach(item => {
+    setTimeout(() => {
+      setColor(item, "#4a90d9", "#357ab8");
+      setTimeout(() => setColor(item, "#0a7a2f", "#068a35"),
+        Math.min(item.durMs * 0.55, 220));
+    }, item.startMs + 50);
+  });
+}
+
+function playRhythmSequence() {
+  if (!rhythmCurrent) return;
+  const { events } = rhythmCurrent;
+  const bpm = rhythmLiveBpm();
+  synth.ensure();
+  const sg = synth.newSeqGain();
+  const beatSec = 60 / bpm;
+  let t = synth.ctx.currentTime + 0.05;
+  events.forEach(ev => {
+    const dur = ev.dur * beatSec;
+    if (!ev.rest) synth.playNote(midiToFreq(ev.midi), t, dur * 0.8, 0.5, sg);
+    t += dur;
+  });
+  if (rhythmCurrent.hintUsed) scheduleRhythmHighlights();
+}
+
+function renderRhythmChoices() {
+  const area = document.getElementById("choicesArea");
+  area.innerHTML = "";
+  for (let n = 1; n <= 8; n++) {
+    const btn = document.createElement("button");
+    btn.className = "choice-btn";
+    btn.style.cssText = "font-size:26px;font-weight:700;min-width:62px;min-height:62px;";
+    btn.textContent = String(n);
+    const enabled = rhythmEnabledCounts.has(n);
+    if (!enabled) { btn.disabled = true; btn.style.opacity = "0.25"; }
+    btn.addEventListener("click", () => handleRhythmAnswer(n));
+    area.appendChild(btn);
+  }
+}
+
+function rhythmHintAlways() {
+  return document.getElementById("rhythmHintAlways").checked;
+}
+
+function activateRhythmHint() {
+  rhythmCurrent.hintUsed = true; markHint();
+  playRhythmSequence(); // replays with dot highlights; user counts the dots
+}
+
+function handleRhythmHint() {
+  if (!rhythmCurrent || rhythmCurrent.answered) return;
+  activateRhythmHint();
+}
+
+function newRhythmQuestion() {
+  const pool = rhythmEnabledCounts.size > 0 ? [...rhythmEnabledCounts] : [2, 3, 4];
+  const count = pool[randomInt(0, pool.length - 1)];
+  const notePool = buildRhythmNotePool();
+  const durPool = rhythmDurSet.size > 0
+    ? [...rhythmDurSet].map(k => RHYTHM_DUR_BEATS[k])
+    : null; // null = constant (1 beat each)
+
+  // Build events: notes with chosen durations, optional 8th rests between notes
+  const events = [];
+  for (let i = 0; i < count; i++) {
+    const midi = notePool[randomInt(0, notePool.length - 1)];
+    const dur  = durPool ? durPool[randomInt(0, durPool.length - 1)] : 1.0;
+    events.push({ midi, dur });
+    if (rhythmRestEnabled && i < count - 1 && Math.random() < 0.5) {
+      events.push({ rest: true, dur: 0.5 });
+    }
+  }
+  rhythmCurrent = { count, events, hintUsed: false, answered: false, tries: 0 };
+  waitingForNext = false; beginQuestion();
+  document.getElementById("rhythmHintText").textContent = "";
+  document.getElementById("rhythmBeats").innerHTML = "";
+  document.getElementById("earLabel").textContent = "";
+  renderRhythmChoices();
+  clearFeedback();
+  if (rhythmHintAlways()) {
+    activateRhythmHint(); // auto-shows hint + plays with highlights
+  } else {
+    playRhythmSequence();
+  }
+}
+
+function playFeedbackDing() {
+  synth.ensure();
+  const t0 = synth.ctx.currentTime + 0.02;
+  synth.playNote(midiToFreq(84), t0,        0.08, 0.9); // C6 — bright tap
+  synth.playNote(midiToFreq(88), t0 + 0.09, 0.18, 0.6); // E6 — rising confirmation
+}
+
+function playFeedbackBuzz() {
+  synth.ensure();
+  const t0 = synth.ctx.currentTime + 0.02;
+  // Tritone cluster played together = dissonant "wrong" buzz
+  synth.playNote(midiToFreq(48), t0, 0.28, 0.55); // C3
+  synth.playNote(midiToFreq(54), t0, 0.28, 0.55); // F#3 (tritone — maximally dissonant)
+}
+
+function handleRhythmAnswer(count) {
+  if (!rhythmCurrent || rhythmCurrent.answered) return;
+  rhythmCurrent.tries++;
+  const correct = count === rhythmCurrent.count;
+  if (document.getElementById("rhythmSoundFb").checked) {
+    if (correct) playFeedbackDing(); else playFeedbackBuzz();
+  }
+  if (correct) {
+    rhythmCurrent.answered = true;
+    lockChoiceButtons(count - 1, rhythmCurrent.count - 1);
+    setFeedback("✓  " + rhythmCurrent.count + " notes", "good");
+    recordResult(rhythmCurrent.tries === 1, rhythmCurrent.tries);
+    setTimeout(newRhythmQuestion, 2000);
+  } else {
+    // Wrong: flash the pressed button, then replay for another attempt
+    setFeedback("✗", "bad"); markWrong();
+    waitingForNext = true;
+    const btns = Array.from(document.getElementById("choicesArea").children);
+    btns.forEach(b => { b.disabled = true; });
+    if (btns[count - 1]) btns[count - 1].classList.add("wrong");
+    setTimeout(() => {
+      waitingForNext = false;
+      clearFeedback();
+      renderRhythmChoices();
+      playRhythmSequence();
+    }, 800);
+  }
+}
+
+// =====================================================================
+// GUITAR TAB QUIZ
+// =====================================================================
+function noteToMidi(letter, octave) { return 12 + octave * 12 + SEMI[letter]; }
+
+function findTabPlacement(letter, octave) {
+  const midi = noteToMidi(letter, octave);
+  const pos  = TAB_POSITIONS[tabPositionIdx];
+  let best = null, bestScore = Infinity;
+  for (const str of GUITAR_STRINGS) {
+    const fret = midi - str.openMidi;
+    if (fret < 0 || fret > 24) continue;
+    const score = fret < pos.minFret ? pos.minFret - fret
+                : fret > pos.maxFret ? fret - pos.maxFret : 0;
+    if (score < bestScore) { bestScore = score; best = { stringNum: str.stringNum, fret }; }
+  }
+  return best;
+}
+
+function buildTabNotePool() {
+  const pos = TAB_POSITIONS[tabPositionIdx];
+  const seen = new Set();
+  const pool = [];
+  for (const str of GUITAR_STRINGS) {
+    for (let fret = pos.minFret; fret <= pos.maxFret; fret++) {
+      const midi = str.openMidi + fret;
+      const semi = (midi - 12) % 12;
+      if (!SEMI_INV.has(semi)) continue;
+      const letter = SEMI_INV.get(semi);
+      const octave = Math.floor((midi - 12) / 12);
+      const dIdx = diatonicIndex(letter, octave);
+      if (!seen.has(dIdx)) { seen.add(dIdx); pool.push(dIdx); }
+    }
+  }
+  return pool.sort((a, b) => a - b);
+}
+
+function newTabNoteQuestion() {
+  const pool = buildTabNotePool();
+  if (!pool.length) return;
+  const seqLen = Number(document.getElementById("seqLen").value) || 1;
+  const seqNotes = [];
+  let attempts = 0;
+  while (seqNotes.length < seqLen && attempts < 200) {
+    attempts++;
+    const idx = pool[randomInt(0, pool.length - 1)];
+    if (seqNotes.length > 0 && seqNotes[seqNotes.length - 1].idx === idx) continue;
+    const note = noteFromIndex(idx);
+    const placement = findTabPlacement(note.letter, note.octave);
+    if (placement) seqNotes.push({ idx, note, placement });
+  }
+  if (!seqNotes.length) return;
+  tabCurrent = { seqNotes, seqPos: 0, answered: [], tries: 0, totalTries: 0 };
+  waitingForNext = false; beginQuestion();
+  updateTabTypedDisplay(); clearFeedback();
+  renderTabBoard();
+  synth.playNoteSeq(seqNotes);
+}
+
+function updateTabTypedDisplay() {
+  const c = tabCurrent;
+  const parts = c.seqNotes.map((_, i) => c.answered[i] || "_");
+  document.getElementById("typed").textContent = c.seqNotes.length === 1 ? parts[0] : parts.join(" ");
+}
+
+function renderTabBoard() {
+  clearSvg(); svg.setAttribute("viewBox","0 0 1000 450");
+  const pos = TAB_POSITIONS[tabPositionIdx];
+
+  // Position label
+  const posT = el("text",{x:500,y:38,"text-anchor":"middle",fill:"#555","font-size":17,"font-family":"system-ui"});
+  posT.textContent = "Position: " + pos.label; svg.appendChild(posT);
+
+  // String labels (high e → low E)
+  const strLabels = ["e","B","G","D","A","E"];
+  TAB_STR_Y.forEach((y, i) => {
+    const t = el("text",{x:TAB_LEFT-10,y:y+8,"text-anchor":"end",fill:"#333","font-size":20,"font-weight":"bold","font-family":"monospace"});
+    t.textContent = strLabels[i]; svg.appendChild(t);
+  });
+
+  // Nut / position marker
+  if (pos.minFret === 0) {
+    svg.appendChild(el("rect",{x:TAB_LEFT,y:TAB_STR_Y[0]-15,width:8,height:TAB_STR_Y[5]-TAB_STR_Y[0]+30,fill:"#222",rx:2}));
+  } else {
+    svg.appendChild(el("line",{x1:TAB_LEFT,y1:TAB_STR_Y[0]-12,x2:TAB_LEFT,y2:TAB_STR_Y[5]+12,stroke:"#555","stroke-width":3}));
+    const frT = el("text",{x:TAB_LEFT+4,y:TAB_STR_Y[5]+32,fill:"#666","font-size":14,"font-style":"italic"});
+    frT.textContent = pos.minFret + "fr"; svg.appendChild(frT);
+  }
+
+  // String lines
+  TAB_STR_Y.forEach(y => {
+    svg.appendChild(el("line",{x1:TAB_LEFT,y1:y,x2:TAB_RIGHT,y2:y,stroke:"#444","stroke-width":2.5}));
+  });
+
+  if (!tabCurrent) return;
+  const c = tabCurrent;
+  const xPos = noteXPositions(c.seqNotes.length);
+
+  c.seqNotes.forEach(({note, placement}, i) => {
+    const answered = i < c.seqPos;
+    const current  = i === c.seqPos;
+    const color = answered ? "#0a7a2f" : current ? "#111" : "#aaa";
+    const x = xPos[i];
+    const y = TAB_STR_Y[placement.stringNum - 1];
+    const fStr = String(placement.fret);
+    const bw = fStr.length === 1 ? 32 : 44;
+
+    svg.appendChild(el("rect",{x:x-bw/2,y:y-14,width:bw,height:28,fill:"white",stroke:color,"stroke-width":2.5,rx:5}));
+    const nt = el("text",{x,y:y+8,"text-anchor":"middle",fill:color,"font-size":20,"font-weight":"bold","font-family":"monospace"});
+    nt.textContent = fStr; svg.appendChild(nt);
+
+    // Show note letter above when answered (or all done)
+    if (answered) {
+      const lt = el("text",{x,y:y-20,"text-anchor":"middle",fill:"#0a7a2f","font-size":15,"font-weight":"bold"});
+      lt.textContent = note.letter; svg.appendChild(lt);
+    }
+  });
+}
+
+function handleTabNoteGuess(letter) {
+  if (waitingForNext || !tabCurrent) return;
+  const c = tabCurrent;
+  const {idx, note} = c.seqNotes[c.seqPos];
+  synth.playByLetter(letter, closestOctaveFor(letter, idx), 0.4);
+  c.tries++; c.totalTries++;
+  flashNoteBtn(letter, letter === note.letter);
+  if (letter === note.letter) {
+    c.answered.push(letter); updateTabTypedDisplay();
+    if (c.seqPos + 1 < c.seqNotes.length) {
+      c.seqPos++; c.tries = 0;
+      setFeedback("✓","good"); renderTabBoard();
+      setTimeout(() => { if (!waitingForNext) clearFeedback(); }, 500);
+    } else {
+      setFeedback("✓","good");
+      recordResult(c.totalTries === c.seqNotes.length, c.totalTries);
+      c.seqPos = c.seqNotes.length; // mark all answered
+      waitingForNext = true;
+      renderTabBoard();
+      setTimeout(newTabNoteQuestion, 1500);
+    }
+  } else {
+    setFeedback("✗","bad"); markWrong();
+  }
+}
+
+// =====================================================================
+// STATS
+// =====================================================================
+// A question just went up: claim a fresh square for it. Any pending question
+// that never settled (mode switch, option change) is simply dropped, so only
+// answers and deliberate skips take up a square.
+function beginQuestion() {
+  pending = {wrong: false, hint: false, attempts: 0};
+  setHintText("");   // every quiz type shares the one hint line
+  updateStats();
+}
+
+// A hint was shown — by the Hint button, the H key, or "Always hint" firing at
+// the start of a rhythm question. Brands the square with an H; the pass/fail is
+// still decided purely by the answer.
+function markHint() {
+  if (!pending || pending.hint) return;
+  pending.hint = true;
+  updateStats();
+}
+
+// A wrong answer on a quiz that keeps asking: redden the square right away, but
+// hold on to it — the question isn't over.
+function markWrong() {
+  if (!pending) return;
+  pending.wrong = true;
+  pending.attempts++;
+  updateStats();
+}
+
+// Deliberate skip: the square keeps whatever it has earned so far — grey if the
+// question was never missed, red if it was — and the next question gets a new one.
+function skipQuestion() {
+  if (pending) {
+    results.push({state: pending.wrong ? "fail" : "skip", hint: pending.hint, attempts: pending.attempts});
+    pending = null;
+  }
+  startNewQuestion();
+}
+
+// `attempts` is the quiz's own try counter — the same number the Tries readout
+// shows. Falls back to the tally of wrong answers when a caller omits it.
+function recordResult(wasFirstTry, attempts) {
+  const hint = !!(pending && pending.hint);
+  const tries = attempts != null ? attempts : (pending ? pending.attempts : 0);
+  pending = null;
+  results.push({state: wasFirstTry ? "pass" : "fail", hint, attempts: tries});
+  updateStats();
+}
+
+const LAST_N = 10;  // how many recent outcomes the squares show
+const SQ_CLASS = {pass: "sq pass", fail: "sq fail", skip: "sq grey"};
+
+// What goes inside a square: the attempt count on a miss (clamped to one digit),
+// and an H if a hint was shown. Either, both, or neither.
+function cellText(c) {
+  const n = c.state === "fail" ? String(Math.min(9, Math.max(1, c.attempts || 1))) : "";
+  return n + (c.hint ? "H" : "");
+}
+
+function updateStats() {
+  // Squares run oldest to newest, the live question last; unused slots stay
+  // blank so the row keeps its width and settled squares don't shift about.
+  const cells = results.slice();
+  if (pending) cells.push({
+    state: pending.wrong ? "fail" : "skip",
+    hint: pending.hint, attempts: pending.attempts, live: true
+  });
+  const recent = cells.slice(-LAST_N);
+  const wrap = document.getElementById("lastTen");
+  wrap.innerHTML = "";
+  for (let i = 0; i < LAST_N; i++) {
+    const sq = document.createElement("div");
+    if (i < recent.length) {
+      const c = recent[i];
+      const text = cellText(c);
+      sq.className = SQ_CLASS[c.state] + (c.live ? " live" : "") + (text.length > 1 ? " tight" : "");
+      sq.textContent = text;
+      if (text) sq.title = [c.state === "fail" ? `${c.attempts} attempt${c.attempts === 1 ? "" : "s"}` : "",
+                            c.hint ? "hint shown" : ""].filter(Boolean).join(" · ");
+    } else {
+      sq.className = "sq";
+    }
+    wrap.appendChild(sq);
+  }
+  // Current streak is the trailing run of passes; longest is the widest run seen.
+  // The live question counts for neither until it settles.
+  let current = 0, longest = 0;
+  for (const r of results) {
+    if (r.state === "pass") { current++; longest = Math.max(longest, current); }
+    else current = 0;
+  }
+  document.getElementById("statStreak").textContent = String(current);
+  document.getElementById("statBest").textContent   = String(longest);
+}
+
+// =====================================================================
+// UI HELPERS
+// =====================================================================
+function setFeedback(text, cls) {
+  const fb = document.getElementById("feedback");
+  fb.textContent = text; fb.className = "big " + (cls||"");
+}
+function clearFeedback() { setFeedback(""); }
+
+const FLASH_MS = 450;
+
+// Transient green/red tint on whichever control took the answer. Only ever the
+// control that was actually pressed — never the correct one — so a miss can't
+// give the answer away on the quizzes that keep asking.
+function flashEl(el, ok, ms = FLASH_MS) {
+  if (!el) return;
+  const cls = ok ? "flash-good" : "flash-bad";
+  el.classList.add(cls);
+  if (ms) setTimeout(() => el.classList.remove(cls), ms);
+}
+
+// Note quizzes answer by letter, whether typed, clicked, or played over MIDI.
+function flashNoteBtn(letter, ok) {
+  flashEl(document.querySelector(`.note-btn[data-note="${letter}"]`), ok);
+}
+
+// Switch quiz type: the mode/modality pair the rest of the code reads is derived
+// here, so there is only ever one place that decides what "note-tab" means.
+function setQuizType(t) {
+  if (!QUIZ_TYPES[t]) return;
+  quizType = t;
+  quizMode = QUIZ_TYPES[t].mode;
+  modality = QUIZ_TYPES[t].modality;
+  updateUI();
+  startNewQuestion();
+}
+
+function updateUI() {
+  const spec     = QUIZ_TYPES[quizType];
+  const isSheet  = modality === "sheet";
+  const isEar    = modality === "ear";
+  const isTab    = modality === "tab";
+  const isNote   = quizMode  === "note";
+  const isKey    = quizMode  === "key";
+  const isRhythm = quizMode  === "rhythm";
+
+  document.querySelectorAll(".quiz-btn").forEach(b =>
+    b.classList.toggle("active-mode", b.dataset.quiz === quizType));
+
+  // Normalized control bar: Play only where there is something to listen to.
+  document.getElementById("promptText").textContent = spec.prompt;
+  document.getElementById("playBtn").style.display  = spec.play ? "" : "none";
+
+  document.getElementById("keyOpts").style.display     = isKey ? "flex" : "none";
+  document.getElementById("earOpts").style.display     = (isEar && isNote) ? "flex" : "none";
+  document.getElementById("tabOpts").style.display     = isTab ? "flex" : "none";
+  document.getElementById("rhythmOpts").style.display  = isRhythm ? "flex" : "none";
+
+  const showBoard = (isSheet || isTab) && !isRhythm;
+  document.getElementById("boardWrap").style.display  = showBoard ? "block" : "none";
+  document.getElementById("earArea").style.display    = (isEar || isRhythm) ? "block" : "none";
+  // Only the rhythm trainer draws a beat ruler, so only it reserves the space.
+  document.getElementById("rhythmHintArea").style.display = isRhythm ? "block" : "none";
+  document.getElementById("noteBtns").style.display   = showBoard ? "flex" : "none";
+  document.getElementById("keyBtns").style.display    = (isSheet && isKey && !isRhythm) ? "block" : "none";
+  // Only the key quiz needs a typed-answer readout — it builds up letter/accidental/
+  // quality before you submit. The note quiz answers in one keypress and shows ✓/✗.
+  document.getElementById("answerRow").style.display  = (showBoard && isKey) ? "" : "none";
+  document.getElementById("seqLenWrap").style.display = (showBoard && isNote) ? "" : "none";
+}
+
+function startNewQuestion() {
+  waitingForNext = false;
+  clearFeedback();
+  document.querySelectorAll(".note-btn,.acc-btn,.qual-btn").forEach(b => b.classList.remove("selected-btn"));
+  if      (quizMode === "rhythm")                    newRhythmQuestion();
+  else if (modality==="sheet" && quizMode==="note") newSheetNoteQuestion();
+  else if (modality==="sheet" && quizMode==="key")  newSheetKeyQuestion();
+  else if (modality==="tab")                         newTabNoteQuestion();
+  else if (modality==="ear"   && quizMode==="note") newEarNoteQuestion();
+  else                                               newEarKeyQuestion();
+}
+
+// =====================================================================
+// EVENT WIRING
+// =====================================================================
+document.querySelectorAll(".quiz-btn").forEach(btn =>
+  btn.addEventListener("click", () => setQuizType(btn.dataset.quiz)));
+
+document.getElementById("hintBtn").addEventListener("click", handleHint);
+
+document.getElementById("playBtn").addEventListener("click", () => {
+  if (quizMode === "rhythm") { playRhythmSequence(); return; }
+  if (!earCurrent) return;
+  if (earCurrent.kind === "note" && earCurrent.midi) synth.playMidi(earCurrent.midi, 90, 0.6);
+  else if (earCurrent.kind === "key" && earCurrent.key) playEarKeySequence(earCurrent.key);
+});
+
+document.getElementById("skipBtn").addEventListener("click", skipQuestion);
+
+document.querySelectorAll(".note-btn").forEach(btn => {
+  btn.addEventListener("click", () => {
+    if (modality === "tab") { handleTabNoteGuess(btn.dataset.note); return; }
+    if (modality !== "sheet") return;
+    if (quizMode === "note") { handleSheetNoteGuess(btn.dataset.note); }
+    else if (!waitingForNext) {
+      const {acc, quality} = getKeyBufParts();
+      keyBuf = btn.dataset.note + acc + quality;
+      updateKeyTypedDisplay(); updateKeyBtnHighlights();
+    }
+  });
+});
+
+document.querySelectorAll(".acc-btn").forEach(btn => {
+  btn.addEventListener("click", () => {
+    if (modality !== "sheet" || quizMode !== "key" || waitingForNext) return;
+    const {letter, quality} = getKeyBufParts();
+    if (!letter) return;
+    keyBuf = letter + btn.dataset.acc + quality;
+    updateKeyTypedDisplay(); updateKeyBtnHighlights();
+  });
+});
+
+document.querySelectorAll(".qual-btn").forEach(btn => {
+  btn.addEventListener("click", () => {
+    if (modality !== "sheet" || quizMode !== "key" || waitingForNext) return;
+    const {letter, acc} = getKeyBufParts();
+    if (!letter) return;
+    keyBuf = letter + acc + btn.dataset.quality;
+    updateKeyTypedDisplay(); updateKeyBtnHighlights();
+  });
+});
+
+document.getElementById("submitKeyBtn").addEventListener("click", () => {
+  if (modality === "sheet" && quizMode === "key" && !waitingForNext) handleSheetKeyGuess();
+});
+
+function setHintText(t) { document.getElementById("hintLine").textContent = t; }
+
+// How many accidentals a key signature carries — shared by both key quizzes.
+function keySignatureHint(key) {
+  return key.sharps > 0 ? `${key.sharps} sharp${key.sharps > 1 ? "s" : ""}` :
+         key.flats  > 0 ? `${key.flats} flat${key.flats > 1 ? "s" : ""}`   : "no accidentals";
+}
+
+// Every quiz type offers a hint; each reveals as little as is still useful.
+// Using one always marks the question's square with an H.
+function handleHint() {
+  if (waitingForNext) return;
+  switch (quizType) {
+    case "note-sheet": {
+      if (!sheetNoteCurrent) return;
+      sheetNoteCurrent.hintUsed = true; markHint();
+      const {note} = sheetNoteCurrent.seqNotes[sheetNoteCurrent.seqPos];
+      setHintText(`Hint: this one is ${note.letter} (octave ${note.octave})`);
+      break;
+    }
+    case "note-tab": {
+      if (!tabCurrent) return;
+      markHint();
+      const {note} = tabCurrent.seqNotes[tabCurrent.seqPos];
+      setHintText(`Hint: this one is ${note.letter} (octave ${note.octave})`);
+      break;
+    }
+    case "note-ear": {
+      if (!earCurrent || earCurrent.answered) return;
+      markHint();
+      setHintText(`Hint: it starts on ${earCurrent.names[0]}`);
+      break;
+    }
+    case "key-sheet": {
+      if (!sheetKeyCurrent) return;
+      sheetKeyCurrent.hintUsed = true; markHint();
+      const {key} = sheetKeyCurrent;
+      const dispAcc = key.acc === "-" ? "b" : key.acc;
+      setHintText(`Hint: root = ${key.letter}${dispAcc} · ${keySignatureHint(key)} · ${key.quality}`);
+      break;
+    }
+    case "key-ear": {
+      if (!earCurrent || earCurrent.answered || !earCurrent.key) return;
+      markHint();
+      setHintText(`Hint: ${keySignatureHint(earCurrent.key)} · ${earCurrent.key.quality}`);
+      break;
+    }
+    case "rhythm":
+      handleRhythmHint();
+      break;
+  }
+}
+
+function resetAll() {
+  results = []; pending = null;
+  updateStats(); startNewQuestion();
+}
+
+document.getElementById("resetBtn").addEventListener("click", resetAll);
+
+document.getElementById("seqLen").addEventListener("change", () => {
+  if (modality === "tab") newTabNoteQuestion();
+  else if (modality === "sheet" && quizMode === "note") newSheetNoteQuestion();
+});
+
+document.querySelectorAll(".tabpos-btn").forEach(btn => {
+  btn.addEventListener("click", () => {
+    tabPositionIdx = Number(btn.dataset.pos);
+    document.querySelectorAll(".tabpos-btn").forEach((b, i) => b.classList.toggle("selected-btn", i === tabPositionIdx));
+    if (modality === "tab") newTabNoteQuestion();
+  });
+});
+
+["earKey","earOctave","earLen","earChoices"].forEach(id => {
+  const e = document.getElementById(id);
+  if (e) e.addEventListener("change", () => {
+    if (modality === "ear" && quizMode === "note") newEarNoteQuestion();
+  });
+});
+
+// Rhythm controls update state only; the new values take effect on the next question.
+document.querySelectorAll(".rhythmcount-cb").forEach(cb => {
+  cb.addEventListener("change", () => {
+    const n = Number(cb.dataset.count);
+    if (cb.checked) rhythmEnabledCounts.add(n);
+    else rhythmEnabledCounts.delete(n);
+    // Prevent unchecking the last box
+    if (rhythmEnabledCounts.size === 0) { cb.checked = true; rhythmEnabledCounts.add(n); }
+  });
+});
+
+const rhythmBpmEl = document.getElementById("rhythmBpm");
+const rhythmBpmValEl = document.getElementById("rhythmBpmVal");
+rhythmBpmEl.addEventListener("input", () => {
+  rhythmBpmValEl.textContent = rhythmBpmEl.value;
+});
+
+document.querySelectorAll(".rhythmnote-cb").forEach(cb => {
+  cb.addEventListener("change", () => {
+    const n = cb.dataset.note;
+    if (cb.checked) rhythmEnabledNotes.add(n);
+    else rhythmEnabledNotes.delete(n);
+    if (rhythmEnabledNotes.size === 0) { cb.checked = true; rhythmEnabledNotes.add(n); }
+  });
+});
+// Octave and hint-always changes take effect on next question; no re-trigger needed.
+
+document.getElementById("rhythmConstantBtn").addEventListener("click", () => {
+  rhythmDurSet.clear();
+  document.querySelectorAll(".rhythmdur-cb").forEach(cb => { cb.checked = false; });
+  document.getElementById("rhythmConstantBtn").classList.add("selected-btn");
+});
+
+document.querySelectorAll(".rhythmdur-cb").forEach(cb => {
+  cb.addEventListener("change", () => {
+    if (cb.checked) rhythmDurSet.add(cb.dataset.dur);
+    else            rhythmDurSet.delete(cb.dataset.dur);
+    // Deselect Constant when any note value is active; restore it when none are
+    document.getElementById("rhythmConstantBtn").classList.toggle("selected-btn", rhythmDurSet.size === 0);
+  });
+});
+
+document.getElementById("rhythmRestCb").addEventListener("change", e => {
+  rhythmRestEnabled = e.target.checked;
+});
+
+function onKeyFilterChange() {
+  if (modality === "ear" && quizMode === "key") newEarKeyQuestion();
+}
+document.getElementById("cbKeySharps").addEventListener("change", e => { keySharpsEnabled = e.target.checked; onKeyFilterChange(); });
+document.getElementById("cbKeyFlats").addEventListener("change",  e => { keyFlatsEnabled  = e.target.checked; onKeyFilterChange(); });
+document.getElementById("cbKeyMinor").addEventListener("change",  e => { keyMinorEnabled  = e.target.checked; onKeyFilterChange(); });
+document.querySelectorAll(".letter-cb").forEach(cb => {
+  cb.addEventListener("change", e => {
+    if (e.target.checked) keyLettersEnabled.add(cb.dataset.letter);
+    else keyLettersEnabled.delete(cb.dataset.letter);
+    onKeyFilterChange();
+  });
+});
+
+window.addEventListener("keydown", e => {
+  if (e.target.tagName === "INPUT" || e.target.tagName === "SELECT") return;
+  if (waitingForNext) return;
+  // S/H/R work in every quiz; none of them is an answer key anywhere. The
+  // modifier guard keeps Cmd+S, Cmd+R and friends with the browser.
+  if (!e.metaKey && !e.ctrlKey) {
+    const k = e.key.toLowerCase();
+    if (k === "s")               { e.preventDefault(); skipQuestion(); return; }
+    if (k === "h" || k === "?")  { e.preventDefault(); handleHint();   return; }
+    if (k === "r")               { e.preventDefault(); resetAll();     return; }
+  }
+  if (quizMode === "rhythm") {
+    if (e.code === "Space" && !e.metaKey && !e.ctrlKey) {
+      e.preventDefault(); playRhythmSequence();
+    } else if (e.key >= "1" && e.key <= "9") {
+      e.preventDefault(); handleRhythmAnswer(Number(e.key));
+    }
+    return;
+  }
+  if (modality === "tab") {
+    const kUp = e.key.toUpperCase();
+    if (kUp.length===1 && kUp>="A" && kUp<="G") {
+      e.preventDefault(); handleTabNoteGuess(kUp);
+    } else if (e.code==="Space" && !e.metaKey && !e.ctrlKey) {
+      e.preventDefault(); if (tabCurrent) synth.playNoteSeq(tabCurrent.seqNotes);
+    }
+    return;
+  }
+  if (modality === "ear") {
+    if (e.code === "Space" && !e.metaKey && !e.ctrlKey) {
+      e.preventDefault();
+      if (!earCurrent) return;
+      if (earCurrent.kind === "note" && earCurrent.midi) synth.playMidi(earCurrent.midi, 90, 0.6);
+      else if (earCurrent.kind === "key" && earCurrent.key) playEarKeySequence(earCurrent.key);
+    } else if (e.key >= "1" && e.key <= "6") {
+      const idx = Number(e.key) - 1;
+      if (quizMode === "note") handleEarNoteAnswer(idx);
+      else handleEarKeyAnswer(idx);
+    }
+    return;
+  }
+  // Sheet mode
+  if (quizMode === "key") {
+    const ku = e.key.toUpperCase();
+    if (ku.length===1 && ku>="A" && ku<="G") {
+      e.preventDefault(); keyBuf=ku; updateKeyTypedDisplay(); updateKeyBtnHighlights();
+    } else if (e.key==="#" && keyBuf.length===1) {
+      e.preventDefault(); keyBuf+="#"; updateKeyTypedDisplay(); updateKeyBtnHighlights();
+    } else if (e.key==="-" && keyBuf.length===1) {
+      e.preventDefault(); keyBuf+="-"; updateKeyTypedDisplay(); updateKeyBtnHighlights();
+    } else if ((e.key==="M"||e.key==="m") && keyBuf.length>=1) {
+      e.preventDefault(); keyBuf+=e.key; updateKeyTypedDisplay(); updateKeyBtnHighlights(); handleSheetKeyGuess();
+    } else if (e.key==="Enter" && keyBuf.length>=1) {
+      e.preventDefault(); handleSheetKeyGuess();
+    }
+    return;
+  }
+  // Sheet + Note
+  const kUp = e.key.toUpperCase();
+  if (kUp.length===1 && kUp>="A" && kUp<="G") {
+    e.preventDefault(); handleSheetNoteGuess(kUp);
+  } else if (e.code==="Space" && !e.metaKey && !e.ctrlKey) {
+    e.preventDefault(); if (sheetNoteCurrent) synth.playNoteSeq(sheetNoteCurrent.seqNotes);
+  }
+});
+
+// =====================================================================
+// MIDI INPUT
+// =====================================================================
+const midiStatusEl = document.getElementById("midiStatus");
+
+function updateMidiStatus(text, good) {
+  midiStatusEl.textContent = text;
+  midiStatusEl.style.color = good ? "#0a7a2f" : "#888";
+}
+
+function handleMidiMessage(event) {
+  const [status, note, velocity] = event.data;
+  // Accept note-on (0x90) with velocity > 0; treat note-on with vel=0 as note-off
+  if ((status & 0xf0) !== 0x90 || velocity === 0) return;
+  if (waitingForNext) return;
+  // Only active for note quiz (sheet or tab)
+  if (!((modality === "sheet" && quizMode === "note") || modality === "tab")) return;
+  const letter = SEMI_INV.get(note % 12);
+  if (!letter) return; // black key — ignore
+  if (modality === "tab") handleTabNoteGuess(letter);
+  else handleSheetNoteGuess(letter);
+}
+
+function setupMidiInputs(access) {
+  access.inputs.forEach(input => { input.onmidimessage = handleMidiMessage; });
+}
+
+function initMidi() {
+  if (!navigator.requestMIDIAccess) {
+    updateMidiStatus("MIDI: N/A", false);
+    return;
+  }
+  navigator.requestMIDIAccess().then(access => {
+    function refresh() {
+      let count = 0;
+      access.inputs.forEach(() => count++);
+      setupMidiInputs(access);
+      updateMidiStatus(count > 0 ? "MIDI: \u25CF connected" : "MIDI: no device", count > 0);
+    }
+    access.onstatechange = refresh;
+    refresh();
+  }, () => {
+    updateMidiStatus("MIDI: denied", false);
+  });
+}
+
+document.getElementById("midiRetryBtn").addEventListener("click", initMidi);
+
+// =====================================================================
+// INIT
+// =====================================================================
+updateStats();
+updateUI();
+startNewQuestion();
+initMidi();
+
+})();
+</script>
+
+<div style="margin-top:14px;" class="hint">
+  <strong>Keyboard shortcuts:</strong><br>
+  <ul>
+    <li><b>S</b> skip to next question<br>
+    <li><b>H</b> show hint for question<br>
+    <li><b>R</b> reset statistics<br>
+    </ul>
+    
+  Note · Sheet and Note · Tab:
+  <ul>
+  <li><b>A–G</b> answer <br>
+  <li><b>Space</b> replay <br>
+  </ul>
+
+  Note · Ear:
+  <ul>
+  <li><b>1–6</b> answer <br>
+  <li><b>Space</b> replay <br>
+  </ul>
+
+  Key · Sheet:
+  <ul>
+    <li><b>A–G</b> answer <br>
+    <li><b>#/-</b> sharp/flat
+    <li><b>M/m</b> major/minor
+    <li><b>Enter</b> to submit<br>
+  </ul>
+
+  Key · Ear:
+  <ul>
+  <li><b>1–6</b> answer <br>
+  <li><b>Space</b> replay <br>
+  </ul>
+
+  Rhythm:
+  <ul>
+  <li><b>1–9</b> answer (count of notes heard)<br>
+  <li><b>Space</b> replay sequence<br>
+  </ul>
+
+  <strong>MIDI:</strong> play any natural note on your keyboard (Note · Sheet and Note · Tab)
+</div>
+</body>
+</html>
