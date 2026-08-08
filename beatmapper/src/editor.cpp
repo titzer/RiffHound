@@ -18,7 +18,10 @@ void editor_init(EditorState* e) {
     e->show_tap_strip     = true;
     e->show_section_strip = true;
     e->show_lyric_strip   = true;
+    e->show_chord_strip   = true;
     e->show_misc_strip    = true;
+    e->chord_strip_h      = 36.0f;   // one row until asked for more
+    e->misc_strip_h       = 36.0f;
     e->show_tempo_graph   = true;
     e->tempo_min_bpm      = 50.0f;
     e->tempo_max_bpm      = 150.0f;

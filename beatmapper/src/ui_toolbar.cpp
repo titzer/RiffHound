@@ -16,7 +16,7 @@ void ui_toolbar_open_settings() { s_show_settings_popup = true; }
 
 void ui_toolbar_render(EditorState* editor, AudioState* audio, BeatMap* beatmap,
                        UndoStack* undo, RecentFiles* recent, SectionMap* sectionmap,
-                       LyricMap* lyricmap, MiscMap* miscmap) {
+                       LyricMap* lyricmap, MiscMap* miscmap, MiscMap* chordmap) {
     // --- Playback controls ---
     bool can_play = audio->loaded && !audio->playing;
     bool can_stop = audio->loaded &&  audio->playing;
@@ -234,7 +234,7 @@ void ui_toolbar_render(EditorState* editor, AudioState* audio, BeatMap* beatmap,
             audio_load(audio, editor, s_file_buf);
             char bm_path[512];
             beatmap_path_for_audio(s_file_buf, bm_path, sizeof(bm_path));
-            if (!beatmap_load(beatmap, sectionmap, lyricmap, miscmap, bm_path))
+            if (!beatmap_load(beatmap, sectionmap, lyricmap, miscmap, chordmap, bm_path))
                 beatmap->count = 0;
             // Companion .txt is the default save target regardless of whether it exists
             strncpy(beatmap->save_path, bm_path, sizeof(beatmap->save_path) - 1);
@@ -244,6 +244,7 @@ void ui_toolbar_render(EditorState* editor, AudioState* audio, BeatMap* beatmap,
             if (sectionmap->count > 0) panel_set_visible(editor, PANEL_SECTIONS, true);
             if (lyricmap->count   > 0) panel_set_visible(editor, PANEL_LYRICS,   true);
             if (miscmap->count    > 0) panel_set_visible(editor, PANEL_MISC,     true);
+            if (chordmap->count   > 0) panel_set_visible(editor, PANEL_CHORDS,   true);
             recent_add(recent, s_file_buf);
             recent_save(recent);
             ImGui::CloseCurrentPopup();

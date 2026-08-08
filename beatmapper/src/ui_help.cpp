@@ -48,15 +48,20 @@ static const HelpRow s_rows[] = {
     { "Right-click section",  "Pick its kind (verse, chorus, solo, ...)" },
     { "Double-click section", "Set the section as the loop region" },
     { "Drag lyric strip",     "Create a lyric; double-click to edit its text" },
-    { "Drag misc strip",      "Create a free-text annotation" },
-    { "Drag a lyric / misc",  "Move it in time; drag its edges to resize" },
-    { "Drag a misc group",    "Moves every selected annotation together" },
-    { "Shift+click misc",     "Add / remove one annotation from the selection" },
-    { "Shift+drag misc",      "Rubber-band select a group of annotations" },
-    { "Ctrl+C / Ctrl+X",      "Copy / cut the selected misc annotations" },
-    { "Ctrl+V",               "Paste them at the playhead, snapped to the beat" },
+
+    { nullptr, "Chord and Misc lanes" },
+    { "Drag the lane",        "Create an annotation; type its text straight away" },
+    { "Chords lane",          "Type the chord name; 'chord:' is added on save" },
+    { "Misc lane",            "Anything else, verbatim -- e.g. 'strum: DuDuUuDu'" },
+    { "Drag an annotation",   "Move it in time; drag its edges to resize" },
+    { "Drag a group",         "Moves every selected annotation together" },
+    { "Shift+click",          "Add / remove one annotation from the selection" },
+    { "Shift+drag",           "Rubber-band select a group of annotations" },
+    { "Drag the lane's edge", "Taller lane: overlapping annotations get a row each" },
+    { "Ctrl+C / Ctrl+X",      "Copy / cut the selection (within the same lane)" },
+    { "Ctrl+V",               "Paste it at the playhead, snapped to the beat" },
     { "Ctrl+V again",         "Tiles the next copy after the last, until you move" },
-    { "Delete",               "Remove the selected misc annotations" },
+    { "Delete",               "Remove the selected annotations" },
 };
 
 void ui_help_render(EditorState* editor) {

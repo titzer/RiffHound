@@ -75,6 +75,54 @@ B49   B65   chart: 4/4 | Am G | F . . E |
 - The editor expands on load and **recompresses on save**, so `chart:` and
   `chord:` are two encodings of one thing, not two sources of truth.
 
+## 2.2 `strum:` — the right hand
+
+A chord chart says what to fret. `strum:` says what to do with the other hand:
+
+```
+B33   B37   strum: DuDuUuDu
+B97   B101  strum: D^^u_UdU
+```
+
+One character per **eighth note**, so eight characters is one bar of 4/4:
+
+| Char | Stroke |
+|---|---|
+| `D` | heavy downstrum |
+| `d` | light downstrum |
+| `U` | heavy upstrum |
+| `u` | light upstrum |
+| `M` | heavy mute / percussive |
+| `m` | light mute |
+| `^` | tie — the previous stroke rings on through this slot |
+| `_` | silence |
+
+Case is weight, not a different symbol, so `DuDu` and `dudu` are the same hand
+at two dynamics and a pattern reads as itself rather than as a key to be looked
+up. Whitespace and `|` inside the pattern are decoration and are ignored, so
+`strum: DuDu | UuDu` is legal and identical to `strum: DuDuUuDu`.
+
+**The span is one loop.** Start and end give both the phase (where the loop
+begins) and the period (how many beats it takes to come round) — normally a
+measure. Expressing the period in beats rather than seconds is what lets the
+loop drift with the take instead of walking off it, the same reason chords are
+beat-relative. A well-formed line has as many eighths in its pattern as its
+span has half-beats; a reader should say so when they disagree rather than
+silently stretching the slots.
+
+**A pattern repeats until replaced.** The line stays in force until the next
+`strum:` line, so a song played one way needs one line and a bridge that changes
+the right hand needs one more. There is no "stop strumming" symbol; a passage
+with no right hand is a pattern of `_`.
+
+The direction of a mute is not written, because it is not free: the hand
+alternates one half-swing per eighth, so a `M` inherits whichever way the hand
+was already travelling. That makes `_m_m` up-chunks on the off-beats and `DuMu`
+a down-mute on beat 2, which is what those patterns mean when a player reads
+them. What is written explicitly always wins, which is why `DdDd` is four
+downstrokes and not two of each — and why a player showing the motion has to
+animate a recovery between them.
+
 ## 3. Patterns — the re-rolled layer
 
 The observation driving this: songs are not sequences of chords, they are a

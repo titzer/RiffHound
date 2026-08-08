@@ -63,7 +63,8 @@ void beatmap_remove(BeatMap* bm, int idx) {
     bm->dirty = true;
 }
 
-bool beatmap_save(BeatMap* bm, SectionMap* sm, LyricMap* lm, MiscMap* mm, const char* path) {
+bool beatmap_save(BeatMap* bm, SectionMap* sm, LyricMap* lm, MiscMap* mm,
+                  MiscMap* cm, const char* path) {
     FILE* f = fopen(path, "w");
     if (!f) {
         fprintf(stderr, "[beatmap] failed to open '%s' for writing\n", path);
@@ -98,6 +99,17 @@ bool beatmap_save(BeatMap* bm, SectionMap* sm, LyricMap* lm, MiscMap* mm, const 
         lm->dirty = false;
     }
 
+    // The chord lane owns the "chord:" keyword and stores its entries without
+    // it, so the keyword goes back on here and only here.
+    if (cm && cm->count > 0) {
+        fprintf(f, "# Chords\n");
+        for (int i = 0; i < cm->count; i++)
+            fprintf(f, "%.6f\t%.6f\t%s %s\n",
+                    cm->entries[i].t_start, cm->entries[i].t_end,
+                    cm->prefix ? cm->prefix : "chord:", cm->entries[i].text);
+        cm->dirty = false;
+    }
+
     if (mm && mm->count > 0) {
         fprintf(f, "# Misc\n");
         for (int i = 0; i < mm->count; i++)
@@ -107,8 +119,9 @@ bool beatmap_save(BeatMap* bm, SectionMap* sm, LyricMap* lm, MiscMap* mm, const 
     }
 
     fclose(f);
-    fprintf(stderr, "[beatmap] saved %d beats + %d sections + %d lyrics + %d misc to '%s'\n",
-            bm->count, sm ? sm->count : 0, lm ? lm->count : 0, mm ? mm->count : 0, path);
+    fprintf(stderr, "[beatmap] saved %d beats + %d sections + %d lyrics + %d chords + %d misc to '%s'\n",
+            bm->count, sm ? sm->count : 0, lm ? lm->count : 0,
+            cm ? cm->count : 0, mm ? mm->count : 0, path);
     beatmap_commit(bm);
     strncpy(bm->save_path, path, sizeof(bm->save_path) - 1);
     bm->save_path[sizeof(bm->save_path) - 1] = '\0';
@@ -116,12 +129,14 @@ bool beatmap_save(BeatMap* bm, SectionMap* sm, LyricMap* lm, MiscMap* mm, const 
     return true;
 }
 
-bool beatmap_load(BeatMap* bm, SectionMap* sm, LyricMap* lm, MiscMap* mm, const char* path) {
+bool beatmap_load(BeatMap* bm, SectionMap* sm, LyricMap* lm, MiscMap* mm,
+                  MiscMap* cm, const char* path) {
     // Always clear first so stale data never persists when the file is missing.
     bm->count = 0;
     if (sm) sectionmap_clear(sm);
     if (lm) lyricmap_clear(lm);
     if (mm) miscmap_clear(mm);
+    if (cm) miscmap_clear(cm);
 
     FILE* f = fopen(path, "r");
     if (!f) {
@@ -164,6 +179,18 @@ bool beatmap_load(BeatMap* bm, SectionMap* sm, LyricMap* lm, MiscMap* mm, const 
             int ll = (int)strlen(text);
             while (ll > 0 && (text[ll - 1] <= ' ')) text[--ll] = '\0';
             lyricmap_add(lm, t1, t2, text);
+        } else if (cm && (strcmp(kind_tok, "chord:")  == 0 ||
+                          strcmp(kind_tok, "chords:") == 0)) {
+            // The lane owns the keyword, so it is stripped here and put back on
+            // save.  "chords:" is the same event with several names in it, and
+            // survives as the text it was written with.
+            const char* rest = p + off;
+            while (*rest == ' ' || *rest == '\t') rest++;
+            char text[128] = {};
+            strncpy(text, rest, sizeof(text) - 1);
+            int ll = (int)strlen(text);
+            while (ll > 0 && text[ll - 1] <= ' ') text[--ll] = '\0';
+            if (text[0]) miscmap_add(cm, t1, t2, text);
         } else if (strncmp(kind_tok, "Bx", 2) == 0) {
             int n = atoi(kind_tok + 2);
             if (n == 1) {
@@ -241,12 +268,14 @@ bool beatmap_load(BeatMap* bm, SectionMap* sm, LyricMap* lm, MiscMap* mm, const 
         }
     }
     fclose(f);
-    fprintf(stderr, "[beatmap] loaded %d beats + %d sections + %d lyrics + %d misc from '%s'\n",
-            bm->count, sm ? sm->count : 0, lm ? lm->count : 0, mm ? mm->count : 0, path);
+    fprintf(stderr, "[beatmap] loaded %d beats + %d sections + %d lyrics + %d chords + %d misc from '%s'\n",
+            bm->count, sm ? sm->count : 0, lm ? lm->count : 0,
+            cm ? cm->count : 0, mm ? mm->count : 0, path);
     bm->dirty = false;
     if (sm) sm->dirty = false;
     if (lm) lm->dirty = false;
     if (mm) mm->dirty = false;
+    if (cm) cm->dirty = false;
     return true;
 }
 
@@ -481,6 +510,7 @@ static bool retime_one(double* t, const double* old_times, const double* new_tim
 }
 
 int beatmap_retime_annotations(SectionMap* sm, LyricMap* lm, MiscMap* mm,
+                               MiscMap* cm,
                                const double* old_times, const double* new_times,
                                int n, double tol)
 {
@@ -503,13 +533,16 @@ int beatmap_retime_annotations(SectionMap* sm, LyricMap* lm, MiscMap* mm,
         }
         if (any) lm->dirty = true;
     }
-    if (mm) {
+    MiscMap* anns[2] = { mm, cm };
+    for (int a = 0; a < 2; a++) {
+        MiscMap* am = anns[a];
+        if (!am) continue;
         bool any = false;
-        for (int i = 0; i < mm->count; i++) {
-            if (retime_one(&mm->entries[i].t_start, old_times, new_times, n, tol)) { changed++; any = true; }
-            if (retime_one(&mm->entries[i].t_end,   old_times, new_times, n, tol)) { changed++; any = true; }
+        for (int i = 0; i < am->count; i++) {
+            if (retime_one(&am->entries[i].t_start, old_times, new_times, n, tol)) { changed++; any = true; }
+            if (retime_one(&am->entries[i].t_end,   old_times, new_times, n, tol)) { changed++; any = true; }
         }
-        if (any) mm->dirty = true;
+        if (any) am->dirty = true;
     }
     return changed;
 }

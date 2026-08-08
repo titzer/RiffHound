@@ -28,15 +28,16 @@ int  beatmap_add(BeatMap* bm, double t);
 // Remove beat at index idx.  No-op if idx is out of range.
 void beatmap_remove(BeatMap* bm, int idx);
 
-// Save beats, sections, lyrics, and misc annotations to a combined timeseries file.
-// On success all beats are committed and dirty flags are cleared.
-// Pass sm/lm/mm=nullptr to omit that layer.
-bool beatmap_save(BeatMap* bm, SectionMap* sm, LyricMap* lm, MiscMap* mm, const char* path);
+// Save beats, sections, lyrics, chords, and misc annotations to a combined
+// timeseries file.  On success all beats are committed and dirty flags cleared.
+// Pass sm/lm/mm/cm=nullptr to omit that layer.
+bool beatmap_save(BeatMap* bm, SectionMap* sm, LyricMap* lm, MiscMap* mm,
+                  MiscMap* cm, const char* path);
 
-// Load beats, sections, lyrics, and misc annotations from a combined timeseries file.
-// Clears existing beats first; clears sm/lm/mm if non-nullptr.
-// All loaded beats are fixed (interp=false).
-bool beatmap_load(BeatMap* bm, SectionMap* sm, LyricMap* lm, MiscMap* mm, const char* path);
+// Load the same layers back.  Clears existing beats first; clears sm/lm/mm/cm
+// if non-nullptr.  All loaded beats are fixed (interp=false).
+bool beatmap_load(BeatMap* bm, SectionMap* sm, LyricMap* lm, MiscMap* mm,
+                  MiscMap* cm, const char* path);
 
 // Mark all beats as fixed (clear all interp flags).
 // Called automatically by beatmap_save on success.
@@ -115,6 +116,7 @@ void beatmap_apply_times(BeatMap* bm, int i0, const double* times, int n);
 // that were not pinned to a beat are left where they are.  Pass nullptr for any
 // layer to skip it.  Returns the number of endpoints adjusted.
 int beatmap_retime_annotations(SectionMap* sm, LyricMap* lm, MiscMap* mm,
+                               MiscMap* cm,
                                const double* old_times, const double* new_times,
                                int n, double tol);
 

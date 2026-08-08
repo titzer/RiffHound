@@ -92,7 +92,7 @@ static void preview_compute(const BeatMap* bm, int i0, int i1,
 // Beats are never closer than 5 ms, and the file format keeps 6 decimals.
 static const double PIN_TOL = 1e-4;
 
-// How many section / lyric / misc endpoints are pinned to a beat the preview
+// How many section / lyric / chord / misc endpoints are pinned to a beat the preview
 // moves — i.e. how many annotations Accept would drag along.
 static int count_pinned_one(const double* orig, const double* prop, int n, double t) {
     if (n <= 0) return 0;
@@ -107,6 +107,7 @@ static int count_pinned_one(const double* orig, const double* prop, int n, doubl
 }
 
 static int count_pinned(const SectionMap* sm, const LyricMap* lm, const MiscMap* mm,
+                        const MiscMap* cm,
                         const double* orig, const double* prop, int n)
 {
     int c = 0;
@@ -118,9 +119,13 @@ static int count_pinned(const SectionMap* sm, const LyricMap* lm, const MiscMap*
         c += count_pinned_one(orig, prop, n, lm->lyrics[i].t_start);
         c += count_pinned_one(orig, prop, n, lm->lyrics[i].t_end);
     }
-    if (mm) for (int i = 0; i < mm->count; i++) {
-        c += count_pinned_one(orig, prop, n, mm->entries[i].t_start);
-        c += count_pinned_one(orig, prop, n, mm->entries[i].t_end);
+    const MiscMap* anns[2] = { mm, cm };
+    for (int a = 0; a < 2; a++) {
+        if (!anns[a]) continue;
+        for (int i = 0; i < anns[a]->count; i++) {
+            c += count_pinned_one(orig, prop, n, anns[a]->entries[i].t_start);
+            c += count_pinned_one(orig, prop, n, anns[a]->entries[i].t_end);
+        }
     }
     return c;
 }
@@ -136,7 +141,7 @@ static int onsets_in_range(const AutoBeatList* ab, double t0, double t1) {
 
 void ui_smoothing_render(EditorState* editor, AudioState* audio, BeatMap* beatmap,
                          SectionMap* sectionmap, LyricMap* lyricmap, MiscMap* miscmap,
-                         UndoStack* undo, AutoBeatList* autobeat)
+                         MiscMap* chordmap, UndoStack* undo, AutoBeatList* autobeat)
 {
     if (!s_p_init) { smooth_params_defaults(&s_p); s_p_init = true; }
 
@@ -334,7 +339,7 @@ void ui_smoothing_render(EditorState* editor, AudioState* audio, BeatMap* beatma
         ImGui::TextDisabled("Beat shift: %.1f ms max, %.1f ms average",
                             s_max_shift_s * 1000.0, s_mean_shift_s * 1000.0);
 
-        int n_pinned = count_pinned(sectionmap, lyricmap, miscmap,
+        int n_pinned = count_pinned(sectionmap, lyricmap, miscmap, chordmap,
                                     s_orig, s_prop, s_preview.n);
         if (n_pinned > 0)
             ImGui::TextDisabled("%d annotation edge%s pinned to a moved beat "
@@ -352,8 +357,8 @@ void ui_smoothing_render(EditorState* editor, AudioState* audio, BeatMap* beatma
     if (ImGui::Button("Accept", ImVec2(avail_w, 0))) {
         // Beats move and annotations pinned to them follow, so all four layers
         // go into one undo entry.
-        undo_push(undo, beatmap, lyricmap, sectionmap, miscmap);
-        beatmap_retime_annotations(sectionmap, lyricmap, miscmap,
+        undo_push(undo, beatmap, lyricmap, sectionmap, miscmap, chordmap);
+        beatmap_retime_annotations(sectionmap, lyricmap, miscmap, chordmap,
                                    s_orig, s_prop, s_preview.n, PIN_TOL);
         beatmap_apply_times(beatmap, s_preview.i0, s_prop, s_preview.n);
         s_key_valid = false;   // recompute against the new positions

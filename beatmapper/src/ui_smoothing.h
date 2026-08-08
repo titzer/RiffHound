@@ -13,12 +13,12 @@
 // Operates on the index range spanned by the beat selection (select a whole
 // range, or just a start and an end beat).  The panel continuously computes a
 // preview of the proposed beat positions; the user accepts or ignores it.
-// Accepting also drags along any section, lyric or misc annotation pinned to a
-// beat that moves.
+// Accepting also drags along any section, lyric, chord or misc annotation
+// pinned to a beat that moves.
 // Must be called outside the main docked window (same as ui_chroma_render).
 void ui_smoothing_render(EditorState* editor, AudioState* audio, BeatMap* beatmap,
                          SectionMap* sectionmap, LyricMap* lyricmap, MiscMap* miscmap,
-                         UndoStack* undo, AutoBeatList* autobeat);
+                         MiscMap* chordmap, UndoStack* undo, AutoBeatList* autobeat);
 
 // Proposed positions awaiting acceptance, for the timeline to draw as ghosts.
 // times[k] / orig[k] correspond to beat index i0 + k.

@@ -25,6 +25,7 @@ SOURCES := \
     $(SRC_DIR)/ui_help.cpp \
     $(SRC_DIR)/ui_smoothing.cpp \
     $(SRC_DIR)/miscmap.cpp \
+    $(SRC_DIR)/ui_annstrip.cpp \
     $(SRC_DIR)/ui_chroma.cpp \
     $(SRC_DIR)/chroma_algo.cpp \
     $(SRC_DIR)/beat_algo.cpp \

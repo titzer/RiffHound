@@ -13,7 +13,7 @@
 
 void ui_toolbar_render(EditorState* editor, AudioState* audio, BeatMap* beatmap,
                        UndoStack* undo, RecentFiles* recent, SectionMap* sectionmap,
-                       LyricMap* lyricmap, MiscMap* miscmap);
+                       LyricMap* lyricmap, MiscMap* miscmap, MiscMap* chordmap);
 
 // Request the Open Audio dialog to appear on the next frame (callable from menu bar).
 void ui_toolbar_open_dialog();

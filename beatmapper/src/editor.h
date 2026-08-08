@@ -20,7 +20,14 @@ struct EditorState {
     bool   show_tap_strip;     // tap recording strip
     bool   show_section_strip; // section strip
     bool   show_lyric_strip;   // lyric strip
+    bool   show_chord_strip;   // chord strip
     bool   show_misc_strip;    // miscellaneous annotation strip
+
+    // Annotation lane heights, in pixels.  Dragging a lane's bottom edge sets
+    // these; the rows that fit follow from the height, so a lane grows to hold
+    // annotations that overlap instead of stacking them on top of each other.
+    float  chord_strip_h;
+    float  misc_strip_h;
 
     // Tempo graph drawn behind the beat strip
     bool   show_tempo_graph;   // instantaneous + rolling-average BPM plot

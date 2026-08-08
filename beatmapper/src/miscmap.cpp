@@ -4,12 +4,13 @@
 #include <stdlib.h>
 #include <string.h>
 
-void miscmap_init(MiscMap* mm) {
+void miscmap_init(MiscMap* mm, const char* prefix) {
     mm->entries      = nullptr;
     mm->count        = 0;
     mm->capacity     = 0;
     mm->dirty        = false;
     mm->selected_idx = -1;
+    mm->prefix       = prefix;
 }
 
 void miscmap_shutdown(MiscMap* mm) {
@@ -126,14 +127,27 @@ struct MiscClipItem {
 static MiscClipItem s_clip[MISC_CLIP_MAX];
 static int          s_clip_count = 0;
 static bool         s_clip_beats = false;  // beat offsets are meaningful
+static const char*  s_clip_lane  = nullptr;  // prefix of the lane copied from
 
-int miscmap_clipboard_count() { return s_clip_count; }
+// Lanes are the same lane when they write the same keyword.  Compared by value
+// rather than by pointer so the answer does not depend on where the literals
+// happened to be interned.
+static bool same_lane(const char* a, const char* b) {
+    if (!a || !b) return a == b;
+    return strcmp(a, b) == 0;
+}
+
+int miscmap_clipboard_count(const MiscMap* mm) {
+    if (!mm || !same_lane(mm->prefix, s_clip_lane)) return 0;
+    return s_clip_count;
+}
 
 int miscmap_copy_selection(const MiscMap* mm, const BeatMap* bm) {
     if (miscmap_selected_count(mm) == 0) return 0;  // keep what is already held
 
     miscmap_paste_chain_reset();  // a new clipboard starts a new run
     s_clip_count = 0;
+    s_clip_lane  = mm->prefix;
     s_clip_beats = (bm && bm->count >= 2);
     double t0 = 0.0, b0 = 0.0;
     bool   first = true;
@@ -156,7 +170,7 @@ int miscmap_copy_selection(const MiscMap* mm, const BeatMap* bm) {
 }
 
 int miscmap_paste(MiscMap* mm, const BeatMap* bm, double t_anchor) {
-    if (s_clip_count == 0) return 0;
+    if (miscmap_clipboard_count(mm) == 0) return 0;
     bool   use_beats = s_clip_beats && bm && bm->count >= 2;
     double b_anchor  = use_beats ? beatmap_beat_pos(bm, t_anchor) : 0.0;
 
@@ -182,9 +196,10 @@ int miscmap_paste(MiscMap* mm, const BeatMap* bm, double t_anchor) {
 
 // --- paste chaining -------------------------------------------------------
 
-static bool   s_chain_live = false;  // the next paste continues a run
-static double s_chain_from = 0.0;    // anchor the caller asked for last time
-static double s_chain_next = 0.0;    // where the continued paste lands
+static bool        s_chain_live = false;  // the next paste continues a run
+static double      s_chain_from = 0.0;    // anchor the caller asked for last time
+static double      s_chain_next = 0.0;    // where the continued paste lands
+static const void* s_chain_map  = nullptr;  // lane the run is tiling into
 
 // Two anchors this close are the same playhead: the transport advances by
 // milliseconds per frame, so anything under this is float noise rather than
@@ -210,9 +225,10 @@ static double clip_group_end(const BeatMap* bm, double anchor) {
 }
 
 int miscmap_paste_chained(MiscMap* mm, const BeatMap* bm, double t_anchor) {
-    if (s_clip_count == 0) return 0;
+    if (miscmap_clipboard_count(mm) == 0) return 0;
 
-    bool   chained = s_chain_live && fabs(t_anchor - s_chain_from) < CHAIN_EPS;
+    bool   chained = s_chain_live && s_chain_map == mm &&
+                     fabs(t_anchor - s_chain_from) < CHAIN_EPS;
     double anchor  = chained ? s_chain_next : t_anchor;
 
     int pasted = miscmap_paste(mm, bm, anchor);
@@ -225,6 +241,7 @@ int miscmap_paste_chained(MiscMap* mm, const BeatMap* bm, double t_anchor) {
         s_chain_live = true;
         s_chain_from = t_anchor;
         s_chain_next = end;
+        s_chain_map  = mm;
     } else {
         s_chain_live = false;
     }

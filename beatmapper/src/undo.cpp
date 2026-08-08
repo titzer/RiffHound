@@ -11,6 +11,7 @@ static void snapshot_free(UndoSnapshot* s) {
     free(s->lyrics);
     free(s->sections);
     free(s->misc);
+    free(s->chords);
     memset(s, 0, sizeof(*s));
 }
 
@@ -33,7 +34,7 @@ static void* dup_array(const void* src, int count, size_t elem_size) {
 }
 
 void undo_push(UndoStack* us, const BeatMap* bm, const LyricMap* lm,
-               const SectionMap* sm, const MiscMap* mm) {
+               const SectionMap* sm, const MiscMap* mm, const MiscMap* cm) {
     if (us->size == UNDO_MAX) {
         // Discard oldest to make room
         snapshot_free(&us->slots[us->head]);
@@ -48,6 +49,7 @@ void undo_push(UndoStack* us, const BeatMap* bm, const LyricMap* lm,
     s.has_lyrics   = (lm != nullptr);
     s.has_sections = (sm != nullptr);
     s.has_misc     = (mm != nullptr);
+    s.has_chords   = (cm != nullptr);
 
     if (bm && bm->count > 0) {
         s.beats = (Beat*)dup_array(bm->beats, bm->count, sizeof(Beat));
@@ -65,6 +67,10 @@ void undo_push(UndoStack* us, const BeatMap* bm, const LyricMap* lm,
         s.misc = (MiscAnnotation*)dup_array(mm->entries, mm->count, sizeof(MiscAnnotation));
         if (s.misc) s.misc_count = mm->count;
     }
+    if (cm && cm->count > 0) {
+        s.chords = (MiscAnnotation*)dup_array(cm->entries, cm->count, sizeof(MiscAnnotation));
+        if (s.chords) s.chord_count = cm->count;
+    }
     us->size++;
 }
 
@@ -75,7 +81,7 @@ void undo_drop_last(UndoStack* us) {
 }
 
 bool undo_pop(UndoStack* us, BeatMap* bm, LyricMap* lm,
-              SectionMap* sm, MiscMap* mm) {
+              SectionMap* sm, MiscMap* mm, MiscMap* cm) {
     if (us->size == 0) return false;
     us->size--;
     int idx = (us->head + us->size) % UNDO_MAX;
@@ -125,6 +131,18 @@ bool undo_pop(UndoStack* us, BeatMap* bm, LyricMap* lm,
         mm->selected_idx = -1;
         s.misc           = nullptr;
         s.misc_count     = 0;
+    }
+
+    if (cm && s.has_chords) {
+        miscmap_paste_chain_reset();
+        free(cm->entries);
+        cm->entries      = s.chords;
+        cm->count        = s.chord_count;
+        cm->capacity     = s.chord_count;
+        cm->dirty        = true;
+        cm->selected_idx = -1;
+        s.chords         = nullptr;
+        s.chord_count    = 0;
     }
 
     // Free anything the caller did not take ownership of.

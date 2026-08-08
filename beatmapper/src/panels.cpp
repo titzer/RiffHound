@@ -23,8 +23,11 @@ const PanelDesc PANELS[PANEL_COUNT] = {
     { PANEL_LYRICS, PK_STRIP, "Lyrics", "Lyrics strip",
       "Lyric lines and the Lyric Index", nullptr,
       &EditorState::show_lyric_strip },
+    { PANEL_CHORDS, PK_STRIP, "Chord", "Chords strip",
+      "Chord names; the 'chord:' keyword is added on save", nullptr,
+      &EditorState::show_chord_strip },
     { PANEL_MISC, PK_STRIP, "Misc", "Misc annotations strip",
-      "Free-text annotations", nullptr,
+      "Free-text annotations, e.g. 'strum: DuDuUuDu'", nullptr,
       &EditorState::show_misc_strip },
 
     { PANEL_CHROMA, PK_WINDOW, "Chroma", "Chroma Analyzer",

@@ -609,6 +609,8 @@
     transform: translateX(-50%);
   }
 
+  .beat.light { font-size: calc(var(--bh) * .44); opacity: .78; }
+
   .beat.hit {
     color: var(--fg);
     border-color: var(--fg);
@@ -654,6 +656,25 @@
   .spane[data-rows="hand"]  .sslot      { top: var(--mid-y); }
 
   .sslot.hit { color: var(--fg); text-shadow: 0 0 16px var(--fg); }
+
+  /* Weight is drawn as weight: a light stroke is a smaller, quieter glyph than
+     a heavy one, so "DuDu" and "dudu" look as different as they sound without
+     needing a second symbol for either. */
+  .sslot.light { font-size: calc(var(--sglyph) * .6); opacity: .75; }
+
+  /* A tie is not a stroke, so it is not a glyph: it is a line drawn out of the
+     stroke it holds, along that stroke's own row. */
+  .stie {
+    position: absolute;
+    height: 0;
+    margin-left: calc(var(--sglyph) * .4);
+    border-top: 2px solid var(--dim);
+    opacity: .6;
+  }
+
+  .spane[data-rows="split"] .stie.up   { top: var(--up-y); }
+  .spane[data-rows="split"] .stie.down { top: var(--down-y); }
+  .spane[data-rows="hand"]  .stie      { top: var(--mid-y); }
 
   .scount {
     position: absolute;
@@ -990,15 +1011,144 @@ const CUE_DOTS = 8;
 const CUE_STEP = 0.5;       /* seconds per dot */
 const CUE_LEAD = CUE_DOTS * CUE_STEP;
 const CUE_MIN = 1.2;        /* a shorter gap isn't worth counting down */
+const REST_MIN = 2;         /* blank row shorter than this would only flicker */
 
 const SECTION_KINDS = ["intro", "verse", "chorus", "bridge", "solo", "outro",
                        "instrumental", "interlude", "pre-chorus", "refrain"];
+
+/* ── strum notation ─────────────────────────────────────────────────────
+   One character per eighth note. Case is weight — a capital is a full stroke,
+   lowercase the same stroke played light — so "DuDu" and "dudu" are the same
+   hand doing the same thing at two dynamics, and the pattern reads as itself
+   rather than as a key that has to be looked up.
+
+     D d  down       U u  up       M m  muted / percussive
+     ^    tie: the last stroke rings on through this slot
+     _    silence: nothing sounds here
+
+   `dir` is the direction the hand travels, which is not always deducible from
+   the glyph: a mute can be struck either way. Left null here and resolved per
+   pattern by compileStrum(), because what makes a chunk an up-chunk is where
+   the hand was on the slot before it. */
+const STROKES = {
+  D: { glyph: "↓", dir: "down", weight: 1,   hit: true  },
+  d: { glyph: "↓", dir: "down", weight: .55, hit: true  },
+  U: { glyph: "↑", dir: "up",   weight: 1,   hit: true  },
+  u: { glyph: "↑", dir: "up",   weight: .55, hit: true  },
+  M: { glyph: "✕", dir: null,   weight: 1,   hit: true  },
+  m: { glyph: "✕", dir: null,   weight: .55, hit: true  },
+  "^": { glyph: "",  dir: null, weight: 0,   hit: false, tie: true },
+  "_": { glyph: "",  dir: null, weight: 0,   hit: false }
+};
+
+const flip = d => (d === "down" ? "up" : "down");
+
+/* Resolve a written pattern into slots that know which way the hand is going.
+   The rule is one half-swing per eighth: the hand alternates unless a stroke
+   says otherwise, and a stroke that says otherwise wins. So "DuDu" alternates,
+   "DdDd" is four downs — the hand has to recover between them, which is what
+   makes it a different motion rather than the same one relabelled — and "M" or
+   "m" simply takes whichever way the hand was already headed.
+
+   Compiled patterns are cached: the same pattern is asked for once per frame
+   and there are only ever a handful of distinct ones in a song. */
+const strumCache = new Map();
+
+function compileStrum(src) {
+  const hit = strumCache.get(src);
+  if (hit) return hit;
+
+  /* Slot 0 falls on a beat, and the hand is on its way down on a beat. */
+  let dir = "up";
+  const slots = [...src].map((ch, s) => {
+    const k = STROKES[ch] || STROKES._;
+    dir = k.dir || flip(dir);
+    return { ch, s, glyph: k.glyph, hit: !!k.hit, tie: !!k.tie,
+             weight: k.weight, dir };
+  });
+
+  /* A tie belongs to the stroke it extends, so it can be drawn as one — and it
+     is silent if nothing came before it to ring on. */
+  slots.forEach((sl, i) => {
+    if (!sl.tie) return;
+    let j = i - 1;
+    while (j >= 0 && !slots[j].hit) j--;
+    sl.from = j >= 0 ? j : -1;
+    if (j >= 0) sl.dir = slots[j].dir;
+  });
+
+  const pat = { src, slots, n: slots.length, beats: slots.length / 2,
+                hits: slots.filter(s => s.hit) };
+  strumCache.set(src, pat);
+  return pat;
+}
+
+/* ── the swing ──────────────────────────────────────────────────────────
+   The hand's path between two strokes, as one number: 0 at the strings, +1 at
+   the bottom of a down-stroke's follow-through, −1 at the top.
+
+   Everything about the motion falls out of the two strokes at either end of the
+   gap. A down followed by an up is half a swing — through the strings, out the
+   bottom, back up through them. A down followed by another down is a whole one,
+   because the hand has to get back above the strings first: that recovery is
+   the entire difference between "DuDu" and "DdDd", and it is why a pattern
+   cannot be animated by a fixed sine wave once the patterns are written by
+   hand. Long gaps keep the hand moving at the same eighth-note rate rather than
+   drifting slowly across, since that is what a player's hand actually does. */
+function halfSwings(gapSlots, sameDir) {
+  /* One half-swing per eighth, forced to the parity the two ends demand: an
+     even number of half-swings comes back the way it started, an odd number
+     turns round. Ties go to the lazier hand. */
+  const want = Math.max(1, gapSlots);
+  const lo = sameDir ? 2 : 1;
+  let h = Math.round(want / 2) * 2 + (sameDir ? 0 : 1);
+  if (h - want >= 1) h -= 2;      /* on a tie, the smaller: the lazier hand */
+  return Math.max(lo, h);
+}
+
+/* The gap the phase f (0..1 through one loop) sits in, wrapping round the end
+   of the pattern so the last stroke leads back into the first. */
+function strumGap(pat, f) {
+  const H = pat.hits;
+  if (!H.length) return null;
+  let j = H.length - 1;
+  for (let k = 0; k < H.length; k++) if (f >= H[k].s / pat.n) j = k;
+
+  const a = H[j], b = H[(j + 1) % H.length];
+  const f0 = a.s / pat.n;
+  let f1 = b.s / pat.n;
+  if (f1 <= f0) f1 += 1;                     /* wraps past the end of the loop */
+  let at = f;
+  if (at < f0) at += 1;                      /* before the first stroke of the loop */
+
+  const gap = (f1 - f0) * pat.n;
+  return { a, b, s: clamp((at - f0) / (f1 - f0), 0, 1),
+           h: halfSwings(gap, a.dir === b.dir),
+           sign: a.dir === "down" ? 1 : -1 };
+}
+
+/* Two readings of the same swing. `through` is the hand: zero when it is at the
+   strings, so a stroke is the instant it crosses. `toward` is the row the
+   stroke is written on: ±1 at each stroke, so the marker arrives at the glyph
+   it is about to play. Same h, same sign — a quarter turn apart. */
+function swingThrough(pat, f) {
+  const g = strumGap(pat, f);
+  if (!g) return 0;
+  return g.sign * Math.sin(g.h * Math.PI * g.s) * (.6 + .4 * g.a.weight);
+}
+
+function swingToward(pat, f) {
+  const g = strumGap(pat, f);
+  if (!g) return 0;
+  return g.sign * Math.cos(g.h * Math.PI * g.s);
+}
 
 /* v0.1's parser, unchanged in behaviour: "t_start t_end event", with lyric:
    lines and section keywords. Beat-relative times (B45) are still skipped —
    they need a beatmap to resolve, which is the next thing to arrive. */
 function parseTimeseries(text) {
-  const lyrics = [], sections = [], beats = [], chords = [];
+  const lyrics = [], sections = [], beats = [], chords = [], strums = [];
+  const notes = [];   /* things worth telling the user about the file itself */
   let gid = 0;
 
   for (const rawLine of text.split("\n")) {
@@ -1048,6 +1198,25 @@ function parseTimeseries(text) {
       if (names.length > 1) gid++;
       continue;
     }
+
+    /* "strum: DuDuDu" is one loop of the right hand, written in eighths. The
+       span is the loop: where it starts and how long it takes to come round,
+       which is what lets it be laid on the record's own beats rather than on a
+       count. It then keeps repeating until the next strum line, so a song with
+       one pattern needs one line. */
+    if (event.startsWith("strum:")) {
+      const src = event.slice(6).trim();
+      const pattern = src.replace(/[\s|]+/g, "");   /* bar lines are decoration */
+      if (!pattern) continue;
+      const bad = [...new Set(pattern.split("").filter(c => !(c in STROKES)))];
+      if (bad.length) {
+        notes.push(`Strum pattern "${src}" has no stroke for ${bad.map(c => `"${c}"`).join(", ")}`);
+        continue;
+      }
+      strums.push({ t_start, t_end, pattern });
+      continue;
+    }
+
     for (const kind of SECTION_KINDS) {
       if (event === kind || event.startsWith(kind + ":") || event.startsWith(kind + " ")) {
         const rest = event.slice(kind.length).replace(/^[\s:]+/, "").trim();
@@ -1062,6 +1231,7 @@ function parseTimeseries(text) {
   lyrics.sort((a, b) => a.t_start - b.t_start);
   sections.sort((a, b) => a.t_start - b.t_start);
   chords.sort((a, b) => a.t_start - b.t_start);
+  strums.sort((a, b) => a.t_start - b.t_start);
   beats.sort((a, b) => a - b);
 
   /* When a line should appear, and whether that lead-in is long enough to
@@ -1073,7 +1243,20 @@ function parseTimeseries(text) {
   });
   if (lyrics.length) lyrics[0].promote = 0;
 
-  return { lyrics, sections, beats, chords };
+  /* A line stops being the current line when it stops being sung, not when the
+     next one arrives. Where those are far apart -- an instrumental bar, a solo,
+     the gap between verses -- leaving it up says "sing this" for eight seconds
+     after it was over. So the line clears at its end and the row goes blank for
+     the wait, which the ball crosses on its way to the return box. Below
+     REST_MIN there is nothing to cross and the blank would only flicker, so
+     short gaps keep the old behaviour: the line stays and the ball rides out
+     past its last word. */
+  lyrics.forEach((l, i) => {
+    const next = i + 1 < lyrics.length ? lyrics[i + 1].promote : l.t_end;
+    l.rest = next - l.t_end >= REST_MIN ? l.t_end : null;
+  });
+
+  return { lyrics, sections, beats, chords, strums, notes };
 }
 
 /* Real accidental glyphs, kerned back against the letter they belong to. */
@@ -1155,13 +1338,13 @@ const SETTINGS = [
   { name: "chordColour", scope: "display", group: "chords", label: "Chord colour",
     type: "choice", def: "green", options: COLOURS, apply: v => tint("chords", v) },
   { name: "chordCue", scope: "display", group: "chords", label: "Chord cue",
-    type: "choice", def: "off", flag: "chordcue", after: "layout",
+    type: "choice", def: "off", flag: "chordcue", after: "layout,strum",
     options: [{ v: "off", label: "Off", icon: ICO.off },
               { v: "ball", label: "Ball", icon: ICO.ball },
               { v: "boxes", label: "Boxes", icon: ICO.boxes },
               { v: "hand", label: "Hand", icon: ICO.hand }] },
   { name: "strumPane", scope: "display", group: "chords", label: "Strum pane",
-    type: "choice", def: "off", flag: "pane", after: "layout",
+    type: "choice", def: "off", flag: "pane", after: "layout,strum",
     options: [{ v: "off", label: "Off", icon: ICO.off },
               { v: "split", label: "Split", icon: ICO.split },
               { v: "hand", label: "Hand", icon: ICO.hand }] },
@@ -1300,6 +1483,76 @@ function bpmAt(t) {
   return Math.round(60 / (local > beatPeriod * GAP_FACTOR ? beatPeriod : local));
 }
 
+/* A fractional beat number for a time and its inverse, by interpolating
+   between the beats either side and extrapolating past both ends with the
+   nearest interval. A strum loop is a number of beats long, not a number of
+   seconds, so laying its repeats out in this coordinate is what makes them
+   drift with the take instead of walking off it. The two are exact inverses,
+   which matters: a slot's time is round-tripped through both. */
+function beatPos(t) {
+  const p = beatPeriod || BOUNCE;
+  if (beatGrid.length < 2) return t / p;
+
+  const i = beatIndex(t);
+  if (i < 0) return (t - beatGrid[0]) / (beatGrid[1] - beatGrid[0]);
+  if (i >= beatGrid.length - 1) {
+    const n = beatGrid.length;
+    return n - 1 + (t - beatGrid[n - 1]) / (beatGrid[n - 1] - beatGrid[n - 2]);
+  }
+  return i + (t - beatGrid[i]) / (beatGrid[i + 1] - beatGrid[i]);
+}
+
+function beatTime(b) {
+  const p = beatPeriod || BOUNCE;
+  if (beatGrid.length < 2) return b * p;
+
+  const n = beatGrid.length;
+  if (b <= 0)     return beatGrid[0] + b * (beatGrid[1] - beatGrid[0]);
+  if (b >= n - 1) return beatGrid[n - 1] + (b - n + 1) * (beatGrid[n - 1] - beatGrid[n - 2]);
+  const i = Math.floor(b);
+  return lerp(beatGrid[i], beatGrid[i + 1], b - i);
+}
+
+/* ── strum ──────────────────────────────────────────────────────────────
+   A strum line is one loop: its span says where the loop starts and how many
+   beats it takes to come round, and it keeps repeating until the next strum
+   line. So a song played one way needs one line, and a bridge that changes the
+   right hand needs one more. */
+let strumLines = [];
+
+function analyseStrums(list, until) {
+  strumLines = list.map((s, i) => {
+    const pat = compileStrum(s.pattern);
+    const b0 = beatPos(s.t_start);
+    const span = beatPos(s.t_end) - b0;
+    /* The span is the authority on how long the loop is, because the beats are
+       what the audio actually did; the pattern's own length is the fallback for
+       a line written without one. They disagreeing is worth saying out loud —
+       it means the eighths in the pattern are not the eighths on the record. */
+    const loop = span > .05 ? span : pat.beats;
+    return { pat, b0, loop, mismatch: span > .05 && Math.abs(span - pat.beats) > .05,
+             from: s.t_start, to: i + 1 < list.length ? list[i + 1].t_start : until };
+  });
+}
+
+/* Which loop of which pattern is running at t, and how far through it. */
+function strumAt(t) {
+  if (!strumLines.length) return null;
+  let i = 0;
+  while (i < strumLines.length - 1 && t >= strumLines[i + 1].from) i++;
+  const s = strumLines[i];
+  if (t < s.from || t >= s.to) return null;
+
+  const k = (beatPos(t) - s.b0) / s.loop;
+  return { line: s, pat: s.pat, loop: Math.floor(k), f: mod(k, 1) };
+}
+
+/* When slot `s` of loop `k` is played. Slots are evenly spaced across the
+   loop — eighth notes when the line is written as one — and the time comes
+   back through the beat grid, so a slot lands where the beat under it landed. */
+const slotTime = (line, k, s) =>
+  beatTime(line.b0 + (k + s / line.pat.n) * line.loop);
+
 /* ── panels ─────────────────────────────────────────────────────────────
    A stack of bands: each says how tall it wants to be and where to put
    itself. The chord surfaces are still here, and still sized, so that when
@@ -1340,8 +1593,9 @@ function layout() {
     if (bands[i] > 0) y += bands[i];
   });
 
+  fitLines();
   measurePads();
-  if (lastLine >= 0) placeCatcher(lastLine);
+  if (lastLine >= 0) placeCatcher(lastLine, lastRest);
 }
 
 function placeLyrics(y, band) {
@@ -1356,6 +1610,8 @@ function placeChords(y, band) {
   main.style.setProperty("--h", band + "px");
   beats.style.top = Math.round(y - geo.boxH / 2) + "px";
   beats.style.height = geo.boxH + "px";
+  beats.style.setProperty("--bh", geo.boxH + "px");
+  beats.style.setProperty("--bw", Math.round(geo.boxH * 1.05) + "px");
   playhead.style.top = (y - geo.zone) + "px";
   playhead.style.height = (geo.zone + band) + "px";
   playhead.style.setProperty("--ball-zone", geo.zone + "px");
@@ -1371,16 +1627,32 @@ function placeChords(y, band) {
 
 function placePane(y, band) {
   const countH = Math.round(band * .2), bandH = band - countH;
+  const upY = Math.round(bandH * .24), midY = Math.round(bandH * .5);
+  const downY = Math.round(bandH * .76);
+  /* What the marker's ±1 is worth in pixels, in each of the pane's two
+     readings: the rows it lands on, and the swing it makes through them. */
+  geo.paneRow = downY - midY;
+  geo.paneSwing = Math.round(bandH * .3);
+  geo.paneRoom = Math.round(bandH * .46);
+  /* The sizes the band alone would like. A loop that only occupies part of the
+     pane packs its slots tighter than that, so renderPane may come back and
+     take them down; these are the ceiling. */
+  geo.paneGlyph = Math.round(band * .3);
+  geo.paneCount = Math.round(band * .13);
+  geo.paneMargin = Math.round(band * .225 + 6);
+
   spane.style.top = y + "px";
   spane.style.height = band + "px";
-  spane.style.setProperty("--up-y", Math.round(bandH * .24) + "px");
-  spane.style.setProperty("--mid-y", Math.round(bandH * .5) + "px");
-  spane.style.setProperty("--down-y", Math.round(bandH * .76) + "px");
+  spane.style.setProperty("--up-y", upY + "px");
+  spane.style.setProperty("--mid-y", midY + "px");
+  spane.style.setProperty("--down-y", downY + "px");
   spane.style.setProperty("--count-y", Math.round(bandH + countH * .5) + "px");
-  spane.style.setProperty("--sglyph", Math.round(band * .3) + "px");
-  spane.style.setProperty("--scount", Math.round(band * .13) + "px");
+  spane.style.setProperty("--sglyph", geo.paneGlyph + "px");
+  spane.style.setProperty("--scount", geo.paneCount + "px");
   spane.style.setProperty("--smark", Math.round(band * .16) + "px");
-  spane.style.setProperty("--sm", Math.round(band * .225 + 6) + "px");
+  spane.style.setProperty("--sm", geo.paneMargin + "px");
+  /* The pane is drawn against its own width, so a resize has to redraw it. */
+  paneAt = "";
 }
 
 function placePreview(y, band) {
@@ -1392,7 +1664,7 @@ function placePreview(y, band) {
    No syllable map yet, so a line is one span: it lights while its own range
    is running, and the ball sweeps across it in that time. When the maps carry
    syllables this becomes the same landing-pad code the demo has. */
-let pads = [], lastLine = -1, lastLit = null, lastCue = -1;
+let pads = [], lastLine = -1, lastRest = false, lastLit = null, lastCue = -1;
 let cueRight = null, cuePitch = 0;
 
 const lineAt = i => lyricLines[clamp(i, 0, lyricLines.length - 1)];
@@ -1407,29 +1679,51 @@ function lineNow(t) {
   return t < lyricLines[0].promote ? -1 : i;
 }
 
-/* Seconds from a line appearing until it is replaced — where the ball's last
-   bounce lands. */
-function lineHold(i) {
-  const nxt = i + 1 < lyricLines.length ? lyricLines[i + 1].promote
-                                        : lyricLines[i].t_end + 2;
-  return nxt - lyricLines[i].t_start;
-}
+/* When a line stops being on screen: the next line's promotion, or two seconds
+   past the end for the last one. */
+const handoff = i => (i + 1 < lyricLines.length ? lyricLines[i + 1].promote
+                                                : lyricLines[i].t_end + 2);
 
-function placeCatcher(i) {
-  if (!pads.length || i < 0) return;
+/* Seconds from a line appearing until it is replaced. */
+const lineHold = i => handoff(i) - lyricLines[i].t_start;
+
+/* Is line i over, with the wait after it long enough to clear the row? */
+const resting = (i, t) =>
+  i >= 0 && lyricLines[i].rest != null && t >= lyricLines[i].rest;
+
+/* The far end of the row; nothing may land past it. */
+const rowEnd = () => Math.max(pads[0].x + 24, lyrics.clientWidth - 24);
+
+/* Where the ball lands. Singing a line, that is where its sweep has got to by
+   the time the next line takes over -- past the last word, because the ball
+   keeps moving through the gap. Resting, the row is blank and the ball has the
+   whole of it to cross, so it is the end of the row.
+
+   Either way it is clamped to the row: extrapolating a two-second line across
+   an eight-second wait used to put the catcher, and the ball chasing it, off
+   the right of the screen. */
+function catchX(i, rest) {
+  if (rest) return rowEnd();
   const l = lyricLines[i];
   const span = Math.max(.2, l.t_end - l.t_start);
-  const f = lineHold(i) / span;
-  lyricCatch.style.left = lerp(pads[0].x, pads[1].x, f) + "px";
+  return Math.min(rowEnd(), lerp(pads[0].x, pads[1].x, lineHold(i) / span));
+}
+
+function placeCatcher(i, rest) {
+  if (!pads.length || i < 0) return;
+  lyricCatch.style.left = catchX(i, rest) + "px";
   lyricCatch.style.top = pads[0].y + "px";
 }
 
-function renderLine(i) {
+/* Resting, the current row is blank and the line that has just finished moves
+   up to the past row -- which is what it now is. The lines ahead are the same
+   either way: the next line to sing is still the next line to sing. */
+function renderLine(i, rest) {
   const span = document.createElement("span");
   span.className = "line";
-  span.textContent = lineText(i) || " ";
+  span.textContent = (rest ? "" : lineText(i)) || "\u00a0";
   lyricCur.replaceChildren(span, cue);
-  lyricPrev.textContent = lineText(i - 1);
+  lyricPrev.textContent = lineText(rest ? i : i - 1);
 
   lyricAhead.replaceChildren(...Array.from({ length: state.nextLines }, (_, k) => {
     const el = document.createElement("div");
@@ -1440,8 +1734,41 @@ function renderLine(i) {
 
   lastLit = null;
   lastCue = -1;
+  fitLines();
   measurePads();
-  placeCatcher(i);
+  placeCatcher(i, rest);
+}
+
+/* Lines that no longer fit in the band are not drawn at all.
+
+   The band is what is left once the surfaces below it have taken their space,
+   so switching on the strum pane, or asking for more lines than the window is
+   tall enough for, leaves room for fewer than were asked for. Letting the
+   surplus spill was the wrong answer twice over: it ran over the chord row,
+   and it showed a line in a place that means something else.
+
+   The current line is never one of them: it is the line the display is for. So
+   the past line goes first when the current line is the one being pushed out,
+   since it is above and dropping it is what pulls the current line back in;
+   otherwise the lines ahead go from the far end. The ball's headroom is the
+   current line's own top margin, so what the past line hands back goes to the
+   lines rather than to the hop. */
+function fitLines() {
+  const room = lyrics.clientHeight;
+  if (!room) return;
+
+  const ahead = [...lyricAhead.children];
+  const show = (el, on) => { if (el) el.style.display = on ? "" : "none"; };
+  ahead.forEach(el => show(el, true));
+  show(lyricPrev, true);
+
+  const top = () => lyrics.getBoundingClientRect().top;
+  const over = el => el && el.getBoundingClientRect().bottom - top() > room + .5;
+
+  /* The past line goes first when even the current line is being pushed out:
+     it is above, so dropping it is what pulls the current line back in. */
+  if (over(lyricCur)) show(lyricPrev, false);
+  for (let k = ahead.length - 1; k >= 0 && over(ahead[k]); k--) show(ahead[k], false);
 }
 
 /* Two points rather than a pad per syllable: where the line starts and where
@@ -1482,38 +1809,60 @@ function updateCue(line, t) {
 
 /* Riding the countdown out, then one hop onto the first word so the ball
    arrives exactly as the line starts. */
-function leadInAt(dt, lead) {
+function leadIn(dt, lead) {
   const head = w => cueRight - (w / CUE_STEP - .5) * cuePitch;
-  const x = cueRight == null
+  return cueRight == null
     ? lerp(pads[0].x - LEAD_STEP * zoom(), pads[0].x, clamp(1 + dt / (lead || 1), 0, 1))
     : dt < -BOUNCE ? head(-dt)
     : lerp(head(BOUNCE), pads[0].x, clamp(dt / BOUNCE + 1, 0, 1));
-
-  return { x, y: pads[0].y - bob() };
 }
 
+/* Across the line while it is being sung, then on to the catcher. The run-out
+   used to be the sweep extrapolated, which is right only while the ball has
+   somewhere to go: a short line followed by a long wait sent it off the side of
+   the screen. It now aims at the catcher, so the two agree by construction
+   wherever that lands. */
 function sweepAt(dt, span) {
-  return { x: lerp(pads[0].x, pads[1].x, span > 0 ? dt / span : 1),
-           y: pads[0].y - bob() };
+  return lerp(pads[0].x, pads[1].x, span > 0 ? clamp(dt / span, 0, 1) : 1);
 }
 
-/* Both balls bounce on the same grid, so they agree about where the beat is. */
+/* Both balls bounce on the same grid, so they agree about where the beat is.
+   The hop is the one thing every stage has in common — the ball keeps time
+   whether it is counting in, singing, running out, or crossing a blank row. */
 const bob = () => arc(beatPhase(player.time)) * hopRoom() * num("bounce") * .6;
 
 function updateLyrics(t) {
   const i = lineNow(t);
-  if (i !== lastLine) { renderLine(i); lastLine = i; }
+  const rest = resting(i, t);
+  if (i !== lastLine || rest !== lastRest) {
+    renderLine(i, rest);
+    lastLine = i;
+    lastRest = rest;
+  }
   if (i < 0 || !pads.length) return;
 
   const line = lyricLines[i];
   const dt = t - line.t_start;
   const span = Math.max(.2, line.t_end - line.t_start);
+  const to = handoff(i);
+  const at = catchX(i, rest);
 
   updateCue(line, t);
 
-  const pos = dt < 0 ? leadInAt(dt, line.t_start - line.promote) : sweepAt(dt, span);
-  lyricBall.style.left = pos.x + "px";
-  lyricBall.style.top = (pos.y - ballSize()) + "px";
+  /* Four stages, and the ball is doing something different in each: riding the
+     countdown in, sweeping the line, running out past its last word, or -- when
+     the row has been cleared for a rest -- crossing the blank row from the
+     margin to the return box, which is where the next line's countdown starts. */
+  const ease = (from, t0, t1) =>
+    lerp(from, at, clamp(t1 > t0 ? (t - t0) / (t1 - t0) : 1, 0, 1));
+
+  const x = dt < 0        ? leadIn(dt, line.t_start - line.promote)
+          : rest          ? ease(pads[0].x, line.rest, to)
+          : t <= line.t_end ? sweepAt(dt, span)
+          :                 ease(pads[1].x, line.t_end, to);
+
+  lyricBall.style.left = x + "px";
+  lyricBall.style.top = (pads[0].y - bob() - ballSize()) + "px";
 
   const lit = dt >= 0 && t <= line.t_end;
   if (lit !== lastLit) {
@@ -1610,6 +1959,7 @@ function renderGroup(i) {
   preview.replaceChildren(...(ahead || []).map(chordBox));
   sizeRow(preview, ahead || []);
   $("nextChord").innerHTML = ahead ? chordHtml(ahead[0].name) : "";
+  renderBeats(g);
 }
 
 function updateChords(t) {
@@ -1617,13 +1967,26 @@ function updateChords(t) {
 
   let i = 0;
   while (i < chordGroups.length - 1 && t >= chordGroups[i].to) i++;
-  if (i !== groupAt) { renderGroup(i); groupAt = i; }
+  if (i !== groupAt) { groupAt = i; renderGroup(i); }
 
   const g = chordGroups[i];
   /* Against the fixed scale, not the group's own length. */
   const f = clamp((t - g.at) / spanMax, 0, 1);
   ball.style.left = cursor.style.left = (f * 100) + "%";
-  ball.style.top = bounceY(t) + "px";
+
+  /* Bounce or strum: the ball is on the beat, or it is the right hand. In hand
+     mode it carries the stroke it is about to play, and the motion never stops
+     even where the pattern has nothing to strike. With no pattern to follow
+     there is no hand to draw, so it goes back to keeping the beat rather than
+     standing still with nothing in it. */
+  const here = state.chordCue === "hand" ? strumAt(t) : null;
+  ball.classList.toggle("strum", !!here);
+  ball.style.top = (here ? strumY(t, here) : bounceY(t)) + "px";
+  const sl = here && here.pat.slots[Math.min(here.pat.n - 1,
+                                             Math.floor(here.f * here.pat.n))];
+  const glyph = sl ? sl.glyph || "·" : "";
+  if (ball.textContent !== glyph) ball.textContent = glyph;
+  updateBeats(t);
 
   /* Which chord of the group is sounding. */
   let k = 0;
@@ -1637,6 +2000,237 @@ function bounceY(t) {
   const room = Math.max(0, geo.zone - BALL - 4);
   return geo.zone - BALL -
     arc(beatPhase(t)) * clamp(room * .62 * num("bounce"), 0, room);
+}
+
+/* In hand mode the ball is not bouncing, it is strumming: it rides the same
+   swing the pane's marker does, so the two agree about where the hand is. */
+function strumY(t, here) {
+  const room = Math.max(0, geo.zone - BALL / 2 - 4);
+  return geo.zone - BALL / 2 +
+    swingThrough(here.pat, here.f) * clamp(geo.zone * .5 * num("bounce"), 0, room);
+}
+
+/* ── strum pane ─────────────────────────────────────────────────────────
+   One loop of the current pattern, drawn once and then only lit.
+
+   The pane is a fixed ruler — PANE_BARS bars of it, always — and a loop takes
+   as much of that as it is long: a one-bar pattern is a quarter of the pane and
+   the marker crosses that quarter in a bar, at exactly the rate a four-bar
+   pattern crosses the whole thing. Letting every loop fill the pane instead
+   made the marker's speed mean nothing, and sent a one-bar loop tearing across
+   the screen four times as fast as a four-bar one for no musical reason.
+
+   Same argument as spanMax on the chord row, and the same consequence: a short
+   loop stops early and leaves the tail of the pane empty rather than being
+   stretched across it. */
+const PANE_BARS = 4;
+const barBeats = () => sections[0]?.beatsPerBar || 4;
+const paneSpan = line => clamp(line.loop / (PANE_BARS * barBeats()), .05, 1);
+
+let paneSlots = [], paneMark = null, paneCursor = null;
+let paneMarks = [], paneAt = "", paneW1 = 1;
+let lastPaneSlot = -1, lastPaneCell = null, lastPaneLoop = -1;
+
+/* Every x in the pane goes through here, so slots, ties, bar lines, the
+   cursor and the marker cannot land on different grids. Fractions are of the
+   loop, not of the pane, so the ruler above is applied in exactly one place. */
+const paneX = f => `calc(var(--sm) + (100% - 2 * var(--sm)) * ${f * paneW1})`;
+const paneW = df => `calc((100% - 2 * var(--sm)) * ${df * paneW1})`;
+
+const ROW = { down: "down", up: "up" };
+
+function renderPane(pat, loops, w) {
+  paneSlots = [];
+  lastPaneSlot = -1;
+  lastPaneCell = null;
+  lastPaneLoop = -1;
+  paneMarks = [];
+  paneW1 = w || 1;
+
+  if (!pat) {
+    spane.replaceChildren();
+    paneMark = paneCursor = null;
+    return;
+  }
+
+  const n = pat.n, kids = [];
+
+  /* Slots as large as the band allows, or as large as they fit, whichever is
+     smaller: a one-bar loop in a quarter of the pane has four times the slots
+     per inch that a four-bar one does, and the glyphs would run together. */
+  const room = Math.max(0, spane.clientWidth - geo.paneMargin * 2);
+  if (room > 0) {
+    const pitch = room * paneW1 / n;
+    spane.style.setProperty("--sglyph",
+      Math.round(Math.min(geo.paneGlyph, pitch * .95)) + "px");
+    spane.style.setProperty("--scount",
+      Math.round(Math.min(geo.paneCount, pitch * .5)) + "px");
+  }
+
+  for (const sl of pat.slots) {
+    const x = paneX(sl.s / n);
+
+    /* A tie is the stroke before it, held: drawn as a line out of that stroke
+       along its own row rather than as a mark of its own, because what the
+       hand does here is nothing. */
+    if (sl.tie && sl.from >= 0) {
+      const tie = document.createElement("div");
+      tie.className = "stie " + ROW[pat.slots[sl.from].dir];
+      tie.style.left = paneX(pat.slots[sl.from].s / n);
+      tie.style.width = paneW((sl.s - pat.slots[sl.from].s + .5) / n);
+      kids.push(tie);
+    } else if (sl.hit) {
+      const el = document.createElement("div");
+      /* The row follows the hand, not the glyph: an up-muted chunk still
+         happens on the way up, and the four downs of "DdDd" are four downs. */
+      el.className = "sslot " + ROW[sl.dir] + (sl.weight < 1 ? " light" : "");
+      el.style.left = x;
+      el.textContent = sl.glyph;
+      paneSlots[sl.s] = el;
+      kids.push(el);
+    }
+
+    const count = document.createElement("div");
+    count.className = "scount";
+    count.style.left = x;
+    count.textContent = sl.s % 2 ? "&" : String(sl.s / 2 % 4 + 1);
+    kids.push(count);
+  }
+
+  for (let b = 1; b < n / 8; b++) {
+    const rule = document.createElement("div");
+    rule.className = "sbar";
+    rule.style.left = paneX(b * 8 / n);
+    kids.push(rule);
+  }
+
+  /* How many times the loop comes round before the chords move on. */
+  if (loops > 1) {
+    const box = document.createElement("div");
+    box.className = "repeats";
+    for (let k = 0; k < loops; k++)
+      paneMarks.push(box.appendChild(document.createElement("i")));
+    kids.push(box);
+  }
+
+  /* The wrap point, which is the end of the loop rather than the end of the
+     pane -- with a fixed ruler those are only the same thing at four bars. */
+  const catcher = document.createElement("div");
+  catcher.className = "catcher scatch";
+  catcher.style.left = paneX(1);
+  catcher.textContent = "↵";
+  paneCursor = document.createElement("div");
+  paneCursor.className = "scursor";
+  paneMark = document.createElement("div");
+  paneMark.className = "smark";
+
+  spane.dataset.rows = state.strumPane;
+  spane.replaceChildren(...kids, catcher, paneCursor, paneMark);
+}
+
+function updatePane(t) {
+  const here = strumAt(t);
+
+  /* The pane is rebuilt only when the pattern itself changes, so a loop that
+     repeats for a whole verse is drawn once. */
+  /* Keyed on the group too, because the repeat dots count loops inside it. */
+  const key = here ? `${here.line.pat.src}@${here.line.from}#${groupAt}` : "";
+  if (key !== paneAt || spane.dataset.rows !== state.strumPane) {
+    paneAt = key;
+    renderPane(here && here.pat, here ? loopsPerGroup(here.line) : 0,
+               here ? paneSpan(here.line) : 1);
+  }
+  if (!here || !paneMark) return;
+
+  const x = paneX(here.f);
+  paneCursor.style.left = x;
+  paneMark.style.left = x;
+  /* Split mode reads the swing as the row it is heading for, hand mode as the
+     hand's own path through the strings. One motion, two projections. */
+  const swing = clamp(geo.paneSwing * num("bounce"), 0, geo.paneRoom);
+  paneMark.style.top = state.strumPane === "hand"
+    ? `calc(var(--mid-y) + ${(swingThrough(here.pat, here.f) * swing).toFixed(1)}px)`
+    : `calc(var(--mid-y) + ${(swingToward(here.pat, here.f) * geo.paneRow).toFixed(1)}px)`;
+
+  if (here.loop !== lastPaneLoop) {
+    paneMarks.forEach((m, k) => m.classList.toggle("spent", k < here.loop));
+    lastPaneLoop = here.loop;
+  }
+
+  const slot = Math.min(here.pat.n - 1, Math.floor(here.f * here.pat.n));
+  if (slot === lastPaneSlot) return;
+  lastPaneCell?.classList.remove("hit");
+  lastPaneCell = paneSlots[slot] || null;
+  lastPaneCell?.classList.add("hit");
+  lastPaneSlot = slot;
+}
+
+/* How many times the loop comes round inside one chord row. Both are lengths
+   in beats, so this is the honest count even where the row is not four bars. */
+function loopsPerGroup(line) {
+  const g = chordGroups[groupAt];
+  if (!g || !(line.loop > 0)) return 0;
+  return Math.round((beatPos(g.to) - beatPos(g.at)) / line.loop);
+}
+
+/* ── stroke boxes on the chord row ──────────────────────────────────────
+   The same strokes again, but laid out in the chord row's space rather than
+   the pattern's: one box per stroke the row contains, at the spot the cursor
+   will be when it is played. Rebuilt with the row, since that is the window
+   they are drawn against. */
+let beatCells = [], lastCell = null, lastSlot = -1;
+
+function renderBeats(g) {
+  beatCells = [];
+  lastCell = null;
+  lastSlot = -1;
+  if (!g || !strumLines.length) { beats.replaceChildren(); return; }
+
+  /* The row's window, not the group's own extent: a short group leaves the
+     tail of the row empty, and the strokes stop where the group does. */
+  const t0 = g.at, t1 = g.at + spanMax;
+  const cells = [];
+
+  for (const line of strumLines) {
+    const to = Math.min(t1, line.to);
+    if (to <= Math.max(t0, line.from)) continue;
+    let k = Math.max(0, Math.floor((beatPos(Math.max(t0, line.from)) - line.b0) / line.loop));
+    for (; ; k++) {
+      const at = slotTime(line, k, 0);
+      if (at >= to) break;
+      for (const sl of line.pat.slots) {
+        if (!sl.hit) continue;
+        const t = slotTime(line, k, sl.s);
+        if (t < t0 || t < line.from || t >= to) continue;
+        const cell = document.createElement("div");
+        cell.className = "beat" + (sl.weight < 1 ? " light" : "");
+        cell.style.left = ((t - t0) / spanMax * 100) + "%";
+        cell.textContent = sl.glyph;
+        beatCells.push({ t, cell });
+        cells.push(cell);
+      }
+    }
+  }
+
+  beatCells.sort((a, b) => a.t - b.t);
+  /* Boxes are as wide as the gap between them allows, so an eighth-note
+     pattern stays a row of boxes rather than one smear. */
+  const gap = beatCells.length > 1
+    ? beatCells.slice(1).reduce((m, c, i) => Math.min(m, c.t - beatCells[i].t), 1e9)
+    : spanMax;
+  const px = main.clientWidth * gap / spanMax;   /* .beats may be display:none */
+  beats.style.setProperty("--bw", Math.round(clamp(px - 3, 10, geo.boxH * 1.6)) + "px");
+  beats.replaceChildren(...cells);
+}
+
+function updateBeats(t) {
+  let i = -1;
+  while (i + 1 < beatCells.length && t >= beatCells[i + 1].t) i++;
+  if (i === lastSlot) return;
+  lastCell?.classList.remove("hit");
+  lastCell = i >= 0 ? beatCells[i].cell : null;
+  lastCell?.classList.add("hit");
+  lastSlot = i;
 }
 
 /* ── audio ──────────────────────────────────────────────────────────────
@@ -1741,6 +2335,7 @@ function frame() {
   if (player.playing) practised();
   updateLyrics(player.time);
   updateChords(player.time);
+  updatePane(player.time);
   drawTransport();
   requestAnimationFrame(frame);
 }
@@ -1992,7 +2587,19 @@ async function openTrack(entry, opts = {}) {
   analyseBeats();
   chordLine = parsed.chords;
   groupChords();
+  /* A strum line runs until the next one, and the last one runs to the end of
+     the track — which is not known yet, and does not need to be. */
+  analyseStrums(parsed.strums, Infinity);
+  for (const note of parsed.notes) noteProblem(note, null);
+  if (parsed.strums.length && strumLines.some(s => s.mismatch))
+    noteProblem("A strum line's span is not the length of its pattern",
+                { message: "Its slots are being spread over the span it was "
+                         + "given, so they are not eighth notes on this track." });
+
   groupAt = -1;
+  paneAt = "";
+  renderPane(null, 0);
+  renderBeats(null);
   main.replaceChildren();
   preview.replaceChildren();
 
@@ -2085,7 +2692,10 @@ const openTrackByKey = key => {
 const controls = {};                       /* name -> the element to reflect into */
 const AFTER = {
   layout: () => layout(),
-  lyrics: () => { renderLine(lastLine); layout(); }
+  lyrics: () => { renderLine(lastLine, lastRest); layout(); },
+  /* The stroke surfaces are drawn once per chord row and once per pattern, so
+     changing what they are supposed to show has to invalidate both. */
+  strum: () => { groupAt = -1; paneAt = ""; layout(); }
 };
 
 function coerce(def, v) {
@@ -2472,7 +3082,7 @@ SETTINGS.forEach(d => set(d.name, d.def, { quiet: true }));
 SETTINGS.forEach(d => d.name in store.display && set(d.name, store.display[d.name], { quiet: true }));
 
 renderTitle();
-renderLine(-1);
+renderLine(-1, false);
 layout();
 transport(false);
 drawTransport();

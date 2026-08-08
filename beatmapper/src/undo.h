@@ -22,6 +22,9 @@ struct UndoSnapshot {
     MiscAnnotation* misc;
     int             misc_count;
     bool            has_misc;
+    MiscAnnotation* chords;
+    int             chord_count;
+    bool            has_chords;
 };
 
 // Circular-buffer undo stack.
@@ -43,7 +46,8 @@ void undo_clear(UndoStack* us);
 // Snapshot the layers about to be mutated.  Pass nullptr for any layer the
 // operation leaves alone.
 void undo_push(UndoStack* us, const BeatMap* bm, const LyricMap* lm,
-               const SectionMap* sm = nullptr, const MiscMap* mm = nullptr);
+               const SectionMap* sm = nullptr, const MiscMap* mm = nullptr,
+               const MiscMap* cm = nullptr);
 
 // Discard the most recent snapshot without restoring it.
 // Call this when a pushed operation turned out to be a no-op, so that Ctrl+Z
@@ -54,6 +58,7 @@ void undo_drop_last(UndoStack* us);
 // Layers the snapshot does not cover, or that the caller passes as nullptr,
 // are left untouched.
 bool undo_pop(UndoStack* us, BeatMap* bm, LyricMap* lm,
-              SectionMap* sm = nullptr, MiscMap* mm = nullptr);
+              SectionMap* sm = nullptr, MiscMap* mm = nullptr,
+              MiscMap* cm = nullptr);
 
 bool undo_can_undo(const UndoStack* us);

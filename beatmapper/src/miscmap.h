@@ -7,15 +7,21 @@ struct MiscAnnotation {
     bool   selected;   // member of the multi-selection that cut/copy act on
 };
 
+// A lane of annotations.  `prefix` is the event keyword the lane owns on disk
+// and does not show in the UI: the chord lane stores "Em" and writes
+// "chord: Em", so a chord chart is typed as chord names rather than as 400
+// repetitions of the word "chord".  A null prefix is the misc lane, which owns
+// no keyword and round-trips whatever it was given, verbatim.
 struct MiscMap {
     MiscAnnotation* entries;
     int             count;
     int             capacity;
     bool            dirty;
     int             selected_idx;
+    const char*     prefix;
 };
 
-void miscmap_init    (MiscMap* mm);
+void miscmap_init    (MiscMap* mm, const char* prefix = nullptr);
 void miscmap_shutdown(MiscMap* mm);
 void miscmap_clear   (MiscMap* mm);
 
@@ -43,6 +49,11 @@ int miscmap_move_selection(MiscMap* mm, double dt, int* focus_idx);
 // first annotation in both seconds and beats; paste prefers beats, because a
 // hand-tapped map of a live recording drifts and the same offsets in seconds
 // would land the group progressively further off.
+//
+// The clipboard remembers which lane it came from and only pastes back into
+// that one.  Text alone does not say what it is: "Em" copied from the chord
+// lane is a chord, and dropping it into misc would write a bare "Em" event that
+// nothing can read.  A lane the clipboard is not for reports zero copied.
 
 struct BeatMap;  // forward declaration -- see beatmap.h
 
@@ -69,4 +80,6 @@ int miscmap_paste(MiscMap* mm, const BeatMap* bm, double t_anchor);
 int  miscmap_paste_chained(MiscMap* mm, const BeatMap* bm, double t_anchor);
 void miscmap_paste_chain_reset();
 
-int miscmap_clipboard_count();
+// How many annotations are held for this lane; 0 when the clipboard belongs to
+// another one.
+int miscmap_clipboard_count(const MiscMap* mm);
