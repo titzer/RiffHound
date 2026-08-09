@@ -577,8 +577,12 @@
 
   .repeats i.spent { background: none; }
 
+  /* On the chord row it sits top right, clear of the chords and over the tail
+     the row leaves empty when the phrase is shorter than the ruler. */
+  .main-row .repeats { top: 8px; bottom: auto; right: 10px; }
+
   /* Same counter in the pane, but counting loops of the pattern inside one
-     chord group rather than passes over the group. */
+     chord row rather than passes over the row. */
   .spane .repeats { top: 6px; bottom: auto; right: 8px; }
   .spane .repeats i { width: 9px; height: 14px; border-width: 2px; }
 
@@ -812,7 +816,50 @@
 
   /* ---- load dialog ----------------------------------------------------- */
 
-  .results { display: grid; gap: 2px; width: 100%; max-height: 190px; overflow-y: auto; }
+  /* This is the one panel read at arm's length -- picking a track from behind
+     an instrument, or off a phone on a stand -- so it takes the screen instead
+     of hanging off the title button it opens from. Fixed rather than absolute
+     for the same reason: it is no longer positioned against that button. */
+  #trackPanel {
+    position: fixed;
+    top: 2.5vh;
+    left: 50%;
+    transform: translateX(-50%);
+    width: min(1200px, 95vw);
+    height: 95vh;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    padding: 18px;
+  }
+
+  /* .panel[hidden] is two attributes to this rule's one id, so without this the
+     dialog would be display:flex whether or not it was meant to be open. */
+  #trackPanel[hidden] { display: none; }
+
+  /* The list is the panel: everything else is a fixed strip above or below it,
+     and the slack goes here. */
+  #trackPanel .results { flex: 1; min-height: 0; max-height: none; }
+  #trackPanel .result { font-size: clamp(15px, 1.9vw, 28px); padding: .26em .4em; gap: 16px; }
+  #trackPanel .result i { font-size: .58em; }
+  #trackPanel > label { font-size: 13px; color: var(--dim); }
+
+  /* The search field, sized by its own text.
+
+     .search carries flex:1 because it was written for a row -- the settings
+     line it used to sit on -- and this panel is a column, where flex:1 means
+     grow *downwards*. So it stretched to share the slack with the list and
+     became a tall box with small type in it. Here it takes its natural height,
+     the list keeps all the slack, and the padding is in em so the box is the
+     size of what is typed in it rather than a fixed number of pixels around
+     something much smaller. */
+  #trackPanel > .search {
+    flex: none;
+    font-size: clamp(16px, 1.9vw, 28px);
+    padding: .3em .45em;
+  }
+
+  .results { display: grid; gap: 2px; width: 100%; max-height: 190px; overflow-y: auto; align-content: start; }
 
   .result {
     display: grid;
@@ -829,8 +876,38 @@
 
   .result:hover, .result.on { border-color: var(--fg); background: var(--hot); color: var(--fg); }
   .result b { font-weight: inherit; }
+  .result b em {
+    font-style: normal;
+    font-size: .5em;
+    margin-left: 1.1em;
+    color: var(--dim);
+    opacity: .75;
+  }
   .result i { font-style: normal; color: var(--dim); font-size: 11px; }
   .result.on b::after { content: " \25c2"; }
+
+  /* What a track has to carry to be worth listing. Off is "everything", so an
+     unfiltered library is the default and each box only ever narrows. */
+  .filters {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 4px 18px;
+    font-size: 13px;
+    color: var(--dim);
+  }
+
+  .filters label {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    cursor: pointer;
+    letter-spacing: .12em;
+  }
+
+  .filters input { width: 15px; height: 15px; accent-color: var(--fg); cursor: pointer; }
+  .filters label:has(input:checked) { color: var(--fg); }
+  .filters .count { margin-left: auto; opacity: .75; }
 
   /* ---- transport bar --------------------------------------------------- */
 
@@ -1370,7 +1447,7 @@ const num = name => state[name] / (DEF[name].scale || 1);
 
 /* ── stores ───────────────────────────────────────────────────────────── */
 const STORE = "riffhound.karaoke.v1";
-const store = { display: {}, tracks: {}, stats: {}, servers: [] };
+const store = { display: {}, tracks: {}, stats: {}, servers: [], filters: {} };
 
 function load() {
   try {
@@ -1378,6 +1455,7 @@ function load() {
     for (const k of ["display", "tracks", "stats"])
       if (saved[k]) Object.assign(store[k], saved[k]);
     if (Array.isArray(saved.servers)) store.servers = saved.servers;
+    if (saved.filters) Object.assign(store.filters, saved.filters);
   } catch (e) {}
 }
 
@@ -1545,7 +1623,7 @@ function strumAt(t) {
   if (t < s.from || t >= s.to) return null;
 
   const k = (beatPos(t) - s.b0) / s.loop;
-  return { line: s, pat: s.pat, loop: Math.floor(k), f: mod(k, 1) };
+  return { line: s, pat: s.pat, f: mod(k, 1) };
 }
 
 /* When slot `s` of loop `k` is played. Slots are evenly spaced across the
@@ -1879,55 +1957,155 @@ function updateLyrics(t) {
    the boxes stop being equal quarters of a bar. */
 const BARS_PER_ROW = 4;
 let chordGroups = [], groupAt = -1, barLen = 2;
+/* The start of the pass currently running. Everything drawn against the row --
+   the cursor, the stroke boxes, the strum pane's own counter -- measures from
+   here rather than from the row's first pass, which is what makes a repeated
+   row repeat instead of scrolling. */
+let groupFrom = 0, repMarks = [], lastRep = -1;
+
+/* Everything the chord and strum surfaces own, back to nothing.
+
+   Loading a track used to reset them a statement at a time at the call site,
+   which drifted out of date every time a surface was added: the next-chord box
+   and the ball's glyph both kept the last track's, and a track with no chords
+   never drew over them, because updateChords() has nothing to draw and returns.
+   One place, and it runs before the new track's data is worked out rather than
+   after -- which is what lets it zero the arrays as well as the pixels. */
+function clearChords() {
+  chordGroups = [];
+  strumLines = [];
+  groupAt = -1;
+  groupFrom = 0;
+  repMarks = [];
+  lastRep = -1;
+  spanMax = 1;
+
+  main.replaceChildren();
+  preview.replaceChildren();
+  main.style.gridTemplateColumns = "";
+  preview.style.gridTemplateColumns = "";
+  $("nextChord").innerHTML = "";
+
+  paneAt = "";
+  renderPane(null, 0);
+  renderBeats(null);
+
+  /* The marker and the next-chord box are hidden rather than emptied: there is
+     no row for them to sweep and nothing coming next, and a ball parked
+     mid-screen over an empty display is the most conspicuous leftover of the
+     lot. renderGroup() brings them back when there is a row again. */
+  ball.textContent = "";
+  ball.classList.remove("strum");
+  ball.style.display = cursor.style.display = next.style.display = "none";
+}
 
 /* Chords are grouped once, on load, and the row then holds a whole group at a
    time instead of shuffling along at every change. Groups never straddle a
    section, so what you memorise is "the four that open the chorus" rather than
    an arbitrary window that happened to line up that way. */
+/* Phrase lengths worth looking for, smallest first: a loop that comes round
+   every two bars is a two-bar loop, not a four-bar one played twice, and
+   ascending order is what tells those apart. Three is absent because a phrase
+   that matches nothing here still gets a row -- it is packed to fit, as before
+   -- so a miss costs the counter, not the chart. */
+const PHRASES = [2, 4, 5, 6, 8];
+const MAX_REPS = 8;          /* more rectangles than this is a wall, not a count */
+
 function groupChords() {
-  /* One row is BARS_PER_ROW bars of time — always, for every group. That is
-     what makes the cursor cross at one rate and a short group simply stop
-     early instead of being stretched. Runs are broken to fit rather than
-     counted, because four chords can be four bars or eight. */
   const beats = sections[0]?.beatsPerBar || 4;
   barLen = (beatPeriod || BOUNCE) * beats;
-
   chordGroups = [];
-  let run = [];
-  const flush = () => { if (run.length) chordGroups.push(run); run = []; };
-  const bars = r => (r[r.length - 1].t_end - r[0].t_start) / barLen;
 
-  const sectionOf = t => sections.findIndex(s => t >= s.t_start && t < s.t_end);
-  let inSection = -1, inGroup = -1;
+  const bars = c => (c.t_end - c.t_start) / barLen;
 
-  for (const c of chordLine) {
-    const grp = c.group >= 0 ? c.group : -1;
-    /* Chords written on one line are a row the author already decided on, so
-       the whole run takes the section of its first chord. Sections are marked
-       by ear and land a fraction of a bar off the changes they introduce —
-       reading each chord's own section would let that fraction shear "Em C G D"
-       into "Em" and "C G D" at every boundary. Loose chords still break on a
-       section, which is what keeps "the four that open the chorus" a row. */
-    const sec = grp >= 0 && grp === inGroup ? inSection : sectionOf(c.t_start);
-
-    if (grp !== inGroup || sec !== inSection) { flush(); inGroup = grp; inSection = sec; }
-
-    /* Adding this one would overrun the row, so start a new one first. */
-    if (run.length && bars([...run, c]) > BARS_PER_ROW + .05) flush();
-    run.push(c);
-    if (bars(run) >= BARS_PER_ROW - .05) flush();
+  /* Split where the author already said to: a row written on one line, or a
+     section. Repeats are looked for inside these and never across them --
+     "the four that open the chorus" is not a repeat of the four that closed
+     the verse even when the names line up. */
+  const segs = [];
+  {
+    const sectionOf = t => sections.findIndex(s => t >= s.t_start && t < s.t_end);
+    let run = [], inGroup = -1, inSection = -1;
+    for (const c of chordLine) {
+      const grp = c.group >= 0 ? c.group : -1;
+      /* Chords written on one line take the section of their first chord.
+         Sections are marked by ear and land a fraction of a bar off the changes
+         they introduce; reading each chord's own section would shear
+         "Em C G D" into "Em" and "C G D" at every boundary. */
+      const sec = grp >= 0 && grp === inGroup ? inSection : sectionOf(c.t_start);
+      if (grp !== inGroup || sec !== inSection) {
+        if (run.length) segs.push(run);
+        run = [];
+        inGroup = grp;
+        inSection = sec;
+      }
+      run.push(c);
+    }
+    if (run.length) segs.push(run);
   }
-  flush();
 
-  chordGroups.forEach((g, i) => { g.at = g[0].t_start; g.to = g[g.length - 1].t_end; g.i = i; });
+  /* How many chords from i make up exactly `want` bars, or 0 if none do. */
+  const chordsFor = (seg, i, want) => {
+    let n = 0, acc = 0;
+    while (i + n < seg.length && acc < want - .05) acc += bars(seg[i + n++]);
+    return Math.abs(acc - want) < .1 ? n : 0;
+  };
 
-  /* The widest row, not a fixed four bars. Still one ruler for the whole
-     track — every row is the same seconds per pixel, so a two-second chord is
-     the same width wherever it appears — but a song whose rows are all two
-     bars gets a ruler two bars long instead of spending half the screen on a
-     tail that is empty for the entire song. The packing above bounds this to
-     about BARS_PER_ROW, so one long line cannot squash the rest. */
-  spanMax = chordGroups.reduce((w, g) => Math.max(w, g.to - g.at), 0)
+  /* The n chords at i and at j are the same phrase: same names, same lengths.
+     Lengths matter as much as names -- "Am G" over two bars and "Am G" over one
+     are not the same phrase, and a player reading a repeat sign needs them not
+     to be conflated. */
+  const alike = (seg, i, j, n) => {
+    if (j + n > seg.length) return false;
+    for (let k = 0; k < n; k++)
+      if (seg[i + k].name !== seg[j + k].name ||
+          Math.abs(bars(seg[i + k]) - bars(seg[j + k])) > .1) return false;
+    return true;
+  };
+
+  for (const seg of segs) {
+    let i = 0;
+    while (i < seg.length) {
+      let n = 0, reps = 1;
+
+      /* A phrase that comes round at least twice is the thing to show once and
+         count off. Anything else is just a row of chords. */
+      for (const want of PHRASES) {
+        const m = chordsFor(seg, i, want);
+        if (!m) continue;
+        let r = 1;
+        while (r < MAX_REPS && alike(seg, i, i + r * m, m)) r++;
+        if (r >= 2) { n = m; reps = r; break; }
+      }
+
+      if (!n) {
+        /* Nothing repeats here: pack a row to fit, which is what every row used
+           to be. Runs are broken to fit rather than counted, because four
+           chords can be four bars or eight. */
+        let acc = 0;
+        while (i + n < seg.length && acc + bars(seg[i + n]) <= BARS_PER_ROW + .05)
+          acc += bars(seg[i + n++]);
+        if (!n) n = 1;             /* a chord longer than a whole row still goes */
+      }
+
+      const g = seg.slice(i, i + n);
+      g.reps = reps;
+      g.starts = Array.from({ length: reps }, (_, r) => seg[i + r * n].t_start);
+      g.at = g[0].t_start;
+      g.span = g[n - 1].t_end - g[0].t_start;     /* one pass, not the whole run */
+      g.to = seg[i + reps * n - 1].t_end;
+      chordGroups.push(g);
+      i += reps * n;
+    }
+  }
+
+  chordGroups.forEach((g, i) => { g.i = i; });
+
+  /* The widest *pass*, not the widest run: a phrase played four times is drawn
+     once, so the ruler is the phrase. Still one seconds-per-pixel for the whole
+     track -- a two-second chord is the same width wherever it appears -- and a
+     shorter row simply stops early and leaves the tail empty. */
+  spanMax = chordGroups.reduce((w, g) => Math.max(w, g.span), 0)
             || BARS_PER_ROW * barLen;
 }
 
@@ -1955,8 +2133,23 @@ function sizeRow(el, group) {
 
 function renderGroup(i) {
   const g = chordGroups[i], ahead = chordGroups[i + 1];
+  ball.style.display = cursor.style.display = next.style.display = "";
   main.replaceChildren(...(g || []).map(chordBox));
   sizeRow(main, g || []);
+
+  /* One rectangle per pass, emptying as the passes are spent. The same counter
+     the strum pane carries, for the same reason: how many times round is the
+     thing you cannot read off the chords themselves. */
+  repMarks = [];
+  lastRep = -1;
+  if (g && g.reps > 1) {
+    const box = document.createElement("div");
+    box.className = "repeats";
+    for (let k = 0; k < g.reps; k++)
+      repMarks.push(box.appendChild(document.createElement("i")));
+    main.append(box);          /* absolute, so it takes no cell of the grid */
+  }
+
   preview.replaceChildren(...(ahead || []).map(chordBox));
   sizeRow(preview, ahead || []);
   $("nextChord").innerHTML = ahead ? chordHtml(ahead[0].name) : "";
@@ -1971,8 +2164,20 @@ function updateChords(t) {
   if (i !== groupAt) { groupAt = i; renderGroup(i); }
 
   const g = chordGroups[i];
-  /* Against the fixed scale, not the group's own length. */
-  const f = clamp((t - g.at) / spanMax, 0, 1);
+
+  /* Which pass over the row, and where inside it. A row that repeats is drawn
+     once and crossed once per pass, instead of the cursor crawling over the
+     whole run at a quarter of the rate. */
+  let r = 0;
+  while (r < g.starts.length - 1 && t >= g.starts[r + 1]) r++;
+  groupFrom = g.starts[r];
+  if (r !== lastRep) {
+    repMarks.forEach((m, k) => m.classList.toggle("spent", k < r));
+    lastRep = r;
+  }
+
+  /* Against the fixed scale, not the row's own length. */
+  const f = clamp((t - groupFrom) / spanMax, 0, 1);
   ball.style.left = cursor.style.left = (f * 100) + "%";
 
   /* Bounce or strum: the ball is on the beat, or it is the right hand. In hand
@@ -1989,11 +2194,14 @@ function updateChords(t) {
   if (ball.textContent !== glyph) ball.textContent = glyph;
   updateBeats(t);
 
-  /* Which chord of the group is sounding. */
+  /* Which chord of the pass is sounding, by how far into the pass we are --
+     the row shows the first pass's chords, so later passes are read against
+     their offsets. */
+  const dt = t - groupFrom;
   let k = 0;
-  while (k < g.length - 1 && t >= g[k].t_end) k++;
-  [...main.children].forEach((el, j) =>
-    el.classList.toggle("current", j === k && t >= g[0].t_start));
+  while (k < g.length - 1 && dt >= g[k].t_end - g.at) k++;
+  main.querySelectorAll(".measure").forEach((el, j) =>
+    el.classList.toggle("current", j === k && t >= g.at));
 }
 
 /* The chord ball bounces on the map's beats, so it drifts with the record. */
@@ -2153,9 +2361,14 @@ function updatePane(t) {
     ? `calc(var(--mid-y) + ${(swingThrough(here.pat, here.f) * swing).toFixed(1)}px)`
     : `calc(var(--mid-y) + ${(swingToward(here.pat, here.f) * geo.paneRow).toFixed(1)}px)`;
 
-  if (here.loop !== lastPaneLoop) {
-    paneMarks.forEach((m, k) => m.classList.toggle("spent", k < here.loop));
-    lastPaneLoop = here.loop;
+  /* Which pass over the loop, counted from the start of the chord row. This
+     used to count from the start of the strum line, which is the pass number
+     since the top of the song -- so every rectangle was spent by the second bar
+     and the counter looked like noise. */
+  const pass = Math.floor((beatPos(t) - beatPos(groupFrom)) / here.line.loop);
+  if (pass !== lastPaneLoop) {
+    paneMarks.forEach((m, k) => m.classList.toggle("spent", k < pass));
+    lastPaneLoop = pass;
   }
 
   const slot = Math.min(here.pat.n - 1, Math.floor(here.f * here.pat.n));
@@ -2171,7 +2384,10 @@ function updatePane(t) {
 function loopsPerGroup(line) {
   const g = chordGroups[groupAt];
   if (!g || !(line.loop > 0)) return 0;
-  return Math.round((beatPos(g.to) - beatPos(g.at)) / line.loop);
+  /* One pass over the row, not the whole run: a repeated row is drawn once, and
+     the chord row's own counter is what says how many times it comes round. */
+  return Math.max(1, Math.round(
+    (beatPos(g.at + g.span) - beatPos(g.at)) / line.loop));
 }
 
 /* ── stroke boxes on the chord row ──────────────────────────────────────
@@ -2207,7 +2423,7 @@ function renderBeats(g) {
         cell.className = "beat" + (sl.weight < 1 ? " light" : "");
         cell.style.left = ((t - t0) / spanMax * 100) + "%";
         cell.textContent = sl.glyph;
-        beatCells.push({ t, cell });
+        beatCells.push({ t: t - t0, cell });   /* offset into the pass */
         cells.push(cell);
       }
     }
@@ -2225,8 +2441,11 @@ function renderBeats(g) {
 }
 
 function updateBeats(t) {
+  /* Against the pass, not the track: the boxes were laid out from the row's
+     first pass, and every pass after it lights the same boxes. */
+  const dt = t - groupFrom;
   let i = -1;
-  while (i + 1 < beatCells.length && t >= beatCells[i + 1].t) i++;
+  while (i + 1 < beatCells.length && dt >= beatCells[i + 1].t) i++;
   if (i === lastSlot) return;
   lastCell?.classList.remove("hit");
   lastCell = i >= 0 ? beatCells[i].cell : null;
@@ -2493,12 +2712,26 @@ async function refreshDirs() {
   }
 }
 
+/* Where a track lives, which is the only thing that tells two files of the same
+   name apart. A library with "Battle Hymn of the Republic" in two folders is a
+   library, not a mistake -- but a list that shows the same title twice with
+   nothing to choose between them is useless. */
+const where = e =>
+  (e.remote ? [e.source, e.folder].filter(Boolean).join("/") : e.source) || "";
+
 function library() {
   const out = [];
   for (const r of remote) if (r.ok) out.push(...serverTracks(r));
   for (const d of dirs) if (d.ok) out.push(...pairUp(d.files, d.name));
   out.push(...pairUp(picked, "picked"));
-  return out;
+
+  /* One server reached by two addresses is one library. That happens the moment
+     you open the page on the LAN address having used localhost before: both are
+     remembered, both answer, and every track arrives twice. Both are worth
+     keeping -- either address may be the one that works next time -- so the
+     addresses stay and the listing dedupes instead. */
+  const seen = new Set();
+  return out.filter(e => !seen.has(e.id) && seen.add(e.id));
 }
 
 /* ── servers ────────────────────────────────────────────────────────────
@@ -2598,9 +2831,53 @@ const serverTracks = r => r.tracks.map(t => ({
   title: t.title,
   source: r.name,
   remote: { base: r.url, tid: t.id },
+  has: t.has,
+  folder: t.folder || "",
   media: { url: r.url + "/media/" + idPath(t.id), name: t.media },
   txt: t.chart ? { url: r.url + "/chart/" + idPath(t.id), name: t.title + ".txt" } : null
 }));
+
+/* ── what a track carries ───────────────────────────────────────────────
+   Beats, chords, lyrics: enough to answer "show me only the ones I have
+   beatmapped" without opening them one at a time.
+
+   A server says so in its listing, because it has the files and can read them
+   for the price of a stat. A folder handle cannot be asked that cheaply, so the
+   sidecars are read in the background after the listing is already on screen,
+   and re-read only where the file has changed. Until that finishes a local
+   track counts as unknown and passes every filter: hiding something because we
+   have not looked yet is the one answer that is definitely wrong. */
+const NOTHING = { beats: false, chords: false, lyrics: false };
+const localFlags = new Map();   // track id -> { beats, chords, lyrics }
+const localSeen = new Map();    // track id -> "size:mtime" already read
+
+const trackFlags = e =>
+  e.remote ? (e.has || NOTHING)
+  : !e.txt ? NOTHING
+  : localFlags.get(e.id) || null;   /* null = not looked at yet */
+
+/* Read the sidecars of every local track, cheapest first: a file whose size and
+   timestamp are unchanged is skipped outright. parseTimeseries is the only
+   thing that decides what an annotation is, here as everywhere else. */
+async function scanLocalCharts() {
+  let found = false;
+  for (const e of library()) {
+    if (e.remote || !e.txt) continue;
+    try {
+      const h = e.txt.handle || e.txt.file || e.txt;
+      const f = ("getFile" in h) ? await h.getFile() : h;
+      const stamp = f.size + ":" + f.lastModified;
+      if (localSeen.get(e.id) === stamp) continue;
+      const p = parseTimeseries(await f.text());
+      localFlags.set(e.id, { beats: p.beats.length > 0,
+                             chords: p.chords.length > 0,
+                             lyrics: p.lyrics.length > 0 });
+      localSeen.set(e.id, stamp);
+      found = true;
+    } catch { localFlags.set(e.id, NOTHING); }
+  }
+  if (found && searchBox) renderResults(searchBox.value);
+}
 
 /* Subsequence match, as v0.1 did: every letter of the query in order. */
 function fuzzy(q, s) {
@@ -2724,6 +3001,7 @@ async function openTrack(entry, opts = {}) {
   sections = parsed.sections;
   beatGrid = parsed.beats;
   analyseBeats();
+  clearChords();
   chordLine = parsed.chords;
   groupChords();
   /* A strum line runs until the next one, and the last one runs to the end of
@@ -2734,13 +3012,6 @@ async function openTrack(entry, opts = {}) {
     noteProblem("A strum line's span is not the length of its pattern",
                 { message: "Its slots are being spread over the span it was "
                          + "given, so they are not eighth notes on this track." });
-
-  groupAt = -1;
-  paneAt = "";
-  renderPane(null, 0);
-  renderBeats(null);
-  main.replaceChildren();
-  preview.replaceChildren();
 
   if (audioUrl) { URL.revokeObjectURL(audioUrl); audioUrl = null; }
   let url = null;
@@ -2797,6 +3068,7 @@ async function reloadTrack() {
      the cached listing, so a track can gain annotations between reloads, and a
      server can have gained the track itself. */
   await Promise.all([refreshDirs(), refreshServers()]);
+  scanLocalCharts();
   renderDirs();
   const entry = library().find(e => e.id === track.id);
   if (!entry) {
@@ -2965,18 +3237,45 @@ function buildPanel() {
 
 /* ── the load dialog ────────────────────────────────────────────────────── */
 let searchBox = null, results = null, dirList = null, reloadBtn = null, problemBox = null;
-let srvBox = null, srvList = null;
+let srvBox = null, srvList = null, filterRow = null, filterCount = null;
+
+/* The three things a chart can carry, as three boxes. Off is "everything", so
+   the default library is the whole library and a box only ever narrows it. */
+const FILTERS = [
+  { key: "beats", label: "Beats" },
+  { key: "chords", label: "Chords" },
+  { key: "lyrics", label: "Lyrics" }
+];
 
 function buildTrackPanel() {
-  const row = document.createElement("div");
-  row.className = "setting";
-  row.innerHTML = `<label for="search">Load track</label>`;
-
   /* First thing in the panel, because when it has anything to say it is the
      reason the panel was opened. */
   problemBox = document.createElement("div");
   problemBox.className = "problems";
   problemBox.hidden = true;
+
+  const label = document.createElement("label");
+  label.htmlFor = "search";
+  label.textContent = "Load track";
+
+  filterRow = document.createElement("div");
+  filterRow.className = "filters";
+  for (const f of FILTERS) {
+    const lab = document.createElement("label");
+    const box = document.createElement("input");
+    box.type = "checkbox";
+    box.checked = !!store.filters[f.key];
+    box.onchange = () => {
+      store.filters[f.key] = box.checked;
+      save();
+      renderResults(searchBox.value);
+    };
+    lab.append(box, document.createTextNode(f.label));
+    filterRow.append(lab);
+  }
+  filterCount = document.createElement("span");
+  filterCount.className = "count";
+  filterRow.append(filterCount);
 
   searchBox = document.createElement("input");
   Object.assign(searchBox, { id: "search", className: "search", type: "search",
@@ -3048,28 +3347,51 @@ function buildTrackPanel() {
   dirList = document.createElement("div");
   dirList.className = "dirs";
 
-  row.append(searchBox, results, sources, srvRow, srvList, dirList);
-  row.prepend(problemBox);        /* above the label, not below it */
-  trackPanel.replaceChildren(row);
+  trackPanel.replaceChildren(problemBox, label, searchBox, filterRow, results,
+                             sources, srvRow, srvList, dirList);
   renderResults("");
   renderServers();
   renderDirs();
   showProblems();          /* anything noted before the panel existed */
 }
 
+/* A track survives the filters when it has everything they ask for. Unknown --
+   a local sidecar not read yet -- passes, because the alternative is hiding a
+   track for not having been looked at. */
+function passes(e) {
+  const want = FILTERS.filter(f => store.filters[f.key]);
+  if (!want.length) return true;
+  const has = trackFlags(e);
+  return has == null || want.every(f => has[f.key]);
+}
+
+/* What a listed track is carrying, in the same words as the filters. */
+const carried = e => {
+  const has = trackFlags(e);
+  if (!has) return "";
+  const on = FILTERS.filter(f => has[f.key]).map(f => f.label.toLowerCase());
+  return on.length ? on.join(" · ") : "no chart";
+};
+
 function renderResults(query) {
   const q = String(query || "").trim();
   if (reloadBtn) reloadBtn.disabled = !track.id || reloadBtn.dataset.busy === "1";
-  const rows = library()
-    .filter(e => fuzzy(q, e.title) || fuzzy(q, e.source))
+  const all = library();
+  const kept = all.filter(e => (fuzzy(q, e.title) || fuzzy(q, e.source)) && passes(e));
+  if (filterCount)
+    filterCount.textContent = kept.length === all.length
+      ? all.length + " tracks"
+      : kept.length + " of " + all.length;
+
+  const rows = kept
     .sort((a, b) => (store.stats[b.id]?.last || 0) - (store.stats[a.id]?.last || 0))
-    .slice(0, 60)
+    .slice(0, 200)
     .map(e => {
       const s = store.stats[e.id] || {};
       const b = document.createElement("button");
       b.className = "result" + (e.id === track.id ? " on" : "");
-      b.innerHTML = `<b>${e.title}</b><i>${e.txt ? "" : "no lyrics"} ${spent(s.secs)}</i>` +
-                    `<i>${ago(s.last)}</i>`;
+      b.innerHTML = `<b>${e.title}<em>${where(e)}</em></b>` +
+                    `<i>${carried(e)} ${spent(s.secs)}</i><i>${ago(s.last)}</i>`;
       b.onclick = () => { openTrack(e); openTrackPanel(false); };
       return b;
     });
@@ -3322,6 +3644,7 @@ for (const [k, v] of boot)
   if (location.protocol.startsWith("http")) remember(location.origin, false);
 
   await Promise.all([refreshServers(), refreshDirs()]);
+  scanLocalCharts();          /* in the background; re-renders when it lands */
   for (const url of trial)
     if (!remote.find(r => r.url === url)?.ok) forgetServer(url);
 

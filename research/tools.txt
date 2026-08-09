@@ -14,3 +14,7 @@ Roadie Coach app:
 
 Vamp and plugins:
 https://vamp-plugins.org/
+
+Reaper: Linux, MacOS, Windows digital audio workstation
+
+Play What you Feel: has annotated songs for a few

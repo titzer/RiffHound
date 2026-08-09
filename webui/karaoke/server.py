@@ -22,6 +22,13 @@ GET /api/resolve?path=ABS    the id of that file, as text/plain (404 if unknown)
 GET /media/<id>              the audio, with Range and ETag
 GET /chart/<id>              the beatmap .txt, with ETag
 
+Folders that are not part of the library -- originals/, stems/, anything whose
+contents mirror what is already there -- are left out two ways: a .riffignore
+file inside the folder, which travels with the library and so holds for every
+client and every way of starting the server, or --exclude on the command line
+for someone who would rather not write to the library at all.  Hidden files and
+folders are always skipped.
+
 An id is "<root index>/<path under that root, without extension>", which is
 readable, debuggable, and stable as long as the file stays where it is.  It is
 deliberately not a content hash: hashing every file to list a folder is a cost
@@ -36,8 +43,10 @@ conversation this leaves room for rather than pre-empts.
 """
 
 import argparse
+import fnmatch
 import json
 import mimetypes
+import os
 import re
 import socket
 import sys
@@ -47,9 +56,73 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
-MEDIA_EXT = {".mp3", ".m4a", ".ogg", ".wav", ".flac", ".mp4", ".m4v", ".mov", ".webm"}
+# Ordered, because the order is a preference: two files with the same stem are
+# one track -- song.mp3 and song.m4a are the same song, not two of them -- and
+# the one served should be the same one every time rather than whichever the
+# directory walk happened to reach last.
+MEDIA_EXT = (".mp3", ".m4a", ".ogg", ".webm", ".flac", ".wav",
+             ".mp4", ".m4v", ".mov")
 RESCAN_AFTER = 5.0          # seconds; a listing this stale is re-walked
 PAGE = "v0.2.html"
+
+# A folder holding this file is not part of the library.  A library that keeps
+# its untouched copies in originals/ has every track twice -- once to play and
+# once that is not for playing -- and no amount of looking at the names can tell
+# which is which.  The marker travels with the folder, so it holds for every
+# client and every way of starting the server; --exclude is the same rule for
+# someone who would rather not write to the library at all.
+IGNORE_FILE = ".riffignore"
+
+
+# --- charts ---------------------------------------------------------------
+
+# Memoised on (size, mtime): the chart being edited next door is re-read, the
+# other four hundred are not.  Without this a listing walks every sidecar every
+# five seconds, which is the kind of cost that only shows up on someone else's
+# library.
+_flags = {}
+
+
+def chart_flags(path):
+    """What kinds of annotation a chart carries.
+
+    So that a client can filter a listing -- "only tracks I have beatmapped" --
+    without fetching every chart in it.  The keywords are the ones in
+    format-spec.md; a reader that does not know an event ignores it, which is
+    why an unknown line counts for nothing rather than for something.
+    """
+    try:
+        st = path.stat()
+    except OSError:
+        return {"beats": False, "chords": False, "lyrics": False}
+
+    key = (str(path), st.st_size, st.st_mtime_ns)
+    hit = _flags.get(str(path))
+    if hit and hit[0] == key:
+        return hit[1]
+
+    has = {"beats": False, "chords": False, "lyrics": False}
+    try:
+        with path.open("r", errors="replace") as f:
+            for line in f:
+                line = re.sub(r"(^|[ \t])#.*", "", line).strip()
+                parts = line.split(None, 2)
+                if len(parts) < 3:
+                    continue
+                tok = parts[2].split(None, 1)[0]
+                if tok in ("B", "BM") or tok.startswith(("Bx", "BMx")):
+                    has["beats"] = True
+                elif tok in ("chord:", "chords:"):
+                    has["chords"] = True
+                elif tok in ("lyric:", "lyric"):
+                    has["lyrics"] = True
+                if all(has.values()):
+                    break
+    except OSError:
+        pass
+
+    _flags[str(path)] = (key, has)
+    return has
 
 
 # --- the library ----------------------------------------------------------
@@ -63,12 +136,23 @@ class Library:
     box from walking the disk once per keystroke.
     """
 
-    def __init__(self, roots):
-        self.roots = [Path(r).expanduser().resolve() for r in roots]
+    def __init__(self, roots, exclude=()):
+        self.roots = dedupe_roots(Path(r).expanduser().resolve() for r in roots)
+        self.exclude = list(exclude)
         self.lock = threading.Lock()
         self.tracks = {}        # id -> dict
         self.by_path = {}       # resolved media path -> id
         self.scanned = 0.0
+
+    def skip(self, root, d):
+        """Is this folder outside the library?"""
+        if d.name.startswith("."):
+            return True
+        if (d / IGNORE_FILE).is_file():
+            return True
+        rel = d.relative_to(root).as_posix()
+        return any(fnmatch.fnmatch(d.name, g) or fnmatch.fnmatch(rel, g)
+                   for g in self.exclude)
 
     def scan(self, force=False):
         with self.lock:
@@ -76,23 +160,50 @@ class Library:
                 return
             tracks, by_path = {}, {}
             for i, root in enumerate(self.roots):
-                for path in sorted(root.rglob("*")):
-                    if not path.is_file() or path.suffix.lower() not in MEDIA_EXT:
-                        continue
-                    rel = path.relative_to(root)
-                    tid = f"{i}/{rel.with_suffix('').as_posix()}"
-                    chart = path.with_suffix(".txt")
-                    st = path.stat()
-                    tracks[tid] = {
-                        "id": tid,
-                        "title": re.sub(r"[_\-]+", " ", rel.stem).strip(),
-                        "source": root.name,
-                        "media": path.name,
-                        "chart": chart.is_file(),
-                        "bytes": st.st_size,
-                        "mtime": int(st.st_mtime),
-                    }
-                    by_path[str(path)] = tid
+                for dirpath, dirnames, filenames in os.walk(root):
+                    here = Path(dirpath)
+                    # Pruned in place, so os.walk does not descend into it: an
+                    # excluded tree costs one readdir rather than a walk of
+                    # everything underneath.
+                    dirnames[:] = sorted(d for d in dirnames
+                                         if not self.skip(root, here / d))
+                    for name in sorted(filenames):
+                        if name.startswith("."):
+                            continue
+                        path = here / name
+                        if path.suffix.lower() not in MEDIA_EXT:
+                            continue
+
+                        rel = path.relative_to(root)
+                        tid = f"{i}/{rel.with_suffix('').as_posix()}"
+
+                        # Same stem, another extension: one track, and the
+                        # better encoding wins whichever order they were found.
+                        old = tracks.get(tid)
+                        if old and (MEDIA_EXT.index(Path(old["media"]).suffix.lower())
+                                    <= MEDIA_EXT.index(path.suffix.lower())):
+                            continue
+
+                        chart = path.with_suffix(".txt")
+                        st = path.stat()
+                        folder = rel.parent.as_posix()
+                        tracks[tid] = {
+                            "id": tid,
+                            "title": re.sub(r"[_\-]+", " ", rel.stem).strip(),
+                            "source": root.name,
+                            # The folder under the root, which is the only thing
+                            # that tells two files of the same name apart -- a
+                            # library with the same hymn in two folders is a
+                            # library, not a mistake.
+                            "folder": "" if folder == "." else folder,
+                            "media": path.name,
+                            "chart": chart.is_file(),
+                            "has": chart_flags(chart) if chart.is_file()
+                                   else {"beats": False, "chords": False, "lyrics": False},
+                            "bytes": st.st_size,
+                            "mtime": int(st.st_mtime),
+                        }
+                        by_path[str(path)] = tid
             self.tracks, self.by_path, self.scanned = tracks, by_path, time.time()
 
     def list(self, q=None):
@@ -134,6 +245,40 @@ class Library:
             return self.by_path.get(str(Path(path).expanduser().resolve()))
         except OSError:
             return None
+
+
+def lan_address():
+    """The address of the interface that would carry traffic off this machine.
+
+    Opens a UDP socket and sends nothing: connect() on a datagram socket only
+    consults the routing table, which is the only thing that knows which of
+    several interfaces a phone across the room would arrive on.  Guessing from
+    gethostname() gets you 127.0.0.1 on a machine with a tidy /etc/hosts.
+    """
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect(("10.255.255.255", 1))
+        return s.getsockname()[0]
+    except OSError:
+        return socket.gethostname()
+    finally:
+        s.close()
+
+
+def dedupe_roots(roots):
+    """Distinct roots, none of them inside another.
+
+    Serving a folder and one of its subfolders lists everything in the
+    subfolder twice, under two ids, because nothing downstream can tell that
+    two paths are the same file.  The subfolder is already covered, so it goes.
+    """
+    out = []
+    for r in sorted(set(roots), key=lambda p: len(p.parts)):
+        if any(r == k or k in r.parents for k in out):
+            sys.stderr.write("[server] %s is already inside %s; skipping it\n" % (r, out[-1]))
+            continue
+        out.append(r)
+    return out
 
 
 def fuzzy(q, s):
@@ -300,6 +445,9 @@ def main():
                     help="0.0.0.0 to let the rest of the room in (default: %(default)s)")
     ap.add_argument("--port", type=int, default=8177,
                     help="0 picks a free one (default: %(default)s)")
+    ap.add_argument("--exclude", action="append", default=[], metavar="GLOB",
+                    help="skip folders matching this, by name or by path under "
+                         "the root; repeatable (e.g. --exclude originals)")
     ap.add_argument("--page", default=None, help="the client to serve at /")
     ap.add_argument("--url-file", default=None,
                     help="write the server's URL here once it is listening")
@@ -317,20 +465,29 @@ def main():
         sys.exit("no page to serve at %s (pass --page)" % page)
 
     last = [time.time()]
-    Handler.library = Library(args.roots)
+    Handler.library = Library(args.roots, args.exclude)
     Handler.page = page
     Handler.quiet = args.quiet
     Handler.touch = staticmethod(lambda: last.__setitem__(0, time.time()))
 
     httpd = ThreadingHTTPServer((args.host, args.port), Handler)
     httpd.daemon_threads = True
-    host = args.host if args.host not in ("0.0.0.0", "::") else socket.gethostname()
-    url = "http://%s:%d" % (host, httpd.server_address[1])
+    port = httpd.server_address[1]
+    loopback = args.host in ("127.0.0.1", "localhost", "::1")
+    url = "http://%s:%d" % ("127.0.0.1" if loopback else lan_address(), port)
 
     Handler.library.scan()
-    print("%s  -- %d tracks in %s" %
+    print("%s  -- %d tracks in %s%s" %
           (url, len(Handler.library.tracks),
-           ", ".join(str(r) for r in Handler.library.roots)), flush=True)
+           ", ".join(str(r) for r in Handler.library.roots),
+           "  (skipping %s)" % ", ".join(args.exclude) if args.exclude else ""),
+          flush=True)
+    # Bound to loopback, the address the phone on the music stand would use is
+    # not merely absent from this line -- it does not work, and nothing about
+    # "127.0.0.1" says why.  So say it here, where the question gets asked.
+    if loopback:
+        print("this machine only; --host 0.0.0.0 to let the rest of the room in "
+              "(then http://%s:%d)" % (lan_address(), port), flush=True)
     if args.url_file:
         Path(args.url_file).write_text(url + "\n")
 
