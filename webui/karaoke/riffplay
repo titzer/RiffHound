@@ -1,0 +1,78 @@
+#!/usr/bin/env bash
+# riffplay TRACK [SECONDS] -- open a track in the karaoke client, playing.
+#
+#     riffplay ~/Music/practice/stairway.mp3
+#     riffplay ~/Music/practice/stairway.mp3 92      # start 92 seconds in
+#
+# The client only ever talks to a server, so this makes sure there is one and
+# then points a browser at it.  If the library server is already up and already
+# serves this file, that one is used -- opening a second track does not start a
+# second server, and does not disturb the first.  Otherwise an ad-hoc server is
+# started on the track's own folder, on whatever port is free, and it shuts
+# itself down once nothing has asked it for anything in a while.
+#
+# The alternative -- a fresh single-use server per invocation, holding one
+# preloaded file -- needs a second media implementation, a port allocator and a
+# shutdown story, and gives the client a second kind of library to understand.
+# This way there is one server, one protocol, and one loading path.
+
+set -euo pipefail
+
+here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+server=$here/server.py
+port=${RIFFPLAY_PORT:-8177}
+home=${RIFFPLAY_SERVER:-http://127.0.0.1:$port}
+idle=${RIFFPLAY_IDLE:-900}
+
+die() { echo "riffplay: $*" >&2; exit 1; }
+
+[ $# -ge 1 ] || die "usage: riffplay TRACK [SECONDS]"
+track=$1
+at=${2:-}
+[ -f "$track" ] || die "no such file: $track"
+[ -f "$server" ] || die "no server.py beside this script"
+
+# Absolute path, since that is what /api/resolve matches against.
+track=$(cd "$(dirname "$track")" && printf '%s/%s' "$(pwd)" "$(basename "$track")")
+
+# The id, as plain text, so this needs no JSON parser -- which is most of why
+# /api/resolve exists.
+resolve() {
+  curl -fsS --max-time 2 --get --data-urlencode "path=$track" "$1/api/resolve" 2>/dev/null
+}
+
+url=$home
+id=$(resolve "$url" || true)
+
+if [ -z "$id" ]; then
+  # Nothing at the usual place, or what is there does not serve this folder.
+  tmp=$(mktemp -t riffplay)
+  trap 'rm -f "$tmp"' EXIT
+  "$server" --port 0 --url-file "$tmp" --idle-exit "$idle" --quiet \
+            "$(dirname "$track")" >/dev/null 2>&1 &
+
+  for _ in $(seq 1 60); do
+    [ -s "$tmp" ] && break
+    sleep 0.1
+  done
+  [ -s "$tmp" ] || die "the server did not come up"
+  url=$(head -n1 "$tmp")
+
+  id=$(resolve "$url" || true)
+  [ -n "$id" ] || die "the server started but does not know $track"
+fi
+
+# Percent-encode the id for the query string; ids are paths, so they have
+# slashes and may have spaces.
+enc=$(printf '%s' "$id" | sed -e 's/%/%25/g' -e 's/ /%20/g' -e 's/#/%23/g' \
+                              -e 's/&/%26/g' -e 's/+/%2B/g' -e 's/?/%3F/g')
+open_at="$url/?track=$enc${at:+&t=$at}"
+
+echo "$open_at"
+if command -v open >/dev/null 2>&1; then
+  open "$open_at"
+elif command -v xdg-open >/dev/null 2>&1; then
+  xdg-open "$open_at"
+else
+  echo "riffplay: open this yourself" >&2
+fi

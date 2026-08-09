@@ -1370,13 +1370,14 @@ const num = name => state[name] / (DEF[name].scale || 1);
 
 /* ── stores ───────────────────────────────────────────────────────────── */
 const STORE = "riffhound.karaoke.v1";
-const store = { display: {}, tracks: {}, stats: {} };
+const store = { display: {}, tracks: {}, stats: {}, servers: [] };
 
 function load() {
   try {
     const saved = JSON.parse(localStorage.getItem(STORE) || "{}");
     for (const k of ["display", "tracks", "stats"])
       if (saved[k]) Object.assign(store[k], saved[k]);
+    if (Array.isArray(saved.servers)) store.servers = saved.servers;
   } catch (e) {}
 }
 
@@ -2402,34 +2403,46 @@ const net = {
    frames in a way Apple's decoder accepts, which is what a VBR track remuxed
    for accurate seeking has to be if Safari is ever going to play it. */
 const MEDIA_RE = /\.(mp3|ogg|wav|flac|m4a|mp4|m4v|mov|webm)$/i;
-let _db = null, dirs = [], picked = [];
+let _db = null, dirs = [], picked = [], remote = [];
 
 function dbOpen() {
   if (_db) return Promise.resolve(_db);
   return new Promise((resolve, reject) => {
-    const req = indexedDB.open("riffhound-karaoke", 1);
+    const req = indexedDB.open("riffhound-karaoke", 2);
     req.onupgradeneeded = e => {
       const db = e.target.result;
       if (!db.objectStoreNames.contains("dirs"))
         db.createObjectStore("dirs", { keyPath: "id", autoIncrement: true });
+      if (!db.objectStoreNames.contains("charts"))
+        db.createObjectStore("charts", { keyPath: "id" });
     };
     req.onsuccess = e => { _db = e.target.result; resolve(_db); };
     req.onerror = e => reject(e.target.error);
   });
 }
 
-function dbRun(mode, fn) {
+function dbRun(store, mode, fn) {
   return dbOpen().then(db => new Promise((resolve, reject) => {
-    const tx = db.transaction("dirs", mode);
-    const req = fn(tx.objectStore("dirs"));
+    const tx = db.transaction(store, mode);
+    const req = fn(tx.objectStore(store));
     tx.oncomplete = () => resolve(req ? req.result : undefined);
     tx.onerror = e => reject(e.target.error);
   }));
 }
 
-const dbAdd = rec => dbRun("readwrite", s => s.add(rec));
-const dbAll = () => dbRun("readonly", s => s.getAll());
-const dbDel = id => dbRun("readwrite", s => s.delete(id));
+const dbAdd = rec => dbRun("dirs", "readwrite", s => s.add(rec));
+const dbAll = () => dbRun("dirs", "readonly", s => s.getAll());
+const dbDel = id => dbRun("dirs", "readwrite", s => s.delete(id));
+
+/* The last chart seen for a track. Not a cache in front of the server -- the
+   server is always asked first, because the chart is the thing being edited in
+   the next window and a stale one is worse than a slow one. This is what is
+   left when the server does not answer at all: the difference between
+   practising on last night's annotations and practising on none. */
+const chartKept = id =>
+  dbRun("charts", "readonly", s => s.get(id)).then(r => r?.text ?? null).catch(() => null);
+const chartKeep = (id, text) =>
+  dbRun("charts", "readwrite", s => s.put({ id, text, at: Date.now() })).catch(() => {});
 
 const canDir = () => typeof showDirectoryPicker === "function";
 const canFiles = () => typeof showOpenFilePicker === "function";
@@ -2482,10 +2495,112 @@ async function refreshDirs() {
 
 function library() {
   const out = [];
+  for (const r of remote) if (r.ok) out.push(...serverTracks(r));
   for (const d of dirs) if (d.ok) out.push(...pairUp(d.files, d.name));
   out.push(...pairUp(picked, "picked"));
   return out;
 }
+
+/* ── servers ────────────────────────────────────────────────────────────
+   A folder handle only exists on the machine that granted it, which is why a
+   phone on a music stand cannot see the library the laptop can. A server can
+   be reached from both, so the same folder becomes the same library from
+   anywhere in the room -- and the same protocol serves the terminal client and
+   the beatmapper later, without any of them owning a filesystem.
+
+   Servers are remembered and re-checked at startup: a client should come up
+   pointed at the library it was pointed at last, without being asked. The
+   check is one small GET with a short deadline, so a server that has gone away
+   costs a second at boot and says so in the panel rather than hanging the app.
+
+   The server's own name, not its URL, keys what is remembered about a track:
+   a laptop that comes back on a different port is the same library, and losing
+   your practice history to a port number would be absurd. */
+const HELLO_MS = 2500;
+
+const cleanUrl = u => String(u || "").trim().replace(/\/+$/, "")
+  .replace(/^(?!https?:\/\/)/, "http://");
+
+async function ask(url, path, opts = {}) {
+  const ctl = new AbortController();
+  const bell = setTimeout(() => ctl.abort(), opts.ms || HELLO_MS);
+  try {
+    const r = await fetch(url + path, { signal: ctl.signal, cache: "no-store" });
+    if (!r.ok) throw new Error("server said " + r.status + " " + r.statusText);
+    return opts.text ? await r.text() : await r.json();
+  } finally {
+    clearTimeout(bell);
+  }
+}
+
+/* One handshake, then the listing. Kept together because a server that says
+   hello but cannot list is not usable, and the panel should say so once. */
+async function greet(url) {
+  const hi = await ask(url, "/api/hello");
+  if (!hi || hi.riffhound == null) throw new Error("not a RiffHound server");
+  const got = await ask(url, "/api/tracks", { ms: 8000 });
+  return { url, name: hi.name || url, roots: hi.roots || [],
+           tracks: got.tracks || [], ok: true, why: "" };
+}
+
+/* Try every server we know, in parallel: they are independent and the slow one
+   should not hold up the rest. A failure is remembered as a failure rather
+   than dropped, so the panel can say which library is not answering. */
+async function refreshServers() {
+  const known = store.servers || (store.servers = []);
+  remote = await Promise.all(known.map(async s => {
+    try {
+      return { ...await greet(s.url), at: s.at };
+    } catch (e) {
+      return { url: s.url, name: s.name || s.url, roots: [], tracks: [],
+               ok: false, why: e.name === "AbortError" ? "no answer" : e.message };
+    }
+  }));
+  /* Adopt whatever the servers now call themselves, so a rename follows. */
+  remote.forEach(r => { const k = known.find(s => s.url === r.url); if (k) k.name = r.name; });
+  save();
+}
+
+async function addServer(raw) {
+  const url = cleanUrl(raw);
+  if (!url) return "";
+  const known = store.servers || (store.servers = []);
+  let got;
+  try {
+    got = await greet(url);
+  } catch (e) {
+    noteProblem("Could not reach " + url, e);
+    return e.name === "AbortError" ? "no answer" : "failed";
+  }
+  const row = known.find(s => s.url === url) || (known.push({ url }), known.at(-1));
+  row.name = got.name;
+  row.at = Date.now();
+  save();
+  remote = [...remote.filter(r => r.url !== url), got];
+  return "ok";
+}
+
+function forgetServer(url) {
+  store.servers = (store.servers || []).filter(s => s.url !== url);
+  remote = remote.filter(r => r.url !== url);
+  save();
+}
+
+/* An id is a path, so it arrives with slashes in it and may arrive with spaces,
+   plus signs or hashes. Encoding it a segment at a time keeps the slashes as
+   slashes -- they are the structure -- and everything else literal. */
+const idPath = tid => String(tid).split("/").map(encodeURIComponent).join("/");
+
+/* Server tracks alongside local ones, in the shape the rest of the app already
+   understands: a title, a source, and somewhere to get the two files. */
+const serverTracks = r => r.tracks.map(t => ({
+  id: "@" + r.name + "/" + t.id,
+  title: t.title,
+  source: r.name,
+  remote: { base: r.url, tid: t.id },
+  media: { url: r.url + "/media/" + idPath(t.id), name: t.media },
+  txt: t.chart ? { url: r.url + "/chart/" + idPath(t.id), name: t.title + ".txt" } : null
+}));
 
 /* Subsequence match, as v0.1 did: every letter of the query in order. */
 function fuzzy(q, s) {
@@ -2570,8 +2685,32 @@ async function openTrack(entry, opts = {}) {
   track = { id: entry.id, title: entry.title };
   clearProblems();
 
+  /* The chart, from the server if there is one and from disk otherwise. A
+     server chart is always fetched, never taken from the copy kept here: it is
+     the file the beatmapper is writing to, and the whole point of edit-and-hear
+     is that the next reload has the edit in it. The kept copy is the fallback
+     for a server that has gone away, not a cache in front of one. */
   let text = "";
-  if (entry.txt) {
+  if (entry.remote) {
+    try {
+      text = entry.txt ? await ask(entry.remote.base,
+                                   "/chart/" + idPath(entry.remote.tid),
+                                   { text: true, ms: 8000 }) : "";
+      chartKeep(entry.id, text);
+    } catch (e) {
+      console.warn("chart:", e);
+      const kept = await chartKept(entry.id);
+      if (kept == null) {
+        ok.text = false;
+        noteProblem("Could not fetch the chart for " + entry.title, e);
+      } else {
+        text = kept;
+        noteProblem("Showing the last chart kept for this track",
+                    { message: "The server did not answer, so its annotations "
+                             + "are as of the last time it did." });
+      }
+    }
+  } else if (entry.txt) {
     try { text = await (await getFile(entry.txt.handle || entry.txt.file || entry.txt)).text(); }
     catch (e) {
       console.warn("lyrics:", e);
@@ -2605,7 +2744,13 @@ async function openTrack(entry, opts = {}) {
 
   if (audioUrl) { URL.revokeObjectURL(audioUrl); audioUrl = null; }
   let url = null;
-  try {
+  /* Server media goes to the element as a URL rather than through a Blob: the
+     browser then streams it, seeks with Range instead of refetching, and keeps
+     the bytes in its own cache -- which is the local media cache, already
+     written, already correct about revalidating. */
+  if (entry.remote) {
+    url = entry.media.url;
+  } else try {
     const file = await getFile(entry.media.handle || entry.media.file || entry.media);
     /* Read the bytes here rather than handing the File straight to
        createObjectURL. A File is a snapshot of a path: once the file behind it
@@ -2649,8 +2794,9 @@ async function reloadTrack() {
   if (was) command({ cmd: "stop" });
 
   /* Re-enumerate first: a .txt written since the folder was opened is not in
-     the cached listing, so a track can gain annotations between reloads. */
-  await refreshDirs();
+     the cached listing, so a track can gain annotations between reloads, and a
+     server can have gained the track itself. */
+  await Promise.all([refreshDirs(), refreshServers()]);
   renderDirs();
   const entry = library().find(e => e.id === track.id);
   if (!entry) {
@@ -2680,8 +2826,12 @@ async function reloadTrack() {
   return ok.text && ok.media ? "ok" : "unreadable";
 }
 
+/* A track can be named by its full id, by the id its server knows it as, or by
+   title -- riffplay only has the server's id to hand, and a human typing a URL
+   only has the title. */
 const openTrackByKey = key => {
-  const found = library().find(e => e.id === key || e.title === key);
+  const found = library().find(e =>
+    e.id === key || e.remote?.tid === key || e.title === key);
   if (found) openTrack(found);
 };
 
@@ -2815,6 +2965,7 @@ function buildPanel() {
 
 /* ── the load dialog ────────────────────────────────────────────────────── */
 let searchBox = null, results = null, dirList = null, reloadBtn = null, problemBox = null;
+let srvBox = null, srvList = null;
 
 function buildTrackPanel() {
   const row = document.createElement("div");
@@ -2867,13 +3018,41 @@ function buildTrackPanel() {
   };
   sources.append(dirBtn, fileBtn, reloadBtn);
 
+  /* One field and one button: a server is a URL, and the point of remembering
+     them is that this is the last time you type it. */
+  const srvRow = document.createElement("div");
+  srvRow.className = "sources";
+  srvBox = document.createElement("input");
+  Object.assign(srvBox, { className: "search", type: "text", spellcheck: false,
+                          placeholder: "http://host:8177", autocomplete: "off" });
+  const srvBtn = document.createElement("button");
+  srvBtn.textContent = "Connect";
+  const connect = async () => {
+    if (!srvBox.value.trim()) return;
+    srvBtn.disabled = true;
+    srvBtn.textContent = "…";
+    const r = await addServer(srvBox.value);
+    srvBtn.textContent = { ok: "Connected", "no answer": "No answer" }[r] || "Failed";
+    if (r === "ok") srvBox.value = "";
+    renderServers();
+    renderResults(searchBox.value);
+    setTimeout(() => { srvBtn.textContent = "Connect"; srvBtn.disabled = false; }, 1400);
+  };
+  srvBtn.onclick = connect;
+  srvBox.onkeydown = e => { if (e.key === "Enter") connect(); };
+  srvRow.append(srvBox, srvBtn);
+
+  srvList = document.createElement("div");
+  srvList.className = "dirs";
+
   dirList = document.createElement("div");
   dirList.className = "dirs";
 
-  row.append(searchBox, results, sources, dirList);
+  row.append(searchBox, results, sources, srvRow, srvList, dirList);
   row.prepend(problemBox);        /* above the label, not below it */
   trackPanel.replaceChildren(row);
   renderResults("");
+  renderServers();
   renderDirs();
   showProblems();          /* anything noted before the panel existed */
 }
@@ -2898,8 +3077,33 @@ function renderResults(query) {
   results.replaceChildren(...(rows.length ? rows : [Object.assign(
     document.createElement("div"),
     { className: "note",
-      textContent: dirs.length || picked.length ? "nothing found"
-                                                : "open a folder of tracks to begin" })]));
+      textContent: remote.length || dirs.length || picked.length
+        ? "nothing found"
+        : "connect to a server, or open a folder of tracks, to begin" })]));
+}
+
+function renderServers() {
+  if (!srvList) return;
+  srvList.replaceChildren(...remote.map(r => {
+    const el = document.createElement("div");
+    el.className = "dir";
+    const n = document.createElement("span");
+    n.textContent = r.name + (r.ok ? "" : " (" + r.why + ")");
+    n.title = r.url;
+    const c = document.createElement("span");
+    c.className = "badge";
+    c.textContent = r.ok ? r.tracks.length + " tracks · " + (r.roots.join(", ") || "server")
+                         : "offline";
+    const x = document.createElement("button");
+    x.textContent = "forget";
+    x.onclick = () => {
+      forgetServer(r.url);
+      renderServers();
+      renderResults(searchBox.value);
+    };
+    el.append(n, c, x);
+    return el;
+  }));
 }
 
 function renderDirs() {
@@ -3087,13 +3291,47 @@ layout();
 transport(false);
 drawTransport();
 
-refreshDirs().then(() => { renderDirs(); renderResults(""); });
+/* Coming up already pointed at a library is the whole point of remembering
+   servers, so the reconnect runs before anything is asked of the user -- and
+   the page it was served from is a server by definition, so that one is worth
+   knowing about even the first time.
 
-new URLSearchParams(location.search).forEach((v, k) => {
+   Then the URL has its say, in order: a server to add, a track to open, a
+   place to start. riffplay writes all three, which is how one shell command
+   ends up at a playhead in a browser. */
+const boot = new URLSearchParams(location.search);
+
+for (const [k, v] of boot)
   if (k.startsWith("set.")) command({ cmd: "set", name: k.slice(4), value: v });
-  else if (k === "track") command({ cmd: "track", key: v });
-  else if (k === "t") command({ cmd: "seek", time: v });
-});
+
+(async () => {
+  const known = store.servers || (store.servers = []);
+  const trial = [];        /* added by this boot, still to prove themselves */
+  const remember = (u, keep) => {
+    const url = cleanUrl(u);
+    if (!url || known.some(s => s.url === url)) return;
+    known.push({ url, name: url, at: Date.now() });
+    if (!keep) trial.push(url);
+  };
+
+  /* A URL asked for one explicitly, so it stays in the list even if it is not
+     answering yet -- that is a server you meant. The page's own origin is a
+     guess, so it only stays if it turns out to be one of ours; otherwise every
+     static host the file was ever opened from would silt up the list. */
+  boot.getAll("server").forEach(u => remember(u, true));
+  if (location.protocol.startsWith("http")) remember(location.origin, false);
+
+  await Promise.all([refreshServers(), refreshDirs()]);
+  for (const url of trial)
+    if (!remote.find(r => r.url === url)?.ok) forgetServer(url);
+
+  renderServers();
+  renderDirs();
+  renderResults("");
+
+  if (boot.has("track")) command({ cmd: "track", key: boot.get("track") });
+  if (boot.has("t")) command({ cmd: "seek", time: boot.get("t") });
+})();
 
 requestAnimationFrame(frame);
 </script>
