@@ -40,8 +40,8 @@ static const HelpRow s_rows[] = {
     { "Click spectrogram","Seek; drag to select a region for analysis" },
     { "Click minimap",    "Seek anywhere in the track" },
     { "Ctrl+= / Ctrl+-",  "Lyric font larger / smaller" },
-    { "Sidebar triangle", "Collapse / expand the beat editor" },
-    { "Pane checkboxes",  "Show or hide timeline lanes (left edge, hover for names)" },
+    { "Sidebar triangles","Collapse / expand each timeline strip" },
+    { "Right-edge icons", "Open the tool drawer; detach tools to float them" },
 
     { nullptr, "Annotations" },
     { "Drag section strip",   "Create a section; drag its handles to resize" },

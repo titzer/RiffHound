@@ -111,21 +111,10 @@ void ui_beat_detector_ensure_onsets(AudioState* audio, BeatMap* beatmap,
     run_detection(nullptr, audio, beatmap, autobeat, t1, t2);
 }
 
-void ui_beat_detector_render(EditorState* editor, AudioState* audio,
-                             BeatMap* beatmap, UndoStack* undo,
-                             AutoBeatList* autobeat)
+void ui_beat_detector_content(EditorState* editor, AudioState* audio,
+                              BeatMap* beatmap, UndoStack* undo,
+                              AutoBeatList* autobeat)
 {
-    if (!editor->show_beat_detector) return;
-
-    ImGui::SetNextWindowSizeConstraints(ImVec2(240, 280), ImVec2(500, 700));
-    ImGui::SetNextWindowSize(ImVec2(280, 400), ImGuiCond_FirstUseEver);
-    if (!ImGui::Begin("Beat Detector", &editor->show_beat_detector,
-                      ImGuiWindowFlags_NoScrollbar |
-                      ImGuiWindowFlags_NoScrollWithMouse)) {
-        ImGui::End();
-        return;
-    }
-
     float avail_w = ImGui::GetContentRegionAvail().x;
 
     // --- Algorithm selector ---
@@ -305,6 +294,4 @@ void ui_beat_detector_render(EditorState* editor, AudioState* audio,
         s_last_t_start = s_last_t_end = -99.0;
         s_last_algo    = -1;
     }
-
-    ImGui::End();
 }

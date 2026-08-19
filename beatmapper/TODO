@@ -1,6 +1,13 @@
 - Fix Linux audio playback / generation
 - Try web/wasm build
-- Hook up analyzer plugins (out of process, python models)
+
+- Analyzer plugins / audio analysis
+  - Allow (out-of-process) plugins to analyze raw audio samples and return results
+  - Spectral fingerprint analysis
+    - select kick drum / snare, find others
+  - Stem extraction
+  - Lyric alignment
+  - Transcription
 - Load dialog should immediately load after system dialog returns selection
 - Load dialog should allow up and down arrows
 - section duplicate tool:
@@ -24,8 +31,6 @@
     arming condition compared the selection to the entry it had just selected
   - next: the same for whole sections, and "chords from the first verse" as a
     reference rather than a copy
-- Tool assist using audio analysis:
-  - lyric find / align: analyze audio to find vocals, line up to lyrics
 - Lyric mode: larger, higher resolution font
   - button to copy previous or other lyric
 - Global audit of all do/undo/redo history
@@ -34,7 +39,6 @@
     loaded (it used to be restorable onto the wrong track)
   - remaining: inline text edits (lyric / misc / section labels) are not
     undoable; there is still no redo
-- Move/remove the track speedup / slowdown plus pitch adjustment?
 
 - Settings dialog for all panels.
 - Beat-precise lyrics. In the lyric editing timeline pane, there is a way to line up beats with individual words and syllables.
@@ -52,6 +56,7 @@ Karaoke, Playback/jamming
 - set / playlist creation
 - much better track selection
 - take apart tracks into pieces
+  - enable / disable, e.g. guitar
 - stem extraction
 - loop schedule (verse#2 x 3, chorus#2 x 1, fill#44, verse#1)
 - mashup

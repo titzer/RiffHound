@@ -3,6 +3,7 @@
 #include "editor.h"
 #include "audio.h"
 
-// Render the floating Chroma Analyzer window.
-// Updates editor->chroma_hover_note each frame (set to -1 when panel is hidden).
-void ui_chroma_render(EditorState* editor, AudioState* audio);
+// Chroma Analyzer content (widgets only, no window).  Rendered by the tool
+// dock into the drawer or a floating window.  Updates
+// editor->chroma_hover_note each frame; the dock resets it when hidden.
+void ui_chroma_content(EditorState* editor, AudioState* audio);

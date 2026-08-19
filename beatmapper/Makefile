@@ -21,6 +21,7 @@ SOURCES := \
     $(SRC_DIR)/recent.cpp \
     $(SRC_DIR)/ui_timeline.cpp \
     $(SRC_DIR)/ui_toolbar.cpp \
+    $(SRC_DIR)/ui_dock.cpp \
     $(SRC_DIR)/panels.cpp \
     $(SRC_DIR)/ui_help.cpp \
     $(SRC_DIR)/ui_smoothing.cpp \
@@ -35,6 +36,7 @@ SOURCES := \
     $(SRC_DIR)/chroma_hps.cpp \
     $(SRC_DIR)/chroma_nnls.cpp \
     $(SRC_DIR)/chroma_peaks.cpp \
+    $(SRC_DIR)/chroma_resonate.cpp \
     $(IMGUI_DIR)/imgui.cpp \
     $(IMGUI_DIR)/imgui_demo.cpp \
     $(IMGUI_DIR)/imgui_draw.cpp \

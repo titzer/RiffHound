@@ -30,6 +30,7 @@ void chroma_goertzel_blackman(const float*, uint64_t, uint32_t, uint32_t, double
 void chroma_hps              (const float*, uint64_t, uint32_t, uint32_t, double, double, float[12]);
 void chroma_nnls             (const float*, uint64_t, uint32_t, uint32_t, double, double, float[12]);
 void chroma_peaks            (const float*, uint64_t, uint32_t, uint32_t, double, double, float[12]);
+void chroma_resonate         (const float*, uint64_t, uint32_t, uint32_t, double, double, float[12]);
 
 // Registration table – defined in chroma_algo.cpp
 extern const ChromaAlgoDesc CHROMA_ALGOS[];

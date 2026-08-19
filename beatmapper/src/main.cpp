@@ -16,10 +16,8 @@
 #include "recent.h"
 #include "ui_timeline.h"
 #include "ui_toolbar.h"
-#include "ui_chroma.h"
 #include "beat_algo.h"
-#include "ui_beat_detector.h"
-#include "ui_smoothing.h"
+#include "ui_dock.h"
 #include "ui_help.h"
 #include "panels.h"
 #include "platform.h"
@@ -27,6 +25,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 
 // Derive a suggested beatmap filename from an audio filepath.
 // e.g. "/path/to/track.mp3" → "track.txt"
@@ -38,6 +37,57 @@ static void beatmap_suggested_name(const char* audio_path, char* out, int out_si
     if (stem > out_size - 5) stem = out_size - 5;
     strncpy(out, name, stem);
     strcpy(out + stem, ".txt");
+}
+
+static bool file_exists(const char* path) {
+    FILE* f = fopen(path, "rb");
+    if (f) { fclose(f); return true; }
+    return false;
+}
+
+// Resolve a command-line argument to an audio file path.
+//   "Track.mp3"          → itself, if it exists
+//   "Track.txt"          → the first of Track.m4a / Track.mp3 / Track.wav found
+//   "Track." or "Track"  → same companion search by stem
+// Returns true and fills `out` when an existing audio file was found.
+static bool resolve_audio_arg(const char* arg, char* out, int out_size) {
+    const char* name = strrchr(arg, '/');
+    name = name ? name + 1 : arg;
+    const char* dot = strrchr(name, '.');
+
+    bool stem_search = false;
+    int  stem_len    = 0;
+    if (dot && (strcasecmp(dot, ".txt") == 0 || dot[1] == '\0')) {
+        // A beatmap path or a bare "Track." — search for companion audio.
+        stem_search = true;
+        stem_len    = (int)(dot - arg);
+    } else if (!dot) {
+        // No extension at all: try the file as given first, then by stem.
+        if ((int)strlen(arg) < out_size && file_exists(arg)) {
+            strcpy(out, arg);
+            return true;
+        }
+        stem_search = true;
+        stem_len    = (int)strlen(arg);
+    }
+
+    if (stem_search) {
+        static const char* AUDIO_EXTS[] = { ".m4a", ".mp3", ".wav" };
+        for (int e = 0; e < (int)(sizeof(AUDIO_EXTS) / sizeof(AUDIO_EXTS[0])); e++) {
+            if (stem_len + 5 > out_size) break;
+            memcpy(out, arg, (size_t)stem_len);
+            strcpy(out + stem_len, AUDIO_EXTS[e]);
+            if (file_exists(out)) return true;
+        }
+        return false;
+    }
+
+    // Anything else is taken as an audio file if it exists.
+    if ((int)strlen(arg) < out_size && file_exists(arg)) {
+        strcpy(out, arg);
+        return true;
+    }
+    return false;
 }
 
 static void glfw_error_callback(int error, const char* description) {
@@ -165,19 +215,21 @@ int main(int argc, char** argv) {
     recent_init(&recent);
     recent_load(&recent);
 
-    // If files were passed on the command line, add all existing ones to the
-    // recent list and open the last valid file.
+    // If files were passed on the command line, resolve each to an audio file
+    // (a .txt or bare stem finds its companion .m4a/.mp3/.wav), add all that
+    // resolve to the recent list, and open the last one.
     if (argc >= 2) {
-        const char* last_file = nullptr;
+        char last_file[512] = "";
         for (int i = 1; i < argc; i++) {
-            FILE* probe = fopen(argv[i], "rb");
-            if (probe) {
-                fclose(probe);
-                recent_add(&recent, argv[i]);
-                last_file = argv[i];
+            char resolved[512];
+            if (resolve_audio_arg(argv[i], resolved, sizeof(resolved))) {
+                recent_add(&recent, resolved);
+                strncpy(last_file, resolved, sizeof(last_file) - 1);
+            } else {
+                fprintf(stderr, "beatmapper: no audio file found for '%s'\n", argv[i]);
             }
         }
-        if (last_file) {
+        if (last_file[0]) {
             recent_save(&recent);
             audio_load(&audio, &editor, last_file);
             char bm_path[512];
@@ -337,8 +389,9 @@ int main(int argc, char** argv) {
             // the window double the screen width.
             int win_w, win_h;
             glfwGetWindowSize(window, &win_w, &win_h);
+            float main_w = (float)win_w - ui_dock_width();
             ImGui::SetNextWindowPos(ImVec2(0, 0));
-            ImGui::SetNextWindowSize(ImVec2((float)win_w, (float)win_h));
+            ImGui::SetNextWindowSize(ImVec2(main_w, (float)win_h));
             ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(4, 4));
             ImGui::Begin("BeatmapEditor", nullptr,
                          ImGuiWindowFlags_NoTitleBar |
@@ -352,8 +405,6 @@ int main(int argc, char** argv) {
             if (ImGui::BeginMenuBar()) {
                 if (ImGui::BeginMenu("File")) {
                     if (ImGui::MenuItem("Open Audio...")) { ui_toolbar_open_dialog(); }
-                    ImGui::Separator();
-                    if (ImGui::MenuItem("Settings...")) { ui_toolbar_open_settings(); }
                     ImGui::Separator();
                     if (ImGui::MenuItem("Save Beatmap", "Ctrl+S")) {
                         if (beatmap.save_path[0] != '\0') {
@@ -381,10 +432,22 @@ int main(int argc, char** argv) {
                     ImGui::EndMenu();
                 }
                 if (ImGui::BeginMenu("View")) {
-                    ImGui::TextDisabled("Timeline panes");
+                    ImGui::TextDisabled("Expanded strips");
                     panels_menu_items(&editor, PK_STRIP);
                     ImGui::Separator();
                     ImGui::MenuItem("All BPM labels", nullptr, &editor.show_bpm_labels);
+                    ImGui::SetNextItemWidth(160);
+                    if (ImGui::DragFloatRange2("BPM range", &editor.tempo_min_bpm,
+                                               &editor.tempo_max_bpm, 1.0f, 20.0f, 400.0f,
+                                               "min %.0f", "max %.0f"))
+                        if (editor.tempo_max_bpm < editor.tempo_min_bpm + 1.0f)
+                            editor.tempo_max_bpm = editor.tempo_min_bpm + 1.0f;
+                    if (ImGui::IsItemHovered())
+                        ImGui::SetTooltip("Bottom and top of the tempo graph behind the beats strip");
+                    ImGui::SetNextItemWidth(160);
+                    ImGui::SliderInt("Average window", &editor.tempo_avg_window, 2, 64, "%d beats");
+                    if (ImGui::IsItemHovered())
+                        ImGui::SetTooltip("Beats averaged for the rolling-average tempo line");
                     ImGui::Separator();
                     if (ImGui::MenuItem("Lyric Font Larger",  "Ctrl+=", nullptr,
                                         ui_timeline_lyric_font_can_grow()))
@@ -397,7 +460,17 @@ int main(int argc, char** argv) {
                     ImGui::EndMenu();
                 }
                 if (ImGui::BeginMenu("Tools")) {
-                    panels_menu_items(&editor, PK_WINDOW);
+                    // The four dockable tools: a click opens the drawer with
+                    // that tool expanded (or focuses its floating window).
+                    static const char* dock_names[DOCK_TOOL_COUNT] = {
+                        "Chroma Analyzer", "Beat Detector", "Beat Smoothing",
+                        "Lyric Index",
+                    };
+                    for (int t = 0; t < DOCK_TOOL_COUNT; t++) {
+                        bool vis = ui_dock_tool_visible((DockTool)t);
+                        if (ImGui::MenuItem(dock_names[t], nullptr, vis))
+                            ui_dock_icon_click((DockTool)t);
+                    }
                     ImGui::EndMenu();
                 }
                 if (ImGui::BeginMenu("Help")) {
@@ -417,15 +490,10 @@ int main(int argc, char** argv) {
             ImGui::End();
         }
 
-        // Chroma Analyzer (floating panel, outside the main docked window)
-        ui_chroma_render(&editor, &audio);
-
-        // Beat Detector (floating panel, outside the main docked window)
-        ui_beat_detector_render(&editor, &audio, &beatmap, &undo, &autobeat);
-
-        // Beat Smoothing (floating panel)
-        ui_smoothing_render(&editor, &audio, &beatmap, &sectionmap, &lyricmap,
-                            &miscmap, &chordmap, &undo, &autobeat);
+        // Right-edge tool dock: icon rail, drawer and any detached tools
+        // (Chroma Analyzer, Beat Detector, Beat Smoothing, Lyric Index).
+        ui_dock_render(&editor, &audio, &beatmap, &undo, &autobeat,
+                       &sectionmap, &lyricmap, &miscmap, &chordmap);
 
         // Keyboard shortcut reference
         ui_help_render(&editor);

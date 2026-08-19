@@ -9,10 +9,8 @@
 
 static char s_file_buf[512] = "";
 static bool s_show_open_dialog    = false;
-static bool s_show_settings_popup = false;
 
 void ui_toolbar_open_dialog()   { s_show_open_dialog    = true; }
-void ui_toolbar_open_settings() { s_show_settings_popup = true; }
 
 void ui_toolbar_render(EditorState* editor, AudioState* audio, BeatMap* beatmap,
                        UndoStack* undo, RecentFiles* recent, SectionMap* sectionmap,
@@ -110,9 +108,79 @@ void ui_toolbar_render(EditorState* editor, AudioState* audio, BeatMap* beatmap,
             strncpy(s_file_buf, audio->filename, sizeof(s_file_buf) - 1);
     }
 
+    // --- Tuning popup: semitone and cent pitch adjustment ---
     ImGui::SameLine();
-    if (ImGui::Button("Settings..."))
-        s_show_settings_popup = true;
+    {
+        bool pitch_active = (editor->semitones != 0 || editor->cents != 0);
+        if (pitch_active) {
+            ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.20f, 0.45f, 0.85f, 1.0f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.30f, 0.55f, 0.95f, 1.0f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonActive,  ImVec4(0.15f, 0.40f, 0.75f, 1.0f));
+        }
+        if (ImGui::Button("Tuning"))
+            ImGui::OpenPopup("##tuning");
+        if (pitch_active)
+            ImGui::PopStyleColor(3);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Pitch shift: %+d semitones, %+d cents",
+                              editor->semitones, editor->cents);
+
+        if (ImGui::BeginPopup("##tuning")) {
+            const float btn_w = 26.0f;
+            const float val_w = ImGui::CalcTextSize("-12 semitones").x + 10.0f;
+
+            ImGui::TextDisabled("Tuning");
+            ImGui::Separator();
+
+            // Semitones: [-] value [+]
+            if (ImGui::Button("-##st", ImVec2(btn_w, 0)))
+                audio_set_pitch(editor, editor->semitones - 1, editor->cents);
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Pitch: -1 semitone");
+            ImGui::SameLine();
+            {
+                char buf[24];
+                snprintf(buf, sizeof(buf), "%+d semitones", editor->semitones);
+                float tw = ImGui::CalcTextSize(buf).x;
+                ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (val_w - tw) * 0.5f);
+                if (editor->semitones != 0)
+                    ImGui::TextColored(ImVec4(0.45f, 0.70f, 1.0f, 1.0f), "%s", buf);
+                else
+                    ImGui::Text("%s", buf);
+                ImGui::SameLine(0, (val_w - tw) * 0.5f + ImGui::GetStyle().ItemSpacing.x);
+            }
+            if (ImGui::Button("+##st", ImVec2(btn_w, 0)))
+                audio_set_pitch(editor, editor->semitones + 1, editor->cents);
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Pitch: +1 semitone");
+
+            // Cents: [-] value [+]
+            if (ImGui::Button("-##ct", ImVec2(btn_w, 0)))
+                audio_set_pitch(editor, editor->semitones, editor->cents - 1);
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Pitch: -1 cent");
+            ImGui::SameLine();
+            {
+                char buf[24];
+                snprintf(buf, sizeof(buf), "%+d cents", editor->cents);
+                float tw = ImGui::CalcTextSize(buf).x;
+                ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (val_w - tw) * 0.5f);
+                if (editor->cents != 0)
+                    ImGui::TextColored(ImVec4(0.45f, 0.70f, 1.0f, 1.0f), "%s", buf);
+                else
+                    ImGui::Text("%s", buf);
+                ImGui::SameLine(0, (val_w - tw) * 0.5f + ImGui::GetStyle().ItemSpacing.x);
+            }
+            if (ImGui::Button("+##ct", ImVec2(btn_w, 0)))
+                audio_set_pitch(editor, editor->semitones, editor->cents + 1);
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Pitch: +1 cent");
+
+            bool at_default = (editor->semitones == 0 && editor->cents == 0);
+            if (at_default) ImGui::BeginDisabled();
+            if (ImGui::Button("Reset", ImVec2(btn_w * 2 + val_w + ImGui::GetStyle().ItemSpacing.x * 2, 0)))
+                audio_set_pitch(editor, 0, 0);
+            if (at_default) ImGui::EndDisabled();
+
+            ImGui::EndPopup();
+        }
+    }
 
     if (audio->loaded) {
         ImGui::SameLine();
@@ -125,72 +193,17 @@ void ui_toolbar_render(EditorState* editor, AudioState* audio, BeatMap* beatmap,
         ImGui::TextColored(ImVec4(1.0f, 0.65f, 0.1f, 1.0f), "*");
     }
 
-    // --- Pitch + Speed controls (right-aligned) ---
-    // Layout:  [-] -3 st [+]  [-] +25 ct [+]  |  [-] 0.75x [+]
+    // --- Speed control (right-aligned) ---
+    // Layout:  [-] 0.75x [+]
     {
         const float btn_w     = 30.0f;
-        const float st_num_w  = ImGui::CalcTextSize("-12 st").x  + 8.0f;
-        const float ct_num_w  = ImGui::CalcTextSize("-100 ct").x + 8.0f;
         const float spd_num_w = ImGui::CalcTextSize("0.00x").x   + 8.0f;
-        const float div_w     = ImGui::CalcTextSize("|").x;
         const float spacing   = ImGui::GetStyle().ItemSpacing.x;
         const float padding   = ImGui::GetStyle().WindowPadding.x;
 
-        float total_w = btn_w + spacing + st_num_w  + spacing + btn_w
-                      + spacing
-                      + btn_w + spacing + ct_num_w  + spacing + btn_w
-                      + spacing + div_w + spacing
-                      + btn_w + spacing + spd_num_w + spacing + btn_w;
+        float total_w = btn_w + spacing + spd_num_w + spacing + btn_w;
         float right_x = ImGui::GetWindowWidth() - padding - total_w;
         ImGui::SameLine(right_x);
-
-        bool pitch_active = (editor->semitones != 0 || editor->cents != 0);
-
-        // Semitones: [-] value [+]
-        if (ImGui::Button("-##st", ImVec2(btn_w, 0)))
-            audio_set_pitch(editor, editor->semitones - 1, editor->cents);
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Pitch: -1 semitone");
-
-        ImGui::SameLine();
-        char st_buf[16];
-        snprintf(st_buf, sizeof(st_buf), "%+d st", editor->semitones);
-        float st_txt_w = ImGui::CalcTextSize(st_buf).x;
-        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (st_num_w - st_txt_w) * 0.5f);
-        if (pitch_active)
-            ImGui::TextColored(ImVec4(0.45f, 0.70f, 1.0f, 1.0f), "%s", st_buf);
-        else
-            ImGui::Text("%s", st_buf);
-        ImGui::SameLine(0, (st_num_w - st_txt_w) * 0.5f + spacing);
-
-        if (ImGui::Button("+##st", ImVec2(btn_w, 0)))
-            audio_set_pitch(editor, editor->semitones + 1, editor->cents);
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Pitch: +1 semitone");
-
-        ImGui::SameLine();
-
-        // Cents: [-] value [+]
-        if (ImGui::Button("-##ct", ImVec2(btn_w, 0)))
-            audio_set_pitch(editor, editor->semitones, editor->cents - 1);
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Pitch: -1 cent");
-
-        ImGui::SameLine();
-        char ct_buf[16];
-        snprintf(ct_buf, sizeof(ct_buf), "%+d ct", editor->cents);
-        float ct_txt_w = ImGui::CalcTextSize(ct_buf).x;
-        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (ct_num_w - ct_txt_w) * 0.5f);
-        if (pitch_active)
-            ImGui::TextColored(ImVec4(0.45f, 0.70f, 1.0f, 1.0f), "%s", ct_buf);
-        else
-            ImGui::Text("%s", ct_buf);
-        ImGui::SameLine(0, (ct_num_w - ct_txt_w) * 0.5f + spacing);
-
-        if (ImGui::Button("+##ct", ImVec2(btn_w, 0)))
-            audio_set_pitch(editor, editor->semitones, editor->cents + 1);
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Pitch: +1 cent");
-
-        ImGui::SameLine();
-        ImGui::TextDisabled("|");
-        ImGui::SameLine();
 
         if (ImGui::Button("-", ImVec2(btn_w, 0)))
             audio_set_speed(editor, editor->speed - 0.05f);
@@ -285,57 +298,6 @@ void ui_toolbar_render(EditorState* editor, AudioState* audio, BeatMap* beatmap,
             do_load();
         ImGui::SameLine();
         if (ImGui::Button("Cancel", ImVec2(80, 0)))
-            ImGui::CloseCurrentPopup();
-        ImGui::EndPopup();
-    }
-
-    // --- Settings popup ---
-    if (s_show_settings_popup) {
-        ImGui::OpenPopup("Settings");
-        s_show_settings_popup = false;
-    }
-    if (ImGui::BeginPopupModal("Settings", nullptr,
-                               ImGuiWindowFlags_AlwaysAutoResize)) {
-        if (ImGui::IsKeyPressed(ImGuiKey_Escape)) ImGui::CloseCurrentPopup();
-
-        ImGui::TextDisabled("Visible strips:");
-        ImGui::Spacing();
-        panels_checkbox_list(editor, PK_STRIP);
-
-        ImGui::Spacing();
-        ImGui::Separator();
-        ImGui::Spacing();
-        ImGui::TextDisabled("Tempo graph:");
-        ImGui::Spacing();
-        ImGui::SetNextItemWidth(160);
-        if (ImGui::DragFloatRange2("BPM range", &editor->tempo_min_bpm,
-                                   &editor->tempo_max_bpm, 1.0f, 20.0f, 400.0f,
-                                   "min %.0f", "max %.0f"))
-            if (editor->tempo_max_bpm < editor->tempo_min_bpm + 1.0f)
-                editor->tempo_max_bpm = editor->tempo_min_bpm + 1.0f;
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Bottom and top of the tempo graph behind the beats strip");
-        ImGui::SetNextItemWidth(160);
-        ImGui::SliderInt("Average window", &editor->tempo_avg_window, 2, 64, "%d beats");
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Beats averaged for the rolling-average tempo line");
-        ImGui::Checkbox("Show all BPM labels", &editor->show_bpm_labels);
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Label every interval with its instantaneous BPM in the\n"
-                              "beats, tap and auto-beat panes (thinned out when they\n"
-                              "would overlap)");
-
-        ImGui::Spacing();
-        ImGui::Separator();
-        ImGui::Spacing();
-        ImGui::TextDisabled("Tools:");
-        ImGui::Spacing();
-        panels_checkbox_list(editor, PK_WINDOW);
-
-        ImGui::Spacing();
-        ImGui::Separator();
-        ImGui::Spacing();
-        if (ImGui::Button("Close", ImVec2(80, 0)))
             ImGui::CloseCurrentPopup();
         ImGui::EndPopup();
     }

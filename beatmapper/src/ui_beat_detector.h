@@ -6,12 +6,12 @@
 #include "beat_algo.h"
 #include "undo.h"
 
-// Beat Detector floating panel.
-// Renders the panel and triggers re-detection when the region or params change.
-// Must be called outside the main docked window (same as ui_chroma_render).
-void ui_beat_detector_render(EditorState* editor, AudioState* audio,
-                             BeatMap* beatmap, UndoStack* undo,
-                             AutoBeatList* autobeat);
+// Beat Detector content (widgets only, no window).  Rendered by the tool
+// dock into the drawer or a floating window.  Triggers re-detection when the
+// region or params change.
+void ui_beat_detector_content(EditorState* editor, AudioState* audio,
+                              BeatMap* beatmap, UndoStack* undo,
+                              AutoBeatList* autobeat);
 
 // Ensure onset_times[] in autobeat covers [t1, t2].
 // Uses current detector params. Runs detection if the range is not already covered.

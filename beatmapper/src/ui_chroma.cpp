@@ -59,13 +59,8 @@ static int    s_last_algo      = -1;
 // Public API
 // ---------------------------------------------------------------------------
 
-void ui_chroma_render(EditorState* editor, AudioState* audio)
+void ui_chroma_content(EditorState* editor, AudioState* audio)
 {
-    if (!editor->show_chroma_panel) {
-        editor->chroma_hover_note = -1;
-        return;
-    }
-
     // Persistent UI state
     static int   s_algo_idx      = 0;
     static float s_roll_secs     = 2.0f;
@@ -105,17 +100,6 @@ void ui_chroma_render(EditorState* editor, AudioState* audio)
         memset(s_chroma, 0, sizeof(s_chroma));
         s_last_t_start = s_last_t_end = -99.0;
         s_last_algo    = -1;
-    }
-
-    // --- Floating window ---
-    ImGui::SetNextWindowSizeConstraints(ImVec2(200, 220), ImVec2(600, 800));
-    ImGui::SetNextWindowSize(ImVec2(260, 400), ImGuiCond_FirstUseEver);
-    if (!ImGui::Begin("Chroma Analyzer", &editor->show_chroma_panel,
-                      ImGuiWindowFlags_NoScrollbar |
-                      ImGuiWindowFlags_NoScrollWithMouse)) {
-        ImGui::End();
-        editor->chroma_hover_note = -1;
-        return;
     }
 
     float avail_w = ImGui::GetContentRegionAvail().x;
@@ -232,6 +216,4 @@ void ui_chroma_render(EditorState* editor, AudioState* audio)
         ImGui::SetTooltip("%s  %.0f%%",
                           NOTE_NAMES[editor->chroma_hover_note],
                           s_chroma[editor->chroma_hover_note] * 100.0f);
-
-    ImGui::End();
 }

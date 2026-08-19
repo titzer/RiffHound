@@ -66,58 +66,6 @@ int panels_count(PanelKind kind) {
     return n;
 }
 
-void panels_checkbox_column(EditorState* e, PanelKind kind,
-                            float x, float y_top, float row_h)
-{
-    if (!e) return;
-    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(2.0f, 2.0f));
-    float y = y_top;
-    for (int i = 0; i < PANEL_COUNT; i++) {
-        const PanelDesc& p = PANELS[i];
-        if (p.kind != kind) continue;
-        ImGui::PushID(i);
-        ImGui::SetCursorScreenPos(ImVec2(x, y));
-        ImGui::Checkbox("##pane", &(e->*(p.flag)));
-        if (ImGui::IsItemHovered()) {
-            if (p.tip) ImGui::SetTooltip("%s\n%s", p.name, p.tip);
-            else       ImGui::SetTooltip("%s", p.name);
-        }
-        ImGui::PopID();
-        y += row_h;
-    }
-    ImGui::PopStyleVar();
-}
-
-void panels_checkbox_row(EditorState* e, PanelKind kind) {
-    if (!e) return;
-    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(2.0f, 1.0f));
-    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing,  ImVec2(6.0f, 2.0f));
-    bool first = true;
-    for (int i = 0; i < PANEL_COUNT; i++) {
-        const PanelDesc& p = PANELS[i];
-        if (p.kind != kind) continue;
-        if (!first) ImGui::SameLine();
-        first = false;
-        ImGui::PushID(i);
-        ImGui::Checkbox(p.label, &(e->*(p.flag)));
-        if (p.tip && ImGui::IsItemHovered()) ImGui::SetTooltip("%s", p.tip);
-        ImGui::PopID();
-    }
-    ImGui::PopStyleVar(2);
-}
-
-void panels_checkbox_list(EditorState* e, PanelKind kind) {
-    if (!e) return;
-    for (int i = 0; i < PANEL_COUNT; i++) {
-        const PanelDesc& p = PANELS[i];
-        if (p.kind != kind) continue;
-        ImGui::PushID(i);
-        ImGui::Checkbox(p.name, &(e->*(p.flag)));
-        if (p.tip && ImGui::IsItemHovered()) ImGui::SetTooltip("%s", p.tip);
-        ImGui::PopID();
-    }
-}
-
 void panels_menu_items(EditorState* e, PanelKind kind) {
     if (!e) return;
     for (int i = 0; i < PANEL_COUNT; i++) {

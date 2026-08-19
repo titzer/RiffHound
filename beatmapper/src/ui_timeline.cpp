@@ -1,4 +1,5 @@
 #include "ui_timeline.h"
+#include "ui_dock.h"
 #include "sectionmap.h"
 #include "lyricmap.h"
 #include "miscmap.h"
@@ -212,6 +213,12 @@ static float bpm_label_y(float cy, float marker_r, float text_h,
                                               : strip_bot - 1.0f - text_h;
 }
 
+// Collapsed-strip marker: a single vertical line where a beat is placed.
+static void draw_beat_line(ImDrawList* dl, float x, float y0, float y1, ImU32 col)
+{
+    dl->AddLine(ImVec2(x, y0 + 2.0f), ImVec2(x, y1 - 2.0f), col, 1.0f);
+}
+
 static void draw_diamond(ImDrawList* dl, float cx, float cy, float r,
                          ImU32 fill, ImU32 border)
 {
@@ -423,11 +430,13 @@ static int lyr_split_callback(ImGuiInputTextCallbackData* d) {
 static const float RULER_H       = 24.0f;
 static const float MINIMAP_H     = 40.0f;
 static const float CTX_PANEL_H   = 36.0f;  // contextual interpolate panel
-static const float PLACE_STRIP_H = 22.0f;  // beat placement strip
-static const float TAP_STRIP_H       = 22.0f;  // tap recording strip
-static const float AUTOBEAT_STRIP_H  = 22.0f;  // auto-detected beat strip
+static const float PLACE_STRIP_H = 18.0f;  // beat placement strip
+static const float TAP_STRIP_H       = 18.0f;  // tap recording strip
+static const float AUTOBEAT_STRIP_H  = 18.0f;  // auto-detected beat strip
 static const float SECTION_H         = 52.0f;  // section strip
 static const float LYRIC_H       = 36.0f;  // lyric strip
+static const float COLLAPSED_H   = 12.0f;  // any strip collapsed to a display band
+static const float STRIP_DIV_H   = 1.0f;   // single divider line between strips
 
 // Per-kind fill and border colours (index = SectionKind)
 static const ImU32 s_sec_fill[SK_COUNT] = {
@@ -459,6 +468,10 @@ static const ImU32 s_sec_border[SK_COUNT] = {
     IM_COL32(230,  90, 145, 230),  // refrain
 };
 
+// Selected lyric index: shared between the lyric strip and the Lyric Index
+// tool (which may render inside the dock drawer or a floating window).
+static int s_lyr_selected = -1;
+
 // --- Tap strip data ---
 static const int MAX_TAPS = 1024;
 struct TapEntry { double time; bool selected; };
@@ -474,13 +487,13 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
 {
     ImGuiIO& io = ImGui::GetIO();
 
-    static bool s_beats_collapsed   = false;  // beat editor collapsed to slim display strip
     static int  s_spectro_max_khz  = 22;     // max displayed frequency [2, 22] kHz
     static bool s_spectro_log      = false;  // logarithmic frequency axis
-    static bool s_lyric_index_open = false;  // lyric index floating window visible
 
-    // Strip visibility is read once through the panel registry so that layout,
-    // hit-testing and drawing all agree for the whole frame.
+    // Strips are always present; the per-strip panel flags now mean
+    // "expanded".  Collapsed strips shrink to a slim display-only band.
+    // Read once through the panel registry so that layout, hit-testing and
+    // drawing all agree for the whole frame.
     const bool show_place = panel_visible(editor, PANEL_INSERT);
     const bool show_beats = panel_visible(editor, PANEL_BEATS);
     const bool show_tempo = panel_visible(editor, PANEL_TEMPO);
@@ -490,8 +503,16 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
     const bool show_lyr   = panel_visible(editor, PANEL_LYRICS);
     const bool show_chrd  = panel_visible(editor, PANEL_CHORDS);
     const bool show_misc  = panel_visible(editor, PANEL_MISC);
-    const float chrd_h    = annstrip_height(editor, ANN_CHORDS);
-    const float misc_h    = annstrip_height(editor, ANN_MISC);
+
+    // Per-strip heights this frame (collapsed strips all share COLLAPSED_H)
+    const float place_h = show_place ? PLACE_STRIP_H    : COLLAPSED_H;
+    const float tap_h   = show_taps  ? TAP_STRIP_H      : COLLAPSED_H;
+    const float ab_h    = show_auto  ? AUTOBEAT_STRIP_H : COLLAPSED_H;
+    const float ba_h    = show_beats ? BEAT_AREA_H      : COLLAPSED_H;
+    const float sa_h    = show_sect  ? SECTION_H        : COLLAPSED_H;
+    const float la_h    = show_lyr   ? LYRIC_H          : COLLAPSED_H;
+    const float chrd_h  = show_chrd ? annstrip_height(editor, ANN_CHORDS) : COLLAPSED_H;
+    const float misc_h  = show_misc ? annstrip_height(editor, ANN_MISC)   : COLLAPSED_H;
 
     // Pre-compute contextual panel visibility (needs beatmap state, but before BeginChild
     // so we can set the correct child height).
@@ -518,41 +539,23 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
         show_ctx = ((int)round(dt * bpm_ref / 60.0) >= 2);
     }
     float ctx_h = show_ctx ? CTX_PANEL_H : 0.0f;
-    // Ctx panel and beat editing are hidden when the beat editor is collapsed.
-    if (s_beats_collapsed) { show_ctx = false; ctx_h = 0.0f; }
 
     // Persistent selection indices for section and lyric strips.
     static int s_sec_selected = -1;
     if (s_sec_selected >= sectionmap->count) s_sec_selected = -1;
     sectionmap->selected_idx = s_sec_selected;  // keep struct in sync for main.cpp delete
 
-    static int s_lyr_selected = -1;
     if (s_lyr_selected >= lyricmap->count) s_lyr_selected = -1;
     lyricmap->selected_idx = s_lyr_selected;  // keep struct in sync for main.cpp delete
 
-    // Dynamic layout: only count visible strips in fixed_h.
-    // If beat strip is hidden, suppress the ctx panel too.
+    // Ctx panel is suppressed while the beat strip is collapsed.
     if (!show_beats) { show_ctx = false; ctx_h = 0.0f; }
 
     ImVec2 avail = ImGui::GetContentRegionAvail();
-    float strips_h = 2.0f;  // initial gap between spectrogram and first strip
-    if (show_place) strips_h += PLACE_STRIP_H    + 2.0f;
-    if (show_taps)  strips_h += TAP_STRIP_H      + 2.0f;
-    if (show_auto)  strips_h += AUTOBEAT_STRIP_H + 2.0f;
-    if (show_beats && !s_beats_collapsed) strips_h += BEAT_AREA_H;
-    strips_h += ctx_h;
-    if (show_sect) strips_h += 2.0f + SECTION_H;
-    if (show_lyr)  strips_h += 2.0f + LYRIC_H;
-    if (show_chrd) strips_h += 2.0f + chrd_h;
-    if (show_misc) strips_h += 2.0f + misc_h;
-
-    // Pane checkboxes live in a narrow lane on the left, bottom-aligned with the
-    // timeline.  They normally sit alongside the strips and cost no extra height;
-    // only when the visible strips are shorter than the column does the timeline
-    // reserve the difference, so the column never rides up over the spectrogram.
-    const float PANE_ROW_H = ImGui::GetFrameHeight() + 3.0f;
-    const float PANE_COL_H = PANE_ROW_H * panels_count(PK_STRIP);
-    if (strips_h < PANE_COL_H) strips_h = PANE_COL_H;
+    // Strips are stacked contiguously, one divider line above each; the
+    // spectrogram takes whatever height the (possibly collapsed) strips leave.
+    float strips_h = (place_h + tap_h + ab_h + ba_h + sa_h + la_h + chrd_h + misc_h)
+                   + 8.0f * STRIP_DIV_H + ctx_h;
 
     float fixed_h = MINIMAP_H + 2.0f + RULER_H + 2.0f + strips_h;
     float spectro_h = avail.y - fixed_h;
@@ -572,12 +575,10 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
 
     float rx = canvas_pos.x, ry = canvas_pos.y, rw = canvas_w;
 
-    // Left lane holds the pane checkboxes; next to it the sidebar is just wide
-    // enough to show "20k" with 4 px padding on each side.
-    float pane_lane_w = ImGui::GetFrameHeight() + 6.0f;
-    float sidebar_w   = pane_lane_w + ImGui::CalcTextSize("20k").x + 8.0f;
-    float sb_x        = rx + pane_lane_w;  // sidebar (labels / buttons) left edge
-    float sb_w        = sidebar_w - pane_lane_w;
+    // Left sidebar: strip expand/collapse triangles plus the frequency labels,
+    // just wide enough to show "20k" with padding next to the triangle lane.
+    float sidebar_w = 14.0f + ImGui::CalcTextSize("20k").x + 10.0f;
+    float sb_x      = rx;
     float cx = rx + sidebar_w;   // content area left edge
     float cw = rw - sidebar_w;   // content area width
 
@@ -585,50 +586,65 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
     float ruler_y = mm_y + mm_h + 2.0f;
     float tx = cx,   ty = ruler_y + RULER_H + 2.0f,   tw = cw,   th = spectro_h;
 
-    // Running-y: compute strip top positions based on which strips are visible.
-    float _y = ty + th + 2.0f;
+    // Running-y: every strip is always present (collapsed or expanded), with a
+    // single divider line above each.
+    float _y = ty + th;
 
+    _y += STRIP_DIV_H;
     float ps_x = cx, ps_w = cw, ps_y = _y;
-    if (show_place) _y += PLACE_STRIP_H + 2.0f;
+    _y += place_h;
 
+    _y += STRIP_DIV_H;
     float tap_x = cx, tap_w = cw, tap_y = _y;
-    if (show_taps) _y += TAP_STRIP_H + 2.0f;
+    _y += tap_h;
 
+    _y += STRIP_DIV_H;
     float ab_x = cx, ab_w = cw, ab_y = _y;
-    if (show_auto) _y += AUTOBEAT_STRIP_H + 2.0f;
+    _y += ab_h;
 
+    _y += STRIP_DIV_H;
     float ba_x = cx, ba_w = cw, ba_y = _y;
-    float ba_h = (show_beats && !s_beats_collapsed) ? BEAT_AREA_H : 0.0f;
-    if (show_beats && !s_beats_collapsed) _y += BEAT_AREA_H;
+    _y += ba_h;
     float ctx_y = ba_y + ba_h;
     _y += ctx_h;
 
-    float sa_x = cx, sa_w = cw, sa_h = SECTION_H;
-    if (show_sect) _y += 2.0f;
-    float sa_y = _y;
-    if (show_sect) _y += SECTION_H;
+    _y += STRIP_DIV_H;
+    float sa_x = cx, sa_w = cw, sa_y = _y;
+    _y += sa_h;
 
-    float la_x = cx, la_w = cw, la_h = LYRIC_H;
-    if (show_lyr) _y += 2.0f;
-    float la_y = _y;
-    if (show_lyr) _y += LYRIC_H;
+    _y += STRIP_DIV_H;
+    float la_x = cx, la_w = cw, la_y = _y;
+    _y += la_h;
 
-    if (show_chrd) _y += 2.0f;
+    _y += STRIP_DIV_H;
     float chrd_y = _y;
-    if (show_chrd) _y += chrd_h;
+    _y += chrd_h;
 
-    if (show_misc) _y += 2.0f;
+    _y += STRIP_DIV_H;
     float misc_y = _y;
-    if (show_misc) _y += misc_h;
+    _y += misc_h;
 
     // Both annotation lanes are the same widget with different colours and a
-    // different keyword; placing them is all the timeline has to know.
+    // different keyword; placing them is all the timeline has to know.  A
+    // collapsed lane is placed as hidden so it takes no clicks; its boxes are
+    // drawn directly by the timeline instead.
     AnnStripCtx ann = { editor, beatmap, undo, audio_get_position(audio) };
     annstrip_place(ANN_CHORDS, editor, show_chrd, cx, chrd_y, cw, chrd_h);
     annstrip_place(ANN_MISC,   editor, show_misc, cx, misc_y, cw, misc_h);
 
-    // Pane checkbox column: left lane, bottom-aligned with the timeline.
-    float pane_col_y = ry + total_h - PANE_COL_H;
+    // Strip rows for the sidebar triangles: id, top y, height this frame.
+    struct StripRow { PanelId id; float y, h; };
+    const StripRow strip_rows[] = {
+        { PANEL_INSERT,   ps_y,   place_h },
+        { PANEL_TAPS,     tap_y,  tap_h   },
+        { PANEL_AUTO,     ab_y,   ab_h    },
+        { PANEL_BEATS,    ba_y,   ba_h    },
+        { PANEL_SECTIONS, sa_y,   sa_h    },
+        { PANEL_LYRICS,   la_y,   la_h    },
+        { PANEL_CHORDS,   chrd_y, chrd_h  },
+        { PANEL_MISC,     misc_y, misc_h  },
+    };
+    const int n_strip_rows = (int)(sizeof(strip_rows) / sizeof(strip_rows[0]));
 
     // --- Beat position layout pass (rebuilds every frame) ---
     // Computes screen positions + stagger rows for all beats.
@@ -668,7 +684,7 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
 
     // --- Single InvisibleButton covering the whole timeline ---
     // AllowOverlap so that widgets added later in the frame (sidebar buttons,
-    // pane checkboxes, interpolate-panel controls) still receive hover and
+    // spectrogram overlay buttons, interpolate-panel controls) still receive hover and
     // clicks.  It spans the full height: trimming it by the interpolate panel's
     // height used to leave a dead band at the bottom where the lower strips
     // stopped responding whenever that panel was open.
@@ -734,29 +750,35 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
         float click_x = io.MousePos.x;
         float click_y = io.MousePos.y;
 
-        // Triangle in left sidebar: toggle beat editor collapse (eats the click).
-        // Only live while the insertion strip — which owns that row — is shown.
-        if (show_place && click_x >= sb_x && click_x < cx &&
-            click_y >= ps_y && click_y < ps_y + PLACE_STRIP_H)
-            s_beats_collapsed = !s_beats_collapsed;
+        // A click in the sidebar lane toggles the strip whose row it falls in
+        // (the triangles); it never starts a strip interaction.
+        bool sidebar_click = (click_x >= sb_x && click_x < cx);
+        if (sidebar_click) {
+            for (int i = 0; i < n_strip_rows; i++) {
+                if (click_y >= strip_rows[i].y &&
+                    click_y <  strip_rows[i].y + strip_rows[i].h) {
+                    panel_toggle(editor, strip_rows[i].id);
+                    break;
+                }
+            }
+        }
 
         s_drag_in_spectro = (click_x >= cx && click_y >= ty && click_y < ty + th);
-        s_drag_in_ruler   = (click_y >= ruler_y && click_y < ty);
-        s_mm_seeking      = (click_y >= mm_y    && click_y < ruler_y);
-        // Beat placement: only when the strip is visible and expanded, and only
-        // in the content area.  Without the visibility test a hidden strip would
-        // still swallow clicks (its row collapses onto the next strip).
-        s_drag_in_place   = (show_place && !s_beats_collapsed && click_x >= cx &&
-                              click_y >= ps_y && click_y < ps_y + PLACE_STRIP_H);
+        s_drag_in_ruler   = (!sidebar_click && click_y >= ruler_y && click_y < ty);
+        s_mm_seeking      = (!sidebar_click && click_y >= mm_y    && click_y < ruler_y);
+        // Strip interactions only happen on expanded strips, in the content
+        // area.  Collapsed strips are display-only.
+        s_drag_in_place   = (show_place && click_x >= cx &&
+                              click_y >= ps_y && click_y < ps_y + place_h);
         s_drag_in_tap      = (show_taps && click_x >= cx &&
-                               click_y >= tap_y && click_y < tap_y + TAP_STRIP_H);
+                               click_y >= tap_y && click_y < tap_y + tap_h);
         s_drag_in_autobeat = (show_auto && autobeat && click_x >= cx &&
-                               click_y >= ab_y && click_y < ab_y + AUTOBEAT_STRIP_H);
-        s_drag_in_beats   = (show_beats &&
+                               click_y >= ab_y && click_y < ab_y + ab_h);
+        s_drag_in_beats   = (show_beats && !sidebar_click &&
                               click_y >= ba_y    && click_y < ba_y + ba_h);
-        s_drag_in_sec     = (show_sect &&
+        s_drag_in_sec     = (show_sect && !sidebar_click &&
                               click_y >= sa_y    && click_y < sa_y + sa_h);
-        s_drag_in_lyr     = (show_lyr &&
+        s_drag_in_lyr     = (show_lyr && !sidebar_click &&
                               click_y >= la_y    && click_y < la_y + la_h);
 
         // Any click outside the section strip clears section selection.
@@ -1491,61 +1513,30 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
     dl->AddLine(ImVec2(cx, ry), ImVec2(cx, ry + total_h),
                 IM_COL32(50, 50, 70, 255));
 
-    // Beat-editor collapse triangle in the left sidebar (owned by the insert row)
-    if (show_place) {
-        float tcx = sb_x + sb_w * 0.5f;
-        float tcy = ps_y + PLACE_STRIP_H * 0.5f;
+    // Strip dividers (one line above each strip) and the sidebar expand /
+    // collapse triangles, one per strip row.
+    for (int i = 0; i < n_strip_rows; i++) {
+        const StripRow& row = strip_rows[i];
+        dl->AddLine(ImVec2(rx, row.y - STRIP_DIV_H), ImVec2(rx + rw, row.y - STRIP_DIV_H),
+                    IM_COL32(50, 50, 70, 255));
+
+        bool  expanded = panel_visible(editor, row.id);
+        float tcx = sb_x + 8.0f;
+        float tcy = row.y + (row.h < 18.0f ? row.h : 18.0f) * 0.5f;
         ImU32 tri_col = IM_COL32(160, 160, 190, 200);
-        if (s_beats_collapsed) {
-            // Right-pointing (▶): collapsed
-            dl->AddTriangleFilled(ImVec2(tcx - 4.0f, tcy - 5.0f),
-                                  ImVec2(tcx - 4.0f, tcy + 5.0f),
+        if (expanded)
+            dl->AddTriangleFilled(ImVec2(tcx - 4.5f, tcy - 3.0f),
+                                  ImVec2(tcx + 4.5f, tcy - 3.0f),
+                                  ImVec2(tcx,        tcy + 4.0f), tri_col);
+        else
+            dl->AddTriangleFilled(ImVec2(tcx - 3.0f, tcy - 4.5f),
+                                  ImVec2(tcx - 3.0f, tcy + 4.5f),
                                   ImVec2(tcx + 4.0f, tcy), tri_col);
-        } else {
-            // Down-pointing (▼): expanded
-            dl->AddTriangleFilled(ImVec2(tcx - 5.0f, tcy - 3.5f),
-                                  ImVec2(tcx + 5.0f, tcy - 3.5f),
-                                  ImVec2(tcx,        tcy + 4.5f), tri_col);
-        }
-    }
 
-    // Spectrogram controls in left sidebar: Log toggle, then +/- max-freq buttons
-    {
-        bool at_max = (s_spectro_max_khz >= 22);
-        bool at_min = (s_spectro_max_khz <= 2);
-        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(1.0f, 3.0f));
-        float bw  = sb_w - 4.0f;
-        float bh  = ImGui::GetFrameHeight();
-        float bx  = sb_x + 2.0f;
-        float by  = ty + 2.0f;
-
-        // Log toggle button — snapshot state before Button() which may flip it
-        bool log_active = s_spectro_log;
-        if (log_active) {
-            ImGui::PushStyleColor(ImGuiCol_Button,        IM_COL32(45, 100, 55, 255));
-            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, IM_COL32(60, 130, 70, 255));
-        }
-        ImGui::SetCursorScreenPos(ImVec2(bx, by));
-        if (ImGui::Button("Log##sl", ImVec2(bw, 0))) s_spectro_log = !s_spectro_log;
-        if (log_active) ImGui::PopStyleColor(2);
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Logarithmic frequency axis");
-        by += bh + 2.0f;
-
-        ImGui::SetCursorScreenPos(ImVec2(bx, by));
-        if (at_max) ImGui::BeginDisabled();
-        if (ImGui::Button("+##mfp", ImVec2(bw, 0))) s_spectro_max_khz++;
-        bool ph = ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled);
-        if (at_max) ImGui::EndDisabled();
-        if (ph) ImGui::SetTooltip("Max freq +1 kHz (now %d kHz)", s_spectro_max_khz);
-
-        ImGui::SetCursorScreenPos(ImVec2(bx, by + bh + 2.0f));
-        if (at_min) ImGui::BeginDisabled();
-        if (ImGui::Button("-##mfm", ImVec2(bw, 0))) s_spectro_max_khz--;
-        bool mh = ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled);
-        if (at_min) ImGui::EndDisabled();
-        if (mh) ImGui::SetTooltip("Max freq -1 kHz (now %d kHz)", s_spectro_max_khz);
-
-        ImGui::PopStyleVar();
+        if (hovered && io.MousePos.x >= sb_x && io.MousePos.x < cx &&
+            io.MousePos.y >= row.y && io.MousePos.y < row.y + row.h)
+            ImGui::SetTooltip("%s %s", expanded ? "Collapse" : "Expand",
+                              PANELS[row.id].name);
     }
 
     // Frequency axis labels aligned to the spectrogram row
@@ -1595,6 +1586,49 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
     spectrogram_render(spectro, dl, tx, ty, tw, th,
                        editor->view_start, editor->view_end,
                        (float)(s_spectro_max_khz * 1000), s_spectro_log);
+
+    // Spectrogram view controls, overlaid in the upper-left corner of the view:
+    // Log toggle and +/- max-frequency buttons.  Semi-transparent so the
+    // spectrogram stays readable underneath.
+    {
+        bool at_max = (s_spectro_max_khz >= 22);
+        bool at_min = (s_spectro_max_khz <= 2);
+        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(4.0f, 2.0f));
+        ImGui::PushStyleColor(ImGuiCol_Button, IM_COL32(30, 30, 45, 170));
+        float bx = tx + 6.0f;
+        float by = ty + 6.0f;
+        const float BW = 26.0f;
+
+        // Log toggle button — snapshot state before Button() which may flip it
+        bool log_active = s_spectro_log;
+        if (log_active) {
+            ImGui::PushStyleColor(ImGuiCol_Button,        IM_COL32(45, 100, 55, 220));
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, IM_COL32(60, 130, 70, 255));
+        }
+        ImGui::SetCursorScreenPos(ImVec2(bx, by));
+        if (ImGui::Button("Log##sl", ImVec2(34.0f, 0))) s_spectro_log = !s_spectro_log;
+        if (log_active) ImGui::PopStyleColor(2);
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Logarithmic frequency axis");
+        bx += 34.0f + 4.0f;
+
+        ImGui::SetCursorScreenPos(ImVec2(bx, by));
+        if (at_min) ImGui::BeginDisabled();
+        if (ImGui::Button("-##mfm", ImVec2(BW, 0))) s_spectro_max_khz--;
+        bool mh = ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled);
+        if (at_min) ImGui::EndDisabled();
+        if (mh) ImGui::SetTooltip("Max freq -1 kHz (now %d kHz)", s_spectro_max_khz);
+        bx += BW + 4.0f;
+
+        ImGui::SetCursorScreenPos(ImVec2(bx, by));
+        if (at_max) ImGui::BeginDisabled();
+        if (ImGui::Button("+##mfp", ImVec2(BW, 0))) s_spectro_max_khz++;
+        bool ph = ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled);
+        if (at_max) ImGui::EndDisabled();
+        if (ph) ImGui::SetTooltip("Max freq +1 kHz (now %d kHz)", s_spectro_max_khz);
+
+        ImGui::PopStyleColor();
+        ImGui::PopStyleVar();
+    }
 
     // Chroma hover overlay: faint green band for each octave of the hovered note
     if (editor->chroma_hover_note >= 0 && spectro->computed && spectro->sample_rate > 0) {
@@ -1690,73 +1724,37 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
         }
     }
 
-    // Placement strip background
-    if (show_place) {
-    dl->AddRectFilled(ImVec2(ps_x, ps_y), ImVec2(ps_x + ps_w, ps_y + PLACE_STRIP_H),
+    // Placement strip background (always present; collapsed = display band)
+    dl->AddRectFilled(ImVec2(ps_x, ps_y), ImVec2(ps_x + ps_w, ps_y + place_h),
                       IM_COL32(12, 16, 22, 255));
-    dl->AddRect(ImVec2(ps_x, ps_y), ImVec2(ps_x + ps_w, ps_y + PLACE_STRIP_H),
-                IM_COL32(40, 50, 65, 255));
-    dl->AddText(ImVec2(cx + 4.0f, ps_y + 3.0f), IM_COL32(90, 90, 110, 100), "Insert");
-
-    // Condensed beat display (collapsed mode only) ----------------------------
-    // Renders diamonds when beats are spread enough, lines when any adjacent pair
-    // would overlap as diamonds (decision applies to the whole visible set).
-    if (s_beats_collapsed && beatmap->count > 0) {
-        const float CD_R    = 5.0f;  // diamond radius in collapsed strip
-        float       strip_cy = ps_y + PLACE_STRIP_H * 0.5f;
-        double      span     = editor->view_end - editor->view_start;
-
-        // Pass 1: determine whether to use lines (overlap check on visible beats)
-        bool  use_lines = false;
-        float prev_bx   = -1e9f;
-        for (int i = 0; i < beatmap->count && !use_lines; i++) {
-            double t = beatmap->beats[i].time;
-            if (t < editor->view_start || t > editor->view_end) continue;
-            float bx = (span > 0.0 && ps_w > 0)
-                ? ps_x + (float)((t - editor->view_start) / span * ps_w)
-                : ps_x;
-            if (prev_bx > -1e8f && bx - prev_bx < 2.0f * CD_R)
-                use_lines = true;
-            prev_bx = bx;
-        }
-
-        // Pass 2: draw
-        dl->PushClipRect(ImVec2(ps_x, ps_y), ImVec2(ps_x + ps_w, ps_y + PLACE_STRIP_H), true);
+    if (!show_place) {
+        // Collapsed: one vertical line per beat, colour-coded like the diamonds.
+        dl->PushClipRect(ImVec2(ps_x, ps_y), ImVec2(ps_x + ps_w, ps_y + place_h), true);
         for (int i = 0; i < beatmap->count; i++) {
             double t = beatmap->beats[i].time;
             if (t < editor->view_start - 1e-6 || t > editor->view_end + 1e-6) continue;
-            float bx = (span > 0.0 && ps_w > 0)
-                ? ps_x + (float)((t - editor->view_start) / span * ps_w)
-                : ps_x;
-            bool  is_interp = beatmap->beats[i].interp;
-            ImU32 fill   = is_interp ? IM_COL32(255, 190, 40, 130) : IM_COL32(255, 190, 40, 210);
-            ImU32 border = is_interp ? IM_COL32(255, 220, 90, 180) : IM_COL32(255, 230, 100, 255);
-            if (use_lines) {
-                dl->AddLine(ImVec2(bx, ps_y + 2.0f), ImVec2(bx, ps_y + PLACE_STRIP_H - 2.0f),
-                            fill, 1.0f);
-            } else {
-                draw_diamond(dl, bx, strip_cy, CD_R, fill, border);
-            }
+            float bx = time_to_x(t, editor->view_start, editor->view_end, ps_x, ps_w);
+            draw_beat_line(dl, bx, ps_y, ps_y + place_h,
+                           beatmap->beats[i].interp ? IM_COL32(255, 190, 40, 130)
+                                                    : IM_COL32(255, 190, 40, 210));
         }
         dl->PopClipRect();
     }
+    if (show_place) {
+    dl->AddText(ImVec2(cx + 4.0f, ps_y + 2.0f), IM_COL32(90, 90, 110, 100), "Insert");
 
     // Placement strip hover preview: outline diamond + instantaneous BPM labels.
     // With Shift held: show fill preview (intermediate diamonds + spectrogram lines).
     if (hovered) {
-        // Triangle tooltip
-        if (io.MousePos.x >= sb_x && io.MousePos.x < cx && io.MousePos.y >= ps_y && io.MousePos.y < ps_y + PLACE_STRIP_H)
-            ImGui::SetTooltip(s_beats_collapsed ? "Expand beat editor" : "Collapse beat editor");
-
         float mpy = io.MousePos.y;
-        if (!s_beats_collapsed && mpy >= ps_y && mpy < ps_y + PLACE_STRIP_H) {
+        if (io.MousePos.x >= cx && mpy >= ps_y && mpy < ps_y + place_h) {
             double span = editor->view_end - editor->view_start;
             double t_hover = (span > 0.0 && ps_w > 0.0f)
                 ? editor->view_start + (double)(io.MousePos.x - ps_x) / ps_w * span
                 : editor->view_start;
             if (t_hover >= 0.0 && t_hover <= editor->duration) {
                 float phx = io.MousePos.x;
-                float phy = ps_y + PLACE_STRIP_H * 0.5f;
+                float phy = ps_y + place_h * 0.5f;
                 float r   = DIAMOND_R;
 
                 // Binary search for insertion point (used in both branches)
@@ -1909,12 +1907,22 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
     }
 
     // --- Tap strip ---
-    if (show_taps) {
-    dl->AddRectFilled(ImVec2(tap_x, tap_y), ImVec2(tap_x + tap_w, tap_y + TAP_STRIP_H),
+    dl->AddRectFilled(ImVec2(tap_x, tap_y), ImVec2(tap_x + tap_w, tap_y + tap_h),
                       IM_COL32(10, 18, 14, 255));
-    dl->AddRect(ImVec2(tap_x, tap_y), ImVec2(tap_x + tap_w, tap_y + TAP_STRIP_H),
-                IM_COL32(40, 65, 50, 255));
-    dl->AddText(ImVec2(cx + 4.0f, tap_y + 3.0f), IM_COL32(90, 110, 90, 100), "Taps");
+    if (!show_taps) {
+        dl->PushClipRect(ImVec2(tap_x, tap_y), ImVec2(tap_x + tap_w, tap_y + tap_h), true);
+        for (int i = 0; i < s_tap_count; i++) {
+            float bx = time_to_x(s_taps[i].time,
+                                 editor->view_start, editor->view_end, tap_x, tap_w);
+            if (bx < tap_x || bx > tap_x + tap_w) continue;
+            draw_beat_line(dl, bx, tap_y, tap_y + tap_h,
+                           s_taps[i].selected ? IM_COL32(100, 200, 255, 220)
+                                              : IM_COL32(120, 200, 140, 190));
+        }
+        dl->PopClipRect();
+    }
+    if (show_taps) {
+    dl->AddText(ImVec2(cx + 4.0f, tap_y + 2.0f), IM_COL32(90, 110, 90, 100), "Taps");
 
     {
         const float TAP_R  = 5.0f;
@@ -2007,12 +2015,22 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
     }  // end show_tap_strip
 
     // --- Auto-beat strip ---
-    if (show_auto && autobeat) {
-    dl->AddRectFilled(ImVec2(ab_x, ab_y), ImVec2(ab_x + ab_w, ab_y + AUTOBEAT_STRIP_H),
+    dl->AddRectFilled(ImVec2(ab_x, ab_y), ImVec2(ab_x + ab_w, ab_y + ab_h),
                       IM_COL32(20, 10, 10, 255));
-    dl->AddRect(ImVec2(ab_x, ab_y), ImVec2(ab_x + ab_w, ab_y + AUTOBEAT_STRIP_H),
-                IM_COL32(80, 30, 30, 255));
-    dl->AddText(ImVec2(cx + 4.0f, ab_y + 3.0f), IM_COL32(130, 60, 60, 100), "Auto");
+    if (!show_auto && autobeat) {
+        dl->PushClipRect(ImVec2(ab_x, ab_y), ImVec2(ab_x + ab_w, ab_y + ab_h), true);
+        for (int i = 0; i < autobeat->beat_count; i++) {
+            float bx = time_to_x(autobeat->beat_times[i],
+                                 editor->view_start, editor->view_end, ab_x, ab_w);
+            if (bx < ab_x || bx > ab_x + ab_w) continue;
+            draw_beat_line(dl, bx, ab_y, ab_y + ab_h,
+                           autobeat->beat_selected[i] ? IM_COL32(220, 50, 50, 230)
+                                                      : IM_COL32(200, 80, 80, 190));
+        }
+        dl->PopClipRect();
+    }
+    if (show_auto && autobeat) {
+    dl->AddText(ImVec2(cx + 4.0f, ab_y + 2.0f), IM_COL32(130, 60, 60, 100), "Auto");
 
     {
         float  strip_cy = ab_y + AUTOBEAT_STRIP_H * 0.5f;
@@ -2114,14 +2132,26 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
     }
     }  // end show_autobeat_strip
 
-    // Beat area background
-    if (show_beats) {
+    // Beat area background (always present; collapsed = display band)
     dl->AddRectFilled(ImVec2(ba_x, ba_y), ImVec2(ba_x + ba_w, ba_y + ba_h),
                       IM_COL32(14, 14, 22, 255));
-    dl->AddRect(ImVec2(ba_x, ba_y), ImVec2(ba_x + ba_w, ba_y + ba_h),
-                IM_COL32(50, 50, 70, 255));
+    if (!show_beats) {
+        // Collapsed: one vertical line per beat, colour-coded like the diamonds.
+        dl->PushClipRect(ImVec2(ba_x, ba_y), ImVec2(ba_x + ba_w, ba_y + ba_h), true);
+        for (int i = 0; i < beatmap->count; i++) {
+            double t = beatmap->beats[i].time;
+            if (t < editor->view_start - 1e-6 || t > editor->view_end + 1e-6) continue;
+            float bx = time_to_x(t, editor->view_start, editor->view_end, ba_x, ba_w);
+            ImU32 col = beatmap->beats[i].selected ? IM_COL32(100, 160, 255, 230)
+                      : beatmap->beats[i].interp   ? IM_COL32(255, 190,  40, 130)
+                                                   : IM_COL32(255, 190,  40, 210);
+            draw_beat_line(dl, bx, ba_y, ba_y + ba_h, col);
+        }
+        dl->PopClipRect();
+    }
+    if (show_beats) {
     // Tempo graph behind the beat markers
-    if (show_tempo && !s_beats_collapsed && ba_h > 8.0f && beatmap->count >= 2) {
+    if (show_tempo && ba_h > 8.0f && beatmap->count >= 2) {
         float lo = editor->tempo_min_bpm, hi = editor->tempo_max_bpm;
         if (hi <= lo) hi = lo + 1.0f;
 
@@ -2155,8 +2185,7 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
     }
 
     // Instantaneous BPM as data labels on every interval
-    if (editor->show_bpm_labels && !s_beats_collapsed && ba_h > 8.0f &&
-        beatmap->count >= 2) {
+    if (editor->show_bpm_labels && ba_h > 8.0f && beatmap->count >= 2) {
         float lo = editor->tempo_min_bpm, hi = editor->tempo_max_bpm;
         if (hi <= lo) hi = lo + 1.0f;
         TimeSeq seq = { beatmap->beats, nullptr, beatmap->count };
@@ -2168,8 +2197,8 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
         dl->PopClipRect();
     }
 
-    if (!s_beats_collapsed)
-        dl->AddText(ImVec2(cx + 4.0f, ba_y + 3.0f), IM_COL32(90, 90, 110, 100), "Beats");
+    dl->AddText(ImVec2(cx + 4.0f, ba_y + 3.0f), IM_COL32(90, 90, 110, 100), "Beats");
+
 
     // Diamonds (clipped to beat area)
     dl->PushClipRect(ImVec2(ba_x, ba_y), ImVec2(ba_x + ba_w, ba_y + ba_h), true);
@@ -2290,11 +2319,22 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
     }  // end show_beat_strip
 
     // --- Section strip ---
-    if (show_sect) {
     dl->AddRectFilled(ImVec2(sa_x, sa_y), ImVec2(sa_x + sa_w, sa_y + sa_h),
                       IM_COL32(18, 18, 26, 255));
-    dl->AddRect(ImVec2(sa_x, sa_y), ImVec2(sa_x + sa_w, sa_y + sa_h),
-                IM_COL32(60, 60, 85, 255));
+    if (!show_sect) {
+        // Collapsed: slim colour-coded boxes, no labels or ticks.
+        dl->PushClipRect(ImVec2(sa_x, sa_y), ImVec2(sa_x + sa_w, sa_y + sa_h), true);
+        for (int i = 0; i < sectionmap->count; i++) {
+            const Section& sec = sectionmap->sections[i];
+            float sx0 = time_to_x(sec.t_start, editor->view_start, editor->view_end, sa_x, sa_w);
+            float sx1 = time_to_x(sec.t_end,   editor->view_start, editor->view_end, sa_x, sa_w);
+            if (sx1 <= sa_x || sx0 >= sa_x + sa_w) continue;
+            dl->AddRectFilled(ImVec2(sx0, sa_y + 1.0f), ImVec2(sx1, sa_y + sa_h - 1.0f),
+                              s_sec_fill[sec.kind]);
+        }
+        dl->PopClipRect();
+    }
+    if (show_sect) {
     dl->AddText(ImVec2(cx + 4.0f, sa_y + 3.0f), IM_COL32(110, 110, 140, 160), "Sections");
 
     dl->PushClipRect(ImVec2(sa_x, sa_y), ImVec2(sa_x + sa_w, sa_y + sa_h), true);
@@ -2386,11 +2426,22 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
     }  // end show_section_strip
 
     // --- Lyric strip ---
-    if (show_lyr) {
     dl->AddRectFilled(ImVec2(la_x, la_y), ImVec2(la_x + la_w, la_y + la_h),
                       IM_COL32(18, 22, 28, 255));
-    dl->AddRect(ImVec2(la_x, la_y), ImVec2(la_x + la_w, la_y + la_h),
-                IM_COL32(55, 60, 80, 255));
+    if (!show_lyr) {
+        // Collapsed: boxes where lyrics are placed, text hidden.
+        dl->PushClipRect(ImVec2(la_x, la_y), ImVec2(la_x + la_w, la_y + la_h), true);
+        for (int i = 0; i < lyricmap->count; i++) {
+            const Lyric& ly = lyricmap->lyrics[i];
+            float lx0 = time_to_x(ly.t_start, editor->view_start, editor->view_end, la_x, la_w);
+            float lx1 = time_to_x(ly.t_end,   editor->view_start, editor->view_end, la_x, la_w);
+            if (lx1 <= la_x || lx0 >= la_x + la_w) continue;
+            dl->AddRectFilled(ImVec2(lx0, la_y + 1.0f), ImVec2(lx1, la_y + la_h - 1.0f),
+                              IM_COL32(45, 95, 130, 160));
+        }
+        dl->PopClipRect();
+    }
+    if (show_lyr) {
     dl->AddText(ImVec2(cx + 4.0f, la_y + 3.0f), IM_COL32(110, 110, 140, 160), "Lyrics");
 
     dl->PushClipRect(ImVec2(la_x, la_y), ImVec2(la_x + la_w, la_y + la_h), true);
@@ -2461,15 +2512,16 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
         const float BTN_H = LYRIC_H - 4.0f;
         float bx = la_x + la_w - BTN_W - 2.0f;
         float by = la_y + 2.0f;
+        bool  lyridx_open = ui_dock_tool_visible(DOCK_LYRICS);
 
         ImGui::SetCursorScreenPos(ImVec2(bx, by));
         ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(0.0f, 0.0f));
         ImGui::PushStyleColor(ImGuiCol_Button,
-            s_lyric_index_open ? IM_COL32(55, 95, 160, 210) : IM_COL32(28, 28, 50, 180));
+            lyridx_open ? IM_COL32(55, 95, 160, 210) : IM_COL32(28, 28, 50, 180));
         ImGui::PushStyleColor(ImGuiCol_ButtonHovered, IM_COL32(70, 120, 190, 230));
         ImGui::PushStyleColor(ImGuiCol_ButtonActive,  IM_COL32(90, 150, 220, 255));
         if (ImGui::Button("##lyridx_tog", ImVec2(BTN_W, BTN_H)))
-            s_lyric_index_open = !s_lyric_index_open;
+            ui_dock_icon_click(DOCK_LYRICS);
         ImGui::PopStyleColor(3);
         ImGui::PopStyleVar();
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("Lyric Index");
@@ -2477,9 +2529,9 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
         // Draw icon: ≡ when closed, × when open
         float icx = bx + BTN_W * 0.5f;
         float icy = by + BTN_H * 0.5f;
-        ImU32 ico = s_lyric_index_open ? IM_COL32(220, 190, 120, 230)
-                                       : IM_COL32(160, 160, 195, 220);
-        if (s_lyric_index_open) {
+        ImU32 ico = lyridx_open ? IM_COL32(220, 190, 120, 230)
+                                : IM_COL32(160, 160, 195, 220);
+        if (lyridx_open) {
             dl->AddLine(ImVec2(icx - 5.0f, icy - 5.0f), ImVec2(icx + 5.0f, icy + 5.0f), ico, 1.5f);
             dl->AddLine(ImVec2(icx + 5.0f, icy - 5.0f), ImVec2(icx - 5.0f, icy + 5.0f), ico, 1.5f);
         } else {
@@ -2539,6 +2591,35 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
     annstrip_draw(ANN_MISC,   ann, dl, cx + 4.0f);
     annstrip_edit(ANN_CHORDS, ann);
     annstrip_edit(ANN_MISC,   ann);
+
+    // Collapsed annotation lanes: boxes where annotations are placed, text
+    // hidden (the lane itself is placed as hidden, so it draws nothing).
+    {
+        struct CollapsedAnn { bool collapsed; float y, h; AnnStripId id; ImU32 fill; };
+        const CollapsedAnn lanes[2] = {
+            { !show_chrd, chrd_y, chrd_h, ANN_CHORDS, IM_COL32(30, 80, 68, 170) },
+            { !show_misc, misc_y, misc_h, ANN_MISC,   IM_COL32(65, 40, 95, 170) },
+        };
+        for (int l = 0; l < 2; l++) {
+            if (!lanes[l].collapsed) continue;
+            float ly0 = lanes[l].y, lh = lanes[l].h;
+            dl->AddRectFilled(ImVec2(cx, ly0), ImVec2(cx + cw, ly0 + lh),
+                              IM_COL32(20, 18, 28, 255));
+            const MiscMap* mm = annstrip_map(lanes[l].id);
+            if (!mm) continue;
+            dl->PushClipRect(ImVec2(cx, ly0), ImVec2(cx + cw, ly0 + lh), true);
+            for (int i = 0; i < mm->count; i++) {
+                float ax0 = time_to_x(mm->entries[i].t_start,
+                                      editor->view_start, editor->view_end, cx, cw);
+                float ax1 = time_to_x(mm->entries[i].t_end,
+                                      editor->view_start, editor->view_end, cx, cw);
+                if (ax1 <= cx || ax0 >= cx + cw) continue;
+                dl->AddRectFilled(ImVec2(ax0, ly0 + 1.0f), ImVec2(ax1, ly0 + lh - 1.0f),
+                                  lanes[l].fill);
+            }
+            dl->PopClipRect();
+        }
+    }
 
     // --- Contextual interpolation panel ---
     // Shown when exactly two adjacent beats are selected.
@@ -2716,284 +2797,149 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
         ImGui::EndPopup();
     }
 
-    // --- Pane checkboxes (left lane, bottom-aligned) ---
-    // Table-driven: every strip in the panel registry gets one unlabelled
-    // checkbox here; the tooltip says which pane it is.
-    {
-        dl->AddRectFilled(ImVec2(rx, pane_col_y),
-                          ImVec2(rx + pane_lane_w, ry + total_h),
-                          IM_COL32(18, 18, 27, 255));
-        dl->AddLine(ImVec2(rx, pane_col_y), ImVec2(rx + pane_lane_w, pane_col_y),
-                    IM_COL32(45, 45, 62, 255));
-        panels_checkbox_column(editor, PK_STRIP, rx + 3.0f, pane_col_y + 1.0f,
-                               PANE_ROW_H);
-    }
-
     ImGui::EndChild();
 
-    // --- Lyric Index floating window ---
-    editor->lyric_index_open = s_lyric_index_open;
-    if (s_lyric_index_open) {
-        ImGui::SetNextWindowSize(ImVec2(420.0f, 260.0f), ImGuiCond_FirstUseEver);
-        bool wvis = ImGui::Begin("Lyric Index", &s_lyric_index_open);
-        if (wvis) {
-            double dur      = audio->duration;
-            bool   has_audio = (dur > 0.0);
+}
 
-            // Paste button: split clipboard by newlines, add each as an unplaced lyric
-            if (ImGui::Button("Paste")) {
-                const char* clip = ImGui::GetClipboardText();
-                if (clip && clip[0]) {
-                    undo_push(undo, beatmap, lyricmap);
-                    // Find next available unplaced slot index to avoid t_start collisions
-                    double base_t = has_audio ? dur : 0.0;
-                    int n_unplaced = 0;
-                    for (int k = 0; k < lyricmap->count; k++)
-                        if (lyricmap->lyrics[k].t_start >= base_t - 1e-9)
-                            n_unplaced++;
+// --- Lyric Index tool content ---------------------------------------------
+// Rendered by the tool dock (into the drawer or a floating window).
+void ui_timeline_lyric_index_content(EditorState* editor, AudioState* audio,
+                                     BeatMap* beatmap, UndoStack* undo,
+                                     LyricMap* lyricmap)
+{
+    if (s_lyr_selected >= lyricmap->count) s_lyr_selected = -1;
+    double dur      = audio->duration;
+    bool   has_audio = (dur > 0.0);
 
-                    const char* p = clip;
-                    int added = 0;
-                    while (*p) {
-                        const char* le = p;
-                        while (*le && *le != '\n' && *le != '\r') le++;
-                        // Trim whitespace from both ends of the line
-                        const char* ts = p, *te = le;
-                        while (ts < te && (*ts == ' ' || *ts == '\t')) ts++;
-                        while (te > ts && (*(te-1) == ' ' || *(te-1) == '\t')) te--;
-                        if (te > ts) {
-                            char buf[128] = {};
-                            int  len = (int)(te - ts);
-                            if (len > 127) len = 127;
-                            strncpy(buf, ts, (size_t)len);
-                            // Place after dur, 1 ms apart, to preserve paste order
-                            double t = base_t + (n_unplaced + added) * 0.001;
-                            lyricmap_add(lyricmap, t, t + 0.001, buf);
-                            added++;
-                        }
-                        p = le;
-                        if (*p == '\r') p++;
-                        if (*p == '\n') p++;
-                    }
-                    // Clipboard held nothing usable — no undo entry for that.
-                    if (added == 0) undo_drop_last(undo);
+    // Paste button: split clipboard by newlines, add each as an unplaced lyric
+    if (ImGui::Button("Paste")) {
+        const char* clip = ImGui::GetClipboardText();
+        if (clip && clip[0]) {
+            undo_push(undo, beatmap, lyricmap);
+            // Find next available unplaced slot index to avoid t_start collisions
+            double base_t = has_audio ? dur : 0.0;
+            int n_unplaced = 0;
+            for (int k = 0; k < lyricmap->count; k++)
+                if (lyricmap->lyrics[k].t_start >= base_t - 1e-9)
+                    n_unplaced++;
+
+            const char* p = clip;
+            int added = 0;
+            while (*p) {
+                const char* le = p;
+                while (*le && *le != '\n' && *le != '\r') le++;
+                // Trim whitespace from both ends of the line
+                const char* ts = p, *te = le;
+                while (ts < te && (*ts == ' ' || *ts == '\t')) ts++;
+                while (te > ts && (*(te-1) == ' ' || *(te-1) == '\t')) te--;
+                if (te > ts) {
+                    char buf[128] = {};
+                    int  len = (int)(te - ts);
+                    if (len > 127) len = 127;
+                    strncpy(buf, ts, (size_t)len);
+                    // Place after dur, 1 ms apart, to preserve paste order
+                    double t = base_t + (n_unplaced + added) * 0.001;
+                    lyricmap_add(lyricmap, t, t + 0.001, buf);
+                    added++;
                 }
+                p = le;
+                if (*p == '\r') p++;
+                if (*p == '\n') p++;
             }
-            if (ImGui::IsItemHovered())
-                ImGui::SetTooltip("Add each clipboard line as a new unplaced lyric");
-            ImGui::SameLine();
-            ImGui::TextDisabled("(%d)", lyricmap->count);
+            // Clipboard held nothing usable — no undo entry for that.
+            if (added == 0) undo_drop_last(undo);
+        }
+    }
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Add each clipboard line as a new unplaced lyric");
+    ImGui::SameLine();
+    ImGui::TextDisabled("(%d)", lyricmap->count);
 
-            ImGui::Separator();
+    ImGui::Separator();
 
-            // First unplaced lyric = most likely candidate for the 'L' shortcut
-            int first_unplaced_idx = -1;
-            if (has_audio) {
-                for (int k = 0; k < lyricmap->count; k++) {
-                    if (lyricmap->lyrics[k].t_start >= dur - 1e-9) {
-                        first_unplaced_idx = k;
-                        break;
-                    }
-                }
+    // First unplaced lyric = most likely candidate for the 'L' shortcut
+    int first_unplaced_idx = -1;
+    if (has_audio) {
+        for (int k = 0; k < lyricmap->count; k++) {
+            if (lyricmap->lyrics[k].t_start >= dur - 1e-9) {
+                first_unplaced_idx = k;
+                break;
             }
+        }
+    }
 
-            // Deferred auto-place: collect index during loop, act on it after EndChild
-            int pending_place        = -1;
-            int pending_region_place = -1;
-            int pending_delete       = -1;
-            int pending_split_idx    = -1;
-            int pending_split_cursor = 0;
+    // Deferred auto-place: collect index during loop, act on it after EndChild
+    int pending_place        = -1;
+    int pending_region_place = -1;
+    int pending_delete       = -1;
+    int pending_split_idx    = -1;
+    int pending_split_cursor = 0;
 
-            // 'L' shortcut: place the first unplaced lyric at the current region
-            if (first_unplaced_idx >= 0 && editor->has_region &&
-                    ImGui::IsKeyPressed(ImGuiKey_L) && !ImGui::IsAnyItemActive())
-                pending_region_place = first_unplaced_idx;
+    // 'L' shortcut: place the first unplaced lyric at the current region
+    if (first_unplaced_idx >= 0 && editor->has_region &&
+            ImGui::IsKeyPressed(ImGuiKey_L) && !ImGui::IsAnyItemActive())
+        pending_region_place = first_unplaced_idx;
 
-            ImGui::PushFont(s_lyric_font());
-            ImGui::BeginChild("##li_rows", ImVec2(0, 0), false);
-            ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing,  ImVec2(2.0f, 2.0f));
-            ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(3.0f, 2.0f));
+    ImGui::PushFont(s_lyric_font());
+    // NoScrollWithMouse: the wheel is handled below with a gentler step than
+    // ImGui's default (5 text lines), which feels too fast with the large
+    // lyric font.
+    ImGui::BeginChild("##li_rows", ImVec2(0, 0), false,
+                      ImGuiWindowFlags_NoScrollWithMouse);
+    {
+        float wheel = ImGui::GetIO().MouseWheel;
+        if (wheel != 0.0f && ImGui::IsWindowHovered())
+            ImGui::SetScrollY(ImGui::GetScrollY()
+                              - wheel * 2.0f * ImGui::GetFrameHeightWithSpacing());
+    }
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing,  ImVec2(2.0f, 2.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(3.0f, 2.0f));
 
-            const float GW = 22.0f;  // gutter column width
+    const float GW = 22.0f;  // gutter column width
 
-            for (int i = 0; i < lyricmap->count; i++) {
-                Lyric& ly     = lyricmap->lyrics[i];
-                // A lyric is "placed" when its start time is before audio end.
-                // Unplaced lyrics are stored with t_start >= dur (in paste order).
-                bool placed   = has_audio && (ly.t_start < dur - 1e-9);
-                bool selected = (i == s_lyr_selected);
+    for (int i = 0; i < lyricmap->count; i++) {
+        Lyric& ly     = lyricmap->lyrics[i];
+        // A lyric is "placed" when its start time is before audio end.
+        // Unplaced lyrics are stored with t_start >= dur (in paste order).
+        bool placed   = has_audio && (ly.t_start < dur - 1e-9);
+        bool selected = (i == s_lyr_selected);
 
-                ImGui::PushID(i);
+        ImGui::PushID(i);
 
-                // Highlight row for the currently selected lyric
-                if (selected) {
-                    ImVec2 rp = ImGui::GetCursorScreenPos();
-                    float  rw = ImGui::GetContentRegionAvail().x;
-                    float  rh = ImGui::GetFrameHeight() + ImGui::GetStyle().ItemSpacing.y;
-                    ImGui::GetWindowDrawList()->AddRectFilled(
-                        rp, ImVec2(rp.x + rw, rp.y + rh),
-                        IM_COL32(40, 80, 145, 88));
-                }
+        // Highlight row for the currently selected lyric
+        if (selected) {
+            ImVec2 rp = ImGui::GetCursorScreenPos();
+            float  rw = ImGui::GetContentRegionAvail().x;
+            float  rh = ImGui::GetFrameHeight() + ImGui::GetStyle().ItemSpacing.y;
+            ImGui::GetWindowDrawList()->AddRectFilled(
+                rp, ImVec2(rp.x + rw, rp.y + rh),
+                IM_COL32(40, 80, 145, 88));
+        }
 
-                // Gutter button: blue=placed(▶), green=unplaced(+)
-                ImVec4 btn_n = placed
-                    ? (selected ? ImVec4(0.24f,0.47f,0.78f,0.82f) : ImVec4(0.16f,0.31f,0.55f,0.76f))
-                    : (selected ? ImVec4(0.24f,0.51f,0.24f,0.82f) : ImVec4(0.16f,0.35f,0.16f,0.68f));
-                ImVec4 btn_h = placed ? ImVec4(0.28f,0.55f,0.86f,0.90f)
-                                      : ImVec4(0.27f,0.59f,0.27f,0.90f);
-                ImVec4 btn_a = placed ? ImVec4(0.39f,0.67f,1.00f,1.00f)
-                                      : ImVec4(0.35f,0.70f,0.35f,1.00f);
-                ImGui::PushStyleColor(ImGuiCol_Button,        btn_n);
-                ImGui::PushStyleColor(ImGuiCol_ButtonHovered, btn_h);
-                ImGui::PushStyleColor(ImGuiCol_ButtonActive,  btn_a);
-                bool hit = ImGui::Button(placed ? ">" : "+", ImVec2(GW, 0));
-                ImGui::PopStyleColor(3);
+        // Gutter button: blue=placed(▶), green=unplaced(+)
+        ImVec4 btn_n = placed
+            ? (selected ? ImVec4(0.24f,0.47f,0.78f,0.82f) : ImVec4(0.16f,0.31f,0.55f,0.76f))
+            : (selected ? ImVec4(0.24f,0.51f,0.24f,0.82f) : ImVec4(0.16f,0.35f,0.16f,0.68f));
+        ImVec4 btn_h = placed ? ImVec4(0.28f,0.55f,0.86f,0.90f)
+                              : ImVec4(0.27f,0.59f,0.27f,0.90f);
+        ImVec4 btn_a = placed ? ImVec4(0.39f,0.67f,1.00f,1.00f)
+                              : ImVec4(0.35f,0.70f,0.35f,1.00f);
+        ImGui::PushStyleColor(ImGuiCol_Button,        btn_n);
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, btn_h);
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive,  btn_a);
+        bool hit = ImGui::Button(placed ? ">" : "+", ImVec2(GW, 0));
+        ImGui::PopStyleColor(3);
 
-                if (hit) {
-                    s_lyr_selected = i;
-                    if (placed) {
-                        // Scroll timeline so this lyric is visible
-                        double span = editor->view_end - editor->view_start;
-                        if (span > 0.0) {
-                            bool in_view = (ly.t_start >= editor->view_start &&
-                                            ly.t_end   <= editor->view_end + 1e-6);
-                            if (!in_view) {
-                                double vs = ly.t_start - span * 0.25;
-                                if (vs < 0.0)                    vs = 0.0;
-                                if (vs + span > editor->duration) vs = editor->duration - span;
-                                if (vs < 0.0)                    vs = 0.0;
-                                editor->view_start = vs;
-                                editor->view_end   = vs + span;
-                            }
-                        }
-                    } else if (has_audio) {
-                        pending_place = i;
-                    }
-                }
-                if (ImGui::IsItemHovered())
-                    ImGui::SetTooltip(placed ? "Scroll to lyric" : "Auto-place on timeline");
-
-                // "Place at region" button – active only for unplaced lyrics when a region exists
-                ImGui::SameLine(0, 2.0f);
-                {
-                    bool can_snap = !placed && editor->has_region;
-                    if (!can_snap) ImGui::BeginDisabled();
-                    ImGui::PushStyleColor(ImGuiCol_Button,
-                        can_snap ? ImVec4(0.45f,0.33f,0.06f,0.82f) : ImVec4(0.22f,0.22f,0.22f,0.40f));
-                    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.60f,0.46f,0.10f,0.92f));
-                    ImGui::PushStyleColor(ImGuiCol_ButtonActive,  ImVec4(0.74f,0.58f,0.16f,1.00f));
-                    bool is_next  = (i == first_unplaced_idx) && editor->has_region;
-                    bool snap_hit = ImGui::Button(is_next ? "L" : "\xe2\x86\x94", ImVec2(GW, 0));
-                    ImGui::PopStyleColor(3);
-                    if (!can_snap) ImGui::EndDisabled();
-                    if (snap_hit) { s_lyr_selected = i; pending_region_place = i; }
-                    if (ImGui::IsItemHovered())
-                        ImGui::SetTooltip(!placed && !editor->has_region
-                            ? "Select a region on the spectrogram first"
-                            : placed ? "Already placed" : "Place at selected region");
-                }
-
-                // Lyric text input (fills remaining row width, minus X delete button)
-                ImGui::SameLine(0, 2.0f);
-                const float del_btn_w = 20.0f;
-                ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - del_btn_w - 2.0f);
-                // Dim unplaced lyrics so placed ones stand out
-                if (!placed)
-                    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.62f,0.59f,0.49f,0.76f));
-                s_lyr_split_state = {};
-                if (ImGui::InputText("##t", ly.text, sizeof(ly.text),
-                                     ImGuiInputTextFlags_CallbackAlways, lyr_split_callback))
-                    lyricmap->dirty = true;
-                if (!placed)
-                    ImGui::PopStyleColor();
-                // Typing in the text field selects the lyric in the strip too
-                if (ImGui::IsItemActive()) s_lyr_selected = i;
-                if (s_lyr_split_state.req) {
-                    pending_split_idx    = i;
-                    pending_split_cursor = s_lyr_split_state.cursor;
-                }
-
-                // X button to delete this lyric
-                ImGui::SameLine(0, 2.0f);
-                ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.55f,0.12f,0.12f,0.76f));
-                ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.72f,0.18f,0.18f,0.90f));
-                ImGui::PushStyleColor(ImGuiCol_ButtonActive,  ImVec4(0.90f,0.25f,0.25f,1.00f));
-                if (ImGui::Button("x", ImVec2(del_btn_w, 0))) pending_delete = i;
-                ImGui::PopStyleColor(3);
-                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Delete lyric");
-
-                ImGui::PopID();
-            }
-
-            if (lyricmap->count == 0)
-                ImGui::TextDisabled("No lyrics yet. Drag on the lyric strip or paste from clipboard.");
-
-            ImGui::PopStyleVar(2);
-            ImGui::EndChild();
-            ImGui::PopFont();
-
-            // ---- Split deferred action ----
-            if (pending_split_idx >= 0 && pending_split_idx < lyricmap->count) {
-                undo_push(undo, beatmap, lyricmap);
-                lyricmap_split(lyricmap, pending_split_idx, pending_split_cursor, &s_lyr_selected);
-            }
-
-            // ---- Delete deferred action ----
-            if (pending_delete >= 0 && pending_delete < lyricmap->count) {
-                undo_push(undo, beatmap, lyricmap);
-                lyricmap_remove(lyricmap, pending_delete);
-                if (s_lyr_selected == pending_delete)     s_lyr_selected = -1;
-                else if (s_lyr_selected > pending_delete) s_lyr_selected--;
-            }
-
-            // ---- Auto-place deferred action ----
-            // Find a gap in the timeline for this lyric and re-insert with real timestamps.
-            if (pending_place >= 0 && pending_place < lyricmap->count) {
-                undo_push(undo, beatmap, lyricmap);
-                int i = pending_place;
-
-                // prev_end: t_end of last placed lyric before index i (0 if none)
-                double prev_end = 0.0;
-                for (int j = i - 1; j >= 0; j--) {
-                    if (lyricmap->lyrics[j].t_start < dur - 1e-9) {
-                        prev_end = lyricmap->lyrics[j].t_end;
-                        break;
-                    }
-                }
-                // next_start: t_start of first placed lyric after index i (dur if none)
-                double next_start = dur;
-                for (int j = i + 1; j < lyricmap->count; j++) {
-                    if (lyricmap->lyrics[j].t_start < dur - 1e-9) {
-                        next_start = lyricmap->lyrics[j].t_start;
-                        break;
-                    }
-                }
-
-                // Try 2 s window, fall back to 1 s, then fill whatever space exists
-                // Small gap after the previous lyric so both handles are easy to grab
-                const double GAP = 0.25;
-                double t0    = prev_end + GAP;
-                double avail = next_start - t0;
-                if (avail < 0.05) { t0 = prev_end; avail = next_start - prev_end; }
-                double lyr_dur = (avail >= 2.0) ? 2.0 :
-                                 (avail >= 1.0) ? 1.0 :
-                                 (avail >= 0.05) ? avail : 0.05;
-                double t1 = t0 + lyr_dur;
-
-                char saved[128];
-                strncpy(saved, lyricmap->lyrics[i].text, sizeof(saved) - 1);
-                saved[sizeof(saved) - 1] = '\0';
-
-                lyricmap_remove(lyricmap, i);
-                int ni = lyricmap_add(lyricmap, t0, t1, saved);
-                s_lyr_selected             = ni;
-                lyricmap->selected_idx     = ni;
-
-                // Scroll to the newly placed lyric
-                if (ni >= 0 && editor->duration > 0.0) {
-                    double span = editor->view_end - editor->view_start;
-                    if (span > 0.0) {
-                        double vs = t0 - span * 0.25;
+        if (hit) {
+            s_lyr_selected = i;
+            if (placed) {
+                // Scroll timeline so this lyric is visible
+                double span = editor->view_end - editor->view_start;
+                if (span > 0.0) {
+                    bool in_view = (ly.t_start >= editor->view_start &&
+                                    ly.t_end   <= editor->view_end + 1e-6);
+                    if (!in_view) {
+                        double vs = ly.t_start - span * 0.25;
                         if (vs < 0.0)                    vs = 0.0;
                         if (vs + span > editor->duration) vs = editor->duration - span;
                         if (vs < 0.0)                    vs = 0.0;
@@ -3001,40 +2947,172 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
                         editor->view_end   = vs + span;
                     }
                 }
-            }
-
-            // ---- Place-at-region deferred action ----
-            if (pending_region_place >= 0 && pending_region_place < lyricmap->count
-                    && editor->has_region) {
-                undo_push(undo, beatmap, lyricmap);
-                int    i  = pending_region_place;
-                double t0 = editor->region_start;
-                double t1 = editor->region_end;
-
-                char saved[128];
-                strncpy(saved, lyricmap->lyrics[i].text, sizeof(saved) - 1);
-                saved[sizeof(saved) - 1] = '\0';
-
-                lyricmap_remove(lyricmap, i);
-                int ni = lyricmap_add(lyricmap, t0, t1, saved);
-                s_lyr_selected         = ni;
-                lyricmap->selected_idx = ni;
-                lyricmap->dirty        = true;
-
-                // Scroll so the newly placed lyric is visible
-                if (ni >= 0 && editor->duration > 0.0) {
-                    double span = editor->view_end - editor->view_start;
-                    if (span > 0.0) {
-                        double vs = t0 - span * 0.25;
-                        if (vs < 0.0)                     vs = 0.0;
-                        if (vs + span > editor->duration)  vs = editor->duration - span;
-                        if (vs < 0.0)                     vs = 0.0;
-                        editor->view_start = vs;
-                        editor->view_end   = vs + span;
-                    }
-                }
+            } else if (has_audio) {
+                pending_place = i;
             }
         }
-        ImGui::End();
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip(placed ? "Scroll to lyric" : "Auto-place on timeline");
+
+        // "Place at region" button – active only for unplaced lyrics when a region exists
+        ImGui::SameLine(0, 2.0f);
+        {
+            bool can_snap = !placed && editor->has_region;
+            if (!can_snap) ImGui::BeginDisabled();
+            ImGui::PushStyleColor(ImGuiCol_Button,
+                can_snap ? ImVec4(0.45f,0.33f,0.06f,0.82f) : ImVec4(0.22f,0.22f,0.22f,0.40f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.60f,0.46f,0.10f,0.92f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonActive,  ImVec4(0.74f,0.58f,0.16f,1.00f));
+            bool is_next  = (i == first_unplaced_idx) && editor->has_region;
+            bool snap_hit = ImGui::Button(is_next ? "L" : "\xe2\x86\x94", ImVec2(GW, 0));
+            ImGui::PopStyleColor(3);
+            if (!can_snap) ImGui::EndDisabled();
+            if (snap_hit) { s_lyr_selected = i; pending_region_place = i; }
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip(!placed && !editor->has_region
+                    ? "Select a region on the spectrogram first"
+                    : placed ? "Already placed" : "Place at selected region");
+        }
+
+        // Lyric text input (fills remaining row width, minus X delete button)
+        ImGui::SameLine(0, 2.0f);
+        const float del_btn_w = 20.0f;
+        ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - del_btn_w - 2.0f);
+        // Dim unplaced lyrics so placed ones stand out
+        if (!placed)
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.62f,0.59f,0.49f,0.76f));
+        s_lyr_split_state = {};
+        if (ImGui::InputText("##t", ly.text, sizeof(ly.text),
+                             ImGuiInputTextFlags_CallbackAlways, lyr_split_callback))
+            lyricmap->dirty = true;
+        if (!placed)
+            ImGui::PopStyleColor();
+        // Typing in the text field selects the lyric in the strip too
+        if (ImGui::IsItemActive()) s_lyr_selected = i;
+        if (s_lyr_split_state.req) {
+            pending_split_idx    = i;
+            pending_split_cursor = s_lyr_split_state.cursor;
+        }
+
+        // X button to delete this lyric
+        ImGui::SameLine(0, 2.0f);
+        ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.55f,0.12f,0.12f,0.76f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.72f,0.18f,0.18f,0.90f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive,  ImVec4(0.90f,0.25f,0.25f,1.00f));
+        if (ImGui::Button("x", ImVec2(del_btn_w, 0))) pending_delete = i;
+        ImGui::PopStyleColor(3);
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Delete lyric");
+
+        ImGui::PopID();
+    }
+
+    if (lyricmap->count == 0)
+        ImGui::TextDisabled("No lyrics yet. Drag on the lyric strip or paste from clipboard.");
+
+    ImGui::PopStyleVar(2);
+    ImGui::EndChild();
+    ImGui::PopFont();
+
+    // ---- Split deferred action ----
+    if (pending_split_idx >= 0 && pending_split_idx < lyricmap->count) {
+        undo_push(undo, beatmap, lyricmap);
+        lyricmap_split(lyricmap, pending_split_idx, pending_split_cursor, &s_lyr_selected);
+    }
+
+    // ---- Delete deferred action ----
+    if (pending_delete >= 0 && pending_delete < lyricmap->count) {
+        undo_push(undo, beatmap, lyricmap);
+        lyricmap_remove(lyricmap, pending_delete);
+        if (s_lyr_selected == pending_delete)     s_lyr_selected = -1;
+        else if (s_lyr_selected > pending_delete) s_lyr_selected--;
+    }
+
+    // ---- Auto-place deferred action ----
+    // Find a gap in the timeline for this lyric and re-insert with real timestamps.
+    if (pending_place >= 0 && pending_place < lyricmap->count) {
+        undo_push(undo, beatmap, lyricmap);
+        int i = pending_place;
+
+        // prev_end: t_end of last placed lyric before index i (0 if none)
+        double prev_end = 0.0;
+        for (int j = i - 1; j >= 0; j--) {
+            if (lyricmap->lyrics[j].t_start < dur - 1e-9) {
+                prev_end = lyricmap->lyrics[j].t_end;
+                break;
+            }
+        }
+        // next_start: t_start of first placed lyric after index i (dur if none)
+        double next_start = dur;
+        for (int j = i + 1; j < lyricmap->count; j++) {
+            if (lyricmap->lyrics[j].t_start < dur - 1e-9) {
+                next_start = lyricmap->lyrics[j].t_start;
+                break;
+            }
+        }
+
+        // Try 2 s window, fall back to 1 s, then fill whatever space exists
+        // Small gap after the previous lyric so both handles are easy to grab
+        const double GAP = 0.25;
+        double t0    = prev_end + GAP;
+        double avail = next_start - t0;
+        if (avail < 0.05) { t0 = prev_end; avail = next_start - prev_end; }
+        double lyr_dur = (avail >= 2.0) ? 2.0 :
+                         (avail >= 1.0) ? 1.0 :
+                         (avail >= 0.05) ? avail : 0.05;
+        double t1 = t0 + lyr_dur;
+
+        char saved[128];
+        strncpy(saved, lyricmap->lyrics[i].text, sizeof(saved) - 1);
+        saved[sizeof(saved) - 1] = '\0';
+
+        lyricmap_remove(lyricmap, i);
+        int ni = lyricmap_add(lyricmap, t0, t1, saved);
+        s_lyr_selected             = ni;
+        lyricmap->selected_idx     = ni;
+
+        // Scroll to the newly placed lyric
+        if (ni >= 0 && editor->duration > 0.0) {
+            double span = editor->view_end - editor->view_start;
+            if (span > 0.0) {
+                double vs = t0 - span * 0.25;
+                if (vs < 0.0)                    vs = 0.0;
+                if (vs + span > editor->duration) vs = editor->duration - span;
+                if (vs < 0.0)                    vs = 0.0;
+                editor->view_start = vs;
+                editor->view_end   = vs + span;
+            }
+        }
+    }
+
+    // ---- Place-at-region deferred action ----
+    if (pending_region_place >= 0 && pending_region_place < lyricmap->count
+            && editor->has_region) {
+        undo_push(undo, beatmap, lyricmap);
+        int    i  = pending_region_place;
+        double t0 = editor->region_start;
+        double t1 = editor->region_end;
+
+        char saved[128];
+        strncpy(saved, lyricmap->lyrics[i].text, sizeof(saved) - 1);
+        saved[sizeof(saved) - 1] = '\0';
+
+        lyricmap_remove(lyricmap, i);
+        int ni = lyricmap_add(lyricmap, t0, t1, saved);
+        s_lyr_selected         = ni;
+        lyricmap->selected_idx = ni;
+        lyricmap->dirty        = true;
+
+        // Scroll so the newly placed lyric is visible
+        if (ni >= 0 && editor->duration > 0.0) {
+            double span = editor->view_end - editor->view_start;
+            if (span > 0.0) {
+                double vs = t0 - span * 0.25;
+                if (vs < 0.0)                     vs = 0.0;
+                if (vs + span > editor->duration)  vs = editor->duration - span;
+                if (vs < 0.0)                     vs = 0.0;
+                editor->view_start = vs;
+                editor->view_end   = vs + span;
+            }
+        }
     }
 }

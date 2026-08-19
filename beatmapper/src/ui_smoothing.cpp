@@ -139,21 +139,16 @@ static int onsets_in_range(const AutoBeatList* ab, double t0, double t1) {
     return n;
 }
 
-void ui_smoothing_render(EditorState* editor, AudioState* audio, BeatMap* beatmap,
-                         SectionMap* sectionmap, LyricMap* lyricmap, MiscMap* miscmap,
-                         MiscMap* chordmap, UndoStack* undo, AutoBeatList* autobeat)
+void ui_smoothing_hidden() {
+    // Panel not on screen this frame: don't leave stale ghosts behind.
+    preview_clear();
+}
+
+void ui_smoothing_content(EditorState* editor, AudioState* audio, BeatMap* beatmap,
+                          SectionMap* sectionmap, LyricMap* lyricmap, MiscMap* miscmap,
+                          MiscMap* chordmap, UndoStack* undo, AutoBeatList* autobeat)
 {
     if (!s_p_init) { smooth_params_defaults(&s_p); s_p_init = true; }
-
-    if (!editor->show_smoothing_panel) { preview_clear(); return; }
-
-    ImGui::SetNextWindowSizeConstraints(ImVec2(300, 300), ImVec2(640, 900));
-    ImGui::SetNextWindowSize(ImVec2(340, 470), ImGuiCond_FirstUseEver);
-    if (!ImGui::Begin("Beat Smoothing", &editor->show_smoothing_panel)) {
-        preview_clear();   // collapsed window: don't leave stale ghosts behind
-        ImGui::End();
-        return;
-    }
 
     float avail_w = ImGui::GetContentRegionAvail().x;
 
@@ -379,6 +374,4 @@ void ui_smoothing_render(EditorState* editor, AudioState* audio, BeatMap* beatma
         beatmap_clear_selection(beatmap);
         preview_clear();
     }
-
-    ImGui::End();
 }

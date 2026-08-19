@@ -26,6 +26,11 @@ const ChromaAlgoDesc CHROMA_ALGOS[] = {
         "Finds spectral peaks then groups harmonically-related ones to a single fundamental",
         chroma_peaks
     },
+    {
+        "Resonate",
+        "Bank of 60 complex resonators updated per-sample (Francois); no FFT, no window function",
+        chroma_resonate
+    },
 };
 
-const int CHROMA_ALGO_COUNT = 5;
+const int CHROMA_ALGO_COUNT = 6;

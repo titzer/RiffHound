@@ -14,7 +14,9 @@ struct EditorState {
     bool   autoscroll;    // scroll timeline to follow playhead during playback
     bool   lyric_index_open;  // true while the Lyric Index floating window is visible
 
-    // Strip visibility (controlled via the pane checkboxes and the Settings popup)
+    // Strip expansion: strips are always present in the timeline; these flags
+    // choose expanded (editable) vs collapsed to a slim display band.
+    // Toggled by the sidebar triangles and the View menu.
     bool   show_place_strip;   // beat insertion strip
     bool   show_beat_strip;    // beat area
     bool   show_tap_strip;     // tap recording strip
