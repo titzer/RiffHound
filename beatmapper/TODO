@@ -1,4 +1,41 @@
-- Fix Linux audio playback / generation
+- Major improvements
+
+1. Beat-detection plugins
+
+Still the most laborious and error-prone of the process.
+Many tracks have click-track, very even and clean timing.
+Others have messy timing.
+Tempo and beat detection are not just onset, but inertia.
+Inserting all beats by hand, even with extrapolation, smoothing, and beat-detection assist is still laborious.
+
+2. Musical score: RiffText
+
+Need a way to store riffs, musical passages, chord voices, fingers, tab.
+Want to go from simple chords to riffs, motifs, and solos.
+Most tracks I care about already have Guitar pros.
+Should be able to load / align Guitar Pro tabs.
+Include audio and video cues for karaoke to nail tricky passages.
+
+3. Transcription: use plugins
+
+Plugins should be able to automatically transcribe drums, bass, guitar, voice.
+
+4. Lyrics / Voice
+
+Plugins can go search the internet for vocals, align vocal lines / passages, maybe even transcribe.
+It'd be great to have one tool that marks vocal lines and another tool that matches found / pasted lyrics.
+Transcribe the melody of vocal passage, both lead, harmonies, backing, interjections, etc.
+Increase precision with beat-precise lyric alignment.
+
+5. Stem separation
+
+Make it possible to practice against a track with a stem removed or "stubbed"--where the melody or rhythm is replaced with clicks, synth'd notes, or other cues.
+
+
+Fixes:
+- Linux audio playback / generation never worked.
+
+Stretch:
 - Try web/wasm build
 
 - Analyzer plugins / audio analysis
@@ -8,7 +45,6 @@
   - Stem extraction
   - Lyric alignment
   - Transcription
-- Load dialog should immediately load after system dialog returns selection
 - Load dialog should allow up and down arrows
 - section duplicate tool:
   - duplicates the beat pattern and measures of a given section (e.g. verse)

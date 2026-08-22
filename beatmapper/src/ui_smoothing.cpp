@@ -183,17 +183,64 @@ void ui_smoothing_content(EditorState* editor, AudioState* audio, BeatMap* beatm
     ImGui::Separator();
     ImGui::Spacing();
 
-    // --- Knobs -------------------------------------------------------------
+    // --- Mode buttons ------------------------------------------------------
+    // Three presets cover the common cases; the knobs below are for fine
+    // tuning and stay tucked away in a collapsed Settings header.
+    struct Preset { const char* name; const char* tip; float strength; int iters; float max_shift; };
+    static const Preset PRESETS[3] = {
+        { "Light",  "Nudge each beat a little toward its neighbours\n(strength 0.25, 5 passes, 20 ms max)",   0.25f,  5, 0.020f },
+        { "Medium", "Even out local jitter\n(strength 0.5, 20 passes, 50 ms max)",                          0.50f, 20, 0.050f },
+        { "Strong", "Converge toward a constant tempo across the range\n(strength 0.8, 100 passes, 150 ms max)", 0.80f, 100, 0.150f },
+    };
+    {
+        float third_w = (avail_w - 2.0f * ImGui::GetStyle().ItemSpacing.x) / 3.0f;
+        for (int k = 0; k < 3; k++) {
+            const Preset& pr = PRESETS[k];
+            bool active = (s_p.strength == pr.strength && s_p.iterations == pr.iters &&
+                           s_p.max_shift == pr.max_shift);
+            if (k) ImGui::SameLine();
+            if (active) {
+                ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.22f, 0.37f, 0.63f, 1.0f));
+                ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.27f, 0.47f, 0.75f, 1.0f));
+            }
+            if (ImGui::Button(pr.name, ImVec2(third_w, 0))) {
+                s_p.strength   = pr.strength;
+                s_p.iterations = pr.iters;
+                s_p.max_shift  = pr.max_shift;
+                s_key_valid    = false;
+            }
+            if (active) ImGui::PopStyleColor(2);
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", pr.tip);
+        }
+    }
+
+    bool onsets_toggled = ImGui::Checkbox("Use detected onsets", &s_p.use_onsets);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Pull smoothed beats toward onsets found by the Beat\n"
+                          "Detector, so the result follows the audio as well as\n"
+                          "the tempo");
+
+    ImGui::Spacing();
+
+    // --- Knobs (collapsed by default) ---------------------------------------
+    ImGui::PushStyleColor(ImGuiCol_Header,        IM_COL32(34, 34, 52, 255));
+    ImGui::PushStyleColor(ImGuiCol_HeaderHovered, IM_COL32(46, 46, 70, 255));
+    ImGui::PushStyleColor(ImGuiCol_HeaderActive,  IM_COL32(56, 56, 84, 255));
+    bool show_settings = ImGui::CollapsingHeader("Settings##sm");
+    ImGui::PopStyleColor(3);
+    if (show_settings) {
+    ImGui::Indent(6.0f);
+    float knob_w = ImGui::GetContentRegionAvail().x;
     ImGui::TextDisabled("Smoothing:");
     ImGui::Spacing();
 
-    ImGui::SetNextItemWidth(avail_w);
+    ImGui::SetNextItemWidth(knob_w);
     ImGui::SliderFloat("##strength", &s_p.strength, 0.02f, 1.0f, "Strength %.2f");
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("How far each beat moves toward the midpoint of its\n"
                           "neighbours on every pass");
 
-    ImGui::SetNextItemWidth(avail_w);
+    ImGui::SetNextItemWidth(knob_w);
     ImGui::SliderInt("##iters", &s_p.iterations, 1, 200, "Passes %d",
                      ImGuiSliderFlags_Logarithmic);
     if (ImGui::IsItemHovered())
@@ -202,7 +249,7 @@ void ui_smoothing_content(EditorState* editor, AudioState* audio, BeatMap* beatm
 
     {
         float shift_ms = s_p.max_shift * 1000.0f;
-        ImGui::SetNextItemWidth(avail_w);
+        ImGui::SetNextItemWidth(knob_w);
         if (ImGui::SliderFloat("##maxshift", &shift_ms, 0.0f, 300.0f,
                                shift_ms <= 0.0f ? "Max shift: unlimited" : "Max shift %.0f ms"))
             s_p.max_shift = shift_ms / 1000.0f;
@@ -215,18 +262,12 @@ void ui_smoothing_content(EditorState* editor, AudioState* audio, BeatMap* beatm
     ImGui::TextDisabled("Audio guidance:");
     ImGui::Spacing();
 
-    bool onsets_toggled = ImGui::Checkbox("Use detected onsets", &s_p.use_onsets);
-    if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Pull smoothed beats toward onsets found by the Beat\n"
-                          "Detector, so the result follows the audio as well as\n"
-                          "the tempo");
-
     if (!s_p.use_onsets) ImGui::BeginDisabled();
-    ImGui::SetNextItemWidth(avail_w);
+    ImGui::SetNextItemWidth(knob_w);
     ImGui::SliderFloat("##opull", &s_p.onset_weight, 0.0f, 1.0f, "Onset pull %.2f");
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("0 = ignore onsets, 1 = snap onto them");
-    ImGui::SetNextItemWidth(avail_w);
+    ImGui::SetNextItemWidth(knob_w);
     {
         float win_pct = s_p.onset_window * 100.0f;
         if (ImGui::SliderFloat("##owin", &win_pct, 2.0f, 50.0f, "Search \xc2\xb1%.0f%% of beat"))
@@ -235,6 +276,13 @@ void ui_smoothing_content(EditorState* editor, AudioState* audio, BeatMap* beatm
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Onsets further than this from the beat are ignored");
     if (!s_p.use_onsets) ImGui::EndDisabled();
+
+    if (ImGui::Button("Reset knobs", ImVec2(knob_w, 0))) {
+        smooth_params_defaults(&s_p);
+        s_key_valid = false;
+    }
+    ImGui::Unindent(6.0f);
+    }   // settings
 
     // Onset availability + (re-)detection over the range.
     if (s_p.use_onsets && have_range) {
@@ -364,13 +412,7 @@ void ui_smoothing_content(EditorState* editor, AudioState* audio, BeatMap* beatm
         ImGui::SetTooltip(can_apply ? "Move the beats to the previewed positions (Ctrl+Z undoes)"
                                     : "Nothing to apply");
 
-    float half_w = (avail_w - ImGui::GetStyle().ItemSpacing.x) * 0.5f;
-    if (ImGui::Button("Reset knobs", ImVec2(half_w, 0))) {
-        smooth_params_defaults(&s_p);
-        s_key_valid = false;
-    }
-    ImGui::SameLine();
-    if (ImGui::Button("Clear selection", ImVec2(half_w, 0))) {
+    if (ImGui::Button("Clear selection", ImVec2(avail_w, 0))) {
         beatmap_clear_selection(beatmap);
         preview_clear();
     }

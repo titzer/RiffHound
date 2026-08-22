@@ -62,7 +62,8 @@ static int    s_last_algo      = -1;
 void ui_chroma_content(EditorState* editor, AudioState* audio)
 {
     // Persistent UI state
-    static int   s_algo_idx      = 0;
+    // NNLS is the default: most accurate for polyphonic material.
+    static int   s_algo_idx      = 3;   // index into CHROMA_ALGOS ("NNLS Chroma")
     static float s_roll_secs     = 2.0f;
 
     // Fetch PCM

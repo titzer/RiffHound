@@ -26,6 +26,7 @@ static float  s_last_thresh   = -1.0f;
 static float  s_last_tight    = -1.0f;
 static float  s_last_pre_ms   = -1.0f;
 static bool   s_last_seeds    = false;
+static bool   s_last_from_region = false;  // last run analysed the editor region
 
 // Seed buffer (accepted beats within the window)
 static double s_seed_buf[MAX_BEAT_CANDS];
@@ -100,6 +101,31 @@ static void run_detection(EditorState* editor, AudioState* audio,
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
+void ui_beat_detector_reset(AutoBeatList* autobeat) {
+    autobeat->beat_count    = 0;
+    autobeat->onset_count   = 0;
+    autobeat->estimated_bpm = 0.0f;
+    s_last_t_start = s_last_t_end = -99.0;
+    s_last_algo    = -1;
+    s_needs_run    = false;
+    s_last_from_region = false;
+}
+
+void ui_beat_detector_update(EditorState* editor, AutoBeatList* autobeat,
+                             bool tool_visible)
+{
+    if (!editor->has_region) {
+        if (autobeat->beat_count > 0 || autobeat->onset_count > 0 || s_last_algo != -1)
+            ui_beat_detector_reset(autobeat);
+        return;
+    }
+    // Hidden tool: results for a window other than the current region are
+    // stale ghosts, not something the user asked for.
+    if (!tool_visible && s_last_from_region &&
+        (editor->region_start != s_last_t_start || editor->region_end != s_last_t_end))
+        ui_beat_detector_reset(autobeat);
+}
+
 void ui_beat_detector_ensure_onsets(AudioState* audio, BeatMap* beatmap,
                                     AutoBeatList* autobeat,
                                     double t1, double t2)
@@ -109,6 +135,7 @@ void ui_beat_detector_ensure_onsets(AudioState* audio, BeatMap* beatmap,
         t1 >= s_last_t_start && t2 <= s_last_t_end)
         return;
     run_detection(nullptr, audio, beatmap, autobeat, t1, t2);
+    s_last_from_region = false;
 }
 
 void ui_beat_detector_content(EditorState* editor, AudioState* audio,
@@ -116,6 +143,16 @@ void ui_beat_detector_content(EditorState* editor, AudioState* audio,
                               AutoBeatList* autobeat)
 {
     float avail_w = ImGui::GetContentRegionAvail().x;
+
+    // --- Settings (collapsed by default; the defaults work for most tracks) ---
+    ImGui::PushStyleColor(ImGuiCol_Header,        IM_COL32(34, 34, 52, 255));
+    ImGui::PushStyleColor(ImGuiCol_HeaderHovered, IM_COL32(46, 46, 70, 255));
+    ImGui::PushStyleColor(ImGuiCol_HeaderActive,  IM_COL32(56, 56, 84, 255));
+    bool show_settings = ImGui::CollapsingHeader("Settings##bd");
+    ImGui::PopStyleColor(3);
+    if (show_settings) {
+    ImGui::Indent(6.0f);
+    avail_w = ImGui::GetContentRegionAvail().x;
 
     // --- Algorithm selector ---
     ImGui::SetNextItemWidth(avail_w);
@@ -194,8 +231,10 @@ void ui_beat_detector_content(EditorState* editor, AudioState* audio,
             "to the nearest detected onset (within \xc2\xb1" "20%% of the beat period).\n"
             "The BPM grid anchors the rhythm; audio snaps the fine placement.");
 
-    ImGui::Spacing();
-    ImGui::Separator();
+    ImGui::Unindent(6.0f);
+    avail_w = ImGui::GetContentRegionAvail().x;
+    }   // settings
+
     ImGui::Spacing();
 
     // --- Determine analysis window ---
@@ -208,24 +247,21 @@ void ui_beat_detector_content(EditorState* editor, AudioState* audio,
     }
 
     // --- Auto-run when window or params change ---
-    if (have_window && (params_changed(t_start, t_end) || s_needs_run))
+    if (have_window && (params_changed(t_start, t_end) || s_needs_run)) {
         run_detection(editor, audio, beatmap, autobeat, t_start, t_end);
-    else if (!have_window) {
-        // Clear stale results when no window
-        autobeat->beat_count  = 0;
-        autobeat->onset_count = 0;
-        autobeat->estimated_bpm = 0.0f;
-        s_last_t_start = s_last_t_end = -99.0;
-        s_last_algo    = -1;
-    }
+        s_last_from_region = true;
+    } else if (!have_window)
+        ui_beat_detector_reset(autobeat);
 
     // --- Manual detect button ---
     bool detect_enabled = have_window;
     if (!detect_enabled) ImGui::BeginDisabled();
     if (ImGui::Button("Detect Now", ImVec2(avail_w, 0))) {
         s_needs_run = true;
-        if (have_window)
+        if (have_window) {
             run_detection(editor, audio, beatmap, autobeat, t_start, t_end);
+            s_last_from_region = true;
+        }
     }
     if (!detect_enabled) ImGui::EndDisabled();
 
@@ -288,10 +324,6 @@ void ui_beat_detector_content(EditorState* editor, AudioState* audio,
 
     if (!have_beats) ImGui::EndDisabled();
 
-    if (ImGui::Button("Clear", ImVec2(avail_w, 0))) {
-        autobeat->beat_count  = 0;
-        autobeat->onset_count = 0;
-        s_last_t_start = s_last_t_end = -99.0;
-        s_last_algo    = -1;
-    }
+    if (ImGui::Button("Clear", ImVec2(avail_w, 0)))
+        ui_beat_detector_reset(autobeat);
 }

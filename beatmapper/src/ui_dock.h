@@ -32,8 +32,9 @@ float ui_dock_width();
 // detached as a floating window.
 bool ui_dock_tool_visible(DockTool t);
 
-// Rail-icon behaviour: open the drawer and expand the tool; if the tool is
-// already expanded, close the drawer; if it is floating, focus its window.
+// Rail-icon behaviour: open the drawer with only this tool expanded (the
+// other docked tools collapse); if the tool is already expanded, close the
+// drawer; if it is floating, focus its window.
 void ui_dock_icon_click(DockTool t);
 
 // Render the rail, the drawer and any detached floating tools.  Call once per

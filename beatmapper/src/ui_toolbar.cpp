@@ -4,6 +4,7 @@
 #include "panels.h"
 #include "imgui.h"
 #include "platform.h"
+#include "ui_beat_detector.h"
 #include <string.h>
 #include <stdio.h>
 
@@ -14,7 +15,9 @@ void ui_toolbar_open_dialog()   { s_show_open_dialog    = true; }
 
 void ui_toolbar_render(EditorState* editor, AudioState* audio, BeatMap* beatmap,
                        UndoStack* undo, RecentFiles* recent, SectionMap* sectionmap,
-                       LyricMap* lyricmap, MiscMap* miscmap, MiscMap* chordmap) {
+                       LyricMap* lyricmap, MiscMap* miscmap, MiscMap* chordmap,
+                       AutoBeatList* autobeat)
+{
     // --- Playback controls ---
     bool can_play = audio->loaded && !audio->playing;
     bool can_stop = audio->loaded &&  audio->playing;
@@ -253,6 +256,7 @@ void ui_toolbar_render(EditorState* editor, AudioState* audio, BeatMap* beatmap,
             strncpy(beatmap->save_path, bm_path, sizeof(beatmap->save_path) - 1);
             beatmap->dirty = false;
             editor->has_region = false;
+            ui_beat_detector_reset(autobeat);
             // Auto-show strips that have content in the loaded file
             if (sectionmap->count > 0) panel_set_visible(editor, PANEL_SECTIONS, true);
             if (lyricmap->count   > 0) panel_set_visible(editor, PANEL_LYRICS,   true);
@@ -290,8 +294,10 @@ void ui_toolbar_render(EditorState* editor, AudioState* audio, BeatMap* beatmap,
         ImGui::SameLine();
         if (ImGui::Button("Browse...")) {
             char picked[512] = {};
-            if (platform_open_file_dialog(picked, sizeof(picked)))
+            if (platform_open_file_dialog(picked, sizeof(picked))) {
                 strncpy(s_file_buf, picked, sizeof(s_file_buf) - 1);
+                do_load();   // picking a file in the system dialog loads it
+            }
         }
         ImGui::Spacing();
         if (ImGui::Button("Load", ImVec2(80, 0)) || enter_pressed)

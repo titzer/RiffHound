@@ -21,10 +21,10 @@ struct ToolState {
     bool focus_req;  // bring the floating window to front next frame
 };
 static ToolState s_tools[DOCK_TOOL_COUNT] = {
-    { false, true, false },
-    { false, true, false },
-    { false, true, false },
-    { false, true, false },
+    { false, false, false },
+    { false, false, false },
+    { false, false, false },
+    { false, false, false },
 };
 
 static const char* TOOL_NAMES[DOCK_TOOL_COUNT] = {
@@ -47,9 +47,13 @@ void ui_dock_icon_click(DockTool t) {
     if (t < 0 || t >= DOCK_TOOL_COUNT) return;
     ToolState& ts = s_tools[t];
     if (ts.floating) { ts.focus_req = true; return; }
-    if (!s_drawer_open)     { s_drawer_open = true; ts.expanded = true; }
-    else if (!ts.expanded)  { ts.expanded = true; }
-    else                    { s_drawer_open = false; }
+    if (s_drawer_open && ts.expanded) { s_drawer_open = false; return; }
+    // Activate just this tool: the others collapse so e.g. opening Beat
+    // Smoothing does not also switch on Chroma or beat detection.
+    for (int i = 0; i < DOCK_TOOL_COUNT; i++)
+        if (i != (int)t && !s_tools[i].floating) s_tools[i].expanded = false;
+    s_drawer_open = true;
+    ts.expanded   = true;
 }
 
 // --- rail icons ------------------------------------------------------------

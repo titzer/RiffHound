@@ -18,6 +18,7 @@
 #include "ui_toolbar.h"
 #include "beat_algo.h"
 #include "ui_dock.h"
+#include "ui_beat_detector.h"
 #include "ui_help.h"
 #include "panels.h"
 #include "platform.h"
@@ -481,7 +482,7 @@ int main(int argc, char** argv) {
             }
 
             // Toolbar strip
-            ui_toolbar_render(&editor, &audio, &beatmap, &undo, &recent, &sectionmap, &lyricmap, &miscmap, &chordmap);
+            ui_toolbar_render(&editor, &audio, &beatmap, &undo, &recent, &sectionmap, &lyricmap, &miscmap, &chordmap, &autobeat);
             ImGui::Separator();
 
             // Timeline
@@ -489,6 +490,10 @@ int main(int argc, char** argv) {
 
             ImGui::End();
         }
+
+        // Drop detected beats that no longer belong to the current region
+        // (region cleared, or changed while the detector is hidden).
+        ui_beat_detector_update(&editor, &autobeat, ui_dock_tool_visible(DOCK_DETECTOR));
 
         // Right-edge tool dock: icon rail, drawer and any detached tools
         // (Chroma Analyzer, Beat Detector, Beat Smoothing, Lyric Index).
