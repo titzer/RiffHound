@@ -63,7 +63,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 MEDIA_EXT = (".mp3", ".m4a", ".ogg", ".webm", ".flac", ".wav",
              ".mp4", ".m4v", ".mov")
 RESCAN_AFTER = 5.0          # seconds; a listing this stale is re-walked
-PAGE = "v0.2.html"
+PAGE = "v0.3.html"
 
 # A folder holding this file is not part of the library.  A library that keeps
 # its untouched copies in originals/ has every track twice -- once to play and
@@ -94,14 +94,14 @@ def chart_flags(path):
     try:
         st = path.stat()
     except OSError:
-        return {"beats": False, "chords": False, "lyrics": False}
+        return {"beats": False, "chords": False, "lyrics": False, "loops": False}
 
     key = (str(path), st.st_size, st.st_mtime_ns)
     hit = _flags.get(str(path))
     if hit and hit[0] == key:
         return hit[1]
 
-    has = {"beats": False, "chords": False, "lyrics": False}
+    has = {"beats": False, "chords": False, "lyrics": False, "loops": False}
     try:
         with path.open("r", errors="replace") as f:
             for line in f:
@@ -116,6 +116,8 @@ def chart_flags(path):
                     has["chords"] = True
                 elif tok in ("lyric:", "lyric"):
                     has["lyrics"] = True
+                elif tok.startswith("loop:"):
+                    has["loops"] = True
                 if all(has.values()):
                     break
     except OSError:
@@ -199,7 +201,8 @@ class Library:
                             "media": path.name,
                             "chart": chart.is_file(),
                             "has": chart_flags(chart) if chart.is_file()
-                                   else {"beats": False, "chords": False, "lyrics": False},
+                                   else {"beats": False, "chords": False,
+                                         "lyrics": False, "loops": False},
                             "bytes": st.st_size,
                             "mtime": int(st.st_mtime),
                         }

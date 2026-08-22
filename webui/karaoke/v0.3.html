@@ -1,0 +1,4415 @@
+<!doctype html>
+<html lang="en" data-theme="green">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Guitar / Voice Karaoke v0.2</title>
+<style>
+  * { box-sizing: border-box; }
+
+  /* The theme hue lives on :root so every derived colour below is resolved
+     against the *current* --fg; deriving them anywhere else would freeze
+     them at the value --fg had on that element. */
+  :root[data-theme="green"] { --fg: #46ff7a; }
+  :root[data-theme="amber"] { --fg: #ffb43c; }
+  :root[data-theme="red"]   { --fg: #ff4436; }
+
+  :root {
+    --fg: #46ff7a;  /* fallback; the [data-theme] rules above win */
+    --pad: 16px;
+    --gap: 12px;
+    --next-w: clamp(110px, 15vw, 240px);
+    --disp-w: calc(100% - var(--pad) * 2 - var(--next-w));
+    --dim: color-mix(in srgb, var(--fg) 52%, #000);
+    --panel: color-mix(in srgb, var(--fg) 11%, #000);
+    --hot: color-mix(in srgb, var(--fg) 34%, #000);
+    --glow: color-mix(in srgb, var(--fg) 55%, transparent);
+    --scan-pitch: 2px;   /* both overwritten by the settings sliders */
+    --brightness: 100%;
+    --lyric-zoom: 100;                       /* per cent, from the settings */
+    --cur-size: calc(clamp(18px, 2.9vw, 38px) * var(--lyric-zoom) / 100);
+    --side-size: calc(clamp(15px, 1.9vw, 25px) * var(--lyric-zoom) / 100);
+  }
+
+  body {
+    margin: 0;
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    color: var(--fg);
+    background: #040604;
+    font: 700 14px/1.4 ui-monospace, "SF Mono", Menlo, "Courier New", monospace;
+    letter-spacing: .1em;
+    text-shadow: 0 0 7px var(--glow);
+    filter: brightness(var(--brightness));
+  }
+
+  /* Chrome is upper-case CRT lettering; chord names keep their own case,
+     since "Am" and "AM" are not the same chord. */
+  header, .next small { text-transform: uppercase; }
+
+  /* A subtree with its own phosphor colour. JS sets --fg here; the shades
+     have to be mixed again at the same place, since the :root versions were
+     already resolved against the :root hue and only inherit their result. */
+  .tinted {
+    --dim: color-mix(in srgb, var(--fg) 52%, #000);
+    --panel: color-mix(in srgb, var(--fg) 11%, #000);
+    --hot: color-mix(in srgb, var(--fg) 34%, #000);
+    --glow: color-mix(in srgb, var(--fg) 55%, transparent);
+    color: var(--fg);
+    text-shadow: 0 0 7px var(--glow);
+  }
+
+  header {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 18px;
+    padding: 5px var(--pad);
+  }
+
+  h1 { margin: 0; font-size: 21px; }
+
+  /* The title is a control, not just a heading: it opens the track menu. */
+  .track { position: relative; }
+
+  .title-btn,
+  .title-btn:hover:not(:disabled) {
+    padding: 0;
+    border: 0;
+    background: none;
+    color: var(--fg);
+  }
+
+  .title-btn { cursor: pointer; text-shadow: inherit; }
+  .title-btn:hover:not(:disabled) { text-shadow: 0 0 12px var(--fg); }
+  #titleTags { color: var(--dim); }
+
+  button, input { font: inherit; letter-spacing: inherit; color: inherit; }
+
+  .switch { display: inline-flex; }
+
+  button {
+    padding: 6px 10px;
+    border: 1px solid var(--dim);
+    background: var(--panel);
+    color: var(--dim);
+    cursor: pointer;
+    text-shadow: inherit;
+  }
+
+  /* Overlap the borders instead of dropping one: a button whose neighbour is
+     disabled (35% opacity) was left with no visible edge of its own. */
+  .switch button + button { margin-left: -1px; }
+  .switch button.active, .switch button:hover:not(:disabled) { position: relative; z-index: 1; }
+
+  button.active, button:hover:not(:disabled) {
+    color: var(--fg);
+    background: var(--hot);
+    border-color: var(--fg);
+    text-shadow: 0 0 10px var(--fg);
+  }
+
+  /* The inactive half of play/stop reads as an unlit key on the panel. */
+  button:disabled {
+    opacity: .35;
+    cursor: default;
+  }
+
+  /* Big three-digit tempo readout, top right, as the prototype had it: the one
+     number you play to should be legible from where you are standing, not set
+     in the small print beside the clock. It is read off the beat grid rather
+     than typed, so it is a readout and not an input any more, and it goes
+     without a "bpm" beside it — three digits that size, next to a clock that
+     is plainly a clock, are not going to be read as anything else, and the
+     header has better uses for the width.
+     flex: none, or it is the first thing squeezed out when the header gets
+     tight and the timeline, which is flex: 1, takes the room. Tabular figures,
+     or the row twitches as 99 becomes 100. */
+  .bpm {
+    flex: none;
+    display: flex;
+    align-items: baseline;
+    gap: 5px;
+    padding: 0 4px;
+  }
+
+  .bpm-num {
+    font-size: clamp(30px, 4.4vw, 48px);
+    line-height: .9;
+    color: var(--fg);
+    text-shadow: 0 0 14px var(--fg);
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* Playing off the record's own speed is worth saying out loud: it is what
+     explains a readout that disagrees with the sleeve. */
+  .bpm-rate { font-size: 12px; color: var(--fg); }
+
+  /* ---- settings menu --------------------------------------------------- */
+
+  .menu { position: relative; }
+
+  /* The two icon buttons belong together, so they sit closer than the
+     header's own gap would put them. */
+  .tools { display: flex; align-items: center; gap: 5px; }
+
+  .menu-btn {
+    display: grid;
+    gap: 4px;
+    place-content: center;
+    width: 40px;
+    height: 34px;
+    padding: 0;
+  }
+
+  .menu-btn i { width: 20px; height: 3px; background: currentColor; }
+
+  .fs-ico {
+    width: 18px;
+    height: 14px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 2;
+  }
+
+  .panel {
+    position: absolute;
+    top: calc(100% + 8px);
+    left: 0;
+    z-index: 30;
+    width: 420px;
+    display: grid;
+    gap: 10px;
+    padding: 14px;
+    border: 2px solid var(--fg);
+    box-shadow: 0 0 24px -4px var(--fg);
+
+    /* Semi-transparent, with the backdrop blurred so the display still reads
+     through it without the labels having to fight the scanlines. */
+    background: #050705b3;   /* 70% */
+    -webkit-backdrop-filter: blur(7px);
+    backdrop-filter: blur(7px);
+  }
+
+  .panel[hidden] { display: none; }
+
+  /* One row per setting: name on the left, control on the right, readout after
+     it. Wider dialog, but each setting costs one line instead of two. */
+  .setting {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 10px;
+    font-size: 12px;
+  }
+
+  .setting > label { flex: 1; min-width: 0; }
+  .setting output { order: 3; min-width: 3.2em; text-align: right; color: var(--fg); }
+  .setting .val { order: 3; }
+  .setting .switch { flex: none; max-width: 262px; }
+
+  /* Second level: common settings first, then one collapsible group per
+     display. The group body is its own element so `details` keeps its
+     disclosure behaviour whatever display the panel grid gives it. */
+  .panel details { border-top: 1px solid var(--dim); padding-top: 8px; }
+
+  .panel summary {
+    cursor: pointer;
+    font-size: 12px;
+    letter-spacing: .14em;
+    color: var(--dim);
+  }
+
+  .panel details[open] summary { color: var(--fg); }
+  .group { display: grid; gap: 9px; padding-top: 9px; }
+
+  /* A readout paired with its reset button, in the row's right-hand cell. */
+  .val { display: flex; align-items: center; gap: 8px; }
+
+  .reset {
+    padding: 1px 6px;
+    font-size: 10px;
+    letter-spacing: .08em;
+  }
+
+  .search {
+    flex: 1;
+    min-width: 0;
+    padding: 6px 8px;
+    border: 1px solid var(--dim);
+    background: var(--panel);
+    outline: none;
+  }
+
+  .search:focus { border-color: var(--fg); }
+  .search::placeholder { color: var(--dim); opacity: .7; }
+  .note { width: 100%; text-align: right; font-size: 11px; color: var(--dim); opacity: .75; }
+  .setting .switch button { flex: 1; padding: 5px 2px; font-size: 11px; }
+
+  /* Mode icons. The circle is the moving marker, drawn where it meets the
+     music; the lines are the rows the stroke glyphs sit on. So the icon says
+     both what moves and what it lands on. */
+  .ico {
+    display: block;
+    width: 100%;
+    max-width: 40px;
+    height: auto;
+    margin: 0 auto 3px;
+    overflow: visible;
+  }
+
+  .ico .wv { fill: none; stroke: currentColor; stroke-width: 1.2; opacity: .55; }
+  .ico .row { stroke: currentColor; stroke-width: 1.6; }
+  .ico .mk { fill: currentColor; }
+  .ico .fr { fill: none; stroke: currentColor; stroke-width: 1.4; }
+
+  /* Framing for the strum pane: one frame round the whole pane, or a box
+     round each stroke. Transparent rather than none, so nothing resizes. */
+  /* With each stroke in its own box the pane needs no surface of its own. */
+  :root[data-strumframe="boxes"] .spane {
+    border-color: transparent;
+    background: none;
+  }
+
+  :root[data-strumframe="boxes"] .sslot {
+    display: grid;
+    place-items: center;
+    min-width: 1.5em;
+    min-height: 1.25em;
+    border: 2px solid var(--dim);
+    background: #050705;
+  }
+
+  :root[data-strumframe="boxes"] .sslot.hit { border-color: var(--fg); }
+
+  input[type=checkbox] {
+    appearance: none;
+    width: 16px;
+    height: 16px;
+    margin: 0;
+    border: 2px solid var(--dim);
+    background: var(--panel);
+    cursor: pointer;
+  }
+
+  input[type=checkbox]:checked {
+    border-color: var(--fg);
+    background: var(--fg);
+    box-shadow: 0 0 10px var(--fg);
+  }
+
+  input[type=range] {
+    appearance: none;
+    flex: none;
+    width: 168px;
+    height: 20px;
+    background: none;
+    cursor: pointer;
+  }
+
+  input[type=range]::-webkit-slider-runnable-track {
+    height: 8px;
+    border: 1px solid var(--dim);
+    background: repeating-linear-gradient(90deg, var(--dim) 0 3px, #0000 3px 8px);
+  }
+
+  input[type=range]::-webkit-slider-thumb {
+    appearance: none;
+    width: 14px;
+    height: 20px;
+    margin-top: -6px;
+    background: var(--fg);
+    box-shadow: 0 0 12px var(--fg);
+  }
+
+  input[type=range]::-moz-range-track {
+    height: 8px;
+    border: 1px solid var(--dim);
+    background: repeating-linear-gradient(90deg, var(--dim) 0 3px, #0000 3px 8px);
+  }
+
+  input[type=range]::-moz-range-thumb {
+    width: 14px;
+    height: 20px;
+    border: 0;
+    border-radius: 0;
+    background: var(--fg);
+    box-shadow: 0 0 12px var(--fg);
+  }
+
+  /* ---- stage ---------------------------------------------------------- */
+
+  .stage { position: relative; flex: 1; overflow: hidden; }
+
+  /* The CRT look is three independent pieces: the monochrome palette and the
+     text-shadow bloom above, a vignette (::before), and the scanline raster
+     (::after) — a repeating gradient of one transparent line and one dark
+     line, so --scan-pitch is the distance from one dark line to the next. */
+  .stage::before,
+  .stage::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+  }
+
+  .stage::before {
+    z-index: 19;
+    background: radial-gradient(120% 90% at 50% 45%, #0000 55%, #000c);
+  }
+
+  .stage::after {
+    z-index: 20;
+    background: repeating-linear-gradient(
+      #0000 0 calc(var(--scan-pitch) / 2),
+      #000000a0 calc(var(--scan-pitch) / 2) var(--scan-pitch));
+  }
+
+  :root[data-scan="off"] .stage::after { display: none; }
+
+  /* The chord surfaces switch off together; the strum pane is independent. */
+  :root[data-chords="off"] .main-row,
+  :root[data-chords="off"] .preview,
+  :root[data-chords="off"] .beats,
+  :root[data-chords="off"] .next,
+  :root[data-chords="off"] .playhead { display: none; }
+
+  /* Holds however many lines-ahead are asked for, without becoming a row of
+     its own: its children are the flex items. */
+  #lyricAhead { display: contents; }
+
+  /* ---- lyrics --------------------------------------------------------- */
+
+  /* Three lines stacked at the top of the stage; the current one carries a
+     landing pad above every syllable, and the ball flies in the gap left
+     above it. JS sets the block's height. */
+  /* Left-justified, with a gutter wide enough for a full eight-dot cue: 8
+     dots + 7 gaps + the offset, in units of the side lines' font size. */
+  .lyrics {
+    position: absolute;
+    top: 0;
+    left: var(--pad);
+    width: var(--disp-w);
+    padding-left: calc(var(--side-size) * 4.8);
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    justify-content: flex-start;
+    gap: 4px;
+    z-index: 5;
+  }
+
+  .lyric { position: relative; white-space: nowrap; }
+
+  .lyric.side {
+    color: var(--dim);
+    font-size: var(--side-size);
+    opacity: .7;
+  }
+
+  .lyric.cur {
+    margin-top: var(--hop-room);
+    display: flex;
+    align-items: flex-start;
+    font-size: var(--cur-size);
+  }
+
+  /* A syllable is a column: landing pad on top, text below. */
+  .syl {
+    display: inline-flex;
+    flex-direction: column;
+    align-items: center;
+    color: var(--dim);
+    transition: color 90ms;
+  }
+
+  /* ♯ and ♭ sit too far from the letter, and the global letter-spacing pushes
+     them further; pull them back and drop the tracking on the glyph itself. */
+  .acc {
+    margin-left: -.16em;
+    margin-right: -.04em;
+    letter-spacing: 0;
+  }
+
+  .syl.word { margin-left: .42em; }
+  .syl:first-child { margin-left: 0; }  /* keep the line flush with the others */
+  .syl.sung { color: var(--fg); }
+  .syl.hit { text-shadow: 0 0 18px var(--fg); }
+
+  .pad {
+    width: 100%;
+    height: 4px;
+    margin-bottom: .18em;
+    background: var(--dim);
+  }
+
+  /* A held syllable gets a narrower, broken pad — the ball bounces in place
+     on it instead of arcing away. */
+  .pad.sustain {
+    width: 48%;
+    background: repeating-linear-gradient(90deg, var(--dim) 0 4px, #0000 4px 8px);
+  }
+
+  .syl.sung .pad { background: var(--fg); }
+  .syl.sung .pad.sustain { background: repeating-linear-gradient(90deg, var(--fg) 0 4px, #0000 4px 8px); }
+  .syl.hit .pad { box-shadow: 0 0 12px var(--fg); }
+
+  /* Countdown until the line starts: one dot per half beat, anchored by its
+     right edge to the left of the text, so dots vanish from the left and the
+     lyric itself never shifts. Sized against --side-size rather than the host
+     line's own em, so the gutter fits it exactly whichever line carries it. */
+  .cue {
+    position: absolute;
+    right: calc(100% + var(--side-size) * .6);
+    top: 50%;
+    display: flex;
+    gap: calc(var(--side-size) * .22);
+    transform: translateY(-50%);
+  }
+
+  .dot {
+    width: calc(var(--side-size) * .33);
+    height: calc(var(--side-size) * .33);
+    border-radius: 50%;
+    background: var(--fg);
+    box-shadow: 0 0 6px var(--fg);
+  }
+
+  /* Guides off: plain karaoke, syllables still light up as they're sung. */
+  :root[data-guide="off"] .pad,
+  :root[data-guide="off"] .lyric-ball { display: none; }
+
+  /* The block is bottom-anchored, so dropping the past line hands its space
+     back to the lyrics rather than leaving a hole. */
+  :root[data-past="off"] #lyricPrev { display: none; }
+
+  .lyric-ball {
+    position: absolute;
+    width: calc(22px * var(--lyric-zoom) / 100);
+    height: calc(22px * var(--lyric-zoom) / 100);
+    border-radius: 50%;
+    background: var(--fg);
+    box-shadow: 0 0 20px var(--fg);
+    transform: translateX(-50%);
+  }
+
+  /* One chord row moves or lights up — the one being played. Everything else
+     about the chords is fixed, so no motion competes with now. */
+  .main-row {
+    position: absolute;
+    left: var(--pad);
+    width: var(--disp-w);
+    display: grid;
+    grid-template-columns: repeat(var(--bars, 4), 1fr);
+    gap: var(--gap);
+    z-index: 4;
+  }
+
+  /* The group queued up next: parked below the main row, left-justified,
+     small and quiet. Static — it only changes at a group boundary. */
+  .preview {
+    position: absolute;
+    left: var(--pad);
+    width: calc(var(--disp-w) * .38);
+    display: grid;
+    grid-template-columns: repeat(var(--bars, 4), 1fr);
+    gap: 6px;
+    opacity: .5;
+  }
+
+  .preview .measure { border-width: 1px; }
+  .preview small { display: none; }
+
+  .measure {
+    position: relative;
+    height: var(--h);
+    display: grid;
+    place-items: center;
+    overflow: hidden;
+    border: 2px solid var(--dim);
+    background: var(--panel);
+    font-size: calc(var(--h) * .42);
+  }
+
+  .name { white-space: nowrap; }
+
+  .measure small {
+    position: absolute;
+    top: 4px;
+    left: 6px;
+    font-size: 11px;
+    opacity: .55;
+  }
+
+  .main-row .measure {
+    color: var(--dim);
+    font-size: calc(var(--h) * .58);
+    transition: background 120ms, border-color 120ms, color 120ms;
+  }
+
+  .main-row .measure.current {
+    color: var(--fg);
+    border-color: var(--fg);
+    background: var(--hot);
+    text-shadow: 0 0 16px var(--fg);
+  }
+
+  /* Repeat counter in the last bar: one rectangle per pass, emptying from the
+     left as passes are spent. It follows the bar's own colour so it stays
+     part of the bar rather than a second thing to watch. */
+  .repeats {
+    position: absolute;
+    right: 10px;
+    bottom: 9px;
+    display: flex;
+    gap: 6px;
+  }
+
+  .repeats i {
+    width: 15px;
+    height: 22px;
+    border: 3px solid currentColor;
+    background: currentColor;
+  }
+
+  .repeats i.spent { background: none; }
+
+  /* On the chord row it sits top right, clear of the chords and over the tail
+     the row leaves empty when the phrase is shorter than the ruler. */
+  .main-row .repeats { top: 8px; bottom: auto; right: 10px; }
+
+  /* Same counter in the pane, but counting loops of the pattern inside one
+     chord row rather than passes over the row. */
+  .spane .repeats { top: 6px; bottom: auto; right: 8px; }
+  .spane .repeats i { width: 9px; height: 14px; border-width: 2px; }
+
+  /* One box per eighth-note slot the player has to act on, straddling the top
+     edge of the chord row. Positioned in *time* — slot s of 32 sits at s/32
+     of the row — which is the same linear space the playhead sweeps, so the
+     ball crosses a box's centre exactly on the beat it belongs to. */
+  .beats {
+    position: absolute;
+    left: var(--pad);
+    width: var(--disp-w);
+    pointer-events: none;
+    z-index: 6;
+  }
+
+  .beat {
+    position: absolute;
+    top: 0;
+    height: 100%;
+    width: var(--bw);
+    display: grid;
+    place-items: center;
+    border: 2px solid var(--dim);
+    background: #050705;   /* opaque: the chord row's edge runs behind it */
+    color: var(--dim);
+    font-size: calc(var(--bh) * .62);
+    line-height: 1;
+    transform: translateX(-50%);
+  }
+
+  .beat.light { font-size: calc(var(--bh) * .44); opacity: .78; }
+
+  .beat.hit {
+    color: var(--fg);
+    border-color: var(--fg);
+    background: var(--hot);
+    text-shadow: 0 0 12px var(--fg);
+  }
+
+  /* Strum is a three-way: nothing, boxes on the chord row, or its own pane.
+     With the pane up the chord row keeps its cursor and bar highlight but
+     loses the ball — one bouncing thing on screen at a time. */
+  .beats, .spane { display: none; }
+  :root[data-chordcue="boxes"] .beats,
+  :root[data-chordcue="hand"]  .beats { display: block; }
+  :root[data-chordcue="off"]   .ball  { display: none; }
+  :root:not([data-pane="off"]) .spane { display: block; }
+
+  /* ---- strum pane ----------------------------------------------------- */
+
+  .spane {
+    position: absolute;
+    left: var(--pad);
+    width: var(--disp-w);
+    border: 2px solid var(--dim);
+    background: var(--panel);
+    z-index: 5;
+  }
+
+  /* One loop of the pattern, however many bars that is. Slots are placed by
+     time across the pane, so the marker crosses each at its own moment. */
+  .sslot {
+    position: absolute;
+    transform: translate(-50%, -50%);
+    font-size: var(--sglyph);
+    line-height: 1;
+    color: var(--dim);
+    transition: color 90ms;
+  }
+
+  /* data-rows, not data-guide: :root already carries a data-guide for the
+     sing guide, and two meanings for one name is asking for trouble. */
+  .spane[data-rows="split"] .sslot.up   { top: var(--up-y); }
+  .spane[data-rows="split"] .sslot.down { top: var(--down-y); }
+  .spane[data-rows="hand"]  .sslot      { top: var(--mid-y); }
+
+  .sslot.hit { color: var(--fg); text-shadow: 0 0 16px var(--fg); }
+
+  /* Weight is drawn as weight: a light stroke is a smaller, quieter glyph than
+     a heavy one, so "DuDu" and "dudu" look as different as they sound without
+     needing a second symbol for either. */
+  .sslot.light { font-size: calc(var(--sglyph) * .6); opacity: .75; }
+
+  /* A tie is not a stroke, so it is not a glyph: it is a line drawn out of the
+     stroke it holds, along that stroke's own row. */
+  .stie {
+    position: absolute;
+    height: 0;
+    margin-left: calc(var(--sglyph) * .4);
+    border-top: 2px solid var(--dim);
+    opacity: .6;
+  }
+
+  .spane[data-rows="split"] .stie.up   { top: var(--up-y); }
+  .spane[data-rows="split"] .stie.down { top: var(--down-y); }
+  .spane[data-rows="hand"]  .stie      { top: var(--mid-y); }
+
+  .scount {
+    position: absolute;
+    top: var(--count-y);
+    transform: translate(-50%, -50%);
+    font-size: var(--scount);
+    color: var(--dim);
+    opacity: .6;
+  }
+
+  .sbar {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    border-left: 1px solid var(--dim);
+    opacity: .5;
+  }
+
+  .smark {
+    position: absolute;
+    width: var(--smark);
+    height: var(--smark);
+    border-radius: 50%;
+    background: var(--fg);
+    box-shadow: 0 0 20px var(--fg);
+    transform: translate(-50%, -50%);
+  }
+
+  /* Where the phrase hands off. Placed at the exact spot the ball lands on the
+     return, so it reads as the destination of the last bounce rather than as
+     decoration at the end of the row. */
+  .catcher {
+    position: absolute;
+    display: grid;
+    place-items: center;
+    min-width: 1.2em;
+    padding: 0 .1em;
+    border: 2px dashed var(--dim);
+    color: var(--dim);
+    line-height: 1.1;
+    font-size: var(--cur-size);
+    transform: translate(-50%, -100%);   /* bottom edge on the landing line */
+  }
+
+  .scatch {
+    font-size: var(--sglyph);
+    transform: translate(-50%, -50%);
+  }
+
+  .spane .scount { color: var(--dim); }
+
+  .spane[data-rows="split"] .scatch { top: var(--down-y); }
+  .spane[data-rows="hand"]  .scatch { top: var(--mid-y); }
+
+  .scursor {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    border-left: 3px dashed var(--fg);
+    opacity: .45;
+    transform: translateX(-50%);
+  }
+
+  /* ---- playhead ------------------------------------------------------- */
+
+  .playhead {
+    position: absolute;
+    left: var(--pad);
+    width: var(--disp-w);
+    pointer-events: none;
+    z-index: 8;
+  }
+
+  .cursor {
+    position: absolute;
+    top: var(--ball-zone);
+    bottom: 0;
+    border-left: 4px dashed var(--fg);
+    opacity: .6;
+    transform: translateX(-50%);
+  }
+
+  .ball {
+    position: absolute;
+    width: 34px;
+    height: 34px;
+    border-radius: 50%;
+    background: var(--fg);
+    box-shadow: 0 0 26px var(--fg);
+    transform: translateX(-50%);
+  }
+
+  /* Strum guide: the strumming hand keeps swinging whether or not it strikes,
+     so only the glyph changes — the motion never stops. */
+  .ball.strum {
+    display: grid;
+    place-items: center;
+    border-radius: 0;
+    background: none;
+    box-shadow: none;
+    font-size: 30px;
+    line-height: 1;
+    text-shadow: 0 0 14px var(--fg);
+  }
+
+  :root[data-playhead="off"] .playhead { display: none; }
+
+  /* ---- next-chord margin ---------------------------------------------- */
+
+  /* JS sizes this to 70% of a main bar, in both directions. */
+  .next {
+    position: absolute;
+    right: var(--pad);
+    display: grid;
+    place-content: center;
+    gap: 4px;
+    text-align: center;
+    border: 2px dashed var(--dim);
+    color: var(--dim);
+    z-index: 6;
+    transition: color 150ms, border-color 150ms;
+  }
+
+  .next.lit {
+    color: var(--fg);
+    border-color: var(--fg);
+    border-style: solid;
+    background: var(--hot);
+    text-shadow: 0 0 16px var(--fg);
+  }
+
+  .next b { font-size: calc(var(--h) * .46); font-weight: inherit; }
+  .next small { font-size: 11px; opacity: .7; }
+
+
+  /* ---- load dialog ----------------------------------------------------- */
+
+  /* This is the one panel read at arm's length -- picking a track from behind
+     an instrument, or off a phone on a stand -- so it takes the screen instead
+     of hanging off the title button it opens from. Fixed rather than absolute
+     for the same reason: it is no longer positioned against that button. */
+  #trackPanel {
+    position: fixed;
+    top: 2.5vh;
+    left: 50%;
+    transform: translateX(-50%);
+    width: min(1200px, 95vw);
+    height: 95vh;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    padding: 18px;
+  }
+
+  /* .panel[hidden] is two attributes to this rule's one id, so without this the
+     dialog would be display:flex whether or not it was meant to be open. */
+  #trackPanel[hidden] { display: none; }
+
+  /* The list is the panel: everything else is a fixed strip above or below it,
+     and the slack goes here. */
+  #trackPanel .results { flex: 1; min-height: 0; max-height: none; }
+  #trackPanel .result { font-size: clamp(15px, 1.9vw, 28px); padding: .26em .4em; gap: 16px; }
+  #trackPanel .result i { font-size: .58em; }
+  #trackPanel > label { font-size: 13px; color: var(--dim); }
+
+  /* The search field, sized by its own text.
+
+     .search carries flex:1 because it was written for a row -- the settings
+     line it used to sit on -- and this panel is a column, where flex:1 means
+     grow *downwards*. So it stretched to share the slack with the list and
+     became a tall box with small type in it. Here it takes its natural height,
+     the list keeps all the slack, and the padding is in em so the box is the
+     size of what is typed in it rather than a fixed number of pixels around
+     something much smaller. */
+  #trackPanel > .search {
+    flex: none;
+    font-size: clamp(16px, 1.9vw, 28px);
+    padding: .3em .45em;
+  }
+
+  .results { display: grid; gap: 2px; width: 100%; max-height: 190px; overflow-y: auto; align-content: start; }
+
+  .result {
+    display: grid;
+    grid-template-columns: 1fr auto auto;
+    gap: 10px;
+    align-items: baseline;
+    padding: 5px 6px;
+    border: 1px solid transparent;
+    background: none;
+    text-align: left;
+    cursor: pointer;
+    font-size: 12px;
+  }
+
+  .result:hover, .result.on { border-color: var(--fg); background: var(--hot); color: var(--fg); }
+  .result b { font-weight: inherit; }
+  .result b em {
+    font-style: normal;
+    font-size: .5em;
+    margin-left: 1.1em;
+    color: var(--dim);
+    opacity: .75;
+  }
+  .result i { font-style: normal; color: var(--dim); font-size: 11px; }
+  .result.on b::after { content: " \25c2"; }
+
+  /* What a track has to carry to be worth listing. Off is "everything", so an
+     unfiltered library is the default and each box only ever narrows. */
+  .filters {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 4px 18px;
+    font-size: 13px;
+    color: var(--dim);
+  }
+
+  .filters label {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    cursor: pointer;
+    letter-spacing: .12em;
+  }
+
+  .filters input { width: 15px; height: 15px; accent-color: var(--fg); cursor: pointer; }
+  .filters label:has(input:checked) { color: var(--fg); }
+  .filters .count { margin-left: auto; opacity: .75; }
+
+  /* ---- transport bar --------------------------------------------------- */
+
+  .timeline {
+    flex: 1;
+    min-width: 90px;
+    height: 14px;
+    position: relative;
+    border: 1px solid var(--dim);
+    background: var(--panel);
+    cursor: pointer;
+  }
+
+  .tl-fill { position: absolute; inset: 0 auto 0 0; width: 0; background: var(--hot); }
+
+  /* While the loop buffer plays, the bar is the programme laid end to end and
+     these are the seams between its parts. */
+  .tl-tick {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 2px;
+    margin-left: -1px;
+    background: var(--dim);
+  }
+
+  .tl-head {
+    position: absolute;
+    top: -3px;
+    bottom: -3px;
+    width: 3px;
+    background: var(--fg);
+    box-shadow: 0 0 10px var(--fg);
+    transform: translateX(-50%);
+  }
+
+  /* flex: none — otherwise these shrink away when the header gets tight and
+     the timeline, which is flex: 1, takes the room. */
+  .clock { flex: none; font-size: 12px; color: var(--dim); white-space: nowrap; }
+  .seek { padding: 4px 7px; font-size: 11px; }
+
+  /* ---- loader ---------------------------------------------------------- */
+
+  .sources { display: flex; gap: 6px; width: 100%; }
+  .sources button { flex: 1; font-size: 11px; padding: 6px 4px; }
+
+  .dirs { display: grid; gap: 3px; width: 100%; }
+
+  .dir {
+    display: grid;
+    grid-template-columns: 1fr auto auto;
+    gap: 8px;
+    align-items: baseline;
+    font-size: 11px;
+    color: var(--dim);
+  }
+
+  .dir button { padding: 1px 6px; font-size: 10px; }
+  .badge { font-size: 10px; color: var(--dim); opacity: .75; }
+
+  /* Why the track would not load. Full width of the panel and left-aligned:
+     these are sentences, not labels. */
+  .problems { display: grid; gap: 6px; width: 100%; }
+
+  .problem {
+    display: grid;
+    gap: 2px;
+    padding: 6px 8px;
+    border: 1px solid var(--fg);
+    background: var(--hot);
+    font-size: 11px;
+    text-align: left;
+  }
+
+  .problem b { font-weight: inherit; color: var(--fg); }
+  /* --dim is tuned for reading against the page's near-black, and these lines
+     sit on --hot instead, where it sinks into the background. */
+  .problem span { color: color-mix(in srgb, var(--fg) 80%, #000); }
+
+  /* ---- loop strips ------------------------------------------------------ */
+  /* Two rows under the header: the map's "loop:" ranges, one button each, and
+     the loop buffer they feed — the programme the player goes round. The
+     rows' own display would beat the hidden attribute, so the empty state is
+     spelled out. */
+  .loopbar, .loopbuf {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    padding: 4px var(--pad);
+    text-transform: uppercase;
+  }
+
+  .loopbar[hidden], .loopbuf[hidden] { display: none; }
+
+  .loopbuf { padding-bottom: 8px; }
+
+  .strip-label, .loopbuf .hint { font-size: 11px; color: var(--dim); }
+
+  /* A chip mid-drag floats a shade lighter; the row reorders under it. */
+  .loopbuf .chip { touch-action: none; }
+  .loopbuf .chip.drag { opacity: .6; }
+
+  /* Clearing is an aside, not another segment of the programme. */
+  .loopbuf .clear { margin-left: auto; border-color: transparent; }
+
+  /* Ghost measures: the chart a track with no chords still has. Bar numbers
+     in the dim shade, so the grid reads as scaffolding rather than music. */
+  .measure.ghost .name { color: var(--dim); text-shadow: none; }
+
+  /* The one line being sung. No syllable map yet, so the whole line lights. */
+  .lyric.cur .line { color: var(--dim); transition: color 90ms; }
+  .lyric.cur.on .line { color: var(--fg); text-shadow: 0 0 18px var(--fg); }
+</style>
+</head>
+<body>
+  <header class="tinted">
+    <div class="tools">
+      <div class="menu">
+        <button class="menu-btn" id="menuBtn" aria-label="Settings" aria-expanded="false">
+          <i></i><i></i><i></i>
+        </button>
+        <div class="panel" id="panel" hidden></div>
+      </div>
+
+      <button class="menu-btn" id="fsBtn" aria-label="Fullscreen" title="Fullscreen (F)">
+        <svg class="fs-ico" viewBox="0 0 18 14" aria-hidden="true">
+          <path d="M1,5 V1 H6 M12,1 H17 V5 M17,9 V13 H12 M6,13 H1 V9"/>
+        </svg>
+      </button>
+    </div>
+
+    <div class="switch">
+      <button id="play">Play</button>
+      <button id="stop">Stop</button>
+    </div>
+
+    <div class="track">
+      <h1>
+        <button class="title-btn" id="titleBtn" aria-expanded="false"
+                aria-haspopup="true"><span id="titleText"></span><span id="titleTags"></span></button>
+      </h1>
+      <div class="panel" id="trackPanel" hidden></div>
+    </div>
+
+    <button class="seek" id="back5" title="Back 5 seconds">−5</button>
+    <div class="timeline" id="timeline">
+      <div class="tl-fill" id="tlFill"></div>
+      <div class="tl-head" id="tlHead"></div>
+    </div>
+    <button class="seek" id="fwd5" title="Forward 5 seconds">+5</button>
+    <span class="clock" id="clock">0:00 / 0:00</span>
+    <div class="bpm" title="Tempo — - and = change speed, \ back to the record">
+      <span class="bpm-num" id="bpmOut"></span>
+      <span class="bpm-rate" id="rateOut"></span>
+    </div>
+  </header>
+
+  <div class="loopbar tinted" id="loopBar" hidden></div>
+  <div class="loopbuf tinted" id="loopBuffer" hidden></div>
+
+  <!-- Fallbacks for browsers without the File System Access API. These work
+       everywhere, including from file://, but hold files only for the session. -->
+  <input type="file" id="pickDir" webkitdirectory multiple hidden>
+  <input type="file" id="pickFiles" multiple hidden>
+
+  <div class="stage" id="stage">
+    <div class="lyrics tinted" id="lyrics">
+      <div class="lyric side" id="lyricPrev"></div>
+      <div class="lyric cur" id="lyricCur"><span class="cue" id="cue"></span></div>
+      <div id="lyricAhead"></div>
+      <div class="lyric-ball" id="lyricBall"></div>
+      <span class="catcher" id="lyricCatch">↵</span>
+    </div>
+
+    <!-- Present but empty: the beatmaps have no chords yet. -->
+    <div id="main" class="main-row tinted"></div>
+    <div id="preview" class="preview tinted"></div>
+    <div id="beats" class="beats tinted"></div>
+    <div id="spane" class="spane tinted" data-rows="split"></div>
+
+    <div class="next tinted" id="next"><small>next</small><b id="nextChord"></b></div>
+
+    <div class="playhead tinted" id="playhead">
+      <div id="cursor" class="cursor"></div>
+      <div id="ball" class="ball"></div>
+    </div>
+  </div>
+<script>
+/* ===========================================================================
+   Karaoke v0.2 — the v1.2 shell over v0.1's loading and playback.
+
+   The demo ran on a beat clock because it owned its own notation. A real
+   beatmap has none of that yet: no tempo, no key, no chords, and lyrics timed
+   in seconds. So this runs on seconds, taken from the audio element, and the
+   chord surfaces are present but empty until the maps carry chords.
+
+   State still comes in three kinds with three lifetimes — display settings
+   saved globally, track settings saved per track, transport never saved — and
+   everything that changes any of them still goes through command().
+   =========================================================================== */
+
+const $ = id => document.getElementById(id);
+const root = document.documentElement;
+const mod = (n, m) => ((n % m) + m) % m;
+const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
+const lerp = (a, b, t) => a + (b - a) * t;
+const arc = t => 4 * t * (1 - t);
+const TAU = Math.PI * 2;
+
+const fmtTime = s => {
+  if (!isFinite(s) || s < 0) s = 0;
+  return Math.floor(s / 60) + ":" + String(Math.floor(s % 60)).padStart(2, "0");
+};
+
+/* ── timing, in seconds ─────────────────────────────────────────────────
+   With no tempo there is nothing to beat against, so the guides run on a
+   fixed rate: one bounce every half second, and a countdown that starts four
+   seconds out at one dot per half second. When beatmaps carry a tempo these
+   become derived rather than assumed. */
+const BOUNCE = 0.5;         /* seconds per bounce */
+const CUE_DOTS = 8;
+const CUE_STEP = 0.5;       /* seconds per dot */
+const CUE_LEAD = CUE_DOTS * CUE_STEP;
+const CUE_MIN = 1.2;        /* a shorter gap isn't worth counting down */
+const REST_MIN = 2;         /* blank row shorter than this would only flicker */
+
+const SECTION_KINDS = ["intro", "verse", "chorus", "bridge", "solo", "outro",
+                       "instrumental", "interlude", "pre-chorus", "refrain"];
+
+/* ── strum notation ─────────────────────────────────────────────────────
+   One character per eighth note. Case is weight — a capital is a full stroke,
+   lowercase the same stroke played light — so "DuDu" and "dudu" are the same
+   hand doing the same thing at two dynamics, and the pattern reads as itself
+   rather than as a key that has to be looked up.
+
+     D d  down       U u  up       M m  muted / percussive
+     ^    tie: the last stroke rings on through this slot
+     _    silence: nothing sounds here
+
+   `dir` is the direction the hand travels, which is not always deducible from
+   the glyph: a mute can be struck either way. Left null here and resolved per
+   pattern by compileStrum(), because what makes a chunk an up-chunk is where
+   the hand was on the slot before it. */
+const STROKES = {
+  D: { glyph: "↓", dir: "down", weight: 1,   hit: true  },
+  d: { glyph: "↓", dir: "down", weight: .55, hit: true  },
+  U: { glyph: "↑", dir: "up",   weight: 1,   hit: true  },
+  u: { glyph: "↑", dir: "up",   weight: .55, hit: true  },
+  M: { glyph: "✕", dir: null,   weight: 1,   hit: true  },
+  m: { glyph: "✕", dir: null,   weight: .55, hit: true  },
+  "^": { glyph: "",  dir: null, weight: 0,   hit: false, tie: true },
+  "_": { glyph: "",  dir: null, weight: 0,   hit: false }
+};
+
+const flip = d => (d === "down" ? "up" : "down");
+
+/* Resolve a written pattern into slots that know which way the hand is going.
+   The rule is one half-swing per eighth: the hand alternates unless a stroke
+   says otherwise, and a stroke that says otherwise wins. So "DuDu" alternates,
+   "DdDd" is four downs — the hand has to recover between them, which is what
+   makes it a different motion rather than the same one relabelled — and "M" or
+   "m" simply takes whichever way the hand was already headed.
+
+   Compiled patterns are cached: the same pattern is asked for once per frame
+   and there are only ever a handful of distinct ones in a song. */
+const strumCache = new Map();
+
+function compileStrum(src) {
+  const hit = strumCache.get(src);
+  if (hit) return hit;
+
+  /* Slot 0 falls on a beat, and the hand is on its way down on a beat. */
+  let dir = "up";
+  const slots = [...src].map((ch, s) => {
+    const k = STROKES[ch] || STROKES._;
+    dir = k.dir || flip(dir);
+    return { ch, s, glyph: k.glyph, hit: !!k.hit, tie: !!k.tie,
+             weight: k.weight, dir };
+  });
+
+  /* A tie belongs to the stroke it extends, so it can be drawn as one — and it
+     is silent if nothing came before it to ring on. */
+  slots.forEach((sl, i) => {
+    if (!sl.tie) return;
+    let j = i - 1;
+    while (j >= 0 && !slots[j].hit) j--;
+    sl.from = j >= 0 ? j : -1;
+    if (j >= 0) sl.dir = slots[j].dir;
+  });
+
+  const pat = { src, slots, n: slots.length, beats: slots.length / 2,
+                hits: slots.filter(s => s.hit) };
+  strumCache.set(src, pat);
+  return pat;
+}
+
+/* ── the swing ──────────────────────────────────────────────────────────
+   The hand's path between two strokes, as one number: 0 at the strings, +1 at
+   the bottom of a down-stroke's follow-through, −1 at the top.
+
+   Everything about the motion falls out of the two strokes at either end of the
+   gap. A down followed by an up is half a swing — through the strings, out the
+   bottom, back up through them. A down followed by another down is a whole one,
+   because the hand has to get back above the strings first: that recovery is
+   the entire difference between "DuDu" and "DdDd", and it is why a pattern
+   cannot be animated by a fixed sine wave once the patterns are written by
+   hand. Long gaps keep the hand moving at the same eighth-note rate rather than
+   drifting slowly across, since that is what a player's hand actually does. */
+function halfSwings(gapSlots, sameDir) {
+  /* One half-swing per eighth, forced to the parity the two ends demand: an
+     even number of half-swings comes back the way it started, an odd number
+     turns round. Ties go to the lazier hand. */
+  const want = Math.max(1, gapSlots);
+  const lo = sameDir ? 2 : 1;
+  let h = Math.round(want / 2) * 2 + (sameDir ? 0 : 1);
+  if (h - want >= 1) h -= 2;      /* on a tie, the smaller: the lazier hand */
+  return Math.max(lo, h);
+}
+
+/* The gap the phase f (0..1 through one loop) sits in, wrapping round the end
+   of the pattern so the last stroke leads back into the first. */
+function strumGap(pat, f) {
+  const H = pat.hits;
+  if (!H.length) return null;
+  let j = H.length - 1;
+  for (let k = 0; k < H.length; k++) if (f >= H[k].s / pat.n) j = k;
+
+  const a = H[j], b = H[(j + 1) % H.length];
+  const f0 = a.s / pat.n;
+  let f1 = b.s / pat.n;
+  if (f1 <= f0) f1 += 1;                     /* wraps past the end of the loop */
+  let at = f;
+  if (at < f0) at += 1;                      /* before the first stroke of the loop */
+
+  const gap = (f1 - f0) * pat.n;
+  return { a, b, s: clamp((at - f0) / (f1 - f0), 0, 1),
+           h: halfSwings(gap, a.dir === b.dir),
+           sign: a.dir === "down" ? 1 : -1 };
+}
+
+/* Two readings of the same swing. `through` is the hand: zero when it is at the
+   strings, so a stroke is the instant it crosses. `toward` is the row the
+   stroke is written on: ±1 at each stroke, so the marker arrives at the glyph
+   it is about to play. Same h, same sign — a quarter turn apart. */
+function swingThrough(pat, f) {
+  const g = strumGap(pat, f);
+  if (!g) return 0;
+  return g.sign * Math.sin(g.h * Math.PI * g.s) * (.6 + .4 * g.a.weight);
+}
+
+function swingToward(pat, f) {
+  const g = strumGap(pat, f);
+  if (!g) return 0;
+  return g.sign * Math.cos(g.h * Math.PI * g.s);
+}
+
+/* v0.1's parser, unchanged in behaviour: "t_start t_end event", with lyric:
+   lines and section keywords. Beat-relative times (B45) are still skipped —
+   they need a beatmap to resolve, which is the next thing to arrive. */
+function parseTimeseries(text) {
+  const lyrics = [], sections = [], beats = [], chords = [], strums = [], loops = [];
+  const notes = [];   /* things worth telling the user about the file itself */
+  let gid = 0;
+
+  for (const rawLine of text.split("\n")) {
+    /* A '#' only starts a comment at the start of a line or after whitespace.
+       Cutting at the first '#' unconditionally eats every sharp: "chord: F#m7"
+       silently becomes "chord: F", and nothing downstream can tell. Same rule
+       as the C loader in lib/riffdsp/timeseries.cpp. */
+    const ci = rawLine.search(/(^|[ \t])#/);
+    const line = (ci >= 0 ? rawLine.slice(0, ci) : rawLine).trim();
+    if (!line) continue;
+
+    const m = line.match(/^(\S+)\s+(\S+)\s+(.*)/);
+    if (!m) continue;
+    if (/^B/i.test(m[1]) || /^B/i.test(m[2])) continue;
+
+    const t_start = parseFloat(m[1]), t_end = parseFloat(m[2]);
+    const event = m[3].trim();
+    if (!isFinite(t_start) || !isFinite(t_end) || t_end < t_start) continue;
+
+    /* A bare B is a beat marker: the recorded grid, drift and all. */
+    if (event === "B") { beats.push(t_start); continue; }
+
+    if (event.startsWith("lyric:")) {
+      const text = event.slice(6).trim();
+      if (text) lyrics.push({ t_start, t_end, text });
+      continue;
+    }
+
+    /* "chords: G D C E" is a bar per chord across the span, and one group on
+       screen. It is both shorthand and the grouping mechanism: what is written
+       on one line is what you see on one row, which is the unit you actually
+       memorise. A lone "chord:" keeps its explicit span, for changes that do
+       not land on bar lines. */
+    /* One keyword, however many names: "chords: G D C E" is a bar each across
+       the span, and "chord: A A" is two bars of A rather than a chord called
+       "A A". A single name is a plain span, and consecutive singles are free to
+       share a row; anything written with several names is a row of its own. */
+    if (event.startsWith("chord:") || event.startsWith("chords:")) {
+      const names = event.slice(event.indexOf(":") + 1).trim().split(/\s+/).filter(Boolean);
+      if (!names.length) continue;
+
+      const d = (t_end - t_start) / names.length;
+      names.forEach((name, k) => chords.push({
+        t_start: t_start + k * d, t_end: t_start + (k + 1) * d, name,
+        group: names.length > 1 ? gid : -1
+      }));
+      if (names.length > 1) gid++;
+      continue;
+    }
+
+    /* "strum: DuDuDu" is one loop of the right hand, written in eighths. The
+       span is the loop: where it starts and how long it takes to come round,
+       which is what lets it be laid on the record's own beats rather than on a
+       count. It then keeps repeating until the next strum line, so a song with
+       one pattern needs one line. */
+    if (event.startsWith("strum:")) {
+      const src = event.slice(6).trim();
+      const pattern = src.replace(/[\s|]+/g, "");   /* bar lines are decoration */
+      if (!pattern) continue;
+      const bad = [...new Set(pattern.split("").filter(c => !(c in STROKES)))];
+      if (bad.length) {
+        notes.push(`Strum pattern "${src}" has no stroke for ${bad.map(c => `"${c}"`).join(", ")}`);
+        continue;
+      }
+      strums.push({ t_start, t_end, pattern });
+      continue;
+    }
+
+    /* "loop: drums" marks a passage worth going round: the span is what
+       repeats, the name is what goes on the button. Only the explicit
+       keyword counts — anything else in the file is not a loop. */
+    if (event.startsWith("loop:")) {
+      const name = event.slice(5).trim();
+      loops.push({ t_start, t_end, name: name || "loop " + (loops.length + 1) });
+      continue;
+    }
+
+    for (const kind of SECTION_KINDS) {
+      if (event === kind || event.startsWith(kind + ":") || event.startsWith(kind + " ")) {
+        const rest = event.slice(kind.length).replace(/^[\s:]+/, "").trim();
+        const meter = /@(\d+)\s*\/\s*(\d+)/.exec(rest);
+        sections.push({ t_start, t_end, kind, label: rest,
+                        beatsPerBar: meter ? +meter[1] : 4 });
+        break;
+      }
+    }
+  }
+
+  lyrics.sort((a, b) => a.t_start - b.t_start);
+  sections.sort((a, b) => a.t_start - b.t_start);
+  chords.sort((a, b) => a.t_start - b.t_start);
+  strums.sort((a, b) => a.t_start - b.t_start);
+  loops.sort((a, b) => a.t_start - b.t_start);
+  beats.sort((a, b) => a - b);
+
+  /* When a line should appear, and whether that lead-in is long enough to
+     count down: the same rule the demo used, in seconds. */
+  lyrics.forEach((l, i) => {
+    const earliest = Math.max(i ? lyrics[i - 1].t_end : 0, l.t_start - CUE_LEAD);
+    l.cued = l.t_start - earliest >= CUE_MIN;
+    l.promote = l.cued ? earliest : l.t_start;
+  });
+  if (lyrics.length) lyrics[0].promote = 0;
+
+  /* A line stops being the current line when it stops being sung, not when the
+     next one arrives. Where those are far apart -- an instrumental bar, a solo,
+     the gap between verses -- leaving it up says "sing this" for eight seconds
+     after it was over. So the line clears at its end and the row goes blank for
+     the wait, which the ball crosses on its way to the return box. Below
+     REST_MIN there is nothing to cross and the blank would only flicker, so
+     short gaps keep the old behaviour: the line stays and the ball rides out
+     past its last word. */
+  lyrics.forEach((l, i) => {
+    const next = i + 1 < lyrics.length ? lyrics[i + 1].promote : l.t_end;
+    l.rest = next - l.t_end >= REST_MIN ? l.t_end : null;
+  });
+
+  return { lyrics, sections, beats, chords, strums, loops, notes };
+}
+
+/* Real accidental glyphs, kerned back against the letter they belong to. */
+const accSpan = a => `<span class="acc">${a === "#" ? "♯" : "♭"}</span>`;
+const chordHtml = name => String(name)
+  .replace(/([A-G])([#b])/g, (_, note, a) => note + accSpan(a))
+  .replace(/([#b])(\d)/g, (_, a, digit) => accSpan(a) + digit);
+
+const PHOSPHOR = { green: "#46ff7a", amber: "#ffb43c", red: "#ff4436" };
+const COLOURS = [{ v: "green", label: "Green" },
+                 { v: "amber", label: "Amber" },
+                 { v: "red", label: "Red" }];
+
+/* ── icons ──────────────────────────────────────────────────────────────
+   One grammar: the wave is the marker's path through a bar, the circle is the
+   marker drawn where it meets the music, and the short lines are the rows the
+   stroke glyphs sit on. So an icon says both what moves and what it lands on. */
+const WAVE = "M0,8.00 L0.5,8.90 L1,9.76 L1.5,10.56 L2,11.25 L2.5,11.82 L3,12.25 L3.5,12.51 L4,12.60 L4.5,12.51 L5,12.25 L5.5,11.82 L6,11.25 L6.5,10.56 L7,9.76 L7.5,8.90 L8,8.00 L8.5,7.10 L9,6.24 L9.5,5.44 L10,4.75 L10.5,4.18 L11,3.75 L11.5,3.49 L12,3.40 L12.5,3.49 L13,3.75 L13.5,4.18 L14,4.75 L14.5,5.44 L15,6.24 L15.5,7.10 L16,8.00 L16.5,8.90 L17,9.76 L17.5,10.56 L18,11.25 L18.5,11.82 L19,12.25 L19.5,12.51 L20,12.60 L20.5,12.51 L21,12.25 L21.5,11.82 L22,11.25 L22.5,10.56 L23,9.76 L23.5,8.90 L24,8.00 L24.5,7.10 L25,6.24 L25.5,5.44 L26,4.75 L26.5,4.18 L27,3.75 L27.5,3.49 L28,3.40 L28.5,3.49 L29,3.75 L29.5,4.18 L30,4.75 L30.5,5.44 L31,6.24 L31.5,7.10 L32,8.00";
+const ico = extra =>
+  `<svg class="ico" viewBox="-1 0 34 16" aria-hidden="true"><path class="wv" d="${WAVE}"/>${extra}</svg>`;
+
+const FLAT_ICO = '<svg class="ico" viewBox="-1 0 34 16" aria-hidden="true">' +
+  '<path class="wv" d="M0,8 L32,8" stroke-dasharray="3 3" opacity=".5"/></svg>';
+const TROUGHS = '<path class="row" d="M1,14.2 L7,14.2"/><path class="row" d="M17,14.2 L23,14.2"/>';
+const PEAKS   = '<path class="row" d="M9,2.2 L15,2.2"/><path class="row" d="M25,2.2 L31,2.2"/>';
+const MIDS    = '<path class="row" d="M5,8 L11,8"/><path class="row" d="M21,8 L27,8"/>';
+const AT_BEAT = '<circle class="mk" cx="4" cy="12.6" r="2.4"/>';
+const AT_CROSS = '<circle class="mk" cx="8" cy="8" r="2.4"/>';
+
+const ICO = {
+  off:   FLAT_ICO,
+  ball:  ico(AT_BEAT),
+  boxes: ico(TROUGHS + AT_BEAT),
+  split: ico(TROUGHS + PEAKS + AT_BEAT),
+  hand:  ico(MIDS + AT_CROSS),
+  frameBoxes: '<svg class="ico" viewBox="0 0 32 16" aria-hidden="true">' +
+    '<rect class="fr" x="1.5" y="3.5" width="6" height="9"/>' +
+    '<rect class="fr" x="9.5" y="3.5" width="6" height="9"/>' +
+    '<rect class="fr" x="17.5" y="3.5" width="6" height="9"/>' +
+    '<rect class="fr" x="25.5" y="3.5" width="5" height="9"/></svg>',
+  framePane: '<svg class="ico" viewBox="0 0 32 16" aria-hidden="true">' +
+    '<rect class="fr" x="1.5" y="3.5" width="29" height="9"/></svg>'
+};
+
+
+/* ── the settings registry ──────────────────────────────────────────────
+   One row of data per setting: what it is called, where it belongs, how it is
+   edited, and what it drives. The panel is built from this, so a control for a
+   future lane is one entry here and nothing else. */
+const SETTINGS = [
+  { name: "controlColour", scope: "display", group: "common", label: "Control colour",
+    type: "choice", def: "red", options: COLOURS, apply: v => tint("control", v) },
+  { name: "brightness", scope: "display", group: "common", label: "Brightness",
+    type: "range", def: 100, min: 40, max: 160, step: 5, unit: "%", css: "--brightness" },
+  { name: "bounce", scope: "display", group: "common", label: "Ball bounce",
+    type: "range", def: 150, min: 75, max: 250, step: 5, suffix: "%", scale: 100 },
+  { name: "scanlines", scope: "display", group: "common", label: "Scanlines",
+    type: "toggle", def: true, flag: "scan" },
+  { name: "scanPitch", scope: "display", group: "common", label: "Scanline pitch",
+    type: "range", def: 2, min: 2, max: 16, step: 1, unit: "px", css: "--scan-pitch" },
+
+  { name: "lyricColour", scope: "display", group: "lyrics", label: "Lyric colour",
+    type: "choice", def: "amber", options: COLOURS, apply: v => tint("lyrics", v) },
+  { name: "zoom", scope: "display", group: "lyrics", label: "Zoom",
+    type: "range", def: 100, min: 60, max: 200, step: 5, scale: 100,
+    suffix: "%", css: "--lyric-zoom", after: "layout" },
+  { name: "singGuide", scope: "display", group: "lyrics", label: "Sing guide",
+    type: "toggle", def: true, flag: "guide", after: "layout" },
+  { name: "pastLine", scope: "display", group: "lyrics", label: "Past line",
+    type: "toggle", def: true, flag: "past", after: "layout" },
+  { name: "nextLines", scope: "display", group: "lyrics", label: "Lines ahead",
+    type: "range", def: 1, min: 1, max: 8, step: 1, after: "lyrics" },
+  { name: "lineCue", scope: "display", group: "lyrics", label: "Line cue",
+    type: "choice", def: "dots",
+    options: [{ v: "off", label: "Off" }, { v: "dots", label: "Dots" }] },
+
+  { name: "chordPanel", scope: "display", group: "chords", label: "Chord panel",
+    type: "toggle", def: true, flag: "chords", after: "layout" },
+  { name: "chordColour", scope: "display", group: "chords", label: "Chord colour",
+    type: "choice", def: "green", options: COLOURS, apply: v => tint("chords", v) },
+  { name: "chordCue", scope: "display", group: "chords", label: "Chord cue",
+    type: "choice", def: "off", flag: "chordcue", after: "layout,strum",
+    options: [{ v: "off", label: "Off", icon: ICO.off },
+              { v: "ball", label: "Ball", icon: ICO.ball },
+              { v: "boxes", label: "Boxes", icon: ICO.boxes },
+              { v: "hand", label: "Hand", icon: ICO.hand }] },
+  { name: "strumPane", scope: "display", group: "chords", label: "Strum pane",
+    type: "choice", def: "off", flag: "pane", after: "layout,strum",
+    options: [{ v: "off", label: "Off", icon: ICO.off },
+              { v: "split", label: "Split", icon: ICO.split },
+              { v: "hand", label: "Hand", icon: ICO.hand }] },
+  { name: "strumFrame", scope: "display", group: "chords", label: "Frame",
+    type: "choice", def: "pane", flag: "strumframe",
+    options: [{ v: "boxes", label: "Boxes", icon: ICO.frameBoxes },
+              { v: "pane", label: "Pane", icon: ICO.framePane }] },
+  { name: "playhead", scope: "display", group: "chords", label: "Playhead",
+    type: "toggle", def: true, flag: "playhead" },
+
+  /* Pitch still waits on the maps — transposing needs a key to be relative to,
+     and the beatmaps do not carry one. Speed needs nothing: three quarters of
+     the record's speed is meaningful without knowing what the record's speed
+     was, so it can land now. */
+  { name: "speed", scope: "display", group: "playback", label: "Speed",
+    type: "range", def: 100, min: 50, max: 150, step: 5, scale: 100, reset: 100,
+    format: v => (v / 100).toFixed(2) + "×", apply: () => applyRate() }
+];
+
+const DEF = Object.fromEntries(SETTINGS.map(d => [d.name, d]));
+const state = {};
+const num = name => state[name] / (DEF[name].scale || 1);
+
+/* ── stores ───────────────────────────────────────────────────────────── */
+const STORE = "riffhound.karaoke.v1";
+const store = { display: {}, tracks: {}, stats: {}, servers: [], filters: {} };
+
+function load() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(STORE) || "{}");
+    for (const k of ["display", "tracks", "stats"])
+      if (saved[k]) Object.assign(store[k], saved[k]);
+    if (Array.isArray(saved.servers)) store.servers = saved.servers;
+    if (saved.filters) Object.assign(store.filters, saved.filters);
+  } catch (e) {}
+}
+
+let saveTimer = 0;
+function save() {
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(() => {
+    try { localStorage.setItem(STORE, JSON.stringify(store)); } catch (e) {}
+  }, 250);
+}
+
+/* ── elements ─────────────────────────────────────────────────────────── */
+const lyrics = $("lyrics"), lyricCur = $("lyricCur"), lyricPrev = $("lyricPrev");
+const lyricAhead = $("lyricAhead"), lyricBall = $("lyricBall");
+const cue = $("cue"), lyricCatch = $("lyricCatch");
+const main = $("main"), preview = $("preview"), beats = $("beats"), spane = $("spane");
+const ball = $("ball"), cursor = $("cursor"), playhead = $("playhead");
+const stage = $("stage"), next = $("next");
+const play = $("play"), stop = $("stop");
+const menuBtn = $("menuBtn"), panel = $("panel");
+const titleBtn = $("titleBtn"), trackPanel = $("trackPanel");
+const titleText = $("titleText"), titleTags = $("titleTags");
+const timeline = $("timeline"), tlFill = $("tlFill"), tlHead = $("tlHead");
+const loopBar = $("loopBar"), loopBuffer = $("loopBuffer");
+const clockOut = $("clock"), bpmOut = $("bpmOut"), rateOut = $("rateOut");
+const header = document.querySelector("header");
+
+const parts = {
+  control: [header, loopBar, loopBuffer],
+  lyrics: [lyrics],
+  chords: [main, preview, next, beats, spane, playhead]
+};
+const tint = (part, colour) =>
+  parts[part].forEach(el => el && el.style.setProperty("--fg", PHOSPHOR[colour]));
+
+/* ── transport ──────────────────────────────────────────────────────────
+   Position is one number again, but now the audio owns it: when a track is
+   loaded the element is the clock and we only read it. That is the honest
+   arrangement — the sound cannot be made to follow us. */
+const player = { time: 0, duration: 0, playing: false };
+let track = { id: null, title: "No track loaded" };
+let audio = null, audioUrl = null;
+
+const LYRIC_BALL = 22, HOP_ROOM = 46, LEAD_STEP = 52, BALL = 34, BALL_ZONE = 76;
+
+const zoom = () => num("zoom");
+const hopRoom = () => HOP_ROOM * zoom();
+const ballSize = () => LYRIC_BALL * zoom();
+const paneOn = () => state.strumPane !== "off";
+const chordsOn = () => state.chordPanel;
+const zone = () => (state.chordCue === "off" ? 14 : BALL_ZONE);
+
+let lyricLines = [], sections = [], beatGrid = [], chordLine = [], loopRanges = [];
+
+/* The beatmap's own grid, when it has one. Bouncing on recorded beats rather
+   than a fixed rate is the difference between following the record and
+   following a metronome that happens to start in the right place. */
+function beatIndex(t) {
+  let lo = 0, hi = beatGrid.length - 1;
+  if (hi < 0 || t < beatGrid[0]) return -1;
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >> 1;
+    if (beatGrid[mid] <= t) lo = mid; else hi = mid - 1;
+  }
+  return lo;
+}
+
+/* The typical gap, taken as the median so a couple of wild intervals — or a
+   long unmarked stretch — cannot drag it. */
+let beatPeriod = 0;
+function analyseBeats() {
+  const gaps = [];
+  for (let i = 1; i < beatGrid.length; i++) gaps.push(beatGrid[i] - beatGrid[i - 1]);
+  gaps.sort((a, b) => a - b);
+  beatPeriod = gaps.length ? gaps[gaps.length >> 1] : 0;
+}
+
+/* Most maps mark only the opening: Margaritaville has 150 beats over three
+   and a half minutes. So: bounce on real beats where they are written, and
+   where they run out — or a gap is too long to be one beat — carry on at the
+   established period, in phase from the last beat actually marked. That keeps
+   the bounce honest for as long as the map is, then plausible after. */
+const GAP_FACTOR = 1.6;
+
+function beatPhase(t) {
+  const p = beatPeriod || BOUNCE;
+  if (!beatGrid.length) return mod(t, p) / p;
+
+  const i = beatIndex(t);
+  if (i < 0) return mod(t - beatGrid[0], p) / p;
+  if (i >= beatGrid.length - 1) return mod(t - beatGrid[i], p) / p;
+
+  const d = beatGrid[i + 1] - beatGrid[i];
+  return d > p * GAP_FACTOR ? mod(t - beatGrid[i], p) / p : (t - beatGrid[i]) / d;
+}
+
+function bpmAt(t) {
+  if (!beatPeriod) return 0;
+  const i = beatIndex(t);
+  if (i < 0 || i >= beatGrid.length - 1) return Math.round(60 / beatPeriod);
+
+  /* Averaged over four beats so the readout doesn't jitter on human timing. */
+  const j = Math.min(beatGrid.length - 1, i + 4);
+  const local = (beatGrid[j] - beatGrid[i]) / (j - i);
+  return Math.round(60 / (local > beatPeriod * GAP_FACTOR ? beatPeriod : local));
+}
+
+/* A fractional beat number for a time and its inverse, by interpolating
+   between the beats either side and extrapolating past both ends with the
+   nearest interval. A strum loop is a number of beats long, not a number of
+   seconds, so laying its repeats out in this coordinate is what makes them
+   drift with the take instead of walking off it. The two are exact inverses,
+   which matters: a slot's time is round-tripped through both. */
+function beatPos(t) {
+  const p = beatPeriod || BOUNCE;
+  if (beatGrid.length < 2) return t / p;
+
+  const i = beatIndex(t);
+  if (i < 0) return (t - beatGrid[0]) / (beatGrid[1] - beatGrid[0]);
+  if (i >= beatGrid.length - 1) {
+    const n = beatGrid.length;
+    return n - 1 + (t - beatGrid[n - 1]) / (beatGrid[n - 1] - beatGrid[n - 2]);
+  }
+  return i + (t - beatGrid[i]) / (beatGrid[i + 1] - beatGrid[i]);
+}
+
+function beatTime(b) {
+  const p = beatPeriod || BOUNCE;
+  if (beatGrid.length < 2) return b * p;
+
+  const n = beatGrid.length;
+  if (b <= 0)     return beatGrid[0] + b * (beatGrid[1] - beatGrid[0]);
+  if (b >= n - 1) return beatGrid[n - 1] + (b - n + 1) * (beatGrid[n - 1] - beatGrid[n - 2]);
+  const i = Math.floor(b);
+  return lerp(beatGrid[i], beatGrid[i + 1], b - i);
+}
+
+/* ── strum ──────────────────────────────────────────────────────────────
+   A strum line is one loop: its span says where the loop starts and how many
+   beats it takes to come round, and it keeps repeating until the next strum
+   line. So a song played one way needs one line, and a bridge that changes the
+   right hand needs one more. */
+let strumLines = [];
+
+function analyseStrums(list, until) {
+  strumLines = list.map((s, i) => {
+    const pat = compileStrum(s.pattern);
+    const b0 = beatPos(s.t_start);
+    const span = beatPos(s.t_end) - b0;
+    /* The span is the authority on how long the loop is, because the beats are
+       what the audio actually did; the pattern's own length is the fallback for
+       a line written without one. They disagreeing is worth saying out loud —
+       it means the eighths in the pattern are not the eighths on the record. */
+    const loop = span > .05 ? span : pat.beats;
+    return { pat, b0, loop, mismatch: span > .05 && Math.abs(span - pat.beats) > .05,
+             from: s.t_start, to: i + 1 < list.length ? list[i + 1].t_start : until };
+  });
+}
+
+/* Which loop of which pattern is running at t, and how far through it. */
+function strumAt(t) {
+  if (!strumLines.length) return null;
+  let i = 0;
+  while (i < strumLines.length - 1 && t >= strumLines[i + 1].from) i++;
+  const s = strumLines[i];
+  if (t < s.from || t >= s.to) return null;
+
+  const k = (beatPos(t) - s.b0) / s.loop;
+  return { line: s, pat: s.pat, f: mod(k, 1) };
+}
+
+/* When slot `s` of loop `k` is played. Slots are evenly spaced across the
+   loop — eighth notes when the line is written as one — and the time comes
+   back through the beat grid, so a slot lands where the beat under it landed. */
+const slotTime = (line, k, s) =>
+  beatTime(line.b0 + (k + s / line.pat.n) * line.loop);
+
+/* ── panels ─────────────────────────────────────────────────────────────
+   A stack of bands: each says how tall it wants to be and where to put
+   itself. The chord surfaces are still here, and still sized, so that when
+   the maps grow chords there is nowhere new to put them. */
+const PANELS = [
+  { id: "lyrics", flex: true, place: placeLyrics, want: () => {
+      const vw = root.clientWidth;
+      const side = clamp(vw * .019, 15, 25) * zoom();
+      const cur = clamp(vw * .029, 18, 38) * zoom();
+      const rows = (state.pastLine ? 1 : 0) + state.nextLines;
+      return Math.round(hopRoom() + cur * 1.3 + rows * side * 1.45 + 22);
+    } },
+  { id: "strum", gap: () => 16, place: placePane,
+    height: h => (paneOn() ? Math.round(h * .17) : 0) },
+  { id: "chords", gap: () => zone() + 8, place: placeChords,
+    height: h => (chordsOn() ? Math.max(90, Math.round(h * (paneOn() ? .27 : .3))) : 0) },
+  { id: "preview", gap: () => 14, place: placePreview,
+    height: h => (chordsOn() ? Math.round(h * (paneOn() ? .081 : .09)) : 0) }
+];
+
+let geo = {};
+
+function layout() {
+  const h = stage.clientHeight;
+  geo = { zone: zone() };
+
+  const bands = PANELS.map(p => (p.flex ? 0 : p.height(h)));
+  const used = bands.reduce((a, b, i) =>
+    a + b + (b > 0 && PANELS[i].gap ? PANELS[i].gap() : 0), 0);
+
+  const flex = PANELS.findIndex(p => p.flex);
+  if (flex >= 0) bands[flex] = clamp(PANELS[flex].want(), 90, Math.max(90, h - used));
+
+  let y = 0;
+  PANELS.forEach((p, i) => {
+    if (bands[i] > 0 && p.gap) y += p.gap();
+    p.place(y, bands[i], h);
+    if (bands[i] > 0) y += bands[i];
+  });
+
+  fitLines();
+  measurePads();
+  if (lastLine >= 0) placeCatcher(lastLine, lastRest);
+}
+
+function placeLyrics(y, band) {
+  lyrics.style.top = y + "px";
+  lyrics.style.height = band + "px";
+  lyrics.style.setProperty("--hop-room", hopRoom() + "px");
+}
+
+function placeChords(y, band) {
+  geo.top = y; geo.mainH = band; geo.bottom = y + band; geo.boxH = 20;
+  main.style.top = y + "px";
+  main.style.setProperty("--h", band + "px");
+  beats.style.top = Math.round(y - geo.boxH / 2) + "px";
+  beats.style.height = geo.boxH + "px";
+  beats.style.setProperty("--bh", geo.boxH + "px");
+  beats.style.setProperty("--bw", Math.round(geo.boxH * 1.05) + "px");
+  playhead.style.top = (y - geo.zone) + "px";
+  playhead.style.height = (geo.zone + band) + "px";
+  playhead.style.setProperty("--ball-zone", geo.zone + "px");
+
+  const nextH = Math.round(band * .7);
+  const bar = main.clientWidth / 4;
+  const room = stage.clientWidth - main.offsetLeft * 2 - main.clientWidth - 12;
+  next.style.top = Math.round(y + (band - nextH) / 2) + "px";
+  next.style.height = nextH + "px";
+  next.style.width = Math.max(60, Math.min(Math.round(bar * .7), room)) + "px";
+  next.style.setProperty("--h", nextH + "px");
+}
+
+function placePane(y, band) {
+  const countH = Math.round(band * .2), bandH = band - countH;
+  const upY = Math.round(bandH * .24), midY = Math.round(bandH * .5);
+  const downY = Math.round(bandH * .76);
+  /* What the marker's ±1 is worth in pixels, in each of the pane's two
+     readings: the rows it lands on, and the swing it makes through them. */
+  geo.paneRow = downY - midY;
+  geo.paneSwing = Math.round(bandH * .3);
+  geo.paneRoom = Math.round(bandH * .46);
+  /* The sizes the band alone would like. A loop that only occupies part of the
+     pane packs its slots tighter than that, so renderPane may come back and
+     take them down; these are the ceiling. */
+  geo.paneGlyph = Math.round(band * .3);
+  geo.paneCount = Math.round(band * .13);
+  geo.paneMargin = Math.round(band * .225 + 6);
+
+  spane.style.top = y + "px";
+  spane.style.height = band + "px";
+  spane.style.setProperty("--up-y", upY + "px");
+  spane.style.setProperty("--mid-y", midY + "px");
+  spane.style.setProperty("--down-y", downY + "px");
+  spane.style.setProperty("--count-y", Math.round(bandH + countH * .5) + "px");
+  spane.style.setProperty("--sglyph", geo.paneGlyph + "px");
+  spane.style.setProperty("--scount", geo.paneCount + "px");
+  spane.style.setProperty("--smark", Math.round(band * .16) + "px");
+  spane.style.setProperty("--sm", geo.paneMargin + "px");
+  /* The pane is drawn against its own width, so a resize has to redraw it. */
+  paneAt = "";
+}
+
+function placePreview(y, band) {
+  preview.style.top = y + "px";
+  preview.style.setProperty("--h", band + "px");
+}
+
+/* ── lyrics ─────────────────────────────────────────────────────────────
+   No syllable map yet, so a line is one span: it lights while its own range
+   is running, and the ball sweeps across it in that time. When the maps carry
+   syllables this becomes the same landing-pad code the demo has. */
+let pads = [], lastLine = -1, lastRest = false, lastLit = null, lastCue = -1;
+let cueRight = null, cuePitch = 0;
+
+const lineAt = i => lyricLines[clamp(i, 0, lyricLines.length - 1)];
+const lineText = i =>
+  (i >= 0 && i < lyricLines.length ? lyricLines[i].text : "");
+
+/* Which line is on screen: the last one to have been promoted. */
+function lineNow(t) {
+  if (!lyricLines.length) return -1;
+  let i = lyricLines.length - 1;
+  while (i > 0 && t < lyricLines[i].promote) i--;
+  return t < lyricLines[0].promote ? -1 : i;
+}
+
+/* When a line stops being on screen: the next line's promotion, or two seconds
+   past the end for the last one. */
+const handoff = i => (i + 1 < lyricLines.length ? lyricLines[i + 1].promote
+                                                : lyricLines[i].t_end + 2);
+
+/* Seconds from a line appearing until it is replaced. */
+const lineHold = i => handoff(i) - lyricLines[i].t_start;
+
+/* Is line i over, with the wait after it long enough to clear the row? */
+const resting = (i, t) =>
+  i >= 0 && lyricLines[i].rest != null && t >= lyricLines[i].rest;
+
+/* The far end of the row; nothing may land past it. */
+const rowEnd = () => Math.max(pads[0].x + 24, lyrics.clientWidth - 24);
+
+/* Where the ball lands. Singing a line, that is where its sweep has got to by
+   the time the next line takes over -- past the last word, because the ball
+   keeps moving through the gap. Resting, the row is blank and the ball has the
+   whole of it to cross, so it is the end of the row.
+
+   Either way it is clamped to the row: extrapolating a two-second line across
+   an eight-second wait used to put the catcher, and the ball chasing it, off
+   the right of the screen. */
+function catchX(i, rest) {
+  if (rest) return rowEnd();
+  const l = lyricLines[i];
+  const span = Math.max(.2, l.t_end - l.t_start);
+  return Math.min(rowEnd(), lerp(pads[0].x, pads[1].x, lineHold(i) / span));
+}
+
+function placeCatcher(i, rest) {
+  if (!pads.length || i < 0) return;
+  lyricCatch.style.left = catchX(i, rest) + "px";
+  lyricCatch.style.top = pads[0].y + "px";
+}
+
+/* Resting, the current row is blank and the line that has just finished moves
+   up to the past row -- which is what it now is. The lines ahead are the same
+   either way: the next line to sing is still the next line to sing. */
+function renderLine(i, rest) {
+  const span = document.createElement("span");
+  span.className = "line";
+  span.textContent = (rest ? "" : lineText(i)) || "\u00a0";
+  lyricCur.replaceChildren(span, cue);
+  lyricPrev.textContent = lineText(rest ? i : i - 1);
+
+  lyricAhead.replaceChildren(...Array.from({ length: state.nextLines }, (_, k) => {
+    const el = document.createElement("div");
+    el.className = "lyric side";
+    el.textContent = lineText(i + k + 1);
+    return el;
+  }));
+
+  lastLit = null;
+  lastCue = -1;
+  fitLines();
+  measurePads();
+  placeCatcher(i, rest);
+}
+
+/* Lines that no longer fit in the band are not drawn at all.
+
+   The band is what is left once the surfaces below it have taken their space,
+   so switching on the strum pane, or asking for more lines than the window is
+   tall enough for, leaves room for fewer than were asked for. Letting the
+   surplus spill was the wrong answer twice over: it ran over the chord row,
+   and it showed a line in a place that means something else.
+
+   The current line is never one of them: it is the line the display is for. So
+   the past line goes first when the current line is the one being pushed out,
+   since it is above and dropping it is what pulls the current line back in;
+   otherwise the lines ahead go from the far end. The ball's headroom is the
+   current line's own top margin, so what the past line hands back goes to the
+   lines rather than to the hop. */
+function fitLines() {
+  const room = lyrics.clientHeight;
+  if (!room) return;
+
+  const ahead = [...lyricAhead.children];
+  const show = (el, on) => { if (el) el.style.display = on ? "" : "none"; };
+  ahead.forEach(el => show(el, true));
+  show(lyricPrev, true);
+
+  const top = () => lyrics.getBoundingClientRect().top;
+  const over = el => el && el.getBoundingClientRect().bottom - top() > room + .5;
+
+  /* The past line goes first when even the current line is being pushed out:
+     it is above, so dropping it is what pulls the current line back in. */
+  if (over(lyricCur)) show(lyricPrev, false);
+  for (let k = ahead.length - 1; k >= 0 && over(ahead[k]); k--) show(ahead[k], false);
+}
+
+/* Two points rather than a pad per syllable: where the line starts and where
+   it ends. The ball rides between them. */
+function measurePads() {
+  const base = lyrics.getBoundingClientRect();
+  const line = lyricCur.querySelector(".line");
+  if (!line) { pads = []; return; }
+  const r = line.getBoundingClientRect();
+  const y = r.top - base.top;
+  pads = [{ x: r.left - base.left, y }, { x: r.right - base.left, y }];
+}
+
+function updateCue(line, t) {
+  const waiting = line ? line.t_start - t : 0;
+  const dots = state.lineCue === "dots" && line && line.cued && waiting > 0
+    ? clamp(Math.ceil(waiting / CUE_STEP), 0, CUE_DOTS) : 0;
+
+  if (dots === lastCue) return;
+
+  cue.replaceChildren(...Array.from({ length: dots }, () => {
+    const dot = document.createElement("i");
+    dot.className = "dot";
+    return dot;
+  }));
+
+  if (dots > 0) {
+    if (lastCue <= 0) {
+      const r = cue.getBoundingClientRect(), base = lyrics.getBoundingClientRect();
+      cueRight = r.right - base.left;
+      cuePitch = r.width / dots;
+    }
+  } else {
+    cueRight = null;
+  }
+  lastCue = dots;
+}
+
+/* Riding the countdown out, then one hop onto the first word so the ball
+   arrives exactly as the line starts. */
+function leadIn(dt, lead) {
+  const head = w => cueRight - (w / CUE_STEP - .5) * cuePitch;
+  return cueRight == null
+    ? lerp(pads[0].x - LEAD_STEP * zoom(), pads[0].x, clamp(1 + dt / (lead || 1), 0, 1))
+    : dt < -BOUNCE ? head(-dt)
+    : lerp(head(BOUNCE), pads[0].x, clamp(dt / BOUNCE + 1, 0, 1));
+}
+
+/* Across the line while it is being sung, then on to the catcher. The run-out
+   used to be the sweep extrapolated, which is right only while the ball has
+   somewhere to go: a short line followed by a long wait sent it off the side of
+   the screen. It now aims at the catcher, so the two agree by construction
+   wherever that lands. */
+function sweepAt(dt, span) {
+  return lerp(pads[0].x, pads[1].x, span > 0 ? clamp(dt / span, 0, 1) : 1);
+}
+
+/* Both balls bounce on the same grid, so they agree about where the beat is.
+   The hop is the one thing every stage has in common — the ball keeps time
+   whether it is counting in, singing, running out, or crossing a blank row. */
+const bob = () => arc(beatPhase(player.time)) * hopRoom() * num("bounce") * .6;
+
+function updateLyrics(t) {
+  const i = lineNow(t);
+  const rest = resting(i, t);
+  if (i !== lastLine || rest !== lastRest) {
+    renderLine(i, rest);
+    lastLine = i;
+    lastRest = rest;
+  }
+  if (i < 0 || !pads.length) return;
+
+  const line = lyricLines[i];
+  const dt = t - line.t_start;
+  const span = Math.max(.2, line.t_end - line.t_start);
+  const to = handoff(i);
+  const at = catchX(i, rest);
+
+  updateCue(line, t);
+
+  /* Four stages, and the ball is doing something different in each: riding the
+     countdown in, sweeping the line, running out past its last word, or -- when
+     the row has been cleared for a rest -- crossing the blank row from the
+     margin to the return box, which is where the next line's countdown starts. */
+  const ease = (from, t0, t1) =>
+    lerp(from, at, clamp(t1 > t0 ? (t - t0) / (t1 - t0) : 1, 0, 1));
+
+  const x = dt < 0        ? leadIn(dt, line.t_start - line.promote)
+          : rest          ? ease(pads[0].x, line.rest, to)
+          : t <= line.t_end ? sweepAt(dt, span)
+          :                 ease(pads[1].x, line.t_end, to);
+
+  lyricBall.style.left = x + "px";
+  lyricBall.style.top = (pads[0].y - bob() - ballSize()) + "px";
+
+  const lit = dt >= 0 && t <= line.t_end;
+  if (lit !== lastLit) {
+    lyricCur.classList.toggle("on", lit);
+    lastLit = lit;
+  }
+}
+
+/* ── chords ─────────────────────────────────────────────────────────────
+   A window of four chords, each box as wide as the chord is long, so the
+   cursor can sweep the row linearly in time and still line up with the boxes.
+   That is the proportional sizing an off-beat change needs; it comes free once
+   the boxes stop being equal quarters of a bar. */
+const BARS_PER_ROW = 4;
+let chordGroups = [], groupAt = -1, barLen = 2;
+/* The start of the pass currently running. Everything drawn against the row --
+   the cursor, the stroke boxes, the strum pane's own counter -- measures from
+   here rather than from the row's first pass, which is what makes a repeated
+   row repeat instead of scrolling. */
+let groupFrom = 0, repMarks = [], lastRep = -1;
+
+/* Everything the chord and strum surfaces own, back to nothing.
+
+   Loading a track used to reset them a statement at a time at the call site,
+   which drifted out of date every time a surface was added: the next-chord box
+   and the ball's glyph both kept the last track's, and a track with no chords
+   never drew over them, because updateChords() has nothing to draw and returns.
+   One place, and it runs before the new track's data is worked out rather than
+   after -- which is what lets it zero the arrays as well as the pixels. */
+function clearChords() {
+  chordGroups = [];
+  strumLines = [];
+  groupAt = -1;
+  groupFrom = 0;
+  repMarks = [];
+  lastRep = -1;
+  spanMax = 1;
+
+  main.replaceChildren();
+  preview.replaceChildren();
+  main.style.gridTemplateColumns = "";
+  preview.style.gridTemplateColumns = "";
+  $("nextChord").innerHTML = "";
+
+  paneAt = "";
+  renderPane(null, 0);
+  renderBeats(null);
+
+  /* The marker and the next-chord box are hidden rather than emptied: there is
+     no row for them to sweep and nothing coming next, and a ball parked
+     mid-screen over an empty display is the most conspicuous leftover of the
+     lot. renderGroup() brings them back when there is a row again. */
+  ball.textContent = "";
+  ball.classList.remove("strum");
+  ball.style.display = cursor.style.display = next.style.display = "none";
+}
+
+/* Chords are grouped once, on load, and the row then holds a whole group at a
+   time instead of shuffling along at every change. Groups never straddle a
+   section, so what you memorise is "the four that open the chorus" rather than
+   an arbitrary window that happened to line up that way. */
+/* Phrase lengths worth looking for, smallest first: a loop that comes round
+   every two bars is a two-bar loop, not a four-bar one played twice, and
+   ascending order is what tells those apart. Three is absent because a phrase
+   that matches nothing here still gets a row -- it is packed to fit, as before
+   -- so a miss costs the counter, not the chart. */
+const PHRASES = [2, 4, 5, 6, 8];
+const MAX_REPS = 8;          /* more rectangles than this is a wall, not a count */
+
+function groupChords() {
+  const beats = sections[0]?.beatsPerBar || 4;
+  barLen = (beatPeriod || BOUNCE) * beats;
+  chordGroups = [];
+
+  const bars = c => (c.t_end - c.t_start) / barLen;
+
+  /* Split where the author already said to: a row written on one line, or a
+     section. Repeats are looked for inside these and never across them --
+     "the four that open the chorus" is not a repeat of the four that closed
+     the verse even when the names line up. */
+  const segs = [];
+  {
+    const sectionOf = t => sections.findIndex(s => t >= s.t_start && t < s.t_end);
+    let run = [], inGroup = -1, inSection = -1;
+    for (const c of chordLine) {
+      const grp = c.group >= 0 ? c.group : -1;
+      /* Chords written on one line take the section of their first chord.
+         Sections are marked by ear and land a fraction of a bar off the changes
+         they introduce; reading each chord's own section would shear
+         "Em C G D" into "Em" and "C G D" at every boundary. */
+      const sec = grp >= 0 && grp === inGroup ? inSection : sectionOf(c.t_start);
+      if (grp !== inGroup || sec !== inSection) {
+        if (run.length) segs.push(run);
+        run = [];
+        inGroup = grp;
+        inSection = sec;
+      }
+      run.push(c);
+    }
+    if (run.length) segs.push(run);
+  }
+
+  /* How many chords from i make up exactly `want` bars, or 0 if none do. */
+  const chordsFor = (seg, i, want) => {
+    let n = 0, acc = 0;
+    while (i + n < seg.length && acc < want - .05) acc += bars(seg[i + n++]);
+    return Math.abs(acc - want) < .1 ? n : 0;
+  };
+
+  /* The n chords at i and at j are the same phrase: same names, same lengths.
+     Lengths matter as much as names -- "Am G" over two bars and "Am G" over one
+     are not the same phrase, and a player reading a repeat sign needs them not
+     to be conflated. */
+  const alike = (seg, i, j, n) => {
+    if (j + n > seg.length) return false;
+    for (let k = 0; k < n; k++)
+      if (seg[i + k].name !== seg[j + k].name ||
+          Math.abs(bars(seg[i + k]) - bars(seg[j + k])) > .1) return false;
+    return true;
+  };
+
+  for (const seg of segs) {
+    let i = 0;
+    while (i < seg.length) {
+      let n = 0, reps = 1;
+
+      /* A phrase that comes round at least twice is the thing to show once and
+         count off. Anything else is just a row of chords. */
+      for (const want of PHRASES) {
+        const m = chordsFor(seg, i, want);
+        if (!m) continue;
+        let r = 1;
+        while (r < MAX_REPS && alike(seg, i, i + r * m, m)) r++;
+        if (r >= 2) { n = m; reps = r; break; }
+      }
+
+      if (!n) {
+        /* Nothing repeats here: pack a row to fit, which is what every row used
+           to be. Runs are broken to fit rather than counted, because four
+           chords can be four bars or eight. */
+        let acc = 0;
+        while (i + n < seg.length && acc + bars(seg[i + n]) <= BARS_PER_ROW + .05)
+          acc += bars(seg[i + n++]);
+        if (!n) n = 1;             /* a chord longer than a whole row still goes */
+      }
+
+      const g = seg.slice(i, i + n);
+      g.reps = reps;
+      g.starts = Array.from({ length: reps }, (_, r) => seg[i + r * n].t_start);
+      g.at = g[0].t_start;
+      g.span = g[n - 1].t_end - g[0].t_start;     /* one pass, not the whole run */
+      g.to = seg[i + reps * n - 1].t_end;
+      chordGroups.push(g);
+      i += reps * n;
+    }
+  }
+
+  chordGroups.forEach((g, i) => { g.i = i; });
+
+  /* The widest *pass*, not the widest run: a phrase played four times is drawn
+     once, so the ruler is the phrase. Still one seconds-per-pixel for the whole
+     track -- a two-second chord is the same width wherever it appears -- and a
+     shorter row simply stops early and leaves the tail empty. */
+  spanMax = chordGroups.reduce((w, g) => Math.max(w, g.span), 0)
+            || BARS_PER_ROW * barLen;
+}
+
+/* A track with no chords still has bars. Where the map has beats and
+   sections but nothing to put over them — a drum track — the chart is
+   synthesised instead of left dark: one dim numbered box per bar, a row per
+   few bars, laid on the recorded grid. So a loop has something that moves at
+   the measure level — the row lights, the cursor crosses, the ball keeps the
+   beat — and the drum transcription, when it lands, takes this spot. */
+let ghostMode = false;   /* the chart is scaffolding, not the track's chords */
+
+function ghostChords() {
+  ghostMode = false;
+  if (chordLine.length || beatGrid.length < 2) return;
+  ghostMode = true;
+  let gid = 100000;                  /* clear of the parser's group ids */
+  const out = [];
+  for (const s of sections) {
+    const bpb = s.beatsPerBar || 4;
+    const b0 = beatPos(s.t_start);
+    /* Numbered through the track, not from 1 in every section, so the same
+       bar has the same name here and on the loop programme's chart. */
+    const base = Math.round(b0 / bpb);
+    const bars = Math.round((beatPos(s.t_end) - b0) / bpb);
+    for (let row = 0; row * BARS_PER_ROW < bars; row++, gid++)
+      for (let k = row * BARS_PER_ROW; k < Math.min(bars, (row + 1) * BARS_PER_ROW); k++)
+        out.push({ t_start: beatTime(b0 + k * bpb), t_end: beatTime(b0 + (k + 1) * bpb),
+                   name: String(base + k + 1), group: gid, ghost: true });
+  }
+  chordLine = out;
+}
+
+/* ── the loop ghost ─────────────────────────────────────────────────────
+   With the buffer playing and no chords to put over it, the chart shows the
+   programme instead: one dim box per measure of it, labelled with the
+   track's measure number, four to a row. Queue "A" — one bar, measure 7 —
+   three times and then "B" at measure 11, and the row reads 7 7 7 11, with
+   the cursor walking the programme so the second pass lights the second 7.
+   This chart lives in programme time; only the ball keeps reading the track
+   clock, because the beats are wherever the record put them. */
+let loopGhostOn = false;
+
+function loopGhost() {
+  const ms = [];
+  let acc = 0;
+  for (const l of looper.buf) {
+    /* Bars anchor to the section the loop starts in — section starts are
+       downbeats by construction — and number on from the bars before it. */
+    const s = sections.find(x => l.from >= x.t_start - .001 && l.from < x.t_end);
+    const bpb = s?.beatsPerBar || sections[0]?.beatsPerBar || 4;
+    const anchor = s ? beatPos(s.t_start) : 0;
+    const base = Math.round(anchor / bpb);
+    const b0 = beatPos(l.from) - anchor, b1 = beatPos(l.to) - anchor;
+    for (let j = Math.floor(b0 / bpb + 1e-6); j * bpb < b1 - 1e-6; j++) {
+      const bs = Math.max(b0, j * bpb), be = Math.min(b1, (j + 1) * bpb);
+      const w0 = beatTime(bs + anchor);
+      const d = beatTime(be + anchor) - w0;
+      if (d <= 1e-6) continue;
+      ms.push({ p0: acc, p1: acc + d, bar: base + j + 1, wall: w0 });
+      acc += d;
+    }
+  }
+
+  chordGroups = [];
+  for (let i = 0; i < ms.length; i += BARS_PER_ROW) {
+    const g = ms.slice(i, i + BARS_PER_ROW).map(m => ({
+      t_start: m.p0, t_end: m.p1, name: String(m.bar), wall: m.wall, ghost: true }));
+    g.reps = 1;
+    g.starts = [g[0].t_start];
+    g.at = g[0].t_start;
+    g.span = g[g.length - 1].t_end - g[0].t_start;
+    g.to = g[g.length - 1].t_end;
+    chordGroups.push(g);
+  }
+  chordGroups.forEach((g, i) => { g.i = i; });
+  spanMax = chordGroups.reduce((w, g) => Math.max(w, g.span), 0) || 1;
+}
+
+/* Which chart the chord surfaces carry: the programme's while the buffer
+   plays, the sections' otherwise — and only where the track has no chords
+   of its own, which real chords always outrank. */
+function refreshGhost() {
+  if (!ghostMode) return;
+  loopGhostOn = progLooping();
+  if (loopGhostOn) loopGhost(); else groupChords();
+  groupAt = -1;                /* whatever is on screen is the other chart's */
+  lastRep = -1;
+}
+
+function chordBox(c, i) {
+  const el = document.createElement("div");
+  el.className = c.ghost ? "measure ghost" : "measure";
+  /* The small time is a place in the record, so a programme box shows where
+     its bar actually lives rather than its position in the programme. */
+  el.innerHTML = `<small>${fmtTime(c.wall ?? c.t_start)}</small>` +
+    `<span class="name">${chordHtml(c.name)}</span>`;
+  return el;
+}
+
+/* One seconds-per-pixel for the whole track, set by the longest group. A
+   shorter group simply stops early and leaves the rest of the row empty,
+   rather than being stretched to fill it — so the cursor crosses the screen at
+   the same rate all the way through, and a two-second chord looks like a
+   two-second chord wherever it appears. */
+let spanMax = 1;
+
+function sizeRow(el, group) {
+  const cols = group.map(c => Math.max(.15, c.t_end - c.t_start));
+  const rest = spanMax - cols.reduce((a, b) => a + b, 0);
+  if (rest > .05) cols.push(rest);          /* the empty tail */
+  el.style.gridTemplateColumns = cols.map(d => d.toFixed(3) + "fr").join(" ");
+}
+
+function renderGroup(i) {
+  const g = chordGroups[i], ahead = chordGroups[i + 1];
+  ball.style.display = cursor.style.display = next.style.display = "";
+  main.replaceChildren(...(g || []).map(chordBox));
+  sizeRow(main, g || []);
+
+  /* One rectangle per pass, emptying as the passes are spent. The same counter
+     the strum pane carries, for the same reason: how many times round is the
+     thing you cannot read off the chords themselves. */
+  repMarks = [];
+  lastRep = -1;
+  if (g && g.reps > 1) {
+    const box = document.createElement("div");
+    box.className = "repeats";
+    for (let k = 0; k < g.reps; k++)
+      repMarks.push(box.appendChild(document.createElement("i")));
+    main.append(box);          /* absolute, so it takes no cell of the grid */
+  }
+
+  preview.replaceChildren(...(ahead || []).map(chordBox));
+  sizeRow(preview, ahead || []);
+  /* "Next: bar 5" is not a cue anyone plays to; the box sits this one out. */
+  const ghost = g && g[0].ghost;
+  $("nextChord").innerHTML = ahead && !ghost ? chordHtml(ahead[0].name) : "";
+  next.style.display = ghost ? "none" : "";
+  renderBeats(g);
+}
+
+function updateChords(t) {
+  if (!chordGroups.length) return;
+
+  let i = 0;
+  while (i < chordGroups.length - 1 && t >= chordGroups[i].to) i++;
+  if (i !== groupAt) { groupAt = i; renderGroup(i); }
+
+  const g = chordGroups[i];
+
+  /* Which pass over the row, and where inside it. A row that repeats is drawn
+     once and crossed once per pass, instead of the cursor crawling over the
+     whole run at a quarter of the rate. */
+  let r = 0;
+  while (r < g.starts.length - 1 && t >= g.starts[r + 1]) r++;
+  groupFrom = g.starts[r];
+  if (r !== lastRep) {
+    repMarks.forEach((m, k) => m.classList.toggle("spent", k < r));
+    lastRep = r;
+  }
+
+  /* Against the fixed scale, not the row's own length. */
+  const f = clamp((t - groupFrom) / spanMax, 0, 1);
+  ball.style.left = cursor.style.left = (f * 100) + "%";
+
+  /* Bounce or strum: the ball is on the beat, or it is the right hand. In hand
+     mode it carries the stroke it is about to play, and the motion never stops
+     even where the pattern has nothing to strike. With no pattern to follow
+     there is no hand to draw, so it goes back to keeping the beat rather than
+     standing still with nothing in it. */
+  /* The ball keeps the record's own time even when the chart above it is
+     drawn in programme time: the beats are wherever the take put them. */
+  const here = state.chordCue === "hand" ? strumAt(player.time) : null;
+  ball.classList.toggle("strum", !!here);
+  ball.style.top = (here ? strumY(player.time, here) : bounceY(player.time)) + "px";
+  const sl = here && here.pat.slots[Math.min(here.pat.n - 1,
+                                             Math.floor(here.f * here.pat.n))];
+  const glyph = sl ? sl.glyph || "·" : "";
+  if (ball.textContent !== glyph) ball.textContent = glyph;
+  updateBeats(t);
+
+  /* Which chord of the pass is sounding, by how far into the pass we are --
+     the row shows the first pass's chords, so later passes are read against
+     their offsets. */
+  const dt = t - groupFrom;
+  let k = 0;
+  while (k < g.length - 1 && dt >= g[k].t_end - g.at) k++;
+  main.querySelectorAll(".measure").forEach((el, j) =>
+    el.classList.toggle("current", j === k && t >= g.at));
+}
+
+/* The chord ball bounces on the map's beats, so it drifts with the record. */
+function bounceY(t) {
+  const room = Math.max(0, geo.zone - BALL - 4);
+  return geo.zone - BALL -
+    arc(beatPhase(t)) * clamp(room * .62 * num("bounce"), 0, room);
+}
+
+/* In hand mode the ball is not bouncing, it is strumming: it rides the same
+   swing the pane's marker does, so the two agree about where the hand is. */
+function strumY(t, here) {
+  const room = Math.max(0, geo.zone - BALL / 2 - 4);
+  return geo.zone - BALL / 2 +
+    swingThrough(here.pat, here.f) * clamp(geo.zone * .5 * num("bounce"), 0, room);
+}
+
+/* ── strum pane ─────────────────────────────────────────────────────────
+   One loop of the current pattern, drawn once and then only lit.
+
+   The pane is a fixed ruler — PANE_BARS bars of it, always — and a loop takes
+   as much of that as it is long: a one-bar pattern is a quarter of the pane and
+   the marker crosses that quarter in a bar, at exactly the rate a four-bar
+   pattern crosses the whole thing. Letting every loop fill the pane instead
+   made the marker's speed mean nothing, and sent a one-bar loop tearing across
+   the screen four times as fast as a four-bar one for no musical reason.
+
+   Same argument as spanMax on the chord row, and the same consequence: a short
+   loop stops early and leaves the tail of the pane empty rather than being
+   stretched across it. */
+const PANE_BARS = 4;
+const barBeats = () => sections[0]?.beatsPerBar || 4;
+const paneSpan = line => clamp(line.loop / (PANE_BARS * barBeats()), .05, 1);
+
+let paneSlots = [], paneMark = null, paneCursor = null;
+let paneMarks = [], paneAt = "", paneW1 = 1;
+let lastPaneSlot = -1, lastPaneCell = null, lastPaneLoop = -1;
+
+/* Every x in the pane goes through here, so slots, ties, bar lines, the
+   cursor and the marker cannot land on different grids. Fractions are of the
+   loop, not of the pane, so the ruler above is applied in exactly one place. */
+const paneX = f => `calc(var(--sm) + (100% - 2 * var(--sm)) * ${f * paneW1})`;
+const paneW = df => `calc((100% - 2 * var(--sm)) * ${df * paneW1})`;
+
+const ROW = { down: "down", up: "up" };
+
+function renderPane(pat, loops, w) {
+  paneSlots = [];
+  lastPaneSlot = -1;
+  lastPaneCell = null;
+  lastPaneLoop = -1;
+  paneMarks = [];
+  paneW1 = w || 1;
+
+  if (!pat) {
+    spane.replaceChildren();
+    paneMark = paneCursor = null;
+    return;
+  }
+
+  const n = pat.n, kids = [];
+
+  /* Slots as large as the band allows, or as large as they fit, whichever is
+     smaller: a one-bar loop in a quarter of the pane has four times the slots
+     per inch that a four-bar one does, and the glyphs would run together. */
+  const room = Math.max(0, spane.clientWidth - geo.paneMargin * 2);
+  if (room > 0) {
+    const pitch = room * paneW1 / n;
+    spane.style.setProperty("--sglyph",
+      Math.round(Math.min(geo.paneGlyph, pitch * .95)) + "px");
+    spane.style.setProperty("--scount",
+      Math.round(Math.min(geo.paneCount, pitch * .5)) + "px");
+  }
+
+  for (const sl of pat.slots) {
+    const x = paneX(sl.s / n);
+
+    /* A tie is the stroke before it, held: drawn as a line out of that stroke
+       along its own row rather than as a mark of its own, because what the
+       hand does here is nothing. */
+    if (sl.tie && sl.from >= 0) {
+      const tie = document.createElement("div");
+      tie.className = "stie " + ROW[pat.slots[sl.from].dir];
+      tie.style.left = paneX(pat.slots[sl.from].s / n);
+      tie.style.width = paneW((sl.s - pat.slots[sl.from].s + .5) / n);
+      kids.push(tie);
+    } else if (sl.hit) {
+      const el = document.createElement("div");
+      /* The row follows the hand, not the glyph: an up-muted chunk still
+         happens on the way up, and the four downs of "DdDd" are four downs. */
+      el.className = "sslot " + ROW[sl.dir] + (sl.weight < 1 ? " light" : "");
+      el.style.left = x;
+      el.textContent = sl.glyph;
+      paneSlots[sl.s] = el;
+      kids.push(el);
+    }
+
+    const count = document.createElement("div");
+    count.className = "scount";
+    count.style.left = x;
+    count.textContent = sl.s % 2 ? "&" : String(sl.s / 2 % 4 + 1);
+    kids.push(count);
+  }
+
+  for (let b = 1; b < n / 8; b++) {
+    const rule = document.createElement("div");
+    rule.className = "sbar";
+    rule.style.left = paneX(b * 8 / n);
+    kids.push(rule);
+  }
+
+  /* How many times the loop comes round before the chords move on. */
+  if (loops > 1) {
+    const box = document.createElement("div");
+    box.className = "repeats";
+    for (let k = 0; k < loops; k++)
+      paneMarks.push(box.appendChild(document.createElement("i")));
+    kids.push(box);
+  }
+
+  /* The wrap point, which is the end of the loop rather than the end of the
+     pane -- with a fixed ruler those are only the same thing at four bars. */
+  const catcher = document.createElement("div");
+  catcher.className = "catcher scatch";
+  catcher.style.left = paneX(1);
+  catcher.textContent = "↵";
+  paneCursor = document.createElement("div");
+  paneCursor.className = "scursor";
+  paneMark = document.createElement("div");
+  paneMark.className = "smark";
+
+  spane.dataset.rows = state.strumPane;
+  spane.replaceChildren(...kids, catcher, paneCursor, paneMark);
+}
+
+function updatePane(t) {
+  const here = strumAt(t);
+
+  /* The pane is rebuilt only when the pattern itself changes, so a loop that
+     repeats for a whole verse is drawn once. */
+  /* Keyed on the group too, because the repeat dots count loops inside it. */
+  const key = here ? `${here.line.pat.src}@${here.line.from}#${groupAt}` : "";
+  if (key !== paneAt || spane.dataset.rows !== state.strumPane) {
+    paneAt = key;
+    renderPane(here && here.pat, here ? loopsPerGroup(here.line) : 0,
+               here ? paneSpan(here.line) : 1);
+  }
+  if (!here || !paneMark) return;
+
+  const x = paneX(here.f);
+  paneCursor.style.left = x;
+  paneMark.style.left = x;
+  /* Split mode reads the swing as the row it is heading for, hand mode as the
+     hand's own path through the strings. One motion, two projections. */
+  const swing = clamp(geo.paneSwing * num("bounce"), 0, geo.paneRoom);
+  paneMark.style.top = state.strumPane === "hand"
+    ? `calc(var(--mid-y) + ${(swingThrough(here.pat, here.f) * swing).toFixed(1)}px)`
+    : `calc(var(--mid-y) + ${(swingToward(here.pat, here.f) * geo.paneRow).toFixed(1)}px)`;
+
+  /* Which pass over the loop, counted from the start of the chord row. This
+     used to count from the start of the strum line, which is the pass number
+     since the top of the song -- so every rectangle was spent by the second bar
+     and the counter looked like noise. */
+  const pass = Math.floor((beatPos(t) - beatPos(groupFrom)) / here.line.loop);
+  if (pass !== lastPaneLoop) {
+    paneMarks.forEach((m, k) => m.classList.toggle("spent", k < pass));
+    lastPaneLoop = pass;
+  }
+
+  const slot = Math.min(here.pat.n - 1, Math.floor(here.f * here.pat.n));
+  if (slot === lastPaneSlot) return;
+  lastPaneCell?.classList.remove("hit");
+  lastPaneCell = paneSlots[slot] || null;
+  lastPaneCell?.classList.add("hit");
+  lastPaneSlot = slot;
+}
+
+/* How many times the loop comes round inside one chord row. Both are lengths
+   in beats, so this is the honest count even where the row is not four bars. */
+function loopsPerGroup(line) {
+  const g = chordGroups[groupAt];
+  if (!g || !(line.loop > 0)) return 0;
+  /* One pass over the row, not the whole run: a repeated row is drawn once, and
+     the chord row's own counter is what says how many times it comes round. */
+  return Math.max(1, Math.round(
+    (beatPos(g.at + g.span) - beatPos(g.at)) / line.loop));
+}
+
+/* ── stroke boxes on the chord row ──────────────────────────────────────
+   The same strokes again, but laid out in the chord row's space rather than
+   the pattern's: one box per stroke the row contains, at the spot the cursor
+   will be when it is played. Rebuilt with the row, since that is the window
+   they are drawn against. */
+let beatCells = [], lastCell = null, lastSlot = -1;
+
+function renderBeats(g) {
+  beatCells = [];
+  lastCell = null;
+  lastSlot = -1;
+  /* A programme chart's row is in programme time; the strum slots are in
+     track time, and mixing the two would scatter the boxes. */
+  if (!g || !strumLines.length || loopGhostOn) { beats.replaceChildren(); return; }
+
+  /* The row's window, not the group's own extent: a short group leaves the
+     tail of the row empty, and the strokes stop where the group does. */
+  const t0 = g.at, t1 = g.at + spanMax;
+  const cells = [];
+
+  for (const line of strumLines) {
+    const to = Math.min(t1, line.to);
+    if (to <= Math.max(t0, line.from)) continue;
+    let k = Math.max(0, Math.floor((beatPos(Math.max(t0, line.from)) - line.b0) / line.loop));
+    for (; ; k++) {
+      const at = slotTime(line, k, 0);
+      if (at >= to) break;
+      for (const sl of line.pat.slots) {
+        if (!sl.hit) continue;
+        const t = slotTime(line, k, sl.s);
+        if (t < t0 || t < line.from || t >= to) continue;
+        const cell = document.createElement("div");
+        cell.className = "beat" + (sl.weight < 1 ? " light" : "");
+        cell.style.left = ((t - t0) / spanMax * 100) + "%";
+        cell.textContent = sl.glyph;
+        beatCells.push({ t: t - t0, cell });   /* offset into the pass */
+        cells.push(cell);
+      }
+    }
+  }
+
+  beatCells.sort((a, b) => a.t - b.t);
+  /* Boxes are as wide as the gap between them allows, so an eighth-note
+     pattern stays a row of boxes rather than one smear. */
+  const gap = beatCells.length > 1
+    ? beatCells.slice(1).reduce((m, c, i) => Math.min(m, c.t - beatCells[i].t), 1e9)
+    : spanMax;
+  const px = main.clientWidth * gap / spanMax;   /* .beats may be display:none */
+  beats.style.setProperty("--bw", Math.round(clamp(px - 3, 10, geo.boxH * 1.6)) + "px");
+  beats.replaceChildren(...cells);
+}
+
+function updateBeats(t) {
+  /* Against the pass, not the track: the boxes were laid out from the row's
+     first pass, and every pass after it lights the same boxes. */
+  const dt = t - groupFrom;
+  let i = -1;
+  while (i + 1 < beatCells.length && dt >= beatCells[i + 1].t) i++;
+  if (i === lastSlot) return;
+  lastCell?.classList.remove("hit");
+  lastCell = i >= 0 ? beatCells[i].cell : null;
+  lastCell?.classList.add("hit");
+  lastSlot = i;
+}
+
+/* ── audio ──────────────────────────────────────────────────────────────
+   The element is the clock. Everything else reads it. */
+function attachAudio(url) {
+  /* Tearing the old element down must not look like a failure. Assigning
+     src = "" makes the browser resolve the empty string against the page and
+     try to decode the HTML as media, which fires `error` a task later — by
+     which time the handler below would blame the track just loaded, so every
+     reload ended in "could not play" over a track that plays fine. Dropping
+     the attribute and re-running load() abandons the resource silently. */
+  if (audio) { audio.pause(); audio.removeAttribute("src"); audio.load(); }
+  audio = null;
+  player.time = 0;
+  player.duration = 0;
+  transport(false);
+
+  if (!url) return;
+
+  const el = audio = new Audio(url);
+  el.preload = "auto";
+  applyRate();                     /* a new element starts at 1× otherwise */
+  /* A discarded element can still report pause or error after the swap, and
+     what it has to say is about a track no longer on screen. */
+  const live = fn => () => { if (el === audio) fn(); };
+  el.addEventListener("loadedmetadata", live(() => {
+    player.duration = el.duration || 0;
+    drawTransport();
+  }));
+  el.addEventListener("play", live(() => transport(true)));
+  el.addEventListener("pause", live(() => transport(false)));
+  el.addEventListener("ended", live(() => transport(false)));
+  el.addEventListener("error", live(() => {
+    const why = MEDIA_ERR[el.error?.code] || "the browser gave no reason";
+    const said = el.error?.message;
+    noteProblem("Could not play " + track.title,
+                { message: said ? `${why} — ${said}` : why });
+  }));
+}
+
+/* Speed without pitch.
+   Web Audio's playbackRate is a resampler: it plays the same samples on a
+   different clock, so 0.75× also drops the track five semitones and you end up
+   practising against an instrument that is out of tune with your own. The
+   media element's own stretcher is the one that does what practising slowly
+   means — preservesPitch keeps the key and stretches time — so the element
+   stays the clock and this is a property on it rather than a graph.
+   It is the default in every current browser; set it anyway, because a browser
+   that has quietly turned it off would be silently transposing the track. */
+const rate = () => num("speed");
+
+function applyRate() {
+  /* Before the early return: the readout answers for the speed whether or not
+     there is a track loaded to apply it to. */
+  drawTransport();
+  if (!audio) return;
+  audio.preservesPitch = true;
+  if ("mozPreservesPitch" in audio) audio.mozPreservesPitch = true;
+  if ("webkitPreservesPitch" in audio) audio.webkitPreservesPitch = true;
+  audio.playbackRate = rate();
+  /* The engine stretches too — WSOLA, so the key holds at any rate. */
+  if (looper.node) looper.node.port.postMessage({ cmd: "speed", v: rate() });
+}
+
+function seek(to) {
+  const t = clamp(to, 0, player.duration || 0);
+  if (looper.on && looper.mode === "engine" && looper.node) {
+    /* The engine owns the clock: a seek lands inside the programme. */
+    engineSeek(t);
+    player.time = looperTime();
+  } else {
+    player.time = t;
+    if (audio) audio.currentTime = t;
+  }
+  /* Jumping backwards must not leave the old line on screen. */
+  lastLine = -2;
+  drawTransport();
+}
+
+function transport(on) {
+  if (on !== player.playing) {
+    player.playing = on;
+    if (!on) save();
+  }
+  play.disabled = player.playing || !audio;
+  stop.disabled = !player.playing;
+}
+
+function drawTransport() {
+  /* Looping, the bar and the clock answer for the programme; otherwise for
+     the record. Position wraps with the buffer, which is the truth of it. */
+  const looping = progLooping();
+  const d = looping ? progTotal() : (player.duration || 0);
+  const t = looping ? progTime(player.time) : player.time;
+  const f = d ? clamp(t / d, 0, 1) : 0;
+  tlFill.style.width = (f * 100) + "%";
+  tlHead.style.left = (f * 100) + "%";
+  clockOut.textContent = `${fmtTime(t)} / ${fmtTime(d)}`;
+
+  /* Tempo is read off the grid rather than declared, so it tracks the take —
+     and then off the speed as well, because what the readout is for is the
+     count you are playing to, not the one on the record. */
+  const r = rate();
+  const bpm = bpmAt(player.time);
+  bpmOut.textContent = bpm ? Math.round(bpm * r) : "";
+  rateOut.textContent = r === 1 ? "" : "×" + String(+r.toFixed(2));
+}
+
+/* ── loops ──────────────────────────────────────────────────────────────
+   A "loop:" range in the map is a passage worth going round — the drum
+   pattern, the hard bar, the solo. The strip under the header offers one
+   button per range; pressing one appends a copy of it to the loop buffer,
+   the strip below that, and the buffer is the programme the player then
+   goes round: add A three times and then B, and it plays A A A B A A A B…
+   until the buffer is cleared.
+
+   The going round itself is the beatmapper's trick (src/wsola.cpp), ported:
+   the whole track is decoded to PCM and played through a WSOLA
+   time-stretcher in an AudioWorklet, and a wrap just moves the read head —
+   the overlap-add tail crossfades the seam, so there is no seek, no decoder
+   gap, no click. It also keeps the speed control honest inside a loop:
+   WSOLA is a stretcher, not a resampler, so any rate keeps the key.
+   Where the worklet cannot be had, the old seek-back loop still runs —
+   audibly worse, and it says so. */
+const looper = {
+  buf: [],           /* the programme: { name, from, to } in track seconds */
+  seg: 0,            /* which entry is sounding */
+  on: false,         /* buffer engaged: the engine (or fallback) owns playback */
+  mode: "engine",    /* "engine" until proven otherwise, then "fallback" */
+  playing: false,    /* engine transport, distinct from the element's */
+  ctx: null, node: null, pending: null, forTrack: null, moduleReady: false,
+  sampleRate: 0,
+  srcBytes: null, srcUrl: null,  /* where the PCM can be had, set per track */
+  lastF: 0, lastAt: 0,           /* last cursor report + arrival stamp */
+  clockT: null, clockAt: 0,      /* the smoothed, forward-only display clock */
+  hopStamp: 0,                   /* fallback: when the last hop was issued */
+  decoding: false,
+};
+
+/* The worklet, as source: the page must work from file://, so the module is
+   handed over as a Blob URL rather than fetched. Frames are planar rather
+   than interleaved because that is what the worklet hands out, and the
+   single loop range became a segment list: crossing one segment's end
+   carries the overshoot into the next, and the last wraps to the first. */
+const WSOLA_SRC = `
+const FRAME = 2048, HOP = 512, SEARCH = 128;
+const HANN = new Float32Array(FRAME);
+for (let i = 0; i < FRAME; i++)
+  HANN[i] = 0.25 * (1 - Math.cos(2 * Math.PI * i / FRAME));
+
+registerProcessor("wsola", class extends AudioWorkletProcessor {
+  constructor() {
+    super();
+    this.pcm = null; this.frames = 0;
+    this.synth = null; this.stage = null;
+    this.pending = 0; this.offset = 0; this.first = true;
+    this.pos = 0; this.speed = 1;
+    this.segs = []; this.seg = 0;
+    this.port.onmessage = e => this.msg(e.data);
+  }
+
+  msg(m) {
+    if (m.cmd === "pcm") {
+      this.pcm = m.channels;
+      this.frames = m.channels[0].length;
+      this.synth = m.channels.map(() => new Float32Array(FRAME));
+      this.stage = m.channels.map(() => new Float32Array(HOP));
+      this.hardSeek(0);
+    } else if (m.cmd === "segs") {
+      this.segs = m.segs;
+      if (!this.segs.length) return;
+      /* Keep going if the head is still inside some segment — editing the
+         programme should not restart the bar — otherwise fall to the start
+         of the nearest surviving entry, tail preserved so the jump is a
+         crossfade like any other. */
+      const i = this.segs.findIndex(g => this.pos >= g.s && this.pos < g.e);
+      if (i >= 0) this.seg = i;
+      else {
+        this.seg = Math.min(this.seg, this.segs.length - 1);
+        this.pos = this.segs[this.seg].s;
+      }
+    } else if (m.cmd === "seek") {
+      this.seg = m.seg;
+      this.hardSeek(m.frame);
+    } else if (m.cmd === "speed") {
+      this.speed = m.v;
+    }
+  }
+
+  hardSeek(frame) {
+    this.pos = frame;
+    this.pending = this.offset = 0;
+    this.first = true;               /* nothing laid down to align against */
+    if (this.synth) this.synth.forEach(b => b.fill(0));
+    this.report();
+  }
+
+  report() { this.port.postMessage({ f: this.pos, seg: this.seg }); }
+
+  /* Where the read head goes when it crosses the end of its segment: into
+     the next entry of the programme, overshoot and all, so the groove keeps
+     its phase across the seam. */
+  advance() {
+    if (!this.segs.length) return this.pos < this.frames;
+    let g = this.segs[this.seg], guard = 0;
+    while (this.pos >= g.e && guard++ < 64) {
+      const over = this.pos - g.e;
+      this.seg = (this.seg + 1) % this.segs.length;
+      g = this.segs[this.seg];
+      this.pos = g.s + over;
+    }
+    return true;
+  }
+
+  /* One synthesis hop: find the analysis frame near the nominal read head
+     whose opening best matches the overlap tail already laid, window it in,
+     ship the first HOP frames, keep the tail. src/wsola.cpp, step for step. */
+  step() {
+    const ch = this.pcm.length;
+    const base = Math.floor(this.pos);
+
+    let best = 0;
+    if (!this.first && this.frames >= HOP) {
+      let bc = -Infinity;
+      for (let d = -SEARCH; d <= SEARCH; d++) {
+        const cand = base + d;
+        if (cand < 0 || cand + HOP > this.frames) continue;
+        let corr = 0;
+        for (let c = 0; c < ch; c++) {
+          const src = this.pcm[c], ref = this.synth[c];
+          for (let i = 0; i < HOP; i++) corr += ref[i] * src[cand + i];
+        }
+        if (corr > bc) { bc = corr; best = d; }
+      }
+    }
+
+    let read = base + best;
+    if (read < 0) read = 0;
+    if (this.frames >= FRAME) read = Math.min(read, this.frames - FRAME);
+    else read = 0;
+
+    for (let c = 0; c < ch; c++) {
+      const src = this.pcm[c], syn = this.synth[c];
+      const n = Math.min(FRAME, this.frames - read);
+      for (let i = 0; i < n; i++) syn[i] += src[read + i] * HANN[i];
+      this.stage[c].set(syn.subarray(0, HOP));
+      syn.copyWithin(0, HOP);
+      syn.fill(0, FRAME - HOP);
+    }
+
+    this.pos += HOP * this.speed;
+    this.pending = HOP;
+    this.offset = 0;
+    this.first = false;
+    this.report();
+  }
+
+  process(_, outputs) {
+    const out = outputs[0];
+    if (!this.pcm || !out.length) return true;
+    const n = out[0].length;
+    let written = 0;
+    while (written < n) {
+      if (this.offset >= this.pending) {
+        if (!this.advance()) break;
+        this.step();
+      }
+      const take = Math.min(this.pending - this.offset, n - written);
+      for (let c = 0; c < out.length; c++) {
+        const src = this.stage[Math.min(c, this.stage.length - 1)];
+        out[c].set(src.subarray(this.offset, this.offset + take), written);
+      }
+      written += take;
+      this.offset += take;
+    }
+    return true;
+  }
+});
+`;
+
+function buildEngine() {
+  looper.decoding = true;
+  renderLoopBuf();
+  return (async () => {
+    const ctx = looper.ctx || (looper.ctx = new AudioContext());
+    if (!looper.moduleReady) {
+      const url = URL.createObjectURL(new Blob([WSOLA_SRC], { type: "application/javascript" }));
+      try { await ctx.audioWorklet.addModule(url); } finally { URL.revokeObjectURL(url); }
+      looper.moduleReady = true;
+    }
+    /* decodeAudioData eats its buffer, so it gets a copy and the original
+       stays good for the next track load or a retry. */
+    let bytes;
+    if (looper.srcBytes) bytes = looper.srcBytes.slice(0);
+    else if (looper.srcUrl) bytes = await (await fetch(looper.srcUrl)).arrayBuffer();
+    else throw new Error("no media to decode");
+    const decoded = await ctx.decodeAudioData(bytes);
+
+    if (looper.node) looper.node.disconnect();
+    const node = looper.node = new AudioWorkletNode(ctx, "wsola",
+      { numberOfInputs: 0, outputChannelCount: [2] });
+    node.connect(ctx.destination);
+    node.port.onmessage = e => {
+      looper.lastF = e.data.f;
+      looper.lastAt = performance.now();
+      if (e.data.seg !== looper.seg) { looper.seg = e.data.seg; drawLoopStrips(); }
+    };
+
+    const chs = [];
+    for (let c = 0; c < Math.min(2, decoded.numberOfChannels); c++)
+      chs.push(new Float32Array(decoded.getChannelData(c)));
+    node.port.postMessage({ cmd: "pcm", channels: chs }, chs.map(a => a.buffer));
+    node.port.postMessage({ cmd: "speed", v: rate() });
+    looper.sampleRate = decoded.sampleRate;
+    return looper;
+  })().catch(e => {
+    noteProblem("Seamless looping unavailable — falling back to plain seeks", e);
+    looper.mode = "fallback";
+    looper.pending = null;
+    return null;
+  }).finally(() => { looper.decoding = false; renderLoopBuf(); });
+}
+
+function ensureEngine() {
+  if (looper.mode !== "engine") return Promise.resolve(null);
+  if (!looper.pending || looper.forTrack !== track.id) {
+    looper.forTrack = track.id;
+    looper.pending = buildEngine();
+  }
+  return looper.pending;
+}
+
+const segFrames = () => looper.buf.map(l => ({
+  s: Math.round(l.from * looper.sampleRate),
+  e: Math.round(l.to * looper.sampleRate)
+}));
+
+function engineSeek(t) {
+  let i = looper.buf.findIndex(l => t >= l.from && t < l.to);
+  if (i < 0) {
+    /* Outside the programme — a nudge or a timeline drag past its edges —
+       lands on the nearest entry rather than being ignored. */
+    let bd = Infinity;
+    looper.buf.forEach((l, k) => {
+      const d = Math.min(Math.abs(t - l.from), Math.abs(t - l.to));
+      if (d < bd) { bd = d; i = k; }
+    });
+    t = clamp(t, looper.buf[i].from, looper.buf[i].to - .001);
+  }
+  looper.seg = i;
+  looper.lastF = t * looper.sampleRate;
+  looper.lastAt = performance.now();
+  looper.clockT = null;                  /* a seek snaps the display clock */
+  looper.node.port.postMessage({ cmd: "seek",
+    frame: Math.round(t * looper.sampleRate), seg: i });
+  drawLoopStrips();
+}
+
+function enginePlay() {
+  if (!looper.ctx) return;
+  looper.playing = true;
+  looper.lastAt = performance.now();
+  looper.ctx.resume().catch(() => {});
+  transport(true);
+}
+
+function engineHold() {
+  looper.playing = false;
+  if (looper.ctx) looper.ctx.suspend().catch(() => {});
+  transport(false);
+}
+
+/* ── programme time ───────────────────────────────────────────────────────
+   While the buffer plays, the transport shows the programme rather than the
+   record: the parts laid end to end, position accumulating through them and
+   wrapping when the whole programme comes round. The track's own clock stays
+   underneath — beats, bpm, lyrics all still read real track time. */
+const progLooping = () => looper.on && looper.buf.length > 0;
+const progTotal = () => looper.buf.reduce((a, l) => a + (l.to - l.from), 0);
+
+function progTime(t) {
+  let acc = 0;
+  for (let i = 0; i < looper.seg && i < looper.buf.length; i++)
+    acc += looper.buf[i].to - looper.buf[i].from;
+  const cur = looper.buf[looper.seg] || looper.buf[0];
+  return acc + clamp(t - cur.from, 0, cur.to - cur.from);
+}
+
+/* Jump to a programme position: unlike a track seek, this knows *which pass*
+   of a repeated part was meant — clicking in the third A goes to the third
+   chip, not the first. */
+function progGoto(pt) {
+  let acc = 0;
+  for (let i = 0; i < looper.buf.length; i++) {
+    const l = looper.buf[i], d = l.to - l.from;
+    if (pt < acc + d || i === looper.buf.length - 1) {
+      const t = l.from + clamp(pt - acc, 0, Math.max(0, d - .001));
+      looper.seg = i;
+      if (looper.mode === "engine" && looper.node) {
+        looper.lastF = t * looper.sampleRate;
+        looper.lastAt = performance.now();
+        looper.clockT = null;
+        looper.node.port.postMessage({ cmd: "seek",
+          frame: Math.round(t * looper.sampleRate), seg: i });
+      } else if (audio) audio.currentTime = t;
+      player.time = t;
+      lastLine = -2;
+      drawLoopStrips();
+      drawTransport();
+      return;
+    }
+    acc += d;
+  }
+}
+
+/* The seams between the programme's parts, as marks on the timeline. Rebuilt
+   with the strips: cheap, and always in step with the buffer. */
+function drawTicks() {
+  [...timeline.querySelectorAll(".tl-tick")].forEach(el => el.remove());
+  if (!progLooping() || looper.buf.length < 2) return;
+  const total = progTotal();
+  let acc = 0;
+  for (let i = 0; i < looper.buf.length - 1; i++) {
+    acc += looper.buf[i].to - looper.buf[i].from;
+    const el = document.createElement("div");
+    el.className = "tl-tick";
+    el.style.left = (acc / total * 100) + "%";
+    timeline.append(el);
+  }
+}
+
+/* The engine's clock. Cursor reports arrive ~86 times a second and the gaps
+   are bridged by extrapolation — which can land a few milliseconds ahead of
+   the next report, so the raw estimate steps backwards when one arrives.
+   Time that runs backwards, however slightly, makes every threshold in the
+   display flicker as it re-crosses: the beat boxes, the pass counter, the
+   group under the cursor. So the raw estimate feeds a smoothed clock that
+   only moves forward within a pass, leaning gently toward the reports; a
+   genuine jump — the wrap, a seek — snaps. */
+function looperTime() {
+  if (!looper.sampleRate) return player.time;
+  const now = performance.now();
+  let raw = looper.lastF / looper.sampleRate;
+  if (looper.playing) raw += (now - looper.lastAt) / 1000 * rate();
+
+  const t0 = looper.clockT;
+  if (t0 == null || Math.abs(raw - t0) > .25) {
+    looper.clockT = raw;
+  } else {
+    const ideal = t0 + (looper.playing ? (now - looper.clockAt) / 1000 * rate() : 0);
+    let t = ideal + (raw - ideal) * .1;
+    if (looper.playing && t < t0) t = t0;
+    looper.clockT = t;
+  }
+  looper.clockAt = now;
+  return looper.clockT;
+}
+
+/* Every edit to the buffer lands here: it decides whether looping should be
+   running at all, hands the engine the new programme, and moves the playhead
+   only when a move was asked for. Engaging starts playback — pressing a
+   section button means "play this round", not "arm something". */
+function loopApply(seekTo) {
+  renderLoopBuf();
+  if (!looper.buf.length) return loopOff();
+
+  const engaging = !looper.on;
+  if (engaging) {
+    looper.on = true;
+    looper.seg = 0;
+    /* The context has to be born inside the click for autoplay's blessing;
+       by the time the decode lands the gesture may be spent. */
+    if (looper.mode === "engine" && !looper.ctx) {
+      try { looper.ctx = new AudioContext(); }
+      catch (e) { looper.mode = "fallback"; }
+    }
+    if (audio) audio.pause();
+  }
+
+  (async () => {
+    const eng = await ensureEngine();
+    if (!looper.on || !looper.buf.length) return;    /* cleared while decoding */
+    if (eng) {
+      eng.node.port.postMessage({ cmd: "segs", segs: segFrames() });
+      if (engaging || seekTo != null) engineSeek(seekTo != null ? seekTo : looper.buf[0].from);
+      if (engaging) enginePlay();
+    } else if (audio) {
+      /* Fallback: the element stays the clock and frame() hops the seams. */
+      looper.seg = Math.min(looper.seg, looper.buf.length - 1);
+      if (engaging || seekTo != null) seek(seekTo != null ? seekTo : looper.buf[0].from);
+      if (engaging) audio.play().catch(() => {});
+    }
+    drawLoopStrips();
+  })();
+
+  refreshGhost();
+}
+
+function loopOff() {
+  if (!looper.on) return drawLoopStrips();
+  const t = player.time;
+  const was = looper.mode === "engine" ? looper.playing : player.playing;
+  looper.on = false;
+  looper.seg = 0;
+  if (looper.mode === "engine") {
+    /* Hand the clock back to the element where the engine left off. */
+    looper.playing = false;
+    if (looper.ctx) looper.ctx.suspend().catch(() => {});
+    if (audio) {
+      audio.currentTime = clamp(t, 0, player.duration || 0);
+      if (was) audio.play().catch(() => {});
+    }
+  }
+  drawLoopStrips();
+  refreshGhost();
+}
+
+/* ── the loop buffer's edits ──────────────────────────────────────────── */
+function bufAdd(l) {
+  looper.buf.push({ name: l.name, from: l.t_start, to: l.t_end });
+  loopApply(looper.buf.length === 1 ? l.t_start : null);
+}
+
+function bufRemove(i) {
+  looper.buf.splice(i, 1);
+  if (looper.seg >= i && looper.seg > 0) looper.seg--;
+  loopApply(null);
+}
+
+function bufClear() {
+  looper.buf = [];
+  loopApply(null);
+}
+
+function bufMove(i, j) {
+  const [x] = looper.buf.splice(i, 1);
+  looper.buf.splice(j, 0, x);
+  if (looper.seg === i) looper.seg = j;
+  else if (i < looper.seg && j >= looper.seg) looper.seg--;
+  else if (i > looper.seg && j <= looper.seg) looper.seg++;
+  loopApply(null);
+}
+
+/* ── the strips ───────────────────────────────────────────────────────── */
+function renderLoopBar() {
+  loopBar.replaceChildren(...loopRanges.map(l => {
+    const b = document.createElement("button");
+    b.textContent = "⟳ " + l.name;
+    b.title = `${fmtTime(l.t_start)} – ${fmtTime(l.t_end)} — add to the loop buffer`;
+    b.onclick = () => bufAdd(l);
+    return b;
+  }));
+  /* Both strips come and go together: the buffer is *available* whenever
+     there are loopable sections, empty or not. Their height changes the
+     stage's, so the panels re-place. */
+  const show = loopRanges.length > 0;
+  const moved = show === loopBar.hidden;
+  loopBar.hidden = loopBuffer.hidden = !show;
+  if (moved) layout();
+  renderLoopBuf();
+}
+
+function renderLoopBuf() {
+  const kids = [];
+  const label = document.createElement("span");
+  label.className = "strip-label";
+  label.textContent = "loop buffer";
+  kids.push(label);
+
+  if (!looper.buf.length) {
+    const h = document.createElement("span");
+    h.className = "hint";
+    h.textContent = "press a section above to add it — the buffer plays in order and repeats";
+    kids.push(h);
+  }
+  looper.buf.forEach((l, i) => {
+    const b = document.createElement("button");
+    b.className = "chip";
+    b.textContent = l.name;
+    b.title = "click to remove — drag to reorder";
+    chipHandlers(b, i);
+    kids.push(b);
+  });
+  if (looper.decoding) {
+    const h = document.createElement("span");
+    h.className = "hint";
+    h.textContent = "decoding…";
+    kids.push(h);
+  }
+  if (looper.buf.length) {
+    const x = document.createElement("button");
+    x.className = "clear";
+    x.textContent = "✕ clear";
+    x.onclick = bufClear;
+    kids.push(x);
+  }
+  loopBuffer.replaceChildren(...kids);
+  drawLoopStrips();
+}
+
+function drawLoopStrips() {
+  const inBuf = new Set(looper.buf.map(l => l.name));
+  [...loopBar.children].forEach((b, i) =>
+    b.classList.toggle("active", inBuf.has(loopRanges[i]?.name)));
+  [...loopBuffer.querySelectorAll(".chip")].forEach((b, i) =>
+    b.classList.toggle("active", looper.on && i === looper.seg));
+  drawTicks();
+}
+
+/* A chip answers two gestures: a click removes it, a drag reorders it. The
+   pointer decides which it was — past a few pixels of travel it is a drag,
+   the chip stepping through its siblings as the pointer crosses their
+   midlines, and the buffer is reordered once, at the end. */
+function chipHandlers(el, index) {
+  el.onpointerdown = e => {
+    e.preventDefault();
+    el.setPointerCapture(e.pointerId);
+    const x0 = e.clientX;
+    let dragging = false;
+    const mid = c => { const r = c.getBoundingClientRect(); return r.left + r.width / 2; };
+
+    el.onpointermove = ev => {
+      if (!dragging && Math.abs(ev.clientX - x0) < 6) return;
+      dragging = true;
+      el.classList.add("drag");
+      const chips = [...loopBuffer.querySelectorAll(".chip")];
+      const at = chips.indexOf(el);
+      const left = chips[at - 1], right = chips[at + 1];
+      if (left && ev.clientX < mid(left)) loopBuffer.insertBefore(el, left);
+      else if (right && ev.clientX > mid(right)) loopBuffer.insertBefore(right, el);
+    };
+
+    el.onpointerup = () => {
+      el.onpointermove = el.onpointerup = null;
+      el.classList.remove("drag");
+      if (!dragging) return bufRemove(index);
+      const to = [...loopBuffer.querySelectorAll(".chip")].indexOf(el);
+      if (to !== index) bufMove(index, to);
+      else drawLoopStrips();
+    };
+  };
+}
+
+/* ── the frame ──────────────────────────────────────────────────────────── */
+function frame() {
+  if (looper.on && looper.mode === "engine") player.time = looperTime();
+  else if (audio) player.time = audio.currentTime;
+
+  /* The fallback loop: the element seeks — audibly — where the engine would
+     have crossfaded. Debounced, because the element keeps reporting the old
+     position until the seek lands, and hopping again on every frame of that
+     latency would spin the whole programme. */
+  if (looper.on && looper.mode === "fallback" && looper.buf.length && audio) {
+    const cur = looper.buf[looper.seg] || looper.buf[0];
+    if (player.time >= cur.to && performance.now() - looper.hopStamp > 250) {
+      looper.hopStamp = performance.now();
+      looper.seg = (looper.seg + 1) % looper.buf.length;
+      seek(looper.buf[looper.seg].from);
+      drawLoopStrips();
+    }
+  }
+
+  if (player.playing) practised();
+  updateLyrics(player.time);
+  /* The programme chart reads programme time; everything else, the track's. */
+  updateChords(loopGhostOn ? progTime(player.time) : player.time);
+  updatePane(player.time);
+  drawTransport();
+  requestAnimationFrame(frame);
+}
+
+/* How long, and how recently — per track, so the library can put what you have
+   been working on at the top. */
+let lastTick = 0;
+function practised() {
+  const now = Date.now();
+  const dt = lastTick ? now - lastTick : 0;
+  lastTick = now;
+  if (!track.id || dt <= 0 || dt > 1000) return;
+
+  const s = store.stats[track.id] || (store.stats[track.id] = { secs: 0, last: 0 });
+  s.secs += dt / 1000;
+  s.last = now;
+  if (Math.floor(s.secs) % 10 === 0) save();
+}
+
+const ago = t => {
+  if (!t) return "";
+  const d = (Date.now() - t) / 86400000;
+  return d < 1 ? "today" : d < 2 ? "yesterday" : Math.floor(d) + "d";
+};
+const spent = s => (!s || s < 60 ? "" : Math.round(s / 60) + "m");
+
+/* ── commands ───────────────────────────────────────────────────────────
+   The single door in: clicks, keys, the URL, and later a socket. */
+function command(msg) {
+  const { cmd } = msg;
+  if (cmd === "set") return set(msg.name, msg.value);
+  if (cmd === "play") return looper.on && looper.mode === "engine"
+    ? enginePlay() : audio && audio.play().catch(() => {});
+  if (cmd === "stop") return looper.on && looper.mode === "engine"
+    ? engineHold() : audio && audio.pause();
+  if (cmd === "seek") return seek(Number(msg.time) || 0);
+  if (cmd === "nudge") return progLooping()
+    ? progGoto(mod(progTime(player.time) + Number(msg.by), progTotal()))
+    : seek(player.time + Number(msg.by));
+  if (cmd === "loop") {
+    /* The socket's single range is a one-entry programme. */
+    looper.buf = msg.from == null ? []
+      : [{ name: msg.name || "loop", from: Number(msg.from), to: Number(msg.to) }];
+    loopApply(looper.buf.length ? looper.buf[0].from : null);
+    return;
+  }
+  if (cmd === "track") return openTrackByKey(msg.key);
+  if (cmd === "reload") return reloadTrack();
+}
+
+const net = {
+  socket: null,
+  connect(url) {
+    this.socket = new WebSocket(url);
+    this.socket.onmessage = e => { try { command(JSON.parse(e.data)); } catch (err) {} };
+  },
+  send(msg) {
+    if (this.socket && this.socket.readyState === 1) this.socket.send(JSON.stringify(msg));
+  }
+};
+
+/* ── the library ────────────────────────────────────────────────────────
+   v0.1's loading, unchanged in behaviour: a directory handle kept in
+   IndexedDB so the folder survives a reload, a file picker for one-offs, and
+   pairing by filename stem — a track is a media file with a .txt beside it.
+   This is the piece the server will eventually replace, endpoint for
+   endpoint, without the rest of the app noticing. */
+/* .mov is here for one reason: it is the only container that holds raw MP3
+   frames in a way Apple's decoder accepts, which is what a VBR track remuxed
+   for accurate seeking has to be if Safari is ever going to play it. */
+const MEDIA_RE = /\.(mp3|ogg|wav|flac|m4a|mp4|m4v|mov|webm)$/i;
+let _db = null, dirs = [], picked = [], remote = [];
+
+function dbOpen() {
+  if (_db) return Promise.resolve(_db);
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open("riffhound-karaoke", 2);
+    req.onupgradeneeded = e => {
+      const db = e.target.result;
+      if (!db.objectStoreNames.contains("dirs"))
+        db.createObjectStore("dirs", { keyPath: "id", autoIncrement: true });
+      if (!db.objectStoreNames.contains("charts"))
+        db.createObjectStore("charts", { keyPath: "id" });
+    };
+    req.onsuccess = e => { _db = e.target.result; resolve(_db); };
+    req.onerror = e => reject(e.target.error);
+  });
+}
+
+function dbRun(store, mode, fn) {
+  return dbOpen().then(db => new Promise((resolve, reject) => {
+    const tx = db.transaction(store, mode);
+    const req = fn(tx.objectStore(store));
+    tx.oncomplete = () => resolve(req ? req.result : undefined);
+    tx.onerror = e => reject(e.target.error);
+  }));
+}
+
+const dbAdd = rec => dbRun("dirs", "readwrite", s => s.add(rec));
+const dbAll = () => dbRun("dirs", "readonly", s => s.getAll());
+const dbDel = id => dbRun("dirs", "readwrite", s => s.delete(id));
+
+/* The last chart seen for a track. Not a cache in front of the server -- the
+   server is always asked first, because the chart is the thing being edited in
+   the next window and a stale one is worse than a slow one. This is what is
+   left when the server does not answer at all: the difference between
+   practising on last night's annotations and practising on none. */
+const chartKept = id =>
+  dbRun("charts", "readonly", s => s.get(id)).then(r => r?.text ?? null).catch(() => null);
+const chartKeep = (id, text) =>
+  dbRun("charts", "readwrite", s => s.put({ id, text, at: Date.now() })).catch(() => {});
+
+const canDir = () => typeof showDirectoryPicker === "function";
+const canFiles = () => typeof showOpenFilePicker === "function";
+
+async function perm(handle) {
+  try {
+    if (await handle.queryPermission({ mode: "read" }) === "granted") return true;
+    return await handle.requestPermission({ mode: "read" }) === "granted";
+  } catch { return false; }
+}
+
+async function enumerate(handle) {
+  const files = [];
+  try {
+    for await (const [name, h] of handle.entries())
+      if (h.kind === "file") files.push({ name, handle: h });
+  } catch {}
+  return files.sort((a, b) => a.name.localeCompare(b.name));
+}
+
+/* Pair a media file with the .txt of the same stem. Only pairs are tracks. */
+function pairUp(files, source) {
+  const stems = {};
+  for (const f of files) {
+    const name = f.name || f.file?.name || "";
+    const stem = name.replace(/\.[^/.]+$/, "");
+    if (MEDIA_RE.test(name)) (stems[stem] ||= {}).media = f;
+    else if (/\.txt$/i.test(name)) (stems[stem] ||= {}).txt = f;
+  }
+  return Object.entries(stems)
+    .filter(([, p]) => p.media)
+    .map(([stem, p]) => ({
+      id: source + "/" + stem,
+      title: (stem.includes("/") ? stem.split("/").pop() : stem).replace(/[_\-]+/g, " "),
+      source, media: p.media, txt: p.txt || null
+    }));
+}
+
+async function refreshDirs() {
+  dirs = [];
+  if (!canDir()) return;
+  let rows = [];
+  try { rows = await dbAll(); } catch { return; }
+  for (const row of rows) {
+    const ok = await perm(row.handle);
+    dirs.push({ id: row.id, name: row.handle.name, handle: row.handle,
+                files: ok ? await enumerate(row.handle) : [], ok });
+  }
+}
+
+/* Where a track lives, which is the only thing that tells two files of the same
+   name apart. A library with "Battle Hymn of the Republic" in two folders is a
+   library, not a mistake -- but a list that shows the same title twice with
+   nothing to choose between them is useless. */
+const where = e =>
+  (e.remote ? [e.source, e.folder].filter(Boolean).join("/") : e.source) || "";
+
+function library() {
+  const out = [];
+  for (const r of remote) if (r.ok) out.push(...serverTracks(r));
+  for (const d of dirs) if (d.ok) out.push(...pairUp(d.files, d.name));
+  out.push(...pairUp(picked, "picked"));
+
+  /* One server reached by two addresses is one library. That happens the moment
+     you open the page on the LAN address having used localhost before: both are
+     remembered, both answer, and every track arrives twice. Both are worth
+     keeping -- either address may be the one that works next time -- so the
+     addresses stay and the listing dedupes instead. */
+  const seen = new Set();
+  return out.filter(e => !seen.has(e.id) && seen.add(e.id));
+}
+
+/* ── servers ────────────────────────────────────────────────────────────
+   A folder handle only exists on the machine that granted it, which is why a
+   phone on a music stand cannot see the library the laptop can. A server can
+   be reached from both, so the same folder becomes the same library from
+   anywhere in the room -- and the same protocol serves the terminal client and
+   the beatmapper later, without any of them owning a filesystem.
+
+   Servers are remembered and re-checked at startup: a client should come up
+   pointed at the library it was pointed at last, without being asked. The
+   check is one small GET with a short deadline, so a server that has gone away
+   costs a second at boot and says so in the panel rather than hanging the app.
+
+   The server's own name, not its URL, keys what is remembered about a track:
+   a laptop that comes back on a different port is the same library, and losing
+   your practice history to a port number would be absurd. */
+const HELLO_MS = 2500;
+
+const cleanUrl = u => String(u || "").trim().replace(/\/+$/, "")
+  .replace(/^(?!https?:\/\/)/, "http://");
+
+async function ask(url, path, opts = {}) {
+  const ctl = new AbortController();
+  const bell = setTimeout(() => ctl.abort(), opts.ms || HELLO_MS);
+  try {
+    const r = await fetch(url + path, { signal: ctl.signal, cache: "no-store" });
+    if (!r.ok) throw new Error("server said " + r.status + " " + r.statusText);
+    return opts.text ? await r.text() : await r.json();
+  } finally {
+    clearTimeout(bell);
+  }
+}
+
+/* One handshake, then the listing. Kept together because a server that says
+   hello but cannot list is not usable, and the panel should say so once. */
+async function greet(url) {
+  const hi = await ask(url, "/api/hello");
+  if (!hi || hi.riffhound == null) throw new Error("not a RiffHound server");
+  const got = await ask(url, "/api/tracks", { ms: 8000 });
+  return { url, name: hi.name || url, roots: hi.roots || [],
+           tracks: got.tracks || [], ok: true, why: "" };
+}
+
+/* Try every server we know, in parallel: they are independent and the slow one
+   should not hold up the rest. A failure is remembered as a failure rather
+   than dropped, so the panel can say which library is not answering. */
+async function refreshServers() {
+  const known = store.servers || (store.servers = []);
+  remote = await Promise.all(known.map(async s => {
+    try {
+      return { ...await greet(s.url), at: s.at };
+    } catch (e) {
+      return { url: s.url, name: s.name || s.url, roots: [], tracks: [],
+               ok: false, why: e.name === "AbortError" ? "no answer" : e.message };
+    }
+  }));
+  /* Adopt whatever the servers now call themselves, so a rename follows. */
+  remote.forEach(r => { const k = known.find(s => s.url === r.url); if (k) k.name = r.name; });
+  save();
+}
+
+async function addServer(raw) {
+  const url = cleanUrl(raw);
+  if (!url) return "";
+  const known = store.servers || (store.servers = []);
+  let got;
+  try {
+    got = await greet(url);
+  } catch (e) {
+    noteProblem("Could not reach " + url, e);
+    return e.name === "AbortError" ? "no answer" : "failed";
+  }
+  const row = known.find(s => s.url === url) || (known.push({ url }), known.at(-1));
+  row.name = got.name;
+  row.at = Date.now();
+  save();
+  remote = [...remote.filter(r => r.url !== url), got];
+  return "ok";
+}
+
+function forgetServer(url) {
+  store.servers = (store.servers || []).filter(s => s.url !== url);
+  remote = remote.filter(r => r.url !== url);
+  save();
+}
+
+/* An id is a path, so it arrives with slashes in it and may arrive with spaces,
+   plus signs or hashes. Encoding it a segment at a time keeps the slashes as
+   slashes -- they are the structure -- and everything else literal. */
+const idPath = tid => String(tid).split("/").map(encodeURIComponent).join("/");
+
+/* Server tracks alongside local ones, in the shape the rest of the app already
+   understands: a title, a source, and somewhere to get the two files. */
+const serverTracks = r => r.tracks.map(t => ({
+  id: "@" + r.name + "/" + t.id,
+  title: t.title,
+  source: r.name,
+  remote: { base: r.url, tid: t.id },
+  has: t.has,
+  folder: t.folder || "",
+  media: { url: r.url + "/media/" + idPath(t.id), name: t.media },
+  txt: t.chart ? { url: r.url + "/chart/" + idPath(t.id), name: t.title + ".txt" } : null
+}));
+
+/* ── what a track carries ───────────────────────────────────────────────
+   Beats, chords, lyrics, loops: enough to answer "show me only the ones I
+   have beatmapped" — or the ones with a passage to go round — without
+   opening them one at a time.
+
+   A server says so in its listing, because it has the files and can read them
+   for the price of a stat. A folder handle cannot be asked that cheaply, so the
+   sidecars are read in the background after the listing is already on screen,
+   and re-read only where the file has changed. Until that finishes a local
+   track counts as unknown and passes every filter: hiding something because we
+   have not looked yet is the one answer that is definitely wrong. */
+const NOTHING = { beats: false, chords: false, lyrics: false, loops: false };
+const localFlags = new Map();   // track id -> { beats, chords, lyrics, loops }
+const localSeen = new Map();    // track id -> "size:mtime" already read
+
+const trackFlags = e =>
+  e.remote ? (e.has || NOTHING)
+  : !e.txt ? NOTHING
+  : localFlags.get(e.id) || null;   /* null = not looked at yet */
+
+/* Read the sidecars of every local track, cheapest first: a file whose size and
+   timestamp are unchanged is skipped outright. parseTimeseries is the only
+   thing that decides what an annotation is, here as everywhere else. */
+async function scanLocalCharts() {
+  let found = false;
+  for (const e of library()) {
+    if (e.remote || !e.txt) continue;
+    try {
+      const h = e.txt.handle || e.txt.file || e.txt;
+      const f = ("getFile" in h) ? await h.getFile() : h;
+      const stamp = f.size + ":" + f.lastModified;
+      if (localSeen.get(e.id) === stamp) continue;
+      const p = parseTimeseries(await f.text());
+      localFlags.set(e.id, { beats: p.beats.length > 0,
+                             chords: p.chords.length > 0,
+                             lyrics: p.lyrics.length > 0,
+                             loops: p.loops.length > 0 });
+      localSeen.set(e.id, stamp);
+      found = true;
+    } catch { localFlags.set(e.id, NOTHING); }
+  }
+  if (found && searchBox) renderResults(searchBox.value);
+}
+
+/* Subsequence match, as v0.1 did: every letter of the query in order. */
+function fuzzy(q, s) {
+  if (!q) return true;
+  q = q.toLowerCase(); s = s.toLowerCase();
+  let qi = 0;
+  for (let i = 0; i < s.length && qi < q.length; i++) if (s[i] === q[qi]) qi++;
+  return qi === q.length;
+}
+
+/* ── what went wrong ────────────────────────────────────────────────────
+   A track that will not load used to put "⚠ could not play <title>" in the
+   header and stop there, which says nothing you could act on and costs you the
+   title as well. The header now carries the warning sign alone, and the reason
+   lives in the panel the title already opens — where there is room to name the
+   file, quote the browser, and say what to do about it. */
+let problems = [];
+
+const fileName = f => f?.name || f?.file?.name || f?.handle?.name || "the file";
+
+/* The four MediaError codes, in the terms of this app rather than the spec. */
+const MEDIA_ERR = {
+  1: "loading was aborted",
+  2: "the file could not be read to the end",
+  3: "the audio is damaged, or in a form this browser cannot decode",
+  4: "this browser will not play this file's format"
+};
+
+/* Two failures are worth naming, because both mean "the library moved under
+   you" and both are fixed the same way. */
+const HINTS = {
+  NotFoundError:    "The file is not there any more. Re-open the folder to pick up its current contents.",
+  NotReadableError: "The file changed on disk after the folder was opened. Re-open the folder to re-read it.",
+  SecurityError:    "The browser withdrew permission for this folder. Re-open it to grant access again."
+};
+
+function clearProblems() { problems = []; showProblems(); }
+
+function noteProblem(what, err) {
+  const name = err?.name || "";
+  const said = err?.message || (err == null ? "" : String(err));
+  problems.push({ what, said: name && said && !said.startsWith(name) ? `${name}: ${said}` : (said || name),
+                  hint: HINTS[name] || "" });
+  showProblems();
+}
+
+function renderTitle() {
+  titleText.textContent = (problems.length ? "⚠ " : "") + (track.title || "");
+}
+
+function showProblems() {
+  renderTitle();
+  if (!problemBox) return;
+  problemBox.replaceChildren(...problems.map(p => {
+    const box = document.createElement("div");
+    box.className = "problem";
+    const what = document.createElement("b");
+    what.textContent = p.what;
+    box.append(what);
+    for (const line of [p.said, p.hint]) {
+      if (!line) continue;
+      const el = document.createElement("span");
+      el.textContent = line;
+      box.append(el);
+    }
+    return box;
+  }));
+  problemBox.hidden = !problems.length;
+}
+
+/* Returns what could be read: a reload needs to tell "the file has no lyrics"
+   apart from "the file could not be read", which look identical on screen.
+   opts.reload marks the one caller that is re-reading the track already up,
+   which keeps the few things that belong to the practice session rather than
+   to the track — see the speed below. */
+async function openTrack(entry, opts = {}) {
+  const getFile = async h => (h && "getFile" in h ? await h.getFile() : h);
+  const ok = { text: true, media: true };
+
+  /* Name the track before clearing, because clearing repaints the title and
+     the title it should paint is this one, not the one on its way out. */
+  track = { id: entry.id, title: entry.title };
+  clearProblems();
+
+  /* The chart, from the server if there is one and from disk otherwise. A
+     server chart is always fetched, never taken from the copy kept here: it is
+     the file the beatmapper is writing to, and the whole point of edit-and-hear
+     is that the next reload has the edit in it. The kept copy is the fallback
+     for a server that has gone away, not a cache in front of one. */
+  let text = "";
+  if (entry.remote) {
+    try {
+      text = entry.txt ? await ask(entry.remote.base,
+                                   "/chart/" + idPath(entry.remote.tid),
+                                   { text: true, ms: 8000 }) : "";
+      chartKeep(entry.id, text);
+    } catch (e) {
+      console.warn("chart:", e);
+      const kept = await chartKept(entry.id);
+      if (kept == null) {
+        ok.text = false;
+        noteProblem("Could not fetch the chart for " + entry.title, e);
+      } else {
+        text = kept;
+        noteProblem("Showing the last chart kept for this track",
+                    { message: "The server did not answer, so its annotations "
+                             + "are as of the last time it did." });
+      }
+    }
+  } else if (entry.txt) {
+    try { text = await (await getFile(entry.txt.handle || entry.txt.file || entry.txt)).text(); }
+    catch (e) {
+      console.warn("lyrics:", e);
+      ok.text = false;
+      noteProblem("Could not read " + fileName(entry.txt), e);
+    }
+  }
+
+  const parsed = parseTimeseries(text);
+  lyricLines = parsed.lyrics;
+  sections = parsed.sections;
+  beatGrid = parsed.beats;
+  analyseBeats();
+  clearChords();
+  chordLine = parsed.chords;
+  ghostChords();
+  groupChords();
+  /* A strum line runs until the next one, and the last one runs to the end of
+     the track — which is not known yet, and does not need to be. */
+  analyseStrums(parsed.strums, Infinity);
+
+  /* A new track must not inherit the old one's programme. A reload is the
+     same track mid-practice: entries whose named ranges still exist re-map
+     to wherever those ranges now are, and the playhead stays put. */
+  loopRanges = parsed.loops;
+  if (opts.reload) {
+    looper.buf = looper.buf.map(b => {
+      const l = loopRanges.find(x => x.name === b.name);
+      return l && { name: l.name, from: l.t_start, to: l.t_end };
+    }).filter(Boolean);
+    if (looper.on) looper.buf.length ? loopApply(null) : loopOff();
+  } else {
+    looper.buf = [];
+    looper.on = false;
+    looper.playing = false;
+    looper.seg = 0;
+    looper.pending = null;
+    looper.forTrack = null;
+    looper.mode = "engine";           /* a new track earns a fresh try */
+    loopGhostOn = false;
+    if (looper.ctx) looper.ctx.suspend().catch(() => {});
+  }
+  looper.srcBytes = looper.srcUrl = null;   /* set below, as the media is read */
+  renderLoopBar();
+
+  for (const note of parsed.notes) noteProblem(note, null);
+  if (parsed.strums.length && strumLines.some(s => s.mismatch))
+    noteProblem("A strum line's span is not the length of its pattern",
+                { message: "Its slots are being spread over the span it was "
+                         + "given, so they are not eighth notes on this track." });
+
+  if (audioUrl) { URL.revokeObjectURL(audioUrl); audioUrl = null; }
+  let url = null;
+  /* Server media goes to the element as a URL rather than through a Blob: the
+     browser then streams it, seeks with Range instead of refetching, and keeps
+     the bytes in its own cache -- which is the local media cache, already
+     written, already correct about revalidating. */
+  if (entry.remote) {
+    url = entry.media.url;
+    looper.srcUrl = url;             /* the engine refetches; the cache has it */
+  } else try {
+    const file = await getFile(entry.media.handle || entry.media.file || entry.media);
+    /* Read the bytes here rather than handing the File straight to
+       createObjectURL. A File is a snapshot of a path: once the file behind it
+       has been moved or rewritten — which is the normal state of affairs when
+       something else on the machine is editing this library — the read fails.
+       Deferring it means the failure arrives later, as a bare media error on
+       the element with no name and no file attached to it. Reading now turns
+       the same failure into an exception that can say which file and why, and
+       the copy in memory cannot go stale underneath a track already playing. */
+    const bytes = await file.arrayBuffer();
+    looper.srcBytes = bytes;         /* the engine decodes from a copy of these */
+    url = audioUrl = URL.createObjectURL(new Blob([bytes], { type: file.type || "" }));
+  } catch (e) {
+    console.warn("media:", e);
+    ok.media = false;
+    noteProblem("Could not read " + fileName(entry.media), e);
+  }
+
+  titleTags.innerHTML = "";
+
+  /* A new track starts at the record's own speed. Half time belongs to the
+     passage you were working on, not to the library, and inheriting last
+     night's 0.6× is the kind of thing you only notice a verse in. A reload is
+     the same track mid-practice, so it keeps the speed you set. */
+  if (!opts.reload) command({ cmd: "set", name: "speed", value: DEF.speed.def });
+
+  lastLine = -2;
+  attachAudio(url);
+  renderResults(searchBox.value);
+  layout();
+  return ok;
+}
+
+/* Re-read the current track from disk. The beatmapper writes annotations while
+   this page is open, so edit-and-hear is the loop that matters; the playhead
+   and the playing state survive a reload, because being sent back to bar one
+   every time would make it useless mid-practice. */
+async function reloadTrack() {
+  if (!track.id) return "no track";
+
+  const at = player.time, was = player.playing;
+  if (was) command({ cmd: "stop" });
+
+  /* Re-enumerate first: a .txt written since the folder was opened is not in
+     the cached listing, so a track can gain annotations between reloads, and a
+     server can have gained the track itself. */
+  await Promise.all([refreshDirs(), refreshServers()]);
+  scanLocalCharts();
+  renderDirs();
+  const entry = library().find(e => e.id === track.id);
+  if (!entry) {
+    /* The listing was just refreshed, so this is the folder's own answer: the
+       track is not in it any more, under that name. */
+    noteProblem(track.title + " is no longer in the folder",
+                { message: "Nothing there pairs a media file with that name. "
+                         + "It may have been renamed, moved, or given a different extension." });
+    renderResults(searchBox ? searchBox.value : "");
+    return "gone";
+  }
+
+  const ok = await openTrack(entry, { reload: true });
+
+  /* seek() clamps against player.duration, and that stays 0 until the fresh
+     audio reports its metadata — seeking any earlier lands at bar one. Wait
+     for it, but never longer than a few seconds: a file that will not decode
+     must not leave the button stuck. */
+  if (audio && !player.duration) await new Promise(done => {
+    audio.addEventListener("loadedmetadata", done, { once: true });
+    audio.addEventListener("error", done, { once: true });
+    setTimeout(done, 4000);
+  });
+  if (at > 0) seek(at);
+  if (was) command({ cmd: "play" });
+
+  return ok.text && ok.media ? "ok" : "unreadable";
+}
+
+/* A track can be named by its full id, by the id its server knows it as, or by
+   title -- riffplay only has the server's id to hand, and a human typing a URL
+   only has the title. */
+const openTrackByKey = key => {
+  const found = library().find(e =>
+    e.id === key || e.remote?.tid === key || e.title === key);
+  if (found) openTrack(found);
+};
+
+/* ── set / sync ─────────────────────────────────────────────────────────
+   set() is the only thing that writes state. sync() is the only thing that
+   writes controls, and never fires events, so a change can safely come from
+   anywhere without the UI arguing with itself. */
+const controls = {};                       /* name -> the element to reflect into */
+const AFTER = {
+  layout: () => layout(),
+  lyrics: () => { renderLine(lastLine, lastRest); layout(); },
+  /* The stroke surfaces are drawn once per chord row and once per pattern, so
+     changing what they are supposed to show has to invalidate both. */
+  strum: () => { groupAt = -1; paneAt = ""; layout(); }
+};
+
+function coerce(def, v) {
+  if (def.type === "toggle") return !!v;
+  if (def.type === "range") return clamp(Number(v), def.min, def.max);
+  return def.options.some(o => o.v === v) ? v : def.def;
+}
+
+function set(name, value, opts = {}) {
+  const def = DEF[name];
+  if (!def) return;                        /* unknown setting: ignore, never throw */
+
+  state[name] = coerce(def, value);
+  const v = state[name];
+
+  if (def.css) root.style.setProperty(def.css, v + (def.unit || ""));
+  if (def.flag) root.dataset[def.flag] = v === true ? "on" : v === false ? "off" : v;
+  if (def.apply) def.apply(v);
+
+  sync(name);
+  if (!opts.quiet) {
+    (def.after || "").split(",").filter(Boolean).forEach(a => AFTER[a]?.());
+    store.display[name] = v;
+    save();
+  }
+}
+
+function sync(name) {
+  const def = DEF[name], el = controls[name], v = state[name];
+  if (!el) return;
+
+  if (def.type === "choice") {
+    [...el.children].forEach(b => b.classList.toggle("active", b.dataset.v === v));
+  } else if (def.type === "toggle") {
+    el.checked = v;
+  } else if (document.activeElement !== el) {
+    el.value = v;
+  }
+
+  const out = el.closest(".setting")?.querySelector("output");
+  if (out) out.value = def.format ? def.format(v) : v + (def.suffix || def.unit || "");
+}
+
+/* ── the panel, built from the registry ─────────────────────────────────── */
+function rowFor(def) {
+  const row = document.createElement("div");
+  row.className = "setting";
+  row.innerHTML = `<label>${def.label}</label>`;
+
+  if (def.type === "choice") {
+    const sw = document.createElement("div");
+    sw.className = "switch";
+    def.options.forEach(o => {
+      const b = document.createElement("button");
+      b.dataset.v = o.v;
+      b.innerHTML = (o.icon || "") + `<span>${o.label}</span>`;
+      b.onclick = () => command({ cmd: "set", name: def.name, value: o.v });
+      sw.append(b);
+    });
+    row.append(sw);
+    controls[def.name] = sw;
+  } else if (def.type === "toggle") {
+    const box = document.createElement("input");
+    box.type = "checkbox";
+    box.onchange = () => command({ cmd: "set", name: def.name, value: box.checked });
+    row.append(box);
+    controls[def.name] = box;
+  } else {
+    const slider = document.createElement("input");
+    Object.assign(slider, { type: "range", min: def.min, max: def.max, step: def.step });
+    slider.oninput = () => command({ cmd: "set", name: def.name, value: slider.value });
+
+    const val = document.createElement("span");
+    val.className = "val";
+    val.append(document.createElement("output"));
+    if (def.reset !== undefined) {
+      const r = document.createElement("button");
+      r.className = "reset";
+      r.textContent = "reset";
+      r.onclick = () => command({ cmd: "set", name: def.name, value: def.reset });
+      val.append(r);
+    }
+    row.append(slider, val);
+    controls[def.name] = slider;
+  }
+  return row;
+}
+
+function group(title, id, defs) {
+  const box = document.createElement("details");
+  box.open = true;
+  box.className = "tinted";
+  if (id) box.id = id;
+  const sum = document.createElement("summary");
+  sum.textContent = title;
+  const body = document.createElement("div");
+  body.className = "group";
+  body.append(...defs.map(rowFor));
+  box.append(sum, body);
+  return box;
+}
+
+function buildPanel() {
+  const of = g => SETTINGS.filter(d => d.group === g);
+  panel.replaceChildren(
+    group("Playback", null, of("playback")),
+    group("Display", null, of("common")),
+    group("Lyrics", "lyricsGroup", of("lyrics")),
+    group("Chords", "chordsGroup", of("chords")));
+
+  /* Each part's settings wear that part's colour, so the panel says which
+     display a control belongs to before you read the label. */
+  parts.lyrics.push($("lyricsGroup"));
+  parts.chords.push($("chordsGroup"));
+}
+
+
+/* ── the load dialog ────────────────────────────────────────────────────── */
+let searchBox = null, results = null, dirList = null, reloadBtn = null, problemBox = null;
+let srvBox = null, srvList = null, filterRow = null, filterCount = null;
+
+/* The things a chart can carry, as checkboxes. Off is "everything", so the
+   default library is the whole library and a box only ever narrows it. */
+const FILTERS = [
+  { key: "beats", label: "Beats" },
+  { key: "chords", label: "Chords" },
+  { key: "lyrics", label: "Lyrics" },
+  { key: "loops", label: "Loops" }
+];
+
+function buildTrackPanel() {
+  /* First thing in the panel, because when it has anything to say it is the
+     reason the panel was opened. */
+  problemBox = document.createElement("div");
+  problemBox.className = "problems";
+  problemBox.hidden = true;
+
+  const label = document.createElement("label");
+  label.htmlFor = "search";
+  label.textContent = "Load track";
+
+  filterRow = document.createElement("div");
+  filterRow.className = "filters";
+  for (const f of FILTERS) {
+    const lab = document.createElement("label");
+    const box = document.createElement("input");
+    box.type = "checkbox";
+    box.checked = !!store.filters[f.key];
+    box.onchange = () => {
+      store.filters[f.key] = box.checked;
+      save();
+      renderResults(searchBox.value);
+    };
+    lab.append(box, document.createTextNode(f.label));
+    filterRow.append(lab);
+  }
+  filterCount = document.createElement("span");
+  filterCount.className = "count";
+  filterRow.append(filterCount);
+
+  searchBox = document.createElement("input");
+  Object.assign(searchBox, { id: "search", className: "search", type: "search",
+                             placeholder: "search tracks…", autocomplete: "off" });
+  searchBox.oninput = () => renderResults(searchBox.value);
+
+  results = document.createElement("div");
+  results.className = "results";
+
+  const sources = document.createElement("div");
+  sources.className = "sources";
+  const dirBtn = document.createElement("button");
+  dirBtn.textContent = "Open folder…";
+  dirBtn.onclick = addFolder;
+  const fileBtn = document.createElement("button");
+  fileBtn.textContent = "Open files…";
+  fileBtn.onclick = addFiles;
+
+  reloadBtn = document.createElement("button");
+  reloadBtn.textContent = "Reload";
+  reloadBtn.title = "Re-read this track's audio and annotations from disk";
+  reloadBtn.onclick = async () => {
+    const label = "Reload";
+    reloadBtn.dataset.busy = "1";        /* openTrack re-renders and would re-enable it */
+    reloadBtn.disabled = true;
+    reloadBtn.textContent = "Reading…";
+    /* "Could not read" is mostly the picked-files path: a file chosen through
+       the plain input is a snapshot the browser refuses to re-read once it has
+       changed on disk. Better to say so than to show minutes-old annotations
+       as though they were fresh. */
+    const r = await reloadTrack();
+    reloadBtn.textContent = { ok: "Reloaded ✓", gone: "Not on disk",
+                              unreadable: "Could not read" }[r] || label;
+    setTimeout(() => {
+      reloadBtn.textContent = label;
+      delete reloadBtn.dataset.busy;
+      reloadBtn.disabled = !track.id;
+    }, 1400);
+  };
+  sources.append(dirBtn, fileBtn, reloadBtn);
+
+  /* One field and one button: a server is a URL, and the point of remembering
+     them is that this is the last time you type it. */
+  const srvRow = document.createElement("div");
+  srvRow.className = "sources";
+  srvBox = document.createElement("input");
+  Object.assign(srvBox, { className: "search", type: "text", spellcheck: false,
+                          placeholder: "http://host:8177", autocomplete: "off" });
+  const srvBtn = document.createElement("button");
+  srvBtn.textContent = "Connect";
+  const connect = async () => {
+    if (!srvBox.value.trim()) return;
+    srvBtn.disabled = true;
+    srvBtn.textContent = "…";
+    const r = await addServer(srvBox.value);
+    srvBtn.textContent = { ok: "Connected", "no answer": "No answer" }[r] || "Failed";
+    if (r === "ok") srvBox.value = "";
+    renderServers();
+    renderResults(searchBox.value);
+    setTimeout(() => { srvBtn.textContent = "Connect"; srvBtn.disabled = false; }, 1400);
+  };
+  srvBtn.onclick = connect;
+  srvBox.onkeydown = e => { if (e.key === "Enter") connect(); };
+  srvRow.append(srvBox, srvBtn);
+
+  srvList = document.createElement("div");
+  srvList.className = "dirs";
+
+  dirList = document.createElement("div");
+  dirList.className = "dirs";
+
+  trackPanel.replaceChildren(problemBox, label, searchBox, filterRow, results,
+                             sources, srvRow, srvList, dirList);
+  renderResults("");
+  renderServers();
+  renderDirs();
+  showProblems();          /* anything noted before the panel existed */
+}
+
+/* A track survives the filters when it has everything they ask for. Unknown --
+   a local sidecar not read yet -- passes, because the alternative is hiding a
+   track for not having been looked at. */
+function passes(e) {
+  const want = FILTERS.filter(f => store.filters[f.key]);
+  if (!want.length) return true;
+  const has = trackFlags(e);
+  return has == null || want.every(f => has[f.key]);
+}
+
+/* What a listed track is carrying, in the same words as the filters. */
+const carried = e => {
+  const has = trackFlags(e);
+  if (!has) return "";
+  const on = FILTERS.filter(f => has[f.key]).map(f => f.label.toLowerCase());
+  return on.length ? on.join(" · ") : "no chart";
+};
+
+function renderResults(query) {
+  const q = String(query || "").trim();
+  if (reloadBtn) reloadBtn.disabled = !track.id || reloadBtn.dataset.busy === "1";
+  const all = library();
+  const kept = all.filter(e => (fuzzy(q, e.title) || fuzzy(q, e.source)) && passes(e));
+  if (filterCount)
+    filterCount.textContent = kept.length === all.length
+      ? all.length + " tracks"
+      : kept.length + " of " + all.length;
+
+  const rows = kept
+    .sort((a, b) => (store.stats[b.id]?.last || 0) - (store.stats[a.id]?.last || 0))
+    .slice(0, 200)
+    .map(e => {
+      const s = store.stats[e.id] || {};
+      const b = document.createElement("button");
+      b.className = "result" + (e.id === track.id ? " on" : "");
+      b.innerHTML = `<b>${e.title}<em>${where(e)}</em></b>` +
+                    `<i>${carried(e)} ${spent(s.secs)}</i><i>${ago(s.last)}</i>`;
+      b.onclick = () => { openTrack(e); openTrackPanel(false); };
+      return b;
+    });
+
+  results.replaceChildren(...(rows.length ? rows : [Object.assign(
+    document.createElement("div"),
+    { className: "note",
+      textContent: remote.length || dirs.length || picked.length
+        ? "nothing found"
+        : "connect to a server, or open a folder of tracks, to begin" })]));
+}
+
+function renderServers() {
+  if (!srvList) return;
+  srvList.replaceChildren(...remote.map(r => {
+    const el = document.createElement("div");
+    el.className = "dir";
+    const n = document.createElement("span");
+    n.textContent = r.name + (r.ok ? "" : " (" + r.why + ")");
+    n.title = r.url;
+    const c = document.createElement("span");
+    c.className = "badge";
+    c.textContent = r.ok ? r.tracks.length + " tracks · " + (r.roots.join(", ") || "server")
+                         : "offline";
+    const x = document.createElement("button");
+    x.textContent = "forget";
+    x.onclick = () => {
+      forgetServer(r.url);
+      renderServers();
+      renderResults(searchBox.value);
+    };
+    el.append(n, c, x);
+    return el;
+  }));
+}
+
+function renderDirs() {
+  const rows = dirs.map(d => {
+    const el = document.createElement("div");
+    el.className = "dir";
+    const n = document.createElement("span");
+    n.textContent = d.name + (d.ok ? "" : " (no permission)");
+    const c = document.createElement("span");
+    c.className = "badge";
+    c.textContent = d.ok ? pairUp(d.files, d.name).length + " tracks" : "";
+    const x = document.createElement("button");
+    x.textContent = "forget";
+    x.onclick = async () => { await dbDel(d.id); await refreshDirs(); renderDirs(); renderResults(searchBox.value); };
+    el.append(n, c, x);
+    return el;
+  });
+
+  if (picked.length) {
+    const el = document.createElement("div");
+    el.className = "dir";
+    el.innerHTML = `<span>picked files</span>` +
+      `<span class="badge">${pairUp(picked, "picked").length} tracks · this session</span>`;
+    rows.push(el);
+  }
+  dirList.replaceChildren(...rows);
+}
+
+/* Prefer the File System Access API, because a handle can be kept and the
+   folder is still there after a reload. Where it is missing — Safari, Firefox,
+   and Chrome from a file:// page — fall back to a plain file input, which
+   works everywhere but only for the session. */
+async function addFolder() {
+  if (!canDir()) return $("pickDir").click();
+  try {
+    const handle = await showDirectoryPicker({ mode: "read" });
+    if (!handle) return;
+    await dbAdd({ handle });
+    await refreshDirs();
+    renderDirs();
+    renderResults(searchBox.value);
+  } catch (e) {
+    if (e.name === "AbortError") return;
+    console.warn(e);
+    $("pickDir").click();          /* blocked rather than absent: try the input */
+  }
+}
+
+async function addFiles() {
+  if (!canFiles()) return $("pickFiles").click();
+  try {
+    const handles = await showOpenFilePicker({ multiple: true });
+    for (const h of handles) picked.push({ name: h.name, handle: h });
+    renderResults(searchBox.value);
+  } catch (e) {
+    if (e.name === "AbortError") return;
+    console.warn(e);
+    $("pickFiles").click();
+  }
+}
+
+function takeFiles(list) {
+  for (const f of list) picked.push({ name: f.webkitRelativePath || f.name, file: f });
+  renderResults(searchBox ? searchBox.value : "");
+  renderDirs();
+}
+
+$("pickDir").onchange = e => takeFiles(e.target.files);
+$("pickFiles").onchange = e => takeFiles(e.target.files);
+
+/* ── menus and transport bar ────────────────────────────────────────────── */
+function openMenu(open) {
+  panel.hidden = !open;
+  menuBtn.setAttribute("aria-expanded", open);
+  menuBtn.classList.toggle("active", open);
+  if (open) openTrackPanel(false);
+}
+
+function openTrackPanel(open) {
+  trackPanel.hidden = !open;
+  titleBtn.setAttribute("aria-expanded", open);
+  if (open) { renderResults(searchBox.value); openMenu(false); }
+}
+
+function toggleFullscreen() {
+  if (document.fullscreenElement) document.exitFullscreen();
+  else document.documentElement.requestFullscreen().catch(() => {});
+}
+
+const seekFromPointer = e => {
+  const r = timeline.getBoundingClientRect();
+  const f = clamp((e.clientX - r.left) / r.width, 0, 1);
+  /* The bar is programme time while the buffer plays, so a click is too. */
+  if (progLooping()) progGoto(f * progTotal());
+  else command({ cmd: "seek", time: f * (player.duration || 0) });
+};
+
+timeline.addEventListener("pointerdown", e => {
+  timeline.setPointerCapture(e.pointerId);
+  seekFromPointer(e);
+});
+timeline.addEventListener("pointermove", e => {
+  if (e.buttons & 1) seekFromPointer(e);
+});
+
+$("back5").onclick = () => command({ cmd: "nudge", by: -5 });
+$("fwd5").onclick = () => command({ cmd: "nudge", by: 5 });
+play.onclick = () => command({ cmd: "play" });
+stop.onclick = () => command({ cmd: "stop" });
+menuBtn.onclick = () => openMenu(panel.hidden);
+titleBtn.onclick = () => openTrackPanel(trackPanel.hidden);
+$("fsBtn").onclick = toggleFullscreen;
+
+addEventListener("pointerdown", e => {
+  if (!panel.hidden && !e.target.closest(".menu")) openMenu(false);
+  if (!trackPanel.hidden && !e.target.closest(".track")) openTrackPanel(false);
+});
+addEventListener("resize", layout);
+addEventListener("fullscreenchange", () => {
+  $("fsBtn").classList.toggle("active", !!document.fullscreenElement);
+  layout();
+});
+
+addEventListener("keydown", e => {
+  /* Never shadow a browser or system shortcut: Cmd-R, Cmd-L, Cmd-F and the
+     rest all arrive here as plain letters otherwise. Shift is left alone, so
+     an upper-case letter still works. */
+  if (e.metaKey || e.ctrlKey || e.altKey) return;
+  if (e.target.tagName === "INPUT" && /^(text|search)$/.test(e.target.type)) return;
+
+  const colour = { g: "green", a: "amber", r: "red" }[e.key.toLowerCase()];
+  if (colour) ["controlColour", "lyricColour", "chordColour"]
+    .forEach(n => command({ cmd: "set", name: n, value: colour }));
+  else if (e.key === " ") command({ cmd: player.playing ? "stop" : "play" });
+  else if (e.key === "ArrowLeft") command({ cmd: "nudge", by: -5 });
+  else if (e.key === "ArrowRight") command({ cmd: "nudge", by: 5 });
+  else if (e.key.toLowerCase() === "f") toggleFullscreen();
+  else if (e.key.toLowerCase() === "z") cycleZoom();
+  else if (e.key.toLowerCase() === "l") openTrackPanel(trackPanel.hidden);
+  else if (e.key.toLowerCase() === "c")
+    command({ cmd: "set", name: "chordPanel", value: !state.chordPanel });
+  else if (e.key.toLowerCase() === "s") togglePane();
+  else if (e.key.toLowerCase() === "o") bufClear();
+  /* The shifted faces of the same two keys count too: reaching for "faster"
+     and landing on + is the same intent, and the guard above has already let
+     shifted keys through. */
+  else if (e.key === "-" || e.key === "_") nudgeSpeed(-1);
+  else if (e.key === "=" || e.key === "+") nudgeSpeed(1);
+  else if (e.key === "\\") command({ cmd: "set", name: "speed", value: DEF.speed.reset });
+  else if (e.key === "Escape") { openMenu(false); openTrackPanel(false); }
+  else return;
+  e.preventDefault();
+});
+
+/* Zoom steps through five sizes and comes back round, so Z alone is enough to
+   find a size from across the room without hunting for the slider. */
+function cycleZoom() {
+  const d = DEF.zoom, steps = 5;
+  const inc = (d.max - d.min) / (steps - 1);
+  const i = Math.round((state.zoom - d.min) / inc);
+  command({ cmd: "set", name: "zoom", value: d.min + mod(i + 1, steps) * inc });
+}
+
+/* Speed moves in the slider's own step, so the keys and the slider can never
+   land on values the other cannot reach. set() clamps to the range. */
+const nudgeSpeed = dir =>
+  command({ cmd: "set", name: "speed", value: state.speed + dir * DEF.speed.step });
+
+/* The pane is a choice, not a switch, so toggling it has to remember which
+   kind of pane you had. */
+let lastPane = "split";
+function togglePane() {
+  if (state.strumPane !== "off") lastPane = state.strumPane;
+  command({ cmd: "set", name: "strumPane",
+            value: state.strumPane === "off" ? lastPane : "off" });
+}
+
+/* ── boot ───────────────────────────────────────────────────────────────── */
+load();
+buildPanel();
+buildTrackPanel();
+
+SETTINGS.forEach(d => set(d.name, d.def, { quiet: true }));
+SETTINGS.forEach(d => d.name in store.display && set(d.name, store.display[d.name], { quiet: true }));
+
+renderTitle();
+renderLine(-1, false);
+layout();
+transport(false);
+drawTransport();
+
+/* Coming up already pointed at a library is the whole point of remembering
+   servers, so the reconnect runs before anything is asked of the user -- and
+   the page it was served from is a server by definition, so that one is worth
+   knowing about even the first time.
+
+   Then the URL has its say, in order: a server to add, a track to open, a
+   place to start. riffplay writes all three, which is how one shell command
+   ends up at a playhead in a browser. */
+const boot = new URLSearchParams(location.search);
+
+for (const [k, v] of boot)
+  if (k.startsWith("set.")) command({ cmd: "set", name: k.slice(4), value: v });
+
+(async () => {
+  const known = store.servers || (store.servers = []);
+  const trial = [];        /* added by this boot, still to prove themselves */
+  const remember = (u, keep) => {
+    const url = cleanUrl(u);
+    if (!url || known.some(s => s.url === url)) return;
+    known.push({ url, name: url, at: Date.now() });
+    if (!keep) trial.push(url);
+  };
+
+  /* A URL asked for one explicitly, so it stays in the list even if it is not
+     answering yet -- that is a server you meant. The page's own origin is a
+     guess, so it only stays if it turns out to be one of ours; otherwise every
+     static host the file was ever opened from would silt up the list. */
+  boot.getAll("server").forEach(u => remember(u, true));
+  if (location.protocol.startsWith("http")) remember(location.origin, false);
+
+  await Promise.all([refreshServers(), refreshDirs()]);
+  scanLocalCharts();          /* in the background; re-renders when it lands */
+  for (const url of trial)
+    if (!remote.find(r => r.url === url)?.ok) forgetServer(url);
+
+  renderServers();
+  renderDirs();
+  renderResults("");
+
+  if (boot.has("track")) command({ cmd: "track", key: boot.get("track") });
+  if (boot.has("t")) command({ cmd: "seek", time: boot.get("t") });
+})();
+
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
