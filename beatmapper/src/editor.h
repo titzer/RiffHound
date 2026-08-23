@@ -24,6 +24,7 @@ struct EditorState {
     bool   show_lyric_strip;   // lyric strip
     bool   show_chord_strip;   // chord strip
     bool   show_misc_strip;    // miscellaneous annotation strip
+    bool   show_timbre_strip;  // onset timbre shapes (Complete Track / Beat Detector)
 
     // Annotation lane heights, in pixels.  Dragging a lane's bottom edge sets
     // these; the rows that fit follow from the height, so a lane grows to hold

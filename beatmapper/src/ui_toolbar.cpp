@@ -5,6 +5,7 @@
 #include "imgui.h"
 #include "platform.h"
 #include "ui_beat_detector.h"
+#include "ui_complete.h"
 #include <string.h>
 #include <stdio.h>
 
@@ -257,6 +258,7 @@ void ui_toolbar_render(EditorState* editor, AudioState* audio, BeatMap* beatmap,
             beatmap->dirty = false;
             editor->has_region = false;
             ui_beat_detector_reset(autobeat);
+            ui_complete_reset();
             // Auto-show strips that have content in the loaded file
             if (sectionmap->count > 0) panel_set_visible(editor, PANEL_SECTIONS, true);
             if (lyricmap->count   > 0) panel_set_visible(editor, PANEL_LYRICS,   true);

@@ -7,6 +7,9 @@
 #include "beat_algo.h"
 #include "ui_beat_detector.h"
 #include "ui_smoothing.h"
+#include "ui_complete.h"
+#include "onset_shape.h"
+#include "ui_rhythm.h"
 #include "panels.h"
 #include "undo.h"
 #include "imgui.h"
@@ -427,12 +430,217 @@ static int lyr_split_callback(ImGuiInputTextCallbackData* d) {
     return 0;
 }
 
+
+// --- Complete Track ghosts ---------------------------------------------------
+// Proposals the Complete Track tool wants to insert, drawn in three levels of
+// presence: faint when the candidate is deselected, solid when selected, and
+// brightest with a warm hue under the mouse in the candidate list.
+
+static void draw_complete_beats(ImDrawList* dl, const EditorState* editor,
+                                float ax, float ay, float aw, float ah)
+{
+    if (!ui_complete_ghosts_active()) return;
+    const CompleteProposal* pv = ui_complete_proposal();
+    int hover = ui_complete_hover();
+    // Hovered candidate drawn last so it sits on top
+    for (int pass = 0; pass < 2; pass++) {
+        for (int ci = 0; ci < (int)pv->cands.size(); ci++) {
+            const CompleteCand& c = pv->cands[ci];
+            if (c.kind != CAND_BEATS || !ui_complete_cand_listed(ci)) continue;
+            if ((ci == hover) != (pass == 1)) continue;
+            if (c.t1 < editor->view_start || c.t0 > editor->view_end) continue;
+            ImU32 col = ui_complete_ghost_color(ci);
+            float r   = (ci == hover) ? DIAMOND_R : DIAMOND_R_INTERP + 0.5f;
+            float cy  = ay + ah * 0.5f;
+            for (int k = 0; k < c.n; k++) {
+                int idx = c.first + k;
+                if (idx < 0 || idx >= (int)pv->beat_times.size()) break;
+                double t = pv->beat_times[idx];
+                if (t < editor->view_start || t > editor->view_end) continue;
+                float x = time_to_x(t, editor->view_start, editor->view_end, ax, aw);
+                dl->AddLine(ImVec2(x, ay + 2.0f), ImVec2(x, ay + ah - 2.0f), col, 1.0f);
+                ImVec2 pts[4] = { { x, cy - r }, { x + r, cy }, { x, cy + r }, { x - r, cy } };
+                dl->AddPolyline(pts, 4, col, ImDrawFlags_Closed, 1.5f);
+            }
+            // Span bracket along the bottom edge so a run reads as one candidate
+            float x0 = time_to_x(c.t0, editor->view_start, editor->view_end, ax, aw);
+            float x1 = time_to_x(c.t1, editor->view_start, editor->view_end, ax, aw);
+            dl->AddLine(ImVec2(x0, ay + ah - 3.0f), ImVec2(x1, ay + ah - 3.0f), col, 2.0f);
+        }
+    }
+}
+
+static void draw_complete_sections(ImDrawList* dl, const EditorState* editor,
+                                   float ax, float ay, float aw, float ah, bool expanded)
+{
+    if (!ui_complete_ghosts_active()) return;
+    const CompleteProposal* pv = ui_complete_proposal();
+    int hover = ui_complete_hover();
+    for (int pass = 0; pass < 2; pass++) {
+        for (int ci = 0; ci < (int)pv->cands.size(); ci++) {
+            const CompleteCand& c = pv->cands[ci];
+            if (c.kind != CAND_SECTION || !ui_complete_cand_listed(ci)) continue;
+            if ((ci == hover) != (pass == 1)) continue;
+            float x0 = time_to_x(c.t0, editor->view_start, editor->view_end, ax, aw);
+            float x1 = time_to_x(c.t1, editor->view_start, editor->view_end, ax, aw);
+            if (x1 <= ax || x0 >= ax + aw) continue;
+            ImU32 col  = ui_complete_ghost_color(ci);
+            ImU32 fill = (col & 0x00FFFFFF) | ((ImU32)((col >> 24) / 4) << 24);
+            float y0 = ay + 2.0f, y1 = ay + ah - 2.0f;
+            dl->AddRectFilled(ImVec2(x0, y0), ImVec2(x1, y1), fill);
+            // Dashed outline: proposed, not yet real
+            float dash = 6.0f;
+            for (float x = x0; x < x1; x += dash * 2.0f) {
+                float xe = x + dash < x1 ? x + dash : x1;
+                dl->AddLine(ImVec2(x, y0), ImVec2(xe, y0), col, 1.5f);
+                dl->AddLine(ImVec2(x, y1), ImVec2(xe, y1), col, 1.5f);
+            }
+            for (float y = y0; y < y1; y += dash * 2.0f) {
+                float ye = y + dash < y1 ? y + dash : y1;
+                dl->AddLine(ImVec2(x0, y), ImVec2(x0, ye), col, 1.5f);
+                dl->AddLine(ImVec2(x1, y), ImVec2(x1, ye), col, 1.5f);
+            }
+            if (expanded) {
+                const char* lbl = c.label[0] ? c.label : SECTION_KIND_NAMES[c.sec_kind];
+                char buf[64];
+                snprintf(buf, sizeof(buf), "%s?", lbl);
+                ImVec2 ts = ImGui::CalcTextSize(buf);
+                if (x0 + 4.0f + ts.x < x1 - 2.0f)
+                    dl->AddText(ImVec2(x0 + 4.0f, y0 + (y1 - y0) * 0.62f - ts.y * 0.5f), col, buf);
+            }
+        }
+    }
+}
+
+static void draw_complete_chords(ImDrawList* dl, const EditorState* editor,
+                                 float ax, float ay, float aw, float ah, bool expanded)
+{
+    if (!ui_complete_ghosts_active()) return;
+    const CompleteProposal* pv = ui_complete_proposal();
+    int hover = ui_complete_hover();
+    dl->PushClipRect(ImVec2(ax, ay), ImVec2(ax + aw, ay + ah), true);
+    for (int pass = 0; pass < 2; pass++) {
+        for (int ci = 0; ci < (int)pv->cands.size(); ci++) {
+            const CompleteCand& c = pv->cands[ci];
+            bool sec_chords = (c.kind == CAND_SECTION && c.chord_n > 0);
+            if ((c.kind != CAND_CHORDS && !sec_chords) || !ui_complete_cand_listed(ci)) continue;
+            if ((ci == hover) != (pass == 1)) continue;
+            if (c.t1 < editor->view_start || c.t0 > editor->view_end) continue;
+            ImU32 col  = ui_complete_ghost_color(ci);
+            ImU32 fill = (col & 0x00FFFFFF) | ((ImU32)((col >> 24) / 4) << 24);
+            float y0 = ay + 2.0f, y1 = expanded ? ay + 2.0f + ImGui::GetTextLineHeight() + 4.0f : ay + ah - 2.0f;
+            if (y1 > ay + ah - 2.0f) y1 = ay + ah - 2.0f;
+            int cfirst = sec_chords ? c.chord_first : c.first;
+            int cn     = sec_chords ? c.chord_n     : c.n;
+            for (int k = 0; k < cn; k++) {
+                int idx = cfirst + k;
+                if (idx < 0 || idx >= (int)pv->chords.size()) break;
+                const ChordProposal& ch = pv->chords[idx];
+                float x0 = time_to_x(ch.t0, editor->view_start, editor->view_end, ax, aw);
+                float x1 = time_to_x(ch.t1, editor->view_start, editor->view_end, ax, aw);
+                if (x1 <= ax || x0 >= ax + aw) continue;
+                if (x1 - x0 < 2.0f) x1 = x0 + 2.0f;
+                dl->AddRectFilled(ImVec2(x0, y0), ImVec2(x1, y1), fill);
+                dl->AddRect(ImVec2(x0, y0), ImVec2(x1, y1), col, 2.0f, 0, 1.0f);
+                if (expanded) {
+                    ImVec2 ts = ImGui::CalcTextSize(ch.text);
+                    if (x0 + 3.0f + ts.x < x1 - 1.0f)
+                        dl->AddText(ImVec2(x0 + 3.0f, y0 + 2.0f), col, ch.text);
+                }
+            }
+        }
+    }
+    dl->PopClipRect();
+}
+
+
+// --- Timbre strip ------------------------------------------------------------
+// One rectangle per classified window, exactly as wide as the descriptor
+// window, coloured and numbered by shape.  Faint for raw onsets; solid for
+// mapped beats; outlined for beats the detector or Complete Track proposed.
+
+
+static void draw_timbre_marks(ImDrawList* dl, const EditorState* editor,
+                              const std::vector<ShapeMark>& marks, ShapeSource src,
+                              float ax, float ay, float aw, float ah, bool expanded)
+{
+    float y0 = ay + 2.0f, y1 = ay + ah - 2.0f;
+    for (const ShapeMark& m : marks) {
+        if (m.t + m.win < editor->view_start || m.t > editor->view_end) continue;
+        float x0 = time_to_x(m.t,         editor->view_start, editor->view_end, ax, aw);
+        float x1 = time_to_x(m.t + m.win, editor->view_start, editor->view_end, ax, aw);
+        if (x1 - x0 < 1.5f) x1 = x0 + 1.5f;
+        ImU32 base = ui_rhythm_shape_color(m.shape);
+        ImU32 rgb = base & 0x00FFFFFF;
+        switch (src) {
+        case SHAPE_SRC_ONSET:
+            dl->AddRectFilled(ImVec2(x0, y0 + 3.0f), ImVec2(x1, y1 - 3.0f), rgb | (55u << 24));
+            break;
+        case SHAPE_SRC_BEAT:
+            dl->AddRectFilled(ImVec2(x0, y0), ImVec2(x1, y1), rgb | (200u << 24));
+            break;
+        case SHAPE_SRC_PROPOSED:
+            dl->AddRectFilled(ImVec2(x0, y0), ImVec2(x1, y1), rgb | (70u << 24));
+            dl->AddRect(ImVec2(x0, y0), ImVec2(x1, y1), rgb | (230u << 24), 0.0f, 0, 1.0f);
+            break;
+        case SHAPE_SRC_DETECTED:
+            dl->AddRectFilled(ImVec2(x0, y0), ImVec2(x1, y1), rgb | (70u << 24));
+            dl->AddRect(ImVec2(x0, y0), ImVec2(x1, y1), IM_COL32(255, 255, 255, 200), 0.0f, 0, 1.0f);
+            break;
+        default: break;
+        }
+        if (expanded && m.shape >= 0 && x1 - x0 >= 9.0f) {
+            char buf[4];
+            snprintf(buf, sizeof(buf), "%d", m.shape);
+            ImVec2 ts = ImGui::CalcTextSize(buf);
+            float tx = x0 + (x1 - x0 - ts.x) * 0.5f, ty = y0 + (y1 - y0 - ts.y) * 0.5f;
+            ImU32 tc = (src == SHAPE_SRC_ONSET) ? (rgb | (170u << 24)) : IM_COL32(10, 10, 14, 255);
+            if (src != SHAPE_SRC_BEAT) tc = IM_COL32(240, 240, 250, 230);
+            dl->AddText(ImVec2(tx, ty), tc, buf);
+        }
+    }
+}
+
+static void draw_timbre_strip(ImDrawList* dl, const EditorState* editor,
+                              float ax, float ay, float aw, float ah, bool expanded)
+{
+    dl->PushClipRect(ImVec2(ax, ay), ImVec2(ax + aw, ay + ah), true);
+    draw_timbre_marks(dl, editor, shape_marks(SHAPE_SRC_ONSET),    SHAPE_SRC_ONSET,    ax, ay, aw, ah, expanded);
+    draw_timbre_marks(dl, editor, shape_marks(SHAPE_SRC_BEAT),     SHAPE_SRC_BEAT,     ax, ay, aw, ah, expanded);
+    draw_timbre_marks(dl, editor, shape_marks(SHAPE_SRC_PROPOSED), SHAPE_SRC_PROPOSED, ax, ay, aw, ah, expanded);
+    draw_timbre_marks(dl, editor, shape_marks(SHAPE_SRC_DETECTED), SHAPE_SRC_DETECTED, ax, ay, aw, ah, expanded);
+    // Hover: which shape, how confident
+    if (expanded) {
+        ImVec2 mp = ImGui::GetIO().MousePos;
+        if (mp.x >= ax && mp.x < ax + aw && mp.y >= ay && mp.y < ay + ah) {
+            double t = editor->view_start + (mp.x - ax) / aw * (editor->view_end - editor->view_start);
+            static const char* SRC_NAME[SHAPE_SRC_COUNT] = { "onset", "beat", "proposed", "detected" };
+            for (int src = SHAPE_SRC_COUNT - 1; src >= 0; src--) {
+                for (const ShapeMark& m : shape_marks((ShapeSource)src)) {
+                    if (t >= m.t && t <= m.t + m.win) {
+                        if (m.shape >= 0)
+                            ImGui::SetTooltip("%s: shape %d (%.0f%%), %.0f dB, %.0f ms window",
+                                              SRC_NAME[src], m.shape, m.conf * 100.0f, m.energy, m.win * 1000.0);
+                        else
+                            ImGui::SetTooltip("%s: unclassified, %.0f dB, %.0f ms window",
+                                              SRC_NAME[src], m.energy, m.win * 1000.0);
+                        dl->PopClipRect();
+                        return;
+                    }
+                }
+            }
+        }
+    }
+    dl->PopClipRect();
+}
+
 static const float RULER_H       = 24.0f;
 static const float MINIMAP_H     = 40.0f;
 static const float CTX_PANEL_H   = 36.0f;  // contextual interpolate panel
 static const float PLACE_STRIP_H = 18.0f;  // beat placement strip
 static const float TAP_STRIP_H       = 18.0f;  // tap recording strip
 static const float AUTOBEAT_STRIP_H  = 18.0f;  // auto-detected beat strip
+static const float TIMBRE_STRIP_H    = 22.0f;  // onset timbre shapes
 static const float SECTION_H         = 52.0f;  // section strip
 static const float LYRIC_H       = 36.0f;  // lyric strip
 static const float COLLAPSED_H   = 12.0f;  // any strip collapsed to a display band
@@ -499,6 +707,7 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
     const bool show_tempo = panel_visible(editor, PANEL_TEMPO);
     const bool show_taps  = panel_visible(editor, PANEL_TAPS);
     const bool show_auto  = panel_visible(editor, PANEL_AUTO);
+    const bool show_timb  = panel_visible(editor, PANEL_TIMBRE);
     const bool show_sect  = panel_visible(editor, PANEL_SECTIONS);
     const bool show_lyr   = panel_visible(editor, PANEL_LYRICS);
     const bool show_chrd  = panel_visible(editor, PANEL_CHORDS);
@@ -508,6 +717,7 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
     const float place_h = show_place ? PLACE_STRIP_H    : COLLAPSED_H;
     const float tap_h   = show_taps  ? TAP_STRIP_H      : COLLAPSED_H;
     const float ab_h    = show_auto  ? AUTOBEAT_STRIP_H : COLLAPSED_H;
+    const float tb_h    = show_timb  ? TIMBRE_STRIP_H   : COLLAPSED_H;
     const float ba_h    = show_beats ? BEAT_AREA_H      : COLLAPSED_H;
     const float sa_h    = show_sect  ? SECTION_H        : COLLAPSED_H;
     const float la_h    = show_lyr   ? LYRIC_H          : COLLAPSED_H;
@@ -554,8 +764,8 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
     ImVec2 avail = ImGui::GetContentRegionAvail();
     // Strips are stacked contiguously, one divider line above each; the
     // spectrogram takes whatever height the (possibly collapsed) strips leave.
-    float strips_h = (place_h + tap_h + ab_h + ba_h + sa_h + la_h + chrd_h + misc_h)
-                   + 8.0f * STRIP_DIV_H + ctx_h;
+    float strips_h = (place_h + tap_h + ab_h + tb_h + ba_h + sa_h + la_h + chrd_h + misc_h)
+                   + 9.0f * STRIP_DIV_H + ctx_h;
 
     float fixed_h = MINIMAP_H + 2.0f + RULER_H + 2.0f + strips_h;
     float spectro_h = avail.y - fixed_h;
@@ -603,6 +813,10 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
     _y += ab_h;
 
     _y += STRIP_DIV_H;
+    float tb_x = cx, tb_w = cw, tb_y = _y;
+    _y += tb_h;
+
+    _y += STRIP_DIV_H;
     float ba_x = cx, ba_w = cw, ba_y = _y;
     _y += ba_h;
     float ctx_y = ba_y + ba_h;
@@ -638,6 +852,7 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
         { PANEL_INSERT,   ps_y,   place_h },
         { PANEL_TAPS,     tap_y,  tap_h   },
         { PANEL_AUTO,     ab_y,   ab_h    },
+        { PANEL_TIMBRE,   tb_y,   tb_h    },
         { PANEL_BEATS,    ba_y,   ba_h    },
         { PANEL_SECTIONS, sa_y,   sa_h    },
         { PANEL_LYRICS,   la_y,   la_h    },
@@ -2132,6 +2347,13 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
     }
     }  // end show_autobeat_strip
 
+    // --- Timbre strip ---
+    dl->AddRectFilled(ImVec2(tb_x, tb_y), ImVec2(tb_x + tb_w, tb_y + tb_h),
+                      IM_COL32(16, 18, 24, 255));
+    draw_timbre_strip(dl, editor, tb_x, tb_y, tb_w, tb_h, show_timb);
+    if (show_timb)
+        dl->AddText(ImVec2(cx + 4.0f, tb_y + 3.0f), IM_COL32(90, 110, 110, 110), "Timbre");
+
     // Beat area background (always present; collapsed = display band)
     dl->AddRectFilled(ImVec2(ba_x, ba_y), ImVec2(ba_x + ba_w, ba_y + ba_h),
                       IM_COL32(14, 14, 22, 255));
@@ -2239,6 +2461,7 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
                 float  x_new = time_to_x(t_new, editor->view_start, editor->view_end, ba_x, ba_w);
                 if ((x_old < ba_x - 8.0f && x_new < ba_x - 8.0f) ||
                     (x_old > ba_x + ba_w + 8.0f && x_new > ba_x + ba_w + 8.0f)) continue;
+                if (fabs(t_new - t_old) < 0.001) continue;   // not adjusted: nothing to show
                 dl->AddLine(ImVec2(x_new, ba_y + 2.0f), ImVec2(x_new, ba_y + ba_h - 2.0f),
                             GHOST, 1.0f);
                 // Connector, only when the move is actually visible at this zoom
@@ -2249,6 +2472,8 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
             }
         }
     }
+    // Complete Track: proposed beats
+    if (ba_h > 0.0f) draw_complete_beats(dl, editor, ba_x, ba_y, ba_w, ba_h);
     dl->PopClipRect();
 
     // Selection rect overlay
@@ -2332,6 +2557,7 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
             dl->AddRectFilled(ImVec2(sx0, sa_y + 1.0f), ImVec2(sx1, sa_y + sa_h - 1.0f),
                               s_sec_fill[sec.kind]);
         }
+        draw_complete_sections(dl, editor, sa_x, sa_y, sa_w, sa_h, false);
         dl->PopClipRect();
     }
     if (show_sect) {
@@ -2409,6 +2635,8 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
                               ImVec2(sx1 + 3.0f, hmy + 8.0f), s_sec_border[sec.kind]);
         }
     }
+    // Complete Track: proposed sections
+    draw_complete_sections(dl, editor, sa_x, sa_y, sa_w, sa_h, true);
     // Drag-to-create preview
     if (s_sec_drag) {
         double dt0 = (s_sec_drag_t0 < s_sec_drag_t1) ? s_sec_drag_t0 : s_sec_drag_t1;
@@ -2589,6 +2817,8 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
     // --- Annotation lanes: chords and misc ---
     annstrip_draw(ANN_CHORDS, ann, dl, cx + 4.0f);
     annstrip_draw(ANN_MISC,   ann, dl, cx + 4.0f);
+    // Complete Track: proposed chords
+    draw_complete_chords(dl, editor, cx, chrd_y, cw, chrd_h, show_chrd);
     annstrip_edit(ANN_CHORDS, ann);
     annstrip_edit(ANN_MISC,   ann);
 

@@ -463,13 +463,9 @@ int main(int argc, char** argv) {
                 if (ImGui::BeginMenu("Tools")) {
                     // The four dockable tools: a click opens the drawer with
                     // that tool expanded (or focuses its floating window).
-                    static const char* dock_names[DOCK_TOOL_COUNT] = {
-                        "Chroma Analyzer", "Beat Detector", "Beat Smoothing",
-                        "Lyric Index",
-                    };
                     for (int t = 0; t < DOCK_TOOL_COUNT; t++) {
                         bool vis = ui_dock_tool_visible((DockTool)t);
-                        if (ImGui::MenuItem(dock_names[t], nullptr, vis))
+                        if (ImGui::MenuItem(ui_dock_tool_name((DockTool)t), nullptr, vis))
                             ui_dock_icon_click((DockTool)t);
                     }
                     ImGui::EndMenu();
@@ -493,7 +489,7 @@ int main(int argc, char** argv) {
 
         // Drop detected beats that no longer belong to the current region
         // (region cleared, or changed while the detector is hidden).
-        ui_beat_detector_update(&editor, &autobeat, ui_dock_tool_visible(DOCK_DETECTOR));
+        ui_beat_detector_update(&editor, &autobeat, ui_dock_tool_visible(DOCK_BEATS));
 
         // Right-edge tool dock: icon rail, drawer and any detached tools
         // (Chroma Analyzer, Beat Detector, Beat Smoothing, Lyric Index).

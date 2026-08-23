@@ -34,6 +34,7 @@ void editor_init(EditorState* e) {
     e->chroma_hover_note = -1;
     e->show_beat_detector      = false;
     e->show_autobeat_strip     = true;
+    e->show_timbre_strip       = false;
     e->show_raw_onsets         = false;
     e->snap_interp_to_onsets   = false;
     e->show_smoothing_panel    = false;

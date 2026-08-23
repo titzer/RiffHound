@@ -1,5 +1,7 @@
 #include "ui_beat_detector.h"
 #include "imgui.h"
+#include <stdio.h>
+#include "onset_shape.h"
 #include <math.h>
 #include <string.h>
 #include <stdlib.h>
@@ -94,6 +96,18 @@ static void run_detection(EditorState* editor, AudioState* audio,
     BEAT_ALGOS[s_algo_idx].fn(pcm, frame_count, channels, sample_rate,
                                t_start, t_end, &p, autobeat);
     save_last(t_start, t_end);
+
+    // Timbre of each detected beat, against the track vocabulary when one
+    // has been trained (else unclassified boxes that still show the window).
+    {
+        AudioPcm a = { pcm, frame_count, channels, sample_rate };
+        double win = shape_track()->win;
+        if (win <= 0.0) {
+            double per = autobeat->estimated_bpm > 0 ? 60.0 / autobeat->estimated_bpm : 0.5;
+            win = shape_params()->window_frac * per;
+        }
+        shape_marks_classify(SHAPE_SRC_DETECTED, a, autobeat->beat_times, autobeat->beat_count, win);
+    }
     s_needs_run = false;
     (void)editor;
 }
@@ -109,6 +123,7 @@ void ui_beat_detector_reset(AutoBeatList* autobeat) {
     s_last_algo    = -1;
     s_needs_run    = false;
     s_last_from_region = false;
+    shape_marks_clear(SHAPE_SRC_DETECTED);
 }
 
 void ui_beat_detector_update(EditorState* editor, AutoBeatList* autobeat,
@@ -138,23 +153,15 @@ void ui_beat_detector_ensure_onsets(AudioState* audio, BeatMap* beatmap,
     s_last_from_region = false;
 }
 
-void ui_beat_detector_content(EditorState* editor, AudioState* audio,
-                              BeatMap* beatmap, UndoStack* undo,
-                              AutoBeatList* autobeat)
+// The analysis window the body last settled on, for the actions row.
+static bool   s_have_window = false;
+static double s_win_t0 = 0.0, s_win_t1 = 0.0;
+
+void ui_beat_detector_settings(ToolCtx& c)
 {
+    EditorState* editor = c.editor;
     float avail_w = ImGui::GetContentRegionAvail().x;
 
-    // --- Settings (collapsed by default; the defaults work for most tracks) ---
-    ImGui::PushStyleColor(ImGuiCol_Header,        IM_COL32(34, 34, 52, 255));
-    ImGui::PushStyleColor(ImGuiCol_HeaderHovered, IM_COL32(46, 46, 70, 255));
-    ImGui::PushStyleColor(ImGuiCol_HeaderActive,  IM_COL32(56, 56, 84, 255));
-    bool show_settings = ImGui::CollapsingHeader("Settings##bd");
-    ImGui::PopStyleColor(3);
-    if (show_settings) {
-    ImGui::Indent(6.0f);
-    avail_w = ImGui::GetContentRegionAvail().x;
-
-    // --- Algorithm selector ---
     ImGui::SetNextItemWidth(avail_w);
     struct AlgoGetter {
         static bool get(void*, int idx, const char** out_text) {
@@ -168,149 +175,107 @@ void ui_beat_detector_content(EditorState* editor, AudioState* audio,
     if (ImGui::IsItemHovered() && s_algo_idx >= 0 && s_algo_idx < BEAT_ALGO_COUNT)
         ImGui::SetTooltip("%s", BEAT_ALGOS[s_algo_idx].tip);
 
-    ImGui::Spacing();
-
-    // --- Parameters ---
     float half_w = (avail_w - ImGui::GetStyle().ItemSpacing.x) * 0.5f;
-
-    // Min / Max BPM on one row
     ImGui::SetNextItemWidth(half_w);
-    if (ImGui::SliderFloat("##minbpm", &s_min_bpm, 30.0f, 180.0f, "Min %.0f"))
-        s_needs_run = true;
+    if (ImGui::SliderFloat("##minbpm", &s_min_bpm, 30.0f, 180.0f, "Min %.0f")) s_needs_run = true;
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("Minimum expected tempo (BPM)");
     ImGui::SameLine();
     ImGui::SetNextItemWidth(half_w);
-    if (ImGui::SliderFloat("##maxbpm", &s_max_bpm, 60.0f, 300.0f, "Max %.0f"))
-        s_needs_run = true;
+    if (ImGui::SliderFloat("##maxbpm", &s_max_bpm, 60.0f, 300.0f, "Max %.0f")) s_needs_run = true;
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("Maximum expected tempo (BPM)");
 
-    // Onset threshold
     ImGui::SetNextItemWidth(avail_w);
-    if (ImGui::SliderFloat("##thresh", &s_threshold, 0.5f, 5.0f, "Thresh %.2f"))
-        s_needs_run = true;
+    if (ImGui::SliderFloat("##thresh", &s_threshold, 0.5f, 5.0f, "Thresh %.2f")) s_needs_run = true;
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Onset sensitivity: mean + N * std deviation (lower = more sensitive)");
-
-    // DP tightness
     ImGui::SetNextItemWidth(avail_w);
     if (ImGui::SliderFloat("##tight", &s_tightness, 10.0f, 2000.0f, "Tight %.0f", ImGuiSliderFlags_Logarithmic))
         s_needs_run = true;
-    if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Ellis DP tightness: higher = stricter tempo adherence");
-
-    // Pre-onset shift
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Ellis DP tightness: higher = stricter tempo adherence");
     ImGui::SetNextItemWidth(avail_w);
-    if (ImGui::SliderFloat("##prems", &s_pre_onset_ms, 0.0f, 100.0f, "Pre %.0f ms"))
-        s_needs_run = true;
+    if (ImGui::SliderFloat("##prems", &s_pre_onset_ms, 0.0f, 100.0f, "Pre %.0f ms")) s_needs_run = true;
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Shift each beat this many ms before the onset peak\n"
                           "Places the marker in the quiet moment before the attack");
 
-    ImGui::Spacing();
-
-    // --- Options ---
-    if (ImGui::Checkbox("Use accepted beats", &s_use_seeds))
-        s_needs_run = true;
-    if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Seed tempo and phase from accepted beats already in the window");
-
-    if (ImGui::Checkbox("Show raw onsets", &editor->show_raw_onsets)) { /* immediate effect */ }
-    if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Show unregularised onset ticks in the Auto strip");
-
-    ImGui::Spacing();
-    ImGui::Separator();
-    ImGui::Spacing();
-    ImGui::TextDisabled("Hybrid interpolation:");
-    ImGui::Spacing();
-
+    if (ImGui::Checkbox("Use accepted beats", &s_use_seeds)) s_needs_run = true;
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Seed tempo and phase from accepted beats already in the window");
+    ImGui::Checkbox("Show raw onsets", &editor->show_raw_onsets);
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Show unregularised onset ticks in the Auto strip");
     ImGui::Checkbox("Snap shift+click to onsets", &editor->snap_interp_to_onsets);
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip(
             "When shift+clicking to fill beats, each grid position is pulled\n"
             "to the nearest detected onset (within \xc2\xb1" "20%% of the beat period).\n"
             "The BPM grid anchors the rhythm; audio snaps the fine placement.");
+}
 
-    ImGui::Unindent(6.0f);
-    avail_w = ImGui::GetContentRegionAvail().x;
-    }   // settings
+void ui_beat_detector_body(ToolCtx& c)
+{
+    EditorState*  editor   = c.editor;
+    AudioState*   audio    = c.audio;
+    BeatMap*      beatmap  = c.beatmap;
+    AutoBeatList* autobeat = c.autobeat;
 
-    ImGui::Spacing();
-
-    // --- Determine analysis window ---
-    bool   have_window = false;
-    double t_start = 0.0, t_end = 0.0;
+    s_have_window = false;
     if (editor->has_region) {
-        t_start = editor->region_start;
-        t_end   = editor->region_end;
-        have_window = (audio_pcm_data(audio, nullptr, nullptr, nullptr) != nullptr);
+        s_win_t0 = editor->region_start;
+        s_win_t1 = editor->region_end;
+        s_have_window = (audio_pcm_data(audio, nullptr, nullptr, nullptr) != nullptr);
     }
-
-    // --- Auto-run when window or params change ---
-    if (have_window && (params_changed(t_start, t_end) || s_needs_run)) {
-        run_detection(editor, audio, beatmap, autobeat, t_start, t_end);
+    if (s_have_window && (params_changed(s_win_t0, s_win_t1) || s_needs_run)) {
+        run_detection(editor, audio, beatmap, autobeat, s_win_t0, s_win_t1);
         s_last_from_region = true;
-    } else if (!have_window)
+    } else if (!s_have_window)
         ui_beat_detector_reset(autobeat);
 
-    // --- Manual detect button ---
-    bool detect_enabled = have_window;
-    if (!detect_enabled) ImGui::BeginDisabled();
-    if (ImGui::Button("Detect Now", ImVec2(avail_w, 0))) {
-        s_needs_run = true;
-        if (have_window) {
-            run_detection(editor, audio, beatmap, autobeat, t_start, t_end);
-            s_last_from_region = true;
-        }
-    }
-    if (!detect_enabled) ImGui::EndDisabled();
-
-    ImGui::Spacing();
-
-    // --- Status ---
-    if (!have_window) {
+    ImGui::TextDisabled("Detection");
+    if (!s_have_window) {
         ImGui::TextDisabled("(select a region to detect beats)");
     } else if (autobeat->beat_count > 0) {
+        int n_sel = 0;
+        for (int i = 0; i < autobeat->beat_count; i++) if (autobeat->beat_selected[i]) n_sel++;
         if (autobeat->estimated_bpm > 0.0f)
-            ImGui::TextDisabled("Detected %d beats  ~%.1f BPM",
-                                autobeat->beat_count, autobeat->estimated_bpm);
+            ImGui::Text("%d beats  ~%.1f BPM", autobeat->beat_count, autobeat->estimated_bpm);
         else
-            ImGui::TextDisabled("Detected %d beats", autobeat->beat_count);
+            ImGui::Text("%d beats", autobeat->beat_count);
+        ImGui::TextDisabled("%d selected; click or drag in the Auto strip, I inserts", n_sel);
     } else {
         ImGui::TextDisabled("No beats detected");
     }
+}
 
-    ImGui::Spacing();
+void ui_beat_detector_actions(ToolCtx& c)
+{
+    EditorState*  editor   = c.editor;
+    AudioState*   audio    = c.audio;
+    BeatMap*      beatmap  = c.beatmap;
+    UndoStack*    undo     = c.undo;
+    AutoBeatList* autobeat = c.autobeat;
+    float avail_w = ImGui::GetContentRegionAvail().x;
+    float sp = ImGui::GetStyle().ItemSpacing.x;
 
-    // --- Selection / insertion controls ---
-    bool have_beats = (autobeat->beat_count > 0);
-    if (!have_beats) ImGui::BeginDisabled();
-
-    // Count selected
     int n_sel = 0;
-    for (int i = 0; i < autobeat->beat_count; i++)
-        if (autobeat->beat_selected[i]) n_sel++;
+    for (int i = 0; i < autobeat->beat_count; i++) if (autobeat->beat_selected[i]) n_sel++;
+    bool have_beats = autobeat->beat_count > 0;
 
-    float btn_w = (avail_w - ImGui::GetStyle().ItemSpacing.x) * 0.5f;
-
-    if (ImGui::Button("Select All", ImVec2(btn_w, 0))) {
-        for (int i = 0; i < autobeat->beat_count; i++)
-            autobeat->beat_selected[i] = true;
+    // Row 1: Detect | Insert N | Clear
+    float w3 = (avail_w - 2.0f * sp) / 3.0f;
+    if (!s_have_window) ImGui::BeginDisabled();
+    if (ImGui::Button("Detect", ImVec2(w3, 0))) {
+        s_needs_run = true;
+        if (s_have_window) { run_detection(editor, audio, beatmap, autobeat, s_win_t0, s_win_t1); s_last_from_region = true; }
     }
+    if (!s_have_window) ImGui::EndDisabled();
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+        ImGui::SetTooltip(s_have_window ? "Run detection over the selected region" : "Select a region first");
     ImGui::SameLine();
-    if (ImGui::Button("Select None", ImVec2(btn_w, 0))) {
-        for (int i = 0; i < autobeat->beat_count; i++)
-            autobeat->beat_selected[i] = false;
-    }
-
-    bool can_insert = (n_sel > 0);
-    if (!can_insert) ImGui::BeginDisabled();
-    if (ImGui::Button("Insert Selected", ImVec2(avail_w, 0))) {
+    if (n_sel == 0) ImGui::BeginDisabled();
+    char ib[32]; snprintf(ib, sizeof(ib), "Insert %d", n_sel);
+    if (ImGui::Button(ib, ImVec2(w3, 0))) {
         undo_push(undo, beatmap, nullptr);
         for (int i = 0; i < autobeat->beat_count; i++)
-            if (autobeat->beat_selected[i])
-                beatmap_add(beatmap, autobeat->beat_times[i]);
-        // Remove inserted beats from autobeat list
+            if (autobeat->beat_selected[i]) beatmap_add(beatmap, autobeat->beat_times[i]);
         int j = 0;
         for (int i = 0; i < autobeat->beat_count; i++)
             if (!autobeat->beat_selected[i]) {
@@ -320,10 +285,19 @@ void ui_beat_detector_content(EditorState* editor, AudioState* audio,
             }
         autobeat->beat_count = j;
     }
-    if (!can_insert) ImGui::EndDisabled();
-
+    if (n_sel == 0) ImGui::EndDisabled();
+    ImGui::SameLine();
+    if (!have_beats) ImGui::BeginDisabled();
+    if (ImGui::Button("Clear", ImVec2(w3, 0))) ui_beat_detector_reset(autobeat);
     if (!have_beats) ImGui::EndDisabled();
 
-    if (ImGui::Button("Clear", ImVec2(avail_w, 0)))
-        ui_beat_detector_reset(autobeat);
+    // Row 2: Select all | Select none
+    float w2 = (avail_w - sp) * 0.5f;
+    if (!have_beats) ImGui::BeginDisabled();
+    if (ImGui::Button("Select all", ImVec2(w2, 0)))
+        for (int i = 0; i < autobeat->beat_count; i++) autobeat->beat_selected[i] = true;
+    ImGui::SameLine();
+    if (ImGui::Button("Select none", ImVec2(w2, 0)))
+        for (int i = 0; i < autobeat->beat_count; i++) autobeat->beat_selected[i] = false;
+    if (!have_beats) ImGui::EndDisabled();
 }

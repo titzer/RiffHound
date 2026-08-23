@@ -1,26 +1,21 @@
 #pragma once
 
-#include "editor.h"
-#include "audio.h"
-#include "beatmap.h"
-#include "sectionmap.h"
-#include "lyricmap.h"
-#include "miscmap.h"
-#include "beat_algo.h"
-#include "undo.h"
+#include "ui_tool.h"
 
 // Right-edge tool dock: a slim icon rail that is always visible, plus a
-// drawer holding the four analysis tools stacked vertically.  Each tool can
-// be collapsed with its header triangle, or detached into a floating window
-// with the detach icon (and docked again with the floating window's Dock
-// button).  Clicking a rail icon makes sure the drawer is open and that that
-// tool is expanded; clicking it again closes the drawer.
+// drawer holding the tools.  Each tool sits in its own framed box with a
+// header (name, settings triangle, detach button); the box holds the tool's
+// settings (when the triangle is open), its body, and its action buttons
+// grouped at the bottom.  Clicking a rail icon opens the drawer with only
+// that tool expanded; clicking it again closes the drawer.  A tool can be
+// detached into a floating window and docked back.
 
 enum DockTool {
-    DOCK_CHROMA = 0,
-    DOCK_DETECTOR,
-    DOCK_SMOOTHING,
-    DOCK_LYRICS,
+    DOCK_CHROMA = 0,   // Chroma Analyzer: purely informative
+    DOCK_BEATS,        // Beats: detector + smoother
+    DOCK_LYRICS,       // Lyric Index
+    DOCK_COMPLETE,     // Complete Track
+    DOCK_RHYTHM,       // Rhythm Map: onset timbre shapes
     DOCK_TOOL_COUNT
 };
 
@@ -36,6 +31,8 @@ bool ui_dock_tool_visible(DockTool t);
 // other docked tools collapse); if the tool is already expanded, close the
 // drawer; if it is floating, focus its window.
 void ui_dock_icon_click(DockTool t);
+
+const char* ui_dock_tool_name(DockTool t);
 
 // Render the rail, the drawer and any detached floating tools.  Call once per
 // frame, outside the main docked window.

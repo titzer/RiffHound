@@ -59,13 +59,39 @@ static int    s_last_algo      = -1;
 // Public API
 // ---------------------------------------------------------------------------
 
-void ui_chroma_content(EditorState* editor, AudioState* audio)
-{
-    // Persistent UI state
-    // NNLS is the default: most accurate for polyphonic material.
-    static int   s_algo_idx      = 3;   // index into CHROMA_ALGOS ("NNLS Chroma")
-    static float s_roll_secs     = 2.0f;
+// Persistent UI state
+static int   s_algo_idx      = 3;   // NNLS Chroma: most accurate for polyphony
+static float s_roll_secs     = 2.0f;
 
+void ui_chroma_settings(ToolCtx& c)
+{
+    float avail_w = ImGui::GetContentRegionAvail().x;
+    ImGui::SetNextItemWidth(avail_w);
+    struct AlgoGetter {
+        static bool get(void*, int idx, const char** out_text) {
+            if (idx < 0 || idx >= CHROMA_ALGO_COUNT) return false;
+            *out_text = CHROMA_ALGOS[idx].name;
+            return true;
+        }
+    };
+    if (ImGui::Combo("##algo", &s_algo_idx, AlgoGetter::get, nullptr, CHROMA_ALGO_COUNT)) {
+        s_last_t_start = s_last_t_end = -99.0;
+        s_last_algo    = -1;
+    }
+    if (ImGui::IsItemHovered() && s_algo_idx >= 0 && s_algo_idx < CHROMA_ALGO_COUNT)
+        ImGui::SetTooltip("%s", CHROMA_ALGOS[s_algo_idx].tip);
+    ImGui::SetNextItemWidth(avail_w);
+    if (ImGui::SliderFloat("##win", &s_roll_secs, 0.5f, 10.0f, "Rolling window %.1fs"))
+        s_last_t_start = s_last_t_end = -99.0;
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Window behind the playhead when no region is selected");
+    (void)c;
+}
+
+void ui_chroma_body(ToolCtx& c)
+{
+    EditorState* editor = c.editor;
+    AudioState*  audio  = c.audio;
     // Fetch PCM
     uint64_t frame_count = 0;
     uint32_t channels    = 0;
@@ -103,37 +129,6 @@ void ui_chroma_content(EditorState* editor, AudioState* audio)
         s_last_algo    = -1;
     }
 
-    float avail_w = ImGui::GetContentRegionAvail().x;
-
-    // --- Algorithm selector ---
-    ImGui::SetNextItemWidth(avail_w);
-    // Lambda-style item getter for the Combo
-    struct AlgoGetter {
-        static bool get(void* /*data*/, int idx, const char** out_text) {
-            if (idx < 0 || idx >= CHROMA_ALGO_COUNT) return false;
-            *out_text = CHROMA_ALGOS[idx].name;
-            return true;
-        }
-    };
-    if (ImGui::Combo("##algo", &s_algo_idx, AlgoGetter::get, nullptr, CHROMA_ALGO_COUNT)) {
-        // Force recompute on next frame
-        s_last_t_start = s_last_t_end = -99.0;
-        s_last_algo    = -1;
-    }
-    if (ImGui::IsItemHovered() && s_algo_idx >= 0 && s_algo_idx < CHROMA_ALGO_COUNT)
-        ImGui::SetTooltip("%s", CHROMA_ALGOS[s_algo_idx].tip);
-
-    // --- Rolling window size (shown only when not using a region) ---
-    if (!editor->has_region) {
-        ImGui::SetNextItemWidth(avail_w);
-        if (ImGui::SliderFloat("##win", &s_roll_secs, 0.5f, 10.0f, "roll %.1fs")) {
-            s_last_t_start = s_last_t_end = -99.0;
-        }
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Rolling window duration (seconds)");
-    }
-
-    ImGui::Spacing();
 
     // --- Status line ---
     if (!pcm)

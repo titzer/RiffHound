@@ -16,9 +16,10 @@
 // preview of the proposed beat positions; the user accepts or ignores it.
 // Accepting also drags along any section, lyric, chord or misc annotation
 // pinned to a beat that moves.
-void ui_smoothing_content(EditorState* editor, AudioState* audio, BeatMap* beatmap,
-                          SectionMap* sectionmap, LyricMap* lyricmap, MiscMap* miscmap,
-                          MiscMap* chordmap, UndoStack* undo, AutoBeatList* autobeat);
+#include "ui_tool.h"
+void ui_smoothing_settings(ToolCtx& c);   // presets and knobs
+void ui_smoothing_body(ToolCtx& c);       // selection, preview statistics
+void ui_smoothing_actions(ToolCtx& c);    // Accept / Clear selection
 
 // Call when the panel is not rendered this frame, so the timeline preview
 // ghosts are cleared.

@@ -17,6 +17,10 @@ const PanelDesc PANELS[PANEL_COUNT] = {
     { PANEL_AUTO, PK_STRIP, "Auto", "Auto-beat strip",
       "Beats proposed by the Beat Detector", nullptr,
       &EditorState::show_autobeat_strip },
+    { PANEL_TIMBRE, PK_STRIP, "Timbre", "Timbre strip",
+      "Onset timbre shapes: one numbered box per classified window\n"
+      "(onsets faint, mapped beats solid, detected and proposed beats outlined)", nullptr,
+      &EditorState::show_timbre_strip },
     { PANEL_SECTIONS, PK_STRIP, "Sect", "Sections strip",
       "Song sections: drag to create, double-click to loop", nullptr,
       &EditorState::show_section_strip },

@@ -2,3 +2,4 @@ beatmapper
 **/*.o
 **/*.d
 imgui.ini
+bmbench

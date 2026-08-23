@@ -6,12 +6,14 @@
 #include "beat_algo.h"
 #include "undo.h"
 
-// Beat Detector content (widgets only, no window).  Rendered by the tool
-// dock into the drawer or a floating window.  Triggers re-detection when the
-// region or params change.
-void ui_beat_detector_content(EditorState* editor, AudioState* audio,
-                              BeatMap* beatmap, UndoStack* undo,
-                              AutoBeatList* autobeat);
+#include "ui_tool.h"
+
+// Beat Detector, the detection half of the Beats tool.  Settings: algorithm
+// and its knobs; body: status and detection state (re-detects when the region
+// or settings change); actions: Detect / Select / Insert / Clear.
+void ui_beat_detector_settings(ToolCtx& c);
+void ui_beat_detector_body(ToolCtx& c);
+void ui_beat_detector_actions(ToolCtx& c);
 
 // Drop all detection results and forget the analysed window.  Called when a
 // new track is loaded and whenever the region is cleared, so no stale beats

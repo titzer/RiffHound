@@ -1,4 +1,4 @@
-.PHONY: all clean run
+.PHONY: all clean run bench
 
 UNAME    := $(shell uname)
 TARGET   := beatmapper
@@ -32,6 +32,11 @@ SOURCES := \
     $(SRC_DIR)/beat_algo.cpp \
     $(SRC_DIR)/beat_spectral_flux.cpp \
     $(SRC_DIR)/ui_beat_detector.cpp \
+    $(SRC_DIR)/beat_chroma.cpp \
+    $(SRC_DIR)/onset_shape.cpp \
+    $(SRC_DIR)/complete_algo.cpp \
+    $(SRC_DIR)/ui_complete.cpp \
+    $(SRC_DIR)/ui_rhythm.cpp \
     $(SRC_DIR)/chroma_goertzel.cpp \
     $(SRC_DIR)/chroma_hps.cpp \
     $(SRC_DIR)/chroma_nnls.cpp \
@@ -80,6 +85,27 @@ DEPS    := $(OBJECTS:.o=.d)
 
 all: $(TARGET)
 
+# Headless regression tool: the inference algorithms without the UI.
+BENCH      := bmbench
+BENCH_SRCS := $(SRC_DIR)/bench.cpp $(SRC_DIR)/audio.cpp $(SRC_DIR)/wsola.cpp \
+    $(SRC_DIR)/pitch_node.cpp $(SRC_DIR)/beatmap.cpp $(SRC_DIR)/sectionmap.cpp \
+    $(SRC_DIR)/lyricmap.cpp $(SRC_DIR)/miscmap.cpp $(SRC_DIR)/chroma_algo.cpp \
+    $(SRC_DIR)/beat_algo.cpp $(SRC_DIR)/beat_spectral_flux.cpp \
+    $(SRC_DIR)/chroma_goertzel.cpp $(SRC_DIR)/chroma_hps.cpp $(SRC_DIR)/chroma_nnls.cpp \
+    $(SRC_DIR)/chroma_peaks.cpp $(SRC_DIR)/chroma_resonate.cpp \
+    $(SRC_DIR)/beat_chroma.cpp $(SRC_DIR)/onset_shape.cpp $(SRC_DIR)/complete_algo.cpp
+BENCH_OBJS := $(BENCH_SRCS:.cpp=.o)
+ifeq ($(UNAME), Darwin)
+    BENCH_LD := -framework CoreAudio -framework AudioToolbox -framework CoreFoundation
+else
+    BENCH_LD := -ldl -lpthread -lm
+endif
+
+bench: $(BENCH)
+
+$(BENCH): $(BENCH_OBJS)
+	$(CXX) $(CXXFLAGS) $^ -o $@ $(BENCH_LD)
+
 $(TARGET): $(OBJECTS)
 	$(CXX) $(CXXFLAGS) $^ -o $@ $(LDFLAGS)
 
@@ -93,7 +119,7 @@ $(SRC_DIR)/platform_macos.o: $(SRC_DIR)/platform_macos.mm
 -include $(DEPS)
 
 clean:
-	rm -f $(TARGET) $(OBJECTS) $(DEPS)
+	rm -f $(TARGET) $(OBJECTS) $(DEPS) $(BENCH) $(BENCH_OBJS) $(BENCH_OBJS:.o=.d)
 
 run: all
 	./$(TARGET)
