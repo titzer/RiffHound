@@ -433,9 +433,13 @@ void ui_complete_body(ToolCtx& c)
                                                 : ImVec4(0.95f, 0.55f, 0.45f, 1.0f), "%s", lbl);
             hov |= ImGui::IsItemHovered();
             ImGui::SameLine();
+            // Dismiss button at the right edge; the description takes the rest
+            float x_btn = ImGui::GetFrameHeight();
+            float desc_w = ImGui::GetContentRegionAvail().x - x_btn - ImGui::GetStyle().ItemSpacing.x;
+            if (desc_w < 40.0f) desc_w = 40.0f;
             ImGui::PushStyleColor(ImGuiCol_Text, c.selected ? IM_COL32(225, 225, 240, 255)
                                                             : IM_COL32(150, 150, 170, 255));
-            if (ImGui::Selectable(c.desc, false, ImGuiSelectableFlags_AllowDoubleClick)) {
+            if (ImGui::Selectable(c.desc, false, ImGuiSelectableFlags_AllowDoubleClick, ImVec2(desc_w, 0))) {
                 // Click: bring it into view.  Double-click: toggle.
                 if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) c.selected = !c.selected;
                 double span = editor->view_end - editor->view_start;
@@ -455,7 +459,21 @@ void ui_complete_body(ToolCtx& c)
                 ImGui::SetTooltip("%s\nsource: %s\nclick: scroll into view, double-click: toggle",
                                   c.desc, c.source);
             }
+            ImGui::SameLine();
+            ImGui::PushStyleColor(ImGuiCol_Button,        IM_COL32(0, 0, 0, 0));
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, IM_COL32(160, 50, 50, 200));
+            ImGui::PushStyleColor(ImGuiCol_ButtonActive,  IM_COL32(200, 60, 60, 255));
+            ImGui::PushStyleColor(ImGuiCol_Text,          IM_COL32(190, 120, 120, 220));
+            bool dismiss = ImGui::Button("x", ImVec2(x_btn, 0));
+            ImGui::PopStyleColor(4);
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Remove this suggestion");
             ImGui::PopID();
+            if (dismiss) {
+                s_prop.cands.erase(s_prop.cands.begin() + i);
+                s_hover = -1;
+                i--;            // the next candidate now sits at this index
+                continue;
+            }
         }
         if (s_n_listed == 0)
             ImGui::TextDisabled(s_list_narrowed ? "(no candidates intersect the region)"

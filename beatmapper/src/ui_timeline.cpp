@@ -996,6 +996,16 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
         s_drag_in_lyr     = (show_lyr && !sidebar_click &&
                               click_y >= la_y    && click_y < la_y + la_h);
 
+        // Selecting or drawing somewhere new drops the selections made
+        // elsewhere: beats selected in one verse must not survive a region
+        // drawn around another, or a later delete removes both.  Shift keeps
+        // them (extending a selection across strips is still possible).
+        if (!io.KeyShift && !sidebar_click) {
+            if (!s_drag_in_beats)    beatmap_clear_selection(beatmap);
+            if (!s_drag_in_tap)      for (int i = 0; i < s_tap_count; i++) s_taps[i].selected = false;
+            if (!s_drag_in_autobeat && autobeat)
+                for (int i = 0; i < autobeat->beat_count; i++) autobeat->beat_selected[i] = false;
+        }
         // Any click outside the section strip clears section selection.
         if (!s_drag_in_sec)
             s_sec_selected = -1;

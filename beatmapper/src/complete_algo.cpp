@@ -58,8 +58,13 @@ void complete_params_defaults(CompleteParams* p) {
     p->chord_runs          = true;
     p->chord_run_beats     = 64;
     p->chord_sim_threshold = 0.70f;
-    p->chord_fallback      = false;
+    p->chord_fallback      = true;
     p->chord_margin        = 0.12f;
+    p->chord_transition    = 0.10f;
+    p->chord_measure_bonus = 0.5f;
+    p->chord_unseen_penalty = 0.10f;
+    p->chord_prior_beats   = 4.0f;
+    p->chord_learn_rate    = true;
 
     beat_chroma_params_defaults(&p->chroma);
 }
@@ -87,6 +92,16 @@ static int first_beat_at(const BeatMap* bm, double t) {
     int lo = 0, hi = bm->count;
     while (lo < hi) { int m = (lo + hi) / 2; if (bm->beats[m].time < t) lo = m + 1; else hi = m; }
     return lo;
+}
+
+// Index of the beat nearest to t.  Section and chord edges are meant to sit
+// on beats; taking the first beat *after* an edge that lands a few ms past
+// its beat would shift everything built on it one beat late.
+static int nearest_beat(const BeatMap* bm, double t) {
+    int i = first_beat_at(bm, t);
+    if (i >= bm->count) return bm->count - 1;
+    if (i > 0 && t - bm->beats[i - 1].time < bm->beats[i].time - t) return i - 1;
+    return i;
 }
 
 bool complete_cand_in_range(const CompleteCand& c, double r0, double r1) {
@@ -193,8 +208,8 @@ static void build_templates(const CompleteInputs& in, const CompleteParams& p,
     std::vector<char> covered(bm->count, 0);
     for (int s = 0; s < in.sectionmap->count; s++) {
         const Section& sec = in.sectionmap->sections[s];
-        int b0 = first_beat_at(bm, sec.t_start - 1e-3);
-        int b1 = first_beat_at(bm, sec.t_end + 1e-3) - 1;
+        int b0 = nearest_beat(bm, sec.t_start);
+        int b1 = nearest_beat(bm, sec.t_end);
         if (b1 - b0 + 1 < p.min_template_beats) continue;
         char name[48];
         if (sec.label[0]) snprintf(name, sizeof(name), "%s %s", SECTION_KIND_NAMES[sec.kind], sec.label);
@@ -1116,10 +1131,16 @@ static double section_overlap(const SectionMap* sm, double t0, double t1) {
     return ov;
 }
 
-// Keep the best-scoring candidates that do not overlap a kept one by > 25%.
+// Keep the best candidates that do not overlap a kept one by > 25%.  Longer
+// matches go first: a 16-beat intro that is harmonically half a verse would
+// otherwise tile the track in halves and pre-empt the 32-beat verse itself.
 static void suppress_overlaps(std::vector<CompleteCand>* found, std::vector<CompleteCand>* kept) {
     std::sort(found->begin(), found->end(),
-              [](const CompleteCand& x, const CompleteCand& y) { return x.score > y.score; });
+              [](const CompleteCand& x, const CompleteCand& y) {
+                  double lx = x.t1 - x.t0, ly = y.t1 - y.t0;
+                  if (fabs(lx - ly) > 0.5) return lx > ly;
+                  return x.score > y.score;
+              });
     for (const CompleteCand& c : *found) {
         bool clash = false;
         for (const CompleteCand& k : *kept)
@@ -1150,8 +1171,8 @@ static float attach_template_chords(const CompleteInputs& in, const CompletePara
     for (int i = 0; i < cm->count; i++) {
         const MiscAnnotation& ch = cm->entries[i];
         if (ch.t_start < src_t0 - 0.25 * med || ch.t_start >= src_t1 - 0.25 * med) continue;
-        int bs = first_beat_at(bm, ch.t_start - 0.25 * med);
-        int be = first_beat_at(bm, ch.t_end   - 0.25 * med);
+        int bs = nearest_beat(bm, ch.t_start);
+        int be = nearest_beat(bm, ch.t_end);
         if (be <= bs) be = bs + 1;
         int ds = dst_b0 + (bs - src_b0), de = dst_b0 + (be - src_b0);
         if (ds < 0 || de > bm->count - 1 || ds >= dst_b0 + n_int) continue;
@@ -1190,8 +1211,8 @@ static void sections_from_templates(const CompleteInputs& in, const CompletePara
     std::vector<CompleteCand> found;
     for (int s = 0; s < sm->count; s++) {
         const Section& sec = sm->sections[s];
-        int b0 = first_beat_at(bm, sec.t_start - 1e-3);
-        int b1 = first_beat_at(bm, sec.t_end + 1e-3) - 1;
+        int b0 = nearest_beat(bm, sec.t_start);
+        int b1 = nearest_beat(bm, sec.t_end);
         int n_int = b1 - b0;
         if (n_int < 2 || !contiguous(bm, b0, n_int, gap_thresh)) continue;
         int group = p.section_granularity == 0 ? std::max(1, sec.ts_num) : 1;
@@ -1203,6 +1224,30 @@ static void sections_from_templates(const CompleteInputs& in, const CompletePara
             if (section_overlap(sm, t0, t1) > p.section_max_overlap * (t1 - t0)) continue;
             float sim = range_similarity(f, b0, b, n_int, group, p.section_rhythm_weight);
             if (sim < p.section_sim_threshold) continue;
+            int bp = b;   // the placement, possibly refined below
+            // Only keep a local maximum over +-1 beat, then refine the exact
+            // beat at beat granularity: measure averages hardly move under a
+            // one-beat shift, beat-level chroma and the rhythm map do.
+            {
+                float l = b > 0 && contiguous(bm, b - 1, n_int, gap_thresh)
+                        ? range_similarity(f, b0, b - 1, n_int, group, p.section_rhythm_weight) : -1.0f;
+                float r = b + 1 + n_int < bm->count && contiguous(bm, b + 1, n_int, gap_thresh)
+                        ? range_similarity(f, b0, b + 1, n_int, group, p.section_rhythm_weight) : -1.0f;
+                if (l > sim || r > sim) continue;
+                int best_b = b; float best_fine = -1.0f;
+                for (int d = -2; d <= 2; d++) {
+                    int bb = b + d;
+                    if (bb < 0 || bb == b0 || bb + n_int >= bm->count || !contiguous(bm, bb, n_int, gap_thresh)) continue;
+                    float fine = range_similarity(f, b0, bb, n_int, 1, std::max(p.section_rhythm_weight, 0.5f));
+                    if (fine > best_fine) { best_fine = fine; best_b = bb; }
+                }
+                if (best_b != b) {
+                    bp = best_b;
+                    t0 = bm->beats[bp].time; t1 = bm->beats[bp + n_int].time;
+                    if (section_overlap(sm, t0, t1) > p.section_max_overlap * (t1 - t0)) continue;
+                    sim = range_similarity(f, b0, bp, n_int, group, p.section_rhythm_weight);
+                }
+            }
             CompleteCand c = {};
             c.kind = CAND_SECTION; c.t0 = t0; c.t1 = t1;
             c.sim = sim; c.score = sim; c.selected = true;
@@ -1211,7 +1256,7 @@ static void sections_from_templates(const CompleteInputs& in, const CompletePara
             strncpy(c.source, src, sizeof(c.source) - 1);
             char a[16], bb[16];
             fmt_time(a, sizeof(a), t0); fmt_time(bb, sizeof(bb), t1);
-            float cs = attach_template_chords(in, p, f, b0, b, n_int, out, &c);
+            float cs = attach_template_chords(in, p, f, b0, bp, n_int, out, &c);
             if (cs >= 0.0f)
                 snprintf(c.desc, sizeof(c.desc), "%s  %s-%s  (%d beats) sim %.2f + %d chords (check %.2f)",
                          src, a, bb, n_int, sim, c.chord_n, cs);
@@ -1244,7 +1289,7 @@ static void sections_from_repeats(const CompleteInputs& in, const CompleteParams
     float rw = p.section_rhythm_weight;
 
     int anchor = 0;
-    if (sm->count > 0) anchor = first_beat_at(bm, sm->sections[0].t_start - 1e-3) % ts;
+    if (sm->count > 0) anchor = nearest_beat(bm, sm->sections[0].t_start) % ts;
 
     struct Block { int b, len, grp; float sim; };
     std::vector<Block> blocks;
@@ -1412,8 +1457,8 @@ static void build_chord_runs(const CompleteInputs& in, const CompleteParams& p,
     double prev_end = -1e9;
     for (int i = 0; i < cm->count; i++) {
         const MiscAnnotation& ch = cm->entries[i];
-        int bs = first_beat_at(bm, ch.t_start - 0.25 * med);
-        int be = first_beat_at(bm, ch.t_end - 0.25 * med);
+        int bs = nearest_beat(bm, ch.t_start);
+        int be = nearest_beat(bm, ch.t_end);
         if (bs >= bm->count - 1 || be <= bs) { flush(); prev_end = ch.t_end; continue; }
         if (fabs(bm->beats[bs].time - ch.t_start) > 0.5 * med) { flush(); prev_end = ch.t_end; continue; }
         bool breaks = cur.b0 < 0 || ch.t_start - prev_end > 0.75 * med ||
@@ -1443,8 +1488,8 @@ static void chords_from_sections(const CompleteInputs& in, const CompleteParams&
     for (int d = 0; d < sm->count; d++) {
         const Section& dst = sm->sections[d];
         if (chords_in(cm, dst.t_start, dst.t_end) > 0) continue;
-        int db0 = first_beat_at(bm, dst.t_start - 1e-3);
-        int db1 = first_beat_at(bm, dst.t_end + 1e-3) - 1;
+        int db0 = nearest_beat(bm, dst.t_start);
+        int db1 = nearest_beat(bm, dst.t_end);
         int dn  = db1 - db0;
         if (dn < 1) continue;
         int best = -1; float best_sim = -1.0f;
@@ -1452,8 +1497,8 @@ static void chords_from_sections(const CompleteInputs& in, const CompleteParams&
             if (s == d) continue;
             const Section& src = sm->sections[s];
             if (src.kind != dst.kind || chords_in(cm, src.t_start, src.t_end) == 0) continue;
-            int sb0 = first_beat_at(bm, src.t_start - 1e-3);
-            int sb1 = first_beat_at(bm, src.t_end + 1e-3) - 1;
+            int sb0 = nearest_beat(bm, src.t_start);
+            int sb1 = nearest_beat(bm, src.t_end);
             int sn  = sb1 - sb0;
             if (sn < 1) continue;
             int n = std::min(sn, dn);
@@ -1573,84 +1618,224 @@ static void chords_from_runs(const CompleteInputs& in, const CompleteParams& p,
     kept->insert(kept->end(), placed.begin(), placed.end());
 }
 
-// 3. Fallback, beat by beat, against what each chord name sounds like in
-//    this track (learned from the map), or plain triads when the map has
-//    nothing to learn from.  Noisy: proposals start deselected.
+// 3. Fallback: decode chords beat by beat where nothing else applies.
+//    Emission = how much the beat's chroma resembles each chord model; the
+//    models are what each chord name sounds like in this track (learned from
+//    the map, blended with the textbook triad so a chord seen once is not
+//    overfitted), and the vocabulary is the map's own chords first -- a song
+//    with eight chords should not be offered twenty-four.  Viterbi over the
+//    beats with a cost for changing chord, waived in part on measure starts,
+//    gives the persistence a chord chart has.  Noisy: proposals start
+//    deselected.
+static const char* ROOT_NAMES[12] = { "C","C#","D","D#","E","F","F#","G","G#","A","A#","B" };
+
+struct ChordModel { char text[32]; float v[12]; int n; bool seen; };
+
+static void triad_template(int root, bool minor, float v[12]) {
+    memset(v, 0, sizeof(float) * 12);
+    v[root] = 1.0f; v[(root + (minor ? 3 : 4)) % 12] = 0.8f; v[(root + 7) % 12] = 0.8f;
+}
+
+// Parse a chord name's root and quality well enough to pick a triad.
+static bool parse_chord(const char* text, int* root, bool* minor) {
+    if (!text || !text[0]) return false;
+    int r = -1;
+    switch (text[0]) { case 'C': r = 0; break; case 'D': r = 2; break; case 'E': r = 4; break;
+                       case 'F': r = 5; break; case 'G': r = 7; break; case 'A': r = 9; break;
+                       case 'B': r = 11; break; default: return false; }
+    const char* q = text + 1;
+    if (*q == '#') { r = (r + 1) % 12; q++; } else if (*q == 'b') { r = (r + 11) % 12; q++; }
+    *root = r;
+    *minor = (q[0] == 'm' && q[1] != 'a');     // "m", "m7", "min" but not "maj"
+    return true;
+}
+
+static void build_chord_models(const CompleteInputs& in, const CompleteParams& p,
+                               const BeatChromaCache* cache, std::vector<ChordModel>* models)
+{
+    const BeatMap* bm = in.beatmap;
+    const MiscMap* cm = in.chordmap;
+    models->clear();
+    for (int i = 0; i < cm->count; i++) {
+        const MiscAnnotation& ch = cm->entries[i];
+        int bs = nearest_beat(bm, ch.t_start), be = nearest_beat(bm, ch.t_end);
+        if (be <= bs) continue;
+        char name[32]; strncpy(name, ch.text, sizeof(name) - 1); name[sizeof(name) - 1] = 0;
+        char* sp = strchr(name, ' '); if (sp) *sp = 0;          // "Em Em" -> "Em"
+        ChordModel* m = nullptr;
+        for (ChordModel& x : *models) if (!strcmp(x.text, name)) m = &x;
+        if (!m) {
+            ChordModel x; strncpy(x.text, name, sizeof(x.text) - 1); x.text[sizeof(x.text) - 1] = 0;
+            memset(x.v, 0, sizeof(x.v)); x.n = 0; x.seen = true;
+            models->push_back(x); m = &models->back();
+        }
+        for (int k = bs; k < be && k < (int)cache->entries.size(); k++) {
+            for (int c = 0; c < 12; c++) m->v[c] += cache->entries[k].v[c];
+            m->n++;
+        }
+    }
+    // Blend each learned model with its triad (k pseudo-beats of it)
+    for (ChordModel& m : *models) {
+        int root; bool minor;
+        float tri[12];
+        bool have_tri = parse_chord(m.text, &root, &minor);
+        float mx = 0; for (int c = 0; c < 12; c++) mx = std::max(mx, m.v[c]);
+        for (int c = 0; c < 12; c++) {
+            float learned = mx > 0 ? m.v[c] / mx : 0.0f;     // normalise peak to 1 like a triad
+            if (have_tri) { triad_template(root, minor, tri); m.v[c] = (m.n * learned + p.chord_prior_beats * tri[c]) / (m.n + p.chord_prior_beats); }
+            else m.v[c] = learned;
+        }
+    }
+    // Unseen triads as a fallback vocabulary, penalised in the decoder
+    if (p.chord_unseen_penalty < 1.0f) {
+        for (int t = 0; t < 24; t++) {
+            int root = t % 12; bool minor = t >= 12;
+            char name[32]; snprintf(name, sizeof(name), "%s%s", ROOT_NAMES[root], minor ? "m" : "");
+            bool dup = false;
+            for (const ChordModel& m : *models) { int r2; bool m2; if (parse_chord(m.text, &r2, &m2) && r2 == root && m2 == minor) dup = true; }
+            if (dup) continue;
+            ChordModel x; strncpy(x.text, name, sizeof(x.text)); x.n = 0; x.seen = false;
+            triad_template(root, minor, x.v);
+            models->push_back(x);
+        }
+    }
+}
+
+// Viterbi decode over beat intervals [i0, i1) of the map.  out_label[i] = model
+// index or -1 (beats with no chroma).
+static void decode_chords(const CompleteInputs& in, const CompleteParams& p,
+                          const BeatChromaCache* cache, const std::vector<ChordModel>& models,
+                          int i0, int i1, int ts, int measure_anchor, std::vector<int>* out_label)
+{
+    int n = i1 - i0, M = (int)models.size();
+    out_label->assign(n, -1);
+    if (n <= 0 || M == 0) return;
+    // Emissions
+    std::vector<float> em((size_t)n * M);
+    for (int i = 0; i < n; i++) {
+        int bi = i0 + i;
+        const float* v = bi < (int)cache->entries.size() ? cache->entries[bi].v : nullptr;
+        for (int m = 0; m < M; m++) {
+            float s = v ? chroma_cosine(v, models[m].v) : 0.0f;
+            if (!models[m].seen) s -= p.chord_unseen_penalty;
+            em[(size_t)i * M + m] = s;
+        }
+    }
+    std::vector<float> score((size_t)n * M, -1e30f);
+    std::vector<int>   back((size_t)n * M, -1);
+    for (int m = 0; m < M; m++) score[m] = em[m];
+    for (int i = 1; i < n; i++) {
+        bool measure_start = ts > 0 && ((i0 + i - measure_anchor) % ts + ts) % ts == 0;
+        float change = p.chord_transition * (measure_start ? (1.0f - p.chord_measure_bonus) : 1.0f);
+        // Best previous state overall, and per-state stay
+        int   bp = 0; float bv = -1e30f;
+        for (int m = 0; m < M; m++) if (score[(size_t)(i - 1) * M + m] > bv) { bv = score[(size_t)(i - 1) * M + m]; bp = m; }
+        for (int m = 0; m < M; m++) {
+            float stay = score[(size_t)(i - 1) * M + m];
+            float sw   = bv - change;
+            if (stay >= sw) { score[(size_t)i * M + m] = stay + em[(size_t)i * M + m]; back[(size_t)i * M + m] = m; }
+            else            { score[(size_t)i * M + m] = sw   + em[(size_t)i * M + m]; back[(size_t)i * M + m] = bp; }
+        }
+    }
+    int best = 0; float bv = -1e30f;
+    for (int m = 0; m < M; m++) if (score[(size_t)(n - 1) * M + m] > bv) { bv = score[(size_t)(n - 1) * M + m]; best = m; }
+    for (int i = n - 1; i >= 0; i--) { (*out_label)[i] = best; best = back[(size_t)i * M + best]; if (best < 0) best = 0; }
+}
+
 static void chords_from_models(const CompleteInputs& in, const CompleteParams& p,
                                const BeatFeatures& f, CompleteProposal* out,
                                std::vector<CompleteCand>* kept)
 {
     const BeatMap* bm = in.beatmap;
     const MiscMap* cm = in.chordmap;
+    const SectionMap* sm = in.sectionmap;
     const BeatChromaCache* cache = f.chroma;
     if (bm->count < 2 || cache->entries.empty()) return;
 
-    struct Model { char text[32]; float v[12]; int n; };
-    std::vector<Model> models;
-    for (int i = 0; i < cm->count; i++) {
-        const MiscAnnotation& ch = cm->entries[i];
-        int bs = first_beat_at(bm, ch.t_start - 1e-3), be = first_beat_at(bm, ch.t_end - 1e-3);
-        if (be <= bs) continue;
-        char name[32]; strncpy(name, ch.text, sizeof(name) - 1); name[sizeof(name) - 1] = 0;
-        char* sp = strchr(name, ' '); if (sp) *sp = 0;          // "Em Em" -> "Em"
-        Model* m = nullptr;
-        for (Model& x : models) if (!strcmp(x.text, name)) m = &x;
-        if (!m) { Model x; strncpy(x.text, name, sizeof(x.text) - 1); x.text[sizeof(x.text) - 1] = 0; memset(x.v, 0, sizeof(x.v)); x.n = 0; models.push_back(x); m = &models.back(); }
-        for (int k = bs; k < be && k < (int)cache->entries.size(); k++) {
-            for (int c = 0; c < 12; c++) m->v[c] += cache->entries[k].v[c];
-            m->n++;
-        }
-    }
-    bool learned = !models.empty();
-    if (!learned) {
-        static const char* ROOTS[12] = { "C","C#","D","D#","E","F","F#","G","G#","A","A#","B" };
-        for (int t = 0; t < 24; t++) {
-            Model x; memset(x.v, 0, sizeof(x.v)); x.n = 1;
-            int root = t % 12; bool minor = t >= 12;
-            snprintf(x.text, sizeof(x.text), "%s%s", ROOTS[root], minor ? "m" : "");
-            x.v[root] = 1.0f; x.v[(root + (minor ? 3 : 4)) % 12] = 0.8f; x.v[(root + 7) % 12] = 0.8f;
-            models.push_back(x);
-        }
-    }
-    for (Model& m : models) if (m.n) for (int c = 0; c < 12; c++) m.v[c] /= m.n;
+    std::vector<ChordModel> models;
+    build_chord_models(in, p, cache, &models);
+    if (models.empty()) return;
+    bool learned = false;
+    for (const ChordModel& m : models) if (m.seen) learned = true;
 
+    int ts = 4, anchor = 0;
+    if (sm->count > 0) { ts = std::max(1, sm->sections[0].ts_num); anchor = nearest_beat(bm, sm->sections[0].t_start) % ts; }
+
+    // The map says how often this song changes chord: scale the change cost
+    // by the median chord length so a song that changes every two beats is
+    // not forced into four-beat chords, nor the reverse.
+    CompleteParams pp = p;
+    if (p.chord_learn_rate && cm->count >= 3) {
+        std::vector<double> lens;
+        for (int i = 0; i < cm->count; i++) {
+            int bs = nearest_beat(bm, cm->entries[i].t_start), be = nearest_beat(bm, cm->entries[i].t_end);
+            if (be > bs) lens.push_back(be - bs);
+        }
+        if (!lens.empty()) {
+            std::sort(lens.begin(), lens.end());
+            double med = lens[lens.size() / 2];
+            pp.chord_transition = p.chord_transition * (float)(med / 4.0);
+        }
+    }
+
+    // Chord-free beat intervals, not reserved by a pending candidate
     int n_int = bm->count - 1;
-    std::vector<int> win(n_int, -1);
-    std::vector<float> margin(n_int, 0.0f);
+    std::vector<char> free_(n_int, 0);
     for (int i = 0; i < n_int; i++) {
         double t0 = bm->beats[i].time, t1 = bm->beats[i + 1].time;
         if (chords_in(cm, t0, t1) > 0) continue;
         bool clash = false;
         for (const CompleteCand& k : *kept) if (overlap_len(t0, t1, k.t0, k.t1) > 0.0) { clash = true; break; }
-        if (clash || i >= (int)cache->entries.size()) continue;
-        float best = -1, second = -1; int bi = -1;
-        for (size_t m = 0; m < models.size(); m++) {
-            float s = chroma_cosine(cache->entries[i].v, models[m].v);
-            if (s > best) { second = best; best = s; bi = (int)m; }
-            else if (s > second) second = s;
-        }
-        if (bi >= 0 && best - second >= p.chord_margin) { win[i] = bi; margin[i] = best - second; }
+        // Inside an annotated chord's span (chord started earlier)?
+        for (int c = 0; c < cm->count && !clash; c++)
+            if (cm->entries[c].t_start < t0 + 1e-3 && cm->entries[c].t_end > t0 + 1e-3) clash = true;
+        free_[i] = !clash;
     }
+
+    // Decode each free stretch; emit one candidate per stretch, split at
+    // section boundaries so a whole track does not become one item.
     int i = 0;
     while (i < n_int) {
-        if (win[i] < 0) { i++; continue; }
-        int j = i; float msum = 0;
-        while (j < n_int && win[j] == win[i]) { msum += margin[j]; j++; }
+        if (!free_[i]) { i++; continue; }
+        int j = i;
+        while (j < n_int && free_[j]) {
+            j++;
+            // split at a section start (not the first beat of the stretch)
+            if (j < n_int && j > i)
+                for (int s = 0; s < sm->count; s++)
+                    if (fabs(sm->sections[s].t_start - bm->beats[j].time) < 1e-3) { goto split; }
+        }
+    split:
+        std::vector<int> label;
+        decode_chords(in, pp, cache, models, i, j, ts, anchor, &label);
         int first = (int)out->chords.size();
-        ChordProposal cp;
-        cp.t0 = bm->beats[i].time; cp.t1 = bm->beats[j].time;
-        strncpy(cp.text, models[win[i]].text, sizeof(cp.text) - 1); cp.text[sizeof(cp.text) - 1] = 0;
-        out->chords.push_back(cp);
-        CompleteCand c = {};
-        c.kind = CAND_CHORDS; c.t0 = cp.t0; c.t1 = cp.t1; c.first = first; c.n = 1;
-        c.sim = 0; c.score = std::min(1.0f, 0.25f + 0.25f * (msum / (j - i)) / p.chord_margin);
-        c.selected = false;
-        strncpy(c.source, learned ? "learned chord" : "triad", sizeof(c.source) - 1);
-        char a[16], b[16];
-        fmt_time(a, sizeof(a), cp.t0); fmt_time(b, sizeof(b), cp.t1);
-        snprintf(c.desc, sizeof(c.desc), "%s  %s-%s  (%d beats, %s fit)", cp.text, a, b, j - i,
-                 learned ? "learned" : "triad");
-        kept->push_back(c);
+        float ssum = 0; int scnt = 0;
+        int k = 0;
+        while (k < (int)label.size()) {
+            if (label[k] < 0) { k++; continue; }
+            int e = k;
+            while (e < (int)label.size() && label[e] == label[k]) e++;
+            ChordProposal cp;
+            cp.t0 = bm->beats[i + k].time; cp.t1 = bm->beats[i + e].time;
+            strncpy(cp.text, models[label[k]].text, sizeof(cp.text) - 1); cp.text[sizeof(cp.text) - 1] = 0;
+            out->chords.push_back(cp);
+            for (int q = k; q < e; q++) { ssum += chroma_cosine(cache->entries[i + q].v, models[label[k]].v); scnt++; }
+            k = e;
+        }
+        int n = (int)out->chords.size() - first;
+        if (n > 0) {
+            CompleteCand c = {};
+            c.kind = CAND_CHORDS; c.t0 = bm->beats[i].time; c.t1 = bm->beats[j].time;
+            c.first = first; c.n = n;
+            c.sim = scnt ? ssum / scnt : 0.0f; c.score = c.sim * 0.9f;
+            c.selected = false;
+            strncpy(c.source, learned ? "learned chords" : "triads", sizeof(c.source) - 1);
+            char a[16], b[16];
+            fmt_time(a, sizeof(a), c.t0); fmt_time(b, sizeof(b), c.t1);
+            snprintf(c.desc, sizeof(c.desc), "%d chords decoded  %s-%s  (%d beats, %s) fit %.2f",
+                     n, a, b, j - i, learned ? "learned models" : "triads", c.sim);
+            kept->push_back(c);
+        }
         i = j;
     }
 }

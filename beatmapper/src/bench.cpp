@@ -22,6 +22,8 @@
 //   --drop-beats N:M    drop every N-th beat starting at M (thin the map)
 //   --no-sections       drop every section (keep beats and chords)
 //   --no-chords         drop every chord
+//   --hide-chords T0-T1 drop chords starting inside (beats and sections stay)
+//   --edge-ms MS        shift every visible section/chord edge by MS (late if > 0)
 //
 // Options
 //   --algo NAME|IDX     gap-fill strategy (complete)
@@ -57,6 +59,9 @@ struct PDesc { const char* name; PType type; size_t off; const char* help; };
 #define PI(field, help) { #field, PT_INT,   offsetof(CompleteParams, field), help }
 #define PB(field, help) { #field, PT_BOOL,  offsetof(CompleteParams, field), help }
 static const PDesc PARAMS[] = {
+    PB(do_beats,             "run the beat stage"),
+    PB(do_sections,          "run the section stage"),
+    PB(do_chords,            "run the chord stage"),
     PF(gap_factor,           "interval > this x median IBI is a gap"),
     PI(template_beats,       "chunk length for unsectioned templates"),
     PI(min_template_beats,   "shortest template"),
@@ -100,7 +105,11 @@ static const PDesc PARAMS[] = {
     PI(chord_run_beats,      "max progression template beats"),
     PF(chord_sim_threshold,  "progression match threshold"),
     PB(chord_fallback,       "beat-by-beat fallback (learned models / triads)"),
-    PF(chord_margin,         "fallback margin"),
+    PF(chord_transition,     "decoder: chord change cost"),
+    PF(chord_measure_bonus,  "decoder: change cost waived on measure starts"),
+    PF(chord_unseen_penalty, "decoder: penalty for triads not in the map (>=1 disables)"),
+    PF(chord_prior_beats,    "learned model triad prior weight"),
+    PB(chord_learn_rate,     "scale change cost by the map's median chord length"),
     PI(chroma.algo_idx,      "CHROMA_ALGOS index for beat chroma"),
     PF(chroma.attack_ms,     "beat chroma: skip attack ms"),
     PF(chroma.attack_frac,   "beat chroma: skip attack fraction"),
@@ -198,6 +207,48 @@ static BeatScore score_beats(const std::vector<double>& prop, const Truth& tr,
     return s;
 }
 
+// First token of a chord annotation ("D D D D" -> "D").
+static void chord_token(const char* text, char* out, int n) {
+    int i = 0;
+    while (text[i] && text[i] != ' ' && i < n - 1) { out[i] = text[i]; i++; }
+    out[i] = 0;
+}
+
+// Per-beat chord accuracy over truth beats whose chord was hidden: the
+// proposal (any chord candidate, or chords riding with a section) covering
+// the beat must name the same chord.
+static void score_chord_beats(const Truth& tr, const MiscMap& cm_visible,
+                              const CompleteProposal& out, int* n_beats, int* n_ok)
+{
+    *n_beats = *n_ok = 0;
+    for (size_t i = 0; i + 1 < tr.beats.size(); i++) {
+        double t = tr.beats[i] + 1e-3;
+        const MiscAnnotation* truth = nullptr;
+        for (const MiscAnnotation& c : tr.chords) if (c.t_start <= t && c.t_end > t) { truth = &c; break; }
+        if (!truth) continue;
+        bool visible = false;
+        for (int j = 0; j < cm_visible.count; j++)
+            if (fabs(cm_visible.entries[j].t_start - truth->t_start) < 1e-3) visible = true;
+        if (visible) continue;
+        (*n_beats)++;
+        const ChordProposal* prop = nullptr;
+        for (const CompleteCand& c : out.cands) {
+            int first = -1, n = 0;
+            if (c.kind == CAND_CHORDS) { first = c.first; n = c.n; }
+            else if (c.kind == CAND_SECTION && c.chord_n > 0) { first = c.chord_first; n = c.chord_n; }
+            for (int k = 0; k < n; k++) {
+                const ChordProposal& cp = out.chords[first + k];
+                if (cp.t0 <= t && cp.t1 > t) { prop = &cp; break; }
+            }
+            if (prop) break;
+        }
+        if (!prop) continue;
+        char a[32], b[32];
+        chord_token(truth->text, a, sizeof(a)); chord_token(prop->text, b, sizeof(b));
+        if (!strcmp(a, b)) (*n_ok)++;
+    }
+}
+
 // ---------------------------------------------------------------------------
 // main
 // ---------------------------------------------------------------------------
@@ -227,6 +278,8 @@ int main(int argc, char** argv) {
     std::vector<Hide> hides;
     int smooth2 = 0; bool stages = false, tsv = false, header = false, list = false;
     bool no_sections = false, no_chords = false, dump = false;
+    double hc0 = 0, hc1 = 0; bool hide_chords = false;
+    double edge_ms = 0.0;
     double tol_ms = 50.0;
     double reg0 = 0, reg1 = 0; bool have_reg = false;
 
@@ -258,6 +311,8 @@ int main(int argc, char** argv) {
         else if (!strcmp(a, "--stages"))  stages = true;
         else if (!strcmp(a, "--no-sections")) no_sections = true;
         else if (!strcmp(a, "--no-chords"))   no_chords = true;
+        else if (!strcmp(a, "--edge-ms") && v) { edge_ms = atof(v); ai++; }
+        else if (!strcmp(a, "--hide-chords") && v) { if (!parse_range(v, &hc0, &hc1)) return 2; hide_chords = true; ai++; }
         else if (!strcmp(a, "--tsv"))     tsv = true;
         else if (!strcmp(a, "--header"))  header = true;
         else if (!strcmp(a, "--list"))    list = true;
@@ -375,8 +430,16 @@ int main(int argc, char** argv) {
             for (size_t i = 0; i < tr.beats.size(); i++) if (((int)i - h.m) % h.n == 0 && (int)i >= h.m) hidden[i] = 1;
         }
     }
+    // Nudge every visible section/chord edge (simulates hand-placed edges
+    // that sit a little after their beat)
+    if (edge_ms != 0.0) {
+        for (int i = 0; i < sm.count; i++) { sm.sections[i].t_start += edge_ms / 1000.0; sm.sections[i].t_end += edge_ms / 1000.0; }
+        for (int i = 0; i < cm.count; i++) { cm.entries[i].t_start += edge_ms / 1000.0; cm.entries[i].t_end += edge_ms / 1000.0; }
+    }
     if (no_sections) for (int i = sm.count - 1; i >= 0; i--) sectionmap_remove(&sm, i);
     if (no_chords)   for (int i = cm.count - 1; i >= 0; i--) miscmap_remove(&cm, i);
+    if (hide_chords) for (int i = cm.count - 1; i >= 0; i--)
+        if (cm.entries[i].t_start >= hc0 - 1e-6 && cm.entries[i].t_start <= hc1) miscmap_remove(&cm, i);
     // Rebuild the beatmap from the unhidden truth
     while (bm.count > 0) beatmap_remove(&bm, bm.count - 1);
     int n_hidden = 0;
@@ -404,6 +467,9 @@ int main(int argc, char** argv) {
 
     // Stage 2/3: accept all beats, score sections, accept them, score chords
     int sec_found = 0, sec_true = 0, sec_false = 0, ch_found = 0, ch_true = 0, ch_text_ok = 0;
+    int cb_n = 0, cb_ok = 0;
+    MiscMap cm_visible; miscmap_init(&cm_visible, "chord");
+    for (int i = 0; i < cm.count; i++) miscmap_add(&cm_visible, cm.entries[i].t_start, cm.entries[i].t_end, cm.entries[i].text);
     if (stages && (want_sections || want_chords)) {
         for (double t : out.beat_times) beatmap_add(&bm, t);
         p.do_beats = false; p.do_sections = true; p.do_chords = false;
@@ -414,6 +480,7 @@ int main(int argc, char** argv) {
                 if (fabs(sm.sections[j].t_start - tr.sections[i].t_start) < 1e-3) sec_hidden[i] = 0;
         for (size_t i = 0; i < tr.sections.size(); i++) if (sec_hidden[i]) sec_true++;
         if (list) for (const CompleteCand& c : out.cands) printf("  [%d] %.2f %s\n", c.kind, c.score, c.desc);
+        CompleteProposal sec_stage = out;     // keep the section stage's chords for scoring
         for (const CompleteCand& c : out.cands) {
             if (c.kind != CAND_SECTION) continue;
             if (c.t0 > tr.t_end + 0.5) continue;      // beyond the ground truth: unknowable
@@ -436,6 +503,17 @@ int main(int argc, char** argv) {
         if (want_chords) {
             p.do_sections = false; p.do_chords = true;
             complete_run(in, p, &cache, &out);
+            {
+                // Score both stages' chords: those that rode with sections and the rest
+                CompleteProposal both = out;
+                int base = (int)both.chords.size();
+                both.chords.insert(both.chords.end(), sec_stage.chords.begin(), sec_stage.chords.end());
+                for (const CompleteCand& c : sec_stage.cands)
+                    if (c.kind == CAND_SECTION && c.chord_n > 0) {
+                        CompleteCand cc = c; cc.chord_first += base; both.cands.push_back(cc);
+                    }
+                score_chord_beats(tr, cm_visible, both, &cb_n, &cb_ok);
+            }
             for (const MiscAnnotation& c : tr.chords) {
                 bool present = false;
                 for (int j = 0; j < cm.count; j++) if (fabs(cm.entries[j].t_start - c.t_start) < 1e-3) present = true;
@@ -476,18 +554,20 @@ int main(int argc, char** argv) {
     }
     const char* algo = complete_fill_algo_name(p.fill_algo_idx);
     if (tsv) {
-        if (header) printf("algo\thidden\tn\thit\tbad\thalf\tmissed\tmean_ms\tmax_ms\ttransfers\ttempo_runs\tsec_found\tsec_true\tsec_false\tch_found\tch_true\tch_text_ok\n");
-        printf("%s\t%d\t%d\t%d\t%d\t%d\t%d\t%.1f\t%.1f\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\n",
+        if (header) printf("algo\thidden\tn\thit\tbad\thalf\tmissed\tmean_ms\tmax_ms\ttransfers\ttempo_runs\tsec_found\tsec_true\tsec_false\tch_found\tch_true\tch_text_ok\tcb_ok\tcb_n\n");
+        printf("%s\t%d\t%d\t%d\t%d\t%d\t%d\t%.1f\t%.1f\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\n",
                algo, n_hidden, s.n, s.hit, s.bad, s.half, s.missed, s.mean_ms, s.max_ms,
-               n_transfer, n_tempo, sec_found, sec_true, sec_false, ch_found, ch_true, ch_text_ok);
+               n_transfer, n_tempo, sec_found, sec_true, sec_false, ch_found, ch_true, ch_text_ok, cb_ok, cb_n);
     } else {
         printf("%s: hid %d of %d beats; %s\n", algo, n_hidden, (int)tr.beats.size(), beat_status);
         printf("  beats: %d proposed in truth range, %d within %.0f ms, %d off, %d half-beat, %d hidden missed, mean %.1f ms, max %.1f ms  (%d transfers, %d tempo runs)\n",
                s.n, s.hit, tol_ms, s.bad, s.half, s.missed, s.mean_ms, s.max_ms, n_transfer, n_tempo);
         if (stages) {
             printf("  sections: %d of %d hidden recovered (edges within 0.25 s), %d spurious\n", sec_found, sec_true, sec_false);
-            if (want_chords)
+            if (want_chords) {
                 printf("  chords: %d proposed for %d hidden, %d with the right name at the right time\n", ch_found, ch_true, ch_text_ok);
+                printf("  chord beats: %d of %d hidden beats carry the right chord (%.0f%%)\n", cb_ok, cb_n, cb_n ? 100.0 * cb_ok / cb_n : 0.0);
+            }
         }
     }
     audio_free_pcm(pcm);

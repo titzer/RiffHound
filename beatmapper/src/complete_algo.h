@@ -105,7 +105,12 @@ struct CompleteParams {
     int   chord_run_beats;       // longest run used as a progression template (64)
     float chord_sim_threshold;   // min per-chord chroma+rhythm similarity for a run match (0.7)
     bool  chord_fallback;        // per-beat inference from learned chord models (or triads)
-    float chord_margin;          // fallback: winner must beat runner-up by this (0.12)
+    float chord_margin;          // (unused by the decoder; kept for the UI)
+    float chord_transition;      // decoder: cost of changing chord between beats (0.15)
+    float chord_measure_bonus;   // decoder: fraction of that cost waived on measure starts (0.5)
+    float chord_unseen_penalty;  // decoder: emission penalty for triads the map never used (0.1); >=1 disables them
+    float chord_prior_beats;     // learned model = (n*learned + prior*triad)/(n+prior) (4)
+    bool  chord_learn_rate;      // scale chord_transition by the map's median chord length / 4
 
     // --- chroma per beat ---
     BeatChromaParams chroma;

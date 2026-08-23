@@ -4,7 +4,7 @@
 #include <string.h>
 
 void beat_chroma_params_defaults(BeatChromaParams* p) {
-    p->algo_idx    = 3;       // NNLS Chroma
+    p->algo_idx    = 6;       // HPS + Peaks: best at telling chords apart (bench: 76% vs 41% for NNLS)
     p->attack_ms   = 60.0f;
     p->attack_frac = 0.15f;
 }
