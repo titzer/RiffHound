@@ -21,7 +21,9 @@ static const HelpRow s_rows[] = {
     { "Shift+click beat",         "Add / remove a beat from the selection" },
     { "Drag in beats strip",      "Rectangle-select beats" },
     { "Delete / Backspace",       "Delete the selection (beats, then section, then lyric)" },
-    { "T",                        "Tap a beat at the playhead while playing" },
+    { "T",                        "Tap a beat at the playhead while playing (a new run of taps selects itself)" },
+    { "S",                        "Smooth the selected taps as previewed (Beats tool smoothing settings)" },
+    { "L (hold)",                 "While playing with no region: record the next unplaced lyric from key down to key up" },
     { "I",                        "Insert selected taps and auto-beats as real beats" },
 
     { nullptr, "Editing" },

@@ -17,7 +17,7 @@ void ui_toolbar_open_dialog()   { s_show_open_dialog    = true; }
 void ui_toolbar_render(EditorState* editor, AudioState* audio, BeatMap* beatmap,
                        UndoStack* undo, RecentFiles* recent, SectionMap* sectionmap,
                        LyricMap* lyricmap, MiscMap* miscmap, MiscMap* chordmap,
-                       AutoBeatList* autobeat)
+                       AutoBeatList* autobeat, Library* library)
 {
     // --- Playback controls ---
     bool can_play = audio->loaded && !audio->playing;
@@ -233,80 +233,198 @@ void ui_toolbar_render(EditorState* editor, AudioState* audio, BeatMap* beatmap,
             audio_set_speed(editor, editor->speed + 0.05f);
     }
 
-    // --- Audio open modal ---
+    // --- Audio open modal: the library ---
+    // A search box over every track in the remembered folders, tagged with
+    // what its .txt carries.  Enter (or a click) loads; Browse... opens the
+    // system dialog and loads the pick straight away, remembering its folder.
+    static char s_query[128]   = {};
+    static int  s_highlight    = 0;
+    static bool s_want_beats = false, s_want_sections = false, s_want_chords = false,
+                s_want_lyrics = false, s_want_loops = false;
+    static bool s_focus_search = false;
     if (s_show_open_dialog) {
         ImGui::OpenPopup("Open Audio File");
         s_show_open_dialog = false;
+        s_query[0] = 0;
+        s_highlight = 0;
+        s_focus_search = true;
+        library_rescan(library);
     }
-    if (ImGui::BeginPopupModal("Open Audio File", nullptr,
-                               ImGuiWindowFlags_AlwaysAutoResize)) {
+    ImGui::SetNextWindowSize(ImVec2(640, 520), ImGuiCond_Appearing);
+    if (ImGui::BeginPopupModal("Open Audio File", nullptr, ImGuiWindowFlags_NoResize)) {
         if (ImGui::IsKeyPressed(ImGuiKey_Escape)) ImGui::CloseCurrentPopup();
 
-        // Helper: load the file in s_file_buf, update recent list, close popup
-        auto do_load = [&]() {
-            if (s_file_buf[0] == '\0') return;
-            // History belongs to the track being replaced — drop it, or Ctrl+Z
-            // would paste the previous track's beats over the new one.
+        auto do_load = [&](const char* path) {
+            if (!path || !path[0]) return;
+            strncpy(s_file_buf, path, sizeof(s_file_buf) - 1);
             undo_clear(undo);
             audio_load(audio, editor, s_file_buf);
             char bm_path[512];
             beatmap_path_for_audio(s_file_buf, bm_path, sizeof(bm_path));
             if (!beatmap_load(beatmap, sectionmap, lyricmap, miscmap, chordmap, bm_path))
                 beatmap->count = 0;
-            // Companion .txt is the default save target regardless of whether it exists
             strncpy(beatmap->save_path, bm_path, sizeof(beatmap->save_path) - 1);
             beatmap->dirty = false;
             editor->has_region = false;
             ui_beat_detector_reset(autobeat);
             ui_complete_reset();
-            // Auto-show strips that have content in the loaded file
             if (sectionmap->count > 0) panel_set_visible(editor, PANEL_SECTIONS, true);
             if (lyricmap->count   > 0) panel_set_visible(editor, PANEL_LYRICS,   true);
             if (miscmap->count    > 0) panel_set_visible(editor, PANEL_MISC,     true);
             if (chordmap->count   > 0) panel_set_visible(editor, PANEL_CHORDS,   true);
             recent_add(recent, s_file_buf);
             recent_save(recent);
+            // Remember the folder so the track is in the library next time
+            char dir[512];
+            strncpy(dir, s_file_buf, sizeof(dir) - 1); dir[sizeof(dir) - 1] = 0;
+            char* slash = strrchr(dir, '/');
+            if (slash && slash != dir) { *slash = 0; library_add_dir(library, dir); }
+            library_touch(library, s_file_buf);
             ImGui::CloseCurrentPopup();
         };
 
-        // Recent files list
-        if (recent->count > 0) {
-            ImGui::TextDisabled("Recent:");
-            for (int i = 0; i < recent->count; i++) {
-                const char* slash = strrchr(recent->paths[i], '/');
-                const char* name  = slash ? slash + 1 : recent->paths[i];
-                ImGui::PushID(i);
-                if (ImGui::Selectable(name, false, 0, ImVec2(400, 0))) {
-                    strncpy(s_file_buf, recent->paths[i], sizeof(s_file_buf) - 1);
-                    do_load();
+        // Search
+        if (s_focus_search) { ImGui::SetKeyboardFocusHere(); s_focus_search = false; }
+        ImGui::SetNextItemWidth(-1);
+        bool enter = ImGui::InputTextWithHint("##search", "Search tracks (every letter in order)",
+                                              s_query, sizeof(s_query),
+                                              ImGuiInputTextFlags_EnterReturnsTrue);
+        bool search_active = ImGui::IsItemActive();
+        if (ImGui::IsItemEdited()) s_highlight = 0;
+
+        // Filters
+        ImGui::TextDisabled("Has:"); ImGui::SameLine();
+        ImGui::Checkbox("Beats", &s_want_beats);       ImGui::SameLine();
+        ImGui::Checkbox("Sections", &s_want_sections); ImGui::SameLine();
+        ImGui::Checkbox("Chords", &s_want_chords);     ImGui::SameLine();
+        ImGui::Checkbox("Lyrics", &s_want_lyrics);     ImGui::SameLine();
+        ImGui::Checkbox("Loops", &s_want_loops);
+
+        // Matching entries, most recently opened first, then by title
+        static int s_order[4096];
+        int n_match = 0;
+        for (int i = 0; i < library->count && n_match < 4096; i++) {
+            const LibEntry& e = library->entries[i];
+            if (!library_fuzzy(s_query, e.title) && !library_fuzzy(s_query, e.dir)) continue;
+            if (s_want_beats    && !e.has.beats)    continue;
+            if (s_want_sections && !e.has.sections) continue;
+            if (s_want_chords   && !e.has.chords)   continue;
+            if (s_want_lyrics   && !e.has.lyrics)   continue;
+            if (s_want_loops    && !e.has.loops)    continue;
+            s_order[n_match++] = i;
+        }
+        for (int a = 1; a < n_match; a++) {            // insertion sort: lists are small
+            int v = s_order[a]; int b = a;
+            auto before = [&](int x, int y) {
+                const LibEntry& ex = library->entries[x]; const LibEntry& ey = library->entries[y];
+                if (ex.last_opened != ey.last_opened) return ex.last_opened > ey.last_opened;
+                return strcasecmp(ex.title, ey.title) < 0;
+            };
+            while (b > 0 && before(v, s_order[b - 1])) { s_order[b] = s_order[b - 1]; b--; }
+            s_order[b] = v;
+        }
+        if (s_highlight >= n_match) s_highlight = n_match ? n_match - 1 : 0;
+        if (n_match == library->count) ImGui::TextDisabled("%d tracks in %d folder%s", library->count,
+                                                           library->dir_count, library->dir_count == 1 ? "" : "s");
+        else ImGui::TextDisabled("%d of %d tracks", n_match, library->count);
+
+        // Keyboard: up/down move the highlight, Enter loads it
+        if (ImGui::IsKeyPressed(ImGuiKey_DownArrow, true) && s_highlight + 1 < n_match) s_highlight++;
+        if (ImGui::IsKeyPressed(ImGuiKey_UpArrow,   true) && s_highlight > 0)           s_highlight--;
+        if ((enter || (!search_active && ImGui::IsKeyPressed(ImGuiKey_Enter, false))) && n_match > 0)
+            do_load(library->entries[s_order[s_highlight]].path);
+
+        // Results: one line per track, presence columns on the right
+        static const char* COLS[5] = { "beats", "sect", "chords", "lyrics", "loops" };
+        const float COL_W = 52.0f;
+        float list_h = ImGui::GetContentRegionAvail().y - 2.0f * ImGui::GetFrameHeightWithSpacing() - 8.0f;
+        {
+            // Column headers
+            float w = ImGui::GetContentRegionAvail().x;
+            ImVec2 hp = ImGui::GetCursorScreenPos();
+            ImDrawList* hdl = ImGui::GetWindowDrawList();
+            for (int c = 0; c < 5; c++) {
+                ImVec2 ts = ImGui::CalcTextSize(COLS[c]);
+                float cx0 = hp.x + w - (5 - c) * COL_W - 14.0f;
+                hdl->AddText(ImVec2(cx0 + (COL_W - ts.x) * 0.5f, hp.y), IM_COL32(140, 140, 170, 220), COLS[c]);
+            }
+            ImGui::Dummy(ImVec2(0, ImGui::GetTextLineHeight()));
+        }
+        if (ImGui::BeginChild("##results", ImVec2(0, list_h), true)) {
+            float w = ImGui::GetContentRegionAvail().x;
+            for (int r = 0; r < n_match; r++) {
+                const LibEntry& e = library->entries[s_order[r]];
+                ImGui::PushID(r);
+                bool hl = (r == s_highlight);
+                ImVec2 p0 = ImGui::GetCursorScreenPos();
+                float row_h = ImGui::GetTextLineHeight() + 4.0f;
+                if (ImGui::Selectable("##row", hl, 0, ImVec2(0, row_h)))
+                    do_load(e.path);
+                if (ImGui::IsItemHovered()) {
+                    const char* dslash = strrchr(e.dir, '/');
+                    ImGui::SetTooltip("%s\nfolder: %s%s", e.path, dslash ? dslash + 1 : e.dir,
+                                      e.has_txt ? "" : "\n(no chart)");
                 }
-                if (ImGui::IsItemHovered())
-                    ImGui::SetTooltip("%s", recent->paths[i]);
+                if (hl && (ImGui::IsKeyPressed(ImGuiKey_DownArrow) || ImGui::IsKeyPressed(ImGuiKey_UpArrow)))
+                    ImGui::SetScrollHereY();
+                ImDrawList* dl = ImGui::GetWindowDrawList();
+                float ty = p0.y + 2.0f;
+                float cols_x = p0.x + w - 5 * COL_W;
+                // Title, clipped before the columns
+                dl->PushClipRect(ImVec2(p0.x, p0.y), ImVec2(cols_x - 8.0f, p0.y + row_h), true);
+                dl->AddText(ImVec2(p0.x + 6.0f, ty), e.has_txt ? IM_COL32(230, 230, 245, 255)
+                                                               : IM_COL32(170, 170, 185, 255), e.title);
+                dl->PopClipRect();
+                // Check marks
+                bool has[5] = { e.has.beats, e.has.sections, e.has.chords, e.has.lyrics, e.has.loops };
+                for (int c = 0; c < 5; c++) {
+                    float cx = cols_x + c * COL_W + COL_W * 0.5f, cy = ty + ImGui::GetTextLineHeight() * 0.5f;
+                    if (has[c]) {
+                        ImU32 col = IM_COL32(120, 220, 140, 255);
+                        dl->AddLine(ImVec2(cx - 5, cy), ImVec2(cx - 1.5f, cy + 4), col, 2.0f);
+                        dl->AddLine(ImVec2(cx - 1.5f, cy + 4), ImVec2(cx + 5, cy - 4), col, 2.0f);
+                    } else {
+                        dl->AddCircleFilled(ImVec2(cx, cy), 1.5f, IM_COL32(70, 70, 90, 200));
+                    }
+                }
                 ImGui::PopID();
             }
-            ImGui::Separator();
-            ImGui::Spacing();
-        }
-
-        // Manual entry
-        ImGui::Text("Path to .mp3 or .wav:");
-        ImGui::SetNextItemWidth(360);
-        bool enter_pressed = ImGui::InputText("##path", s_file_buf, sizeof(s_file_buf),
-                                              ImGuiInputTextFlags_EnterReturnsTrue);
-        ImGui::SameLine();
-        if (ImGui::Button("Browse...")) {
-            char picked[512] = {};
-            if (platform_open_file_dialog(picked, sizeof(picked))) {
-                strncpy(s_file_buf, picked, sizeof(s_file_buf) - 1);
-                do_load();   // picking a file in the system dialog loads it
+            if (n_match == 0) {
+                if (library->dir_count == 0)
+                    ImGui::TextDisabled("No folders yet. Browse... for a file, or Add folder...");
+                else
+                    ImGui::TextDisabled("(nothing matches)");
             }
         }
-        ImGui::Spacing();
-        if (ImGui::Button("Load", ImVec2(80, 0)) || enter_pressed)
-            do_load();
+        ImGui::EndChild();
+
+        // Folders
+        ImGui::TextDisabled("Folders:");
+        for (int i = 0; i < library->dir_count; i++) {
+            ImGui::SameLine();
+            const char* dslash = strrchr(library->dirs[i], '/');
+            const char* dname = dslash ? dslash + 1 : library->dirs[i];
+            ImGui::PushID(1000 + i);
+            if (ImGui::SmallButton(dname)) { library_remove_dir(library, i); ImGui::PopID(); break; }
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s\n(click to forget this folder)", library->dirs[i]);
+            ImGui::PopID();
+        }
+
+        // Buttons
+        if (ImGui::Button("Browse...", ImVec2(110, 0))) {
+            char picked[512] = {};
+            if (platform_open_file_dialog(picked, sizeof(picked))) do_load(picked);
+        }
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("System file dialog; the pick loads at once and its folder joins the library");
         ImGui::SameLine();
-        if (ImGui::Button("Cancel", ImVec2(80, 0)))
-            ImGui::CloseCurrentPopup();
+        if (ImGui::Button("Add folder...", ImVec2(110, 0))) {
+            char picked[512] = {};
+            if (platform_open_folder_dialog(picked, sizeof(picked))) library_add_dir(library, picked);
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Rescan", ImVec2(80, 0))) library_rescan(library);
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel", ImVec2(80, 0))) ImGui::CloseCurrentPopup();
         ImGui::EndPopup();
     }
 }

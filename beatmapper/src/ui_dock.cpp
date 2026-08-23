@@ -25,6 +25,7 @@ struct ToolState {
     bool expanded;      // header triangle state while docked
     bool settings_open; // settings section shown
     bool focus_req;     // bring the floating window to front next frame
+    bool opened_req;    // just opened by its rail icon: tools that analyse a selection run now
 };
 static ToolState s_tools[DOCK_TOOL_COUNT] = {};
 
@@ -89,12 +90,13 @@ const char* ui_dock_tool_name(DockTool t) {
 void ui_dock_icon_click(DockTool t) {
     if (t < 0 || t >= DOCK_TOOL_COUNT) return;
     ToolState& ts = s_tools[t];
-    if (ts.floating) { ts.focus_req = true; return; }
+    if (ts.floating) { ts.focus_req = true; ts.opened_req = true; return; }
     if (s_drawer_open && ts.expanded) { s_drawer_open = false; return; }
     for (int i = 0; i < DOCK_TOOL_COUNT; i++)
         if (i != (int)t && !s_tools[i].floating) s_tools[i].expanded = false;
     s_drawer_open = true;
     ts.expanded   = true;
+    ts.opened_req = true;
 }
 
 // --- rail icons ------------------------------------------------------------
@@ -255,6 +257,13 @@ static void tool_frame(DockTool t, ToolCtx& c, float x, float y, float w, float 
     float cur_y = y + H;
     float inner_x = x + FRAME_PAD, inner_w = w - 2.0f * FRAME_PAD;
     ImGui::PushID((int)t + 100);
+
+    // Opened by a click with a selection in place: analyse it straight away.
+    // (Chroma and the detector already follow the region on their own.)
+    if (ts.opened_req) {
+        ts.opened_req = false;
+        if (t == DOCK_COMPLETE) ui_complete_auto_analyze(c);
+    }
 
     // Settings
     if (td.settings && ts.settings_open) {

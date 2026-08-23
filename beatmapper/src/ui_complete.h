@@ -19,6 +19,10 @@ void ui_complete_settings(ToolCtx& c);
 void ui_complete_body(ToolCtx& c);
 void ui_complete_actions(ToolCtx& c);
 
+// Opening the tool with a region selected and no proposal yet runs the
+// analysis right away, so select-then-click shows results.
+void ui_complete_auto_analyze(ToolCtx& c);
+
 // Call when the panel is not rendered this frame (drops the hover highlight).
 void ui_complete_hidden();
 

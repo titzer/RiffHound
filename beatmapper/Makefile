@@ -19,6 +19,7 @@ SOURCES := \
     $(SRC_DIR)/lyricmap.cpp \
     $(SRC_DIR)/undo.cpp \
     $(SRC_DIR)/recent.cpp \
+    $(SRC_DIR)/library.cpp \
     $(SRC_DIR)/ui_timeline.cpp \
     $(SRC_DIR)/ui_toolbar.cpp \
     $(SRC_DIR)/ui_dock.cpp \

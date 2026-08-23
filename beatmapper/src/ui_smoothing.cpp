@@ -34,6 +34,10 @@ static double   s_max_shift_s = 0.0;   // largest |delta| in the preview
 static double   s_mean_shift_s = 0.0;
 
 const SmoothPreview* ui_smoothing_preview() { return &s_preview; }
+const SmoothParams*  ui_smoothing_params() {
+    if (!s_p_init) { smooth_params_defaults(&s_p); s_p_init = true; }
+    return &s_p;
+}
 
 static bool key_equal(const PreviewKey& a, const PreviewKey& b) {
     return a.i0 == b.i0 && a.i1 == b.i1 &&

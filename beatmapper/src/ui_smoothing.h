@@ -37,3 +37,7 @@ struct SmoothPreview {
 
 // Never null; check ->active before use.
 const SmoothPreview* ui_smoothing_preview();
+
+// The smoothing knobs in force (presets / sliders in the Beats tool), so
+// other things -- the tap strip -- can smooth with the same settings.
+const SmoothParams* ui_smoothing_params();

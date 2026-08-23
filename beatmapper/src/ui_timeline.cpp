@@ -686,6 +686,51 @@ struct TapEntry { double time; bool selected; };
 static TapEntry s_taps[MAX_TAPS];
 static int      s_tap_count = 0;
 
+// Smoothing preview for the selected taps: where each would land with the
+// Beats tool's smoothing settings.  Recomputed every frame (taps are few);
+// the S key applies it.  s_tap_smooth[i] is valid when s_tap_smooth_ok[i].
+static double s_tap_smooth[MAX_TAPS];
+static bool   s_tap_smooth_ok[MAX_TAPS];
+static int    s_tap_smooth_n = 0;       // selected taps in the preview
+static double s_last_tap_time = -1e9;   // a pause ends a run of taps
+
+// Hold-to-record lyrics: while L is held during playback (and no region is
+// selected) the next unplaced lyric starts at the playhead and its end
+// follows the playhead until the key is released.
+static int s_lyr_hold_idx = -1;
+
+static int first_unplaced_lyric(const LyricMap* lm, double dur) {
+    for (int k = 0; k < lm->count; k++)
+        if (lm->lyrics[k].t_start >= dur - 1e-9) return k;
+    return -1;
+}
+
+bool ui_timeline_lyric_hold_armed(const EditorState* editor, const AudioState* audio,
+                                  const LyricMap* lyricmap)
+{
+    if (s_lyr_hold_idx >= 0) return true;
+    return audio->loaded && audio->playing && !editor->has_region &&
+           first_unplaced_lyric(lyricmap, audio->duration) >= 0;
+}
+
+static void tap_preview_update(const AutoBeatList* autobeat) {
+    for (int i = 0; i < s_tap_count; i++) s_tap_smooth_ok[i] = false;
+    s_tap_smooth_n = 0;
+    int idx[MAX_TAPS]; int n = 0;
+    for (int i = 0; i < s_tap_count; i++) if (s_taps[i].selected) idx[n++] = i;
+    if (n < 3) return;
+    // chronological, in case taps were recorded out of order
+    for (int a = 1; a < n; a++) for (int b = a; b > 0 && s_taps[idx[b]].time < s_taps[idx[b - 1]].time; b--) { int t = idx[b]; idx[b] = idx[b - 1]; idx[b - 1] = t; }
+    double arr[MAX_TAPS];
+    for (int k = 0; k < n; k++) arr[k] = s_taps[idx[k]].time;
+    const SmoothParams* sp = ui_smoothing_params();
+    beat_smooth_times(arr, n, sp,
+                      (autobeat && autobeat->onset_count > 0) ? autobeat->onset_times : nullptr,
+                      autobeat ? autobeat->onset_count : 0);
+    for (int k = 0; k < n; k++) { s_tap_smooth[idx[k]] = arr[k]; s_tap_smooth_ok[idx[k]] = true; }
+    s_tap_smooth_n = n;
+}
+
 // --- main widget -------------------------------------------------------
 
 void ui_timeline_render(EditorState* editor, AudioState* audio,
@@ -1673,12 +1718,75 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
         }
     }
 
-    // T key: record a tap at the current playhead position (play mode only)
+    // T key: record a tap at the current playhead position (play mode only).
+    // The first tap after a pause starts a new run: every other selection is
+    // dropped so what is selected afterwards is exactly this run of taps,
+    // ready to be smoothed (S) and inserted (I).
     if (audio->playing && !ImGui::IsAnyItemActive() &&
             ImGui::IsKeyPressed(ImGuiKey_T, false)) {
         double t = audio_get_position(audio);
+        bool new_run = (t - s_last_tap_time > 3.0) || (t < s_last_tap_time);
+        if (new_run) {
+            beatmap_clear_selection(beatmap);
+            for (int i = 0; i < s_tap_count; i++) s_taps[i].selected = false;
+            if (autobeat) for (int i = 0; i < autobeat->beat_count; i++) autobeat->beat_selected[i] = false;
+            s_sec_selected = -1;
+            s_lyr_selected = -1;
+            annstrip_defocus(ANN_CHORDS);
+            annstrip_defocus(ANN_MISC);
+        }
         if (s_tap_count < MAX_TAPS)
-            s_taps[s_tap_count++] = { t, false };
+            s_taps[s_tap_count++] = { t, true };
+        s_last_tap_time = t;
+    }
+
+    // Smoothing preview for whatever taps are selected
+    tap_preview_update(autobeat);
+
+    // L held during playback: record the next unplaced lyric from the
+    // moment the key goes down to the moment it comes up.  The lyric is the
+    // only thing selected afterwards, so a wrong one is one Delete away.
+    if (s_lyr_hold_idx >= lyricmap->count) s_lyr_hold_idx = -1;
+    if (s_lyr_hold_idx < 0 && audio->loaded && audio->playing && !editor->has_region &&
+            !ImGui::IsAnyItemActive() && ImGui::IsKeyPressed(ImGuiKey_L, false)) {
+        int k = first_unplaced_lyric(lyricmap, audio->duration);
+        if (k >= 0) {
+            undo_push(undo, beatmap, lyricmap);
+            char saved[128];
+            strncpy(saved, lyricmap->lyrics[k].text, sizeof(saved) - 1); saved[sizeof(saved) - 1] = 0;
+            double t0 = audio_get_position(audio);
+            lyricmap_remove(lyricmap, k);
+            s_lyr_hold_idx = lyricmap_add(lyricmap, t0, t0 + 0.05, saved);
+            lyricmap->dirty = true;
+            // Only this lyric is selected
+            beatmap_clear_selection(beatmap);
+            for (int i = 0; i < s_tap_count; i++) s_taps[i].selected = false;
+            if (autobeat) for (int i = 0; i < autobeat->beat_count; i++) autobeat->beat_selected[i] = false;
+            s_sec_selected = -1;
+            annstrip_defocus(ANN_CHORDS);
+            annstrip_defocus(ANN_MISC);
+            s_lyr_selected         = s_lyr_hold_idx;
+            lyricmap->selected_idx = s_lyr_hold_idx;
+        }
+    }
+    if (s_lyr_hold_idx >= 0) {
+        Lyric& ly = lyricmap->lyrics[s_lyr_hold_idx];
+        double now = audio_get_position(audio);
+        if (now > ly.t_start + 0.05) ly.t_end = now;
+        bool released = !ImGui::IsKeyDown(ImGuiKey_L);
+        if (released || !audio->playing) {
+            s_lyr_selected         = s_lyr_hold_idx;
+            lyricmap->selected_idx = s_lyr_hold_idx;
+            s_lyr_hold_idx = -1;
+        }
+    }
+
+    // S key: apply the smoothing preview to the selected taps
+    if (!ImGui::IsAnyItemActive() && !io.KeyCtrl && !io.KeySuper &&
+            ImGui::IsKeyPressed(ImGuiKey_S, false) && s_tap_smooth_n >= 3) {
+        for (int i = 0; i < s_tap_count; i++)
+            if (s_tap_smooth_ok[i]) s_taps[i].time = s_tap_smooth[i];
+        tap_preview_update(autobeat);
     }
 
     // I key: insert selected taps into the beatmap as real beats
@@ -2182,6 +2290,19 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
                          : sel  ? IM_COL32(160, 230, 255, 255)
                                 : IM_COL32(160, 230, 160, 220);
             draw_diamond(dl, bx, strip_cy, r, fill, border);
+        }
+        // Smoothing preview: where a selected tap would move (S applies)
+        for (int i = 0; i < s_tap_count; i++) {
+            if (!s_tap_smooth_ok[i] || fabs(s_tap_smooth[i] - s_taps[i].time) < 0.001) continue;
+            float x_old = (span > 0.0 && tap_w > 0)
+                ? tap_x + (float)((s_taps[i].time - editor->view_start) / span * tap_w) : tap_x;
+            float x_new = (span > 0.0 && tap_w > 0)
+                ? tap_x + (float)((s_tap_smooth[i] - editor->view_start) / span * tap_w) : tap_x;
+            if (x_new < tap_x - 8.0f || x_new > tap_x + tap_w + 8.0f) continue;
+            const ImU32 GHOST = IM_COL32(120, 255, 170, 200);
+            dl->AddLine(ImVec2(x_new, tap_y + 2.0f), ImVec2(x_new, tap_y + TAP_STRIP_H - 2.0f), GHOST, 1.0f);
+            if (fabsf(x_new - x_old) >= 1.5f)
+                dl->AddLine(ImVec2(x_old, strip_cy), ImVec2(x_new, strip_cy), GHOST, 1.0f);
         }
         // Rect-select highlight
         if (s_tap_rect_sel && ImGui::IsMouseDown(ImGuiMouseButton_Left)) {

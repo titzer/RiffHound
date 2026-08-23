@@ -24,6 +24,22 @@ bool platform_open_file_dialog(char* out_path, int out_size) {
     return false;
 }
 
+bool platform_open_folder_dialog(char* out_path, int out_size) {
+    NSOpenPanel* panel = [NSOpenPanel openPanel];
+    panel.allowsMultipleSelection = NO;
+    panel.canChooseDirectories    = YES;
+    panel.canChooseFiles          = NO;
+    panel.canCreateDirectories    = NO;
+    panel.prompt = @"Add Folder";
+    if ([panel runModal] == NSModalResponseOK) {
+        const char* utf8 = [panel.URL.path UTF8String];
+        strncpy(out_path, utf8, out_size - 1);
+        out_path[out_size - 1] = '\0';
+        return true;
+    }
+    return false;
+}
+
 bool platform_open_beatmap_dialog(char* out_path, int out_size) {
     NSOpenPanel* panel = [NSOpenPanel openPanel];
     panel.allowsMultipleSelection = NO;

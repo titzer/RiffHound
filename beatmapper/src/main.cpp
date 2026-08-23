@@ -14,6 +14,7 @@
 #include "ui_annstrip.h"
 #include "undo.h"
 #include "recent.h"
+#include "library.h"
 #include "ui_timeline.h"
 #include "ui_toolbar.h"
 #include "beat_algo.h"
@@ -180,8 +181,8 @@ int main(int argc, char** argv) {
             cfg.SizePixels = LYRIC_FONT_SIZES[i];
             s_lyric_fonts[i] = fio.Fonts->AddFontDefault(&cfg);
         }
-        // Default lyric font: 20px (index 2)
-        ui_timeline_set_lyric_fonts(s_lyric_fonts, N_LYRIC_FONTS, 2);
+        // Default lyric font: 16px (index 1)
+        ui_timeline_set_lyric_fonts(s_lyric_fonts, N_LYRIC_FONTS, 1);
     }
 
     ImGui_ImplGlfw_InitForOpenGL(window, true);
@@ -215,6 +216,23 @@ int main(int argc, char** argv) {
     undo_init(&undo);
     recent_init(&recent);
     recent_load(&recent);
+    Library library;
+    library_init(&library);
+    library_load(&library);
+    // The recent files' folders are the library's seed, and their order its
+    // recency.
+    for (int i = recent.count - 1; i >= 0; i--) {
+        char dir[512];
+        strncpy(dir, recent.paths[i], sizeof(dir) - 1); dir[sizeof(dir) - 1] = 0;
+        char* slash = strrchr(dir, '/');
+        if (slash && slash != dir) { *slash = 0; library_add_dir(&library, dir); }
+    }
+    for (int i = recent.count - 1; i >= 0; i--) {
+        library_touch(&library, recent.paths[i]);
+        for (int k = 0; k < library.count; k++)
+            if (strcmp(library.entries[k].path, recent.paths[i]) == 0)
+                library.entries[k].last_opened -= (double)i;   // keep the recent order
+    }
 
     // If files were passed on the command line, resolve each to an audio file
     // (a .txt or bare stem finds its companion .m4a/.mp3/.wav), add all that
@@ -239,6 +257,13 @@ int main(int argc, char** argv) {
                 beatmap.count = 0;
             strncpy(beatmap.save_path, bm_path, sizeof(beatmap.save_path) - 1);
             beatmap.dirty = false;
+            {
+                char dir[512];
+                strncpy(dir, last_file, sizeof(dir) - 1); dir[sizeof(dir) - 1] = 0;
+                char* slash = strrchr(dir, '/');
+                if (slash && slash != dir) { *slash = 0; library_add_dir(&library, dir); }
+                library_touch(&library, last_file);
+            }
         }
     }
 
@@ -317,9 +342,12 @@ int main(int argc, char** argv) {
             if (ImGui::IsKeyPressed(ImGuiKey_RightArrow, true))
                 audio_seek(&audio, audio_get_position(&audio) + 5.0);
             if (ImGui::IsKeyPressed(ImGuiKey_L)) {
-                // When the Lyric Index is open and a region exists, 'L' places the
-                // next unplaced lyric at that region (handled in ui_timeline_render).
-                if (!editor.lyric_index_open || !editor.has_region)
+                // 'L' places the next unplaced lyric at the region (Lyric Index
+                // open), or records one while held during playback; otherwise
+                // it toggles looping.  Both handled in ui_timeline_render.
+                bool places  = editor.lyric_index_open && editor.has_region;
+                bool records = ui_timeline_lyric_hold_armed(&editor, &audio, &lyricmap);
+                if (!places && !records)
                     audio.loop = !audio.loop;
             }
 
@@ -478,7 +506,7 @@ int main(int argc, char** argv) {
             }
 
             // Toolbar strip
-            ui_toolbar_render(&editor, &audio, &beatmap, &undo, &recent, &sectionmap, &lyricmap, &miscmap, &chordmap, &autobeat);
+            ui_toolbar_render(&editor, &audio, &beatmap, &undo, &recent, &sectionmap, &lyricmap, &miscmap, &chordmap, &autobeat, &library);
             ImGui::Separator();
 
             // Timeline

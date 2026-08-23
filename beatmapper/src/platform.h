@@ -7,6 +7,9 @@
 // Returns false if the user cancelled.
 bool platform_open_file_dialog(char* out_path, int out_size);
 
+// Show the OS native "choose folder" dialog.
+bool platform_open_folder_dialog(char* out_path, int out_size);
+
 // Show the OS native "open file" dialog filtered to .txt files (beatmap/timeseries).
 bool platform_open_beatmap_dialog(char* out_path, int out_size);
 

@@ -13,6 +13,21 @@ static void ensure_gtk_init() {
   }
 }
 
+bool platform_open_folder_dialog(char *out_path, int out_size) {
+  ensure_gtk_init();
+  GtkWidget *dialog = gtk_file_chooser_dialog_new(
+      "Add Folder", nullptr, GTK_FILE_CHOOSER_ACTION_SELECT_FOLDER, "_Cancel",
+      GTK_RESPONSE_CANCEL, "_Add", GTK_RESPONSE_ACCEPT, nullptr);
+  bool ok = false;
+  if (gtk_dialog_run(GTK_DIALOG(dialog)) == GTK_RESPONSE_ACCEPT) {
+    char *fn = gtk_file_chooser_get_filename(GTK_FILE_CHOOSER(dialog));
+    if (fn) { strncpy(out_path, fn, out_size - 1); out_path[out_size - 1] = 0; g_free(fn); ok = true; }
+  }
+  gtk_widget_destroy(dialog);
+  while (gtk_events_pending()) gtk_main_iteration();
+  return ok;
+}
+
 bool platform_open_file_dialog(char *out_path, int out_size) {
   ensure_gtk_init();
 

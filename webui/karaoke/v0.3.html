@@ -629,6 +629,9 @@
   :root[data-chordcue="boxes"] .beats,
   :root[data-chordcue="hand"]  .beats { display: block; }
   :root[data-chordcue="off"]   .ball  { display: none; }
+  /* In high bounce the ball is the show: with nothing to sing and nothing
+     strummed, it stays on even where the chord cue is off. */
+  :root[data-highbounce]       .ball  { display: block; }
   :root:not([data-pane="off"]) .spane { display: block; }
 
   /* ---- strum pane ----------------------------------------------------- */
@@ -763,8 +766,8 @@
 
   .ball {
     position: absolute;
-    width: 34px;
-    height: 34px;
+    width: var(--ball-size, 34px);
+    height: var(--ball-size, 34px);
     border-radius: 50%;
     background: var(--fg);
     box-shadow: 0 0 26px var(--fg);
@@ -1450,6 +1453,8 @@ const SETTINGS = [
   { name: "scanPitch", scope: "display", group: "common", label: "Scanline pitch",
     type: "range", def: 2, min: 2, max: 16, step: 1, unit: "px", css: "--scan-pitch" },
 
+  { name: "lyricsPanel", scope: "display", group: "lyrics", label: "Lyrics panel",
+    type: "toggle", def: true, after: "layout" },
   { name: "lyricColour", scope: "display", group: "lyrics", label: "Lyric colour",
     type: "choice", def: "amber", options: COLOURS, apply: v => tint("lyrics", v) },
   { name: "zoom", scope: "display", group: "lyrics", label: "Zoom",
@@ -1562,6 +1567,11 @@ const ballSize = () => LYRIC_BALL * zoom();
 const paneOn = () => state.strumPane !== "off";
 const chordsOn = () => state.chordPanel;
 const zone = () => (state.chordCue === "off" ? 14 : BALL_ZONE);
+/* The lyric band earns its space by having something to sing: switched off,
+   or empty for this track, it collapses — and with the chart still on below,
+   the freed sky goes to an exaggerated bounce, the beat writ large. */
+const showLyrics = () => state.lyricsPanel && lyricLines.length > 0;
+const highBounce = () => chordsOn() && !showLyrics();
 
 let lyricLines = [], sections = [], beatGrid = [], chordLine = [], loopRanges = [];
 
@@ -1702,7 +1712,7 @@ const PANELS = [
     } },
   { id: "strum", gap: () => 16, place: placePane,
     height: h => (paneOn() ? Math.round(h * .17) : 0) },
-  { id: "chords", gap: () => zone() + 8, place: placeChords,
+  { id: "chords", gap: () => geo.zone + 8, place: placeChords,
     height: h => (chordsOn() ? Math.max(90, Math.round(h * (paneOn() ? .27 : .3))) : 0) },
   { id: "preview", gap: () => 14, place: placePreview,
     height: h => (chordsOn() ? Math.round(h * (paneOn() ? .081 : .09)) : 0) }
@@ -1712,14 +1722,26 @@ let geo = {};
 
 function layout() {
   const h = stage.clientHeight;
-  geo = { zone: zone() };
+  geo = { zone: zone(), ball: BALL };
 
   const bands = PANELS.map(p => (p.flex ? 0 : p.height(h)));
   const used = bands.reduce((a, b, i) =>
     a + b + (b > 0 && PANELS[i].gap ? PANELS[i].gap() : 0), 0);
 
   const flex = PANELS.findIndex(p => p.flex);
-  if (flex >= 0) bands[flex] = clamp(PANELS[flex].want(), 90, Math.max(90, h - used));
+  if (flex >= 0) bands[flex] = showLyrics()
+    ? clamp(PANELS[flex].want(), 90, Math.max(90, h - used)) : 0;
+
+  /* High bounce: the room the lyric band gave up is handed to the ball's
+     zone rather than left as slack, so the chart keeps the bottom of the
+     stage and the ball gets the sky. The chords gap reads geo.zone, so the
+     stack still lands exactly at the bottom edge — and the ball itself grows
+     into the part it now plays. */
+  if (highBounce()) {
+    geo.zone += Math.max(0, h - used - (flex >= 0 ? bands[flex] : 0));
+    geo.ball = clamp(Math.round(geo.zone * .12), BALL, 64);
+  }
+  root.toggleAttribute("data-highbounce", highBounce());
 
   let y = 0;
   PANELS.forEach((p, i) => {
@@ -1734,6 +1756,7 @@ function layout() {
 }
 
 function placeLyrics(y, band) {
+  lyrics.style.display = band > 0 ? "" : "none";
   lyrics.style.top = y + "px";
   lyrics.style.height = band + "px";
   lyrics.style.setProperty("--hop-room", hopRoom() + "px");
@@ -1750,6 +1773,7 @@ function placeChords(y, band) {
   playhead.style.top = (y - geo.zone) + "px";
   playhead.style.height = (geo.zone + band) + "px";
   playhead.style.setProperty("--ball-zone", geo.zone + "px");
+  playhead.style.setProperty("--ball-size", (geo.ball || BALL) + "px");
 
   const nextH = Math.round(band * .7);
   const bar = main.clientWidth / 4;
@@ -2353,18 +2377,22 @@ function updateChords(t) {
     el.classList.toggle("current", j === k && t >= g.at));
 }
 
-/* The chord ball bounces on the map's beats, so it drifts with the record. */
+/* The chord ball bounces on the map's beats, so it drifts with the record.
+   Its size and zone come from the layout: in high bounce both are grown, so
+   the same arc fills whatever room the missing lyric band left. */
 function bounceY(t) {
-  const room = Math.max(0, geo.zone - BALL - 4);
-  return geo.zone - BALL -
+  const ball = geo.ball || BALL;
+  const room = Math.max(0, geo.zone - ball - 4);
+  return geo.zone - ball -
     arc(beatPhase(t)) * clamp(room * .62 * num("bounce"), 0, room);
 }
 
 /* In hand mode the ball is not bouncing, it is strumming: it rides the same
    swing the pane's marker does, so the two agree about where the hand is. */
 function strumY(t, here) {
-  const room = Math.max(0, geo.zone - BALL / 2 - 4);
-  return geo.zone - BALL / 2 +
+  const ball = geo.ball || BALL;
+  const room = Math.max(0, geo.zone - ball / 2 - 4);
+  return geo.zone - ball / 2 +
     swingThrough(here.pat, here.f) * clamp(geo.zone * .5 * num("bounce"), 0, room);
 }
 

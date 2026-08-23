@@ -26,6 +26,12 @@ void ui_timeline_lyric_index_content(EditorState* editor, AudioState* audio,
                                      BeatMap* beatmap, UndoStack* undo,
                                      LyricMap* lyricmap);
 
+// True when holding L would record a lyric (playing, no region, and an
+// unplaced lyric waiting) or is doing so now; main.cpp leaves the loop
+// toggle alone in that case.
+bool ui_timeline_lyric_hold_armed(const EditorState* editor, const AudioState* audio,
+                                  const LyricMap* lyricmap);
+
 // Lyric font size control.  Call ui_timeline_set_lyric_fonts() once after the
 // ImGui font atlas is populated (before the first frame) to register the fonts.
 void ui_timeline_set_lyric_fonts(ImFont** fonts, int count, int default_idx);

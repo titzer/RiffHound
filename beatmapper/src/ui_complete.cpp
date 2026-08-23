@@ -162,6 +162,14 @@ static void count_listed() {
     }
 }
 
+void ui_complete_auto_analyze(ToolCtx& c)
+{
+    if (!s_p_init) { complete_params_defaults(&s_p); s_p_init = true; }
+    if (s_have_prop || !c.editor->has_region) return;
+    if (!c.audio->loaded || !audio_pcm_data(c.audio, nullptr, nullptr, nullptr)) return;
+    run_analysis(c.editor, c.audio, c.beatmap, c.sectionmap, c.chordmap);
+}
+
 void ui_complete_settings(ToolCtx& c)
 {
     if (!s_p_init) { complete_params_defaults(&s_p); s_p_init = true; }
