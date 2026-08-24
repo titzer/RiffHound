@@ -1722,22 +1722,64 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
     // The first tap after a pause starts a new run: every other selection is
     // dropped so what is selected afterwards is exactly this run of taps,
     // ready to be smoothed (S) and inserted (I).
-    if (audio->playing && !ImGui::IsAnyItemActive() &&
-            ImGui::IsKeyPressed(ImGuiKey_T, false)) {
-        double t = audio_get_position(audio);
-        bool new_run = (t - s_last_tap_time > 3.0) || (t < s_last_tap_time);
-        if (new_run) {
-            beatmap_clear_selection(beatmap);
-            for (int i = 0; i < s_tap_count; i++) s_taps[i].selected = false;
-            if (autobeat) for (int i = 0; i < autobeat->beat_count; i++) autobeat->beat_selected[i] = false;
-            s_sec_selected = -1;
-            s_lyr_selected = -1;
-            annstrip_defocus(ANN_CHORDS);
-            annstrip_defocus(ANN_MISC);
+    //
+    // A capital T (shift held, or caps lock on -- read from the character
+    // queue, which knows about both) taps *and fills*: the stretch from the
+    // last tap or mapped beat before the playhead is filled with taps at the
+    // instantaneous BPM of the surrounding events, so tapping every bar or
+    // every phrase is enough on a steady passage.
+    if (audio->playing && !ImGui::IsAnyItemActive()) {
+        bool tap = false, fill = false;
+        for (int ci = 0; ci < io.InputQueueCharacters.Size; ci++) {
+            unsigned int ch = io.InputQueueCharacters[ci];
+            if (ch == 't')      { tap = true; }
+            else if (ch == 'T') { tap = true; fill = true; }
         }
-        if (s_tap_count < MAX_TAPS)
-            s_taps[s_tap_count++] = { t, true };
-        s_last_tap_time = t;
+        if (tap) {
+            double t = audio_get_position(audio);
+            bool new_run = (t - s_last_tap_time > 3.0) || (t < s_last_tap_time);
+            if (new_run) {
+                beatmap_clear_selection(beatmap);
+                for (int i = 0; i < s_tap_count; i++) s_taps[i].selected = false;
+                if (autobeat) for (int i = 0; i < autobeat->beat_count; i++) autobeat->beat_selected[i] = false;
+                s_sec_selected = -1;
+                s_lyr_selected = -1;
+                annstrip_defocus(ANN_CHORDS);
+                annstrip_defocus(ANN_MISC);
+            }
+            if (fill) {
+                // Anchor and tempo from taps and mapped beats together: the
+                // two most recent events before the playhead.
+                double anchor = -1.0, prev = -1.0;
+                for (int i = 0; i < s_tap_count; i++) {
+                    double tt = s_taps[i].time;
+                    if (tt >= t - 1e-3) continue;
+                    if (tt > anchor) { prev = anchor; anchor = tt; }
+                    else if (tt > prev) prev = tt;
+                }
+                for (int i = 0; i < beatmap->count; i++) {
+                    double tt = beatmap->beats[i].time;
+                    if (tt >= t - 1e-3) break;
+                    if (tt > anchor) { prev = anchor; anchor = tt; }
+                    else if (tt > prev) prev = tt;
+                }
+                double period = (anchor > 0.0 && prev > 0.0) ? anchor - prev : 0.0;
+                if (anchor > 0.0 && period > 0.2 && period < 2.5 && t - anchor > 1.5 * period) {
+                    int n = (int)floor((t - anchor) / period + 0.5);
+                    if (n > 1) {
+                        for (int k = 1; k < n && s_tap_count < MAX_TAPS; k++)
+                            s_taps[s_tap_count++] = { anchor + (t - anchor) * k / n, true };
+                    }
+                }
+            }
+            if (s_tap_count < MAX_TAPS)
+                s_taps[s_tap_count++] = { t, true };
+            // Keep chronological: fills and out-of-order taps land mid-array
+            for (int a = 1; a < s_tap_count; a++)
+                for (int b = a; b > 0 && s_taps[b].time < s_taps[b - 1].time; b--)
+                    { TapEntry tmp = s_taps[b]; s_taps[b] = s_taps[b - 1]; s_taps[b - 1] = tmp; }
+            s_last_tap_time = t;
+        }
     }
 
     // Smoothing preview for whatever taps are selected

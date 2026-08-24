@@ -28,6 +28,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
+#include <unistd.h>
 
 // Derive a suggested beatmap filename from an audio filepath.
 // e.g. "/path/to/track.mp3" → "track.txt"
@@ -271,8 +272,10 @@ int main(int argc, char** argv) {
     static bool show_quit_modal = false;
 
     // Main loop
+    double frame_t0 = glfwGetTime();
     while (!glfwWindowShouldClose(window)) {
         glfwPollEvents();
+        frame_t0 = glfwGetTime();
 
         // Intercept window-close when there are unsaved changes.
         if (glfwWindowShouldClose(window) &&
@@ -589,6 +592,24 @@ int main(int argc, char** argv) {
         ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
 
         glfwSwapBuffers(window);
+
+        // Frame pacing.  Vsync normally holds the loop at the display rate, but
+        // macOS stops blocking the swap once the window is occluded or
+        // minimised, and an unpaced loop then spins flat out -- the CPU creep
+        // a long-running session shows.  Two guards: a hard cap so a broken
+        // vsync can never spin, and a lower background rate when the window is
+        // neither focused nor playing audio.
+        {
+            bool focused = glfwGetWindowAttrib(window, GLFW_FOCUSED) != 0;
+            bool hidden  = glfwGetWindowAttrib(window, GLFW_ICONIFIED) != 0 ||
+                           glfwGetWindowAttrib(window, GLFW_VISIBLE) == 0;
+            double min_frame = (audio.playing || (focused && !hidden))
+                             ? 1.0 / 240.0     // foreground: vsync paces; this only stops a spin
+                             : 1.0 / 15.0;     // background and silent: 15 fps is plenty
+            double spent = glfwGetTime() - frame_t0;
+            if (spent < min_frame)
+                usleep((useconds_t)((min_frame - spent) * 1e6));
+        }
     }
 
     // Save window size so the next launch restores it.
