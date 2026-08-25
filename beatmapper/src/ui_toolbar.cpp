@@ -78,28 +78,15 @@ void ui_toolbar_render(EditorState* editor, AudioState* audio, BeatMap* beatmap,
     ImGui::TextDisabled("|");
     ImGui::SameLine();
 
-    // --- Position display ---
+    // --- Position display (total time lives in the minimap) ---
     if (audio->loaded) {
         double pos = audio_get_position(audio);
         int m = (int)(pos / 60.0);
         double s = pos - m * 60.0;
         ImGui::Text("%d:%06.3f", m, s);
-        ImGui::SameLine();
-        ImGui::Text("/ %.1fs", audio->duration);
     } else {
         ImGui::TextDisabled("--:---.---");
     }
-
-    ImGui::SameLine();
-    ImGui::TextDisabled("|");
-    ImGui::SameLine();
-
-    // --- ±5s seek buttons (now in the main flow) ---
-    if (ImGui::Button("-5s", ImVec2(40, 0)))
-        audio_seek(audio, audio_get_position(audio) - 5.0);
-    ImGui::SameLine();
-    if (ImGui::Button("+5s", ImVec2(40, 0)))
-        audio_seek(audio, audio_get_position(audio) + 5.0);
 
     ImGui::SameLine();
     ImGui::TextDisabled("|");

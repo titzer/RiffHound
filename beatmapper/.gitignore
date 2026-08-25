@@ -3,3 +3,5 @@ beatmapper
 **/*.d
 imgui.ini
 bmbench
+bench/*.tsv
+bench/*.log

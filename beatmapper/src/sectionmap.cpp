@@ -56,6 +56,7 @@ int sectionmap_add(SectionMap* sm, double t_start, double t_end,
     s.kind     = kind;
     s.ts_num   = 4;
     s.ts_den   = 4;
+    s.selected = false;
     s.label[0] = '\0';
     if (label && label[0])
         strncpy(s.label, label, sizeof(s.label) - 1);

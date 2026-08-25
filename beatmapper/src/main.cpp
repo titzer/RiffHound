@@ -367,18 +367,31 @@ int main(int argc, char** argv) {
                 for (int i = 0; i < beatmap.count && !any_beats; i++)
                     if (beatmap.beats[i].selected) any_beats = true;
 
+                bool any_secs = sectionmap.selected_idx >= 0;
+                for (int i = 0; i < sectionmap.count && !any_secs; i++)
+                    if (sectionmap.sections[i].selected) any_secs = true;
+                bool any_lyrs = lyricmap.selected_idx >= 0;
+                for (int i = 0; i < lyricmap.count && !any_lyrs; i++)
+                    if (lyricmap.lyrics[i].selected) any_lyrs = true;
+
                 if (any_beats) {
                     undo_push(&undo, &beatmap, &lyricmap);
                     for (int i = beatmap.count - 1; i >= 0; i--)
                         if (beatmap.beats[i].selected)
                             beatmap_remove(&beatmap, i);
-                } else if (sectionmap.selected_idx >= 0) {
+                } else if (any_secs) {
                     undo_push(&undo, nullptr, nullptr, &sectionmap, nullptr);
-                    sectionmap_remove(&sectionmap, sectionmap.selected_idx);
+                    for (int i = sectionmap.count - 1; i >= 0; i--)
+                        if (sectionmap.sections[i].selected ||
+                            i == sectionmap.selected_idx)
+                            sectionmap_remove(&sectionmap, i);
                     sectionmap.selected_idx = -1;
-                } else if (lyricmap.selected_idx >= 0) {
+                } else if (any_lyrs) {
                     undo_push(&undo, &beatmap, &lyricmap);
-                    lyricmap_remove(&lyricmap, lyricmap.selected_idx);
+                    for (int i = lyricmap.count - 1; i >= 0; i--)
+                        if (lyricmap.lyrics[i].selected ||
+                            i == lyricmap.selected_idx)
+                            lyricmap_remove(&lyricmap, i);
                     lyricmap.selected_idx = -1;
                 }
             }

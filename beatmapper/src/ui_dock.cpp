@@ -325,7 +325,7 @@ static void render_floating(DockTool t, ToolCtx& c) {
     ToolState& ts = s_tools[t];
     ImGui::SetNextWindowSizeConstraints(ImVec2(280, 260), ImVec2(900, 1200));
     ImGui::SetNextWindowSize(ImVec2(t == DOCK_COMPLETE ? 460.0f : 340.0f,
-                                    t == DOCK_CHROMA ? 420.0f : 560.0f), ImGuiCond_FirstUseEver);
+                                    t == DOCK_CHROMA ? 260.0f : 560.0f), ImGuiCond_FirstUseEver);
     if (ts.focus_req) { ImGui::SetNextWindowFocus(); ts.focus_req = false; }
 
     bool open = true;
@@ -425,9 +425,20 @@ void ui_dock_render(EditorState* editor, AudioState* audio, BeatMap* beatmap,
         c.in_drawer = true;
         for (int t = 0; t < DOCK_TOOL_COUNT; t++) {
             if (s_tools[t].floating) continue;
-            bool exp = s_tools[t].expanded;
-            tool_frame((DockTool)t, c, x, y, w, exp ? exp_h : 0.0f);
-            y += (exp ? exp_h : header_h()) + FRAME_GAP;
+            bool  exp = s_tools[t].expanded;
+            float h_t = exp ? exp_h : 0.0f;
+            // Chroma is a compact readout: size its frame to the content
+            // (status line + 64px bars + note labels, plus settings when
+            // open) instead of stretching it to fill the drawer.
+            if (t == DOCK_CHROMA && exp) {
+                float body_want = ImGui::GetTextLineHeightWithSpacing() * 2.0f + 64.0f + 26.0f;
+                float set_want  = s_tools[t].settings_open
+                                ? 2.0f * ImGui::GetFrameHeightWithSpacing() + 16.0f : 0.0f;
+                float want = header_h() + set_want + body_want + 2.0f * FRAME_PAD;
+                if (h_t > want) h_t = want;
+            }
+            tool_frame((DockTool)t, c, x, y, w, h_t);
+            y += (exp ? h_t : header_h()) + FRAME_GAP;
         }
     }
 

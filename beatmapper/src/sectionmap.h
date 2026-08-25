@@ -18,6 +18,7 @@ struct Section {
     char        label[48];  // optional suffix after ':' (e.g. "1" in "verse: 1")
     int         ts_num;     // time-signature numerator  (beats per measure), default 4
     int         ts_den;     // time-signature denominator (note value = 1/ts_den), default 4
+    bool        selected;   // member of the multi-selection that cut/copy/delete act on
 };
 
 struct SectionMap {

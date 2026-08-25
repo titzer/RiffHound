@@ -17,6 +17,10 @@ struct EditorState {
     // Strip expansion: strips are always present in the timeline; these flags
     // choose expanded (editable) vs collapsed to a slim display band.
     // Toggled by the sidebar triangles and the View menu.
+    // The five beat-related strips (insert, taps, auto, timbre, beats) form
+    // one collapsible group: collapsed, only taps and beats remain as slim
+    // display bands and the other three vanish entirely.
+    bool   show_beat_group;    // the beat strip group as a whole
     bool   show_place_strip;   // beat insertion strip
     bool   show_beat_strip;    // beat area
     bool   show_tap_strip;     // tap recording strip

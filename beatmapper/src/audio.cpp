@@ -322,7 +322,11 @@ void audio_update(AudioState* a) {
         a->playing = false;
 
     // Read cursor from the atomic updated by the audio thread after each hop.
-    if (s_wsola_ok) {
+    // Only while playing: ma_sound_seek_to_pcm_frame is deferred (applied on
+    // the audio thread's next read), so while stopped the WSOLA cursor still
+    // holds the pre-seek position and syncing from it would snap the playhead
+    // back after every click-seek -- the "Space needs several presses" bug.
+    if (s_wsola_ok && a->playing) {
         uint64_t cur = s_wsola.cursor_frames.load(std::memory_order_relaxed);
         a->position = (double)cur / s_wsola.sample_rate;
     }

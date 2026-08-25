@@ -132,13 +132,36 @@ Sections are inferred from the beats *in the map*, so the workflow is: accept
 beats, re-analyze.  Two sources, both using the chroma + rhythm blend
 (`section_rhythm_weight`, 0.4) compared one measure at a time by default.
 
-*Template matching.*  Every mapped section is slid across the grid in beat
-steps.  A placement must clear `section_sim_threshold` (0.75), be a local
-maximum over ±1 beat, and is then **refined** ±2 beats at beat granularity
-with the rhythm map -- measure averages hardly move under a one-beat shift,
-beat-level features do.  Overlap suppression ranks **longer templates first**:
-a 16-beat intro that is harmonically half a verse would otherwise tile the
-song in halves.
+*Partition DP* (default).  Sections tile the track, so the uncovered spans
+between known sections are not fields for independent sliding matches: each
+span is inferred as a *sequence* of blocks that must meet the known edges
+exactly.  A dynamic program over the span's beats chooses the sequence:
+template blocks (every mapped section, compared measure-by-measure on
+prefix-summed chroma + rhythm features), gently truncated or extended by
+whole measures -- extra measures compare cyclically against the template's
+last two, so a final chorus that repeats its tail matches as one long block
+-- and per-beat filler for what matches nothing.  Each block costs a fixed
+`section_block_penalty` (8), which is what keeps the DP from covering a
+hidden chorus with confetti of small high-similarity fragments; blocks whose
+similarity clears the DP's soft gate but not `section_sim_threshold` arrive
+deselected.  Anchoring both ends makes the off-by-a-few-beats placements of a
+sliding search structurally impossible for interior spans.  (A learned
+kind-transition prior exists behind `section_prior_weight` but defaults to
+off: with only a handful of known sections the bigram counts are too sparse
+to help.)
+
+On the 25-track library's leave-one-out benchmark (hide one instance of a
+section kind that appears three times; its siblings remain) the partition DP
+recovers 70 % of hidden sections against the sliding matcher's 59 %, with
+22 % fewer false positives and the riding chords right on 84 % of beats
+(77 % before).  Its known weakness is an *inferred* beat grid: blocks must
+meet the span edges exactly, so beat-stage errors hurt it more than they
+hurt sliding matches.
+
+*Sliding template matching* (`section_partition=0`) remains as the fallback
+path: placements clearing the threshold, local-maximum over ±1 beat, refined
+±2 beats at beat granularity, with longer templates ranked first in overlap
+suppression.
 
 *Chords ride along.*  If the template section has chords, each chord is mapped
 to the candidate at the same beat offsets and spot-checked: the chord's span

@@ -4,6 +4,7 @@ struct Lyric {
     double t_start;
     double t_end;
     char   text[128];
+    bool   selected;   // member of the multi-selection that cut/copy/delete act on
 };
 
 struct LyricMap {
@@ -27,4 +28,9 @@ void lyricmap_remove(LyricMap* lm, int idx);
 
 // Split lyric at idx: text is split at cursor_pos, time range split at midpoint.
 // *new_sel (if non-null) is set to the index of the second lyric after the split.
-void lyricmap_split(LyricMap* lm, int idx, int cursor_pos, int* new_sel);
+// audio_dur marks the placed/unplaced boundary: when the lyric being split is
+// the LAST placed one, the first half keeps the whole interval and the second
+// half becomes the next unplaced lyric instead of taking the interval's back
+// half (pass 0 to disable that rule).
+void lyricmap_split(LyricMap* lm, int idx, int cursor_pos, int* new_sel,
+                    double audio_dur);

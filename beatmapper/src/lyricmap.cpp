@@ -46,6 +46,7 @@ int lyricmap_add(LyricMap* lm, double t_start, double t_end, const char* text) {
     Lyric& ly = lm->lyrics[pos];
     ly.t_start  = t_start;
     ly.t_end    = t_end;
+    ly.selected = false;
     ly.text[0]  = '\0';
     if (text && text[0])
         strncpy(ly.text, text, sizeof(ly.text) - 1);
@@ -67,7 +68,8 @@ void lyricmap_remove(LyricMap* lm, int idx) {
     else if (lm->selected_idx > idx) lm->selected_idx--;
 }
 
-void lyricmap_split(LyricMap* lm, int idx, int cursor_pos, int* new_sel) {
+void lyricmap_split(LyricMap* lm, int idx, int cursor_pos, int* new_sel,
+                    double audio_dur) {
     if (idx < 0 || idx >= lm->count) return;
 
     // Save lyric data before removal
@@ -88,15 +90,34 @@ void lyricmap_split(LyricMap* lm, int idx, int cursor_pos, int* new_sel) {
     if (la > 0) strncpy(text_a, saved,              la);
     if (lb > 0) strncpy(text_b, saved + cursor_pos, lb);
 
-    // Split the time range at the midpoint; for zero/tiny range (unplaced
-    // lyrics), give each half a 1 ms slot so insertion order is preserved.
-    bool   has_range = (t1 - t0 > 1e-4);
-    double t_mid     = (t0 + t1) * 0.5;
+    // Placed lyrics start before audio_dur; unplaced ones are parked at or
+    // beyond it.  The lyric is the last placed one when nothing placed
+    // follows it (the array is sorted by t_start).
+    bool placed      = (audio_dur > 0.0) && (t0 < audio_dur - 1e-9);
+    bool last_placed = placed &&
+        (idx + 1 >= lm->count || lm->lyrics[idx + 1].t_start >= audio_dur - 1e-9);
+
     double ta0, ta1, tb0, tb1;
-    if (has_range) {
+    if (last_placed) {
+        // Splitting the lyric just recorded: its timing is right for the sung
+        // line, so the first half keeps the whole interval and the second half
+        // becomes the next unplaced lyric.  Park it in the sliver just below
+        // audio_dur -- still unplaced, but sorting ahead of every parked lyric
+        // (halfway between the placed boundary and the first parked start, so
+        // repeated splits keep queueing up in order).
+        double lo = audio_dur - 1e-9, hi = audio_dur;
+        if (idx + 1 < lm->count && lm->lyrics[idx + 1].t_start < hi)
+            hi = lm->lyrics[idx + 1].t_start;
+        ta0 = t0;                    ta1 = t1;
+        tb0 = lo + (hi - lo) * 0.5;  tb1 = tb0 + 0.001;
+    } else if (t1 - t0 > 1e-4) {
+        // Split the time range at the midpoint.
+        double t_mid = (t0 + t1) * 0.5;
         ta0 = t0;    ta1 = t_mid;
         tb0 = t_mid; tb1 = t1;
     } else {
+        // Zero/tiny range (unplaced lyrics): give each half a 1 ms slot so
+        // insertion order is preserved.
         ta0 = t0;          ta1 = t0 + 0.001;
         tb0 = t0 + 0.001;  tb1 = t0 + 0.002;
     }

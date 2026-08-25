@@ -174,6 +174,19 @@ static void draw_minimap(ImDrawList* dl,
 
     dl->AddRect(ImVec2(mx, my), ImVec2(mx + mw, my + mh),
                 IM_COL32(55, 55, 75, 255));
+
+    // Track's total time, upper-right corner of the minimap.
+    {
+        int    dm = (int)(duration / 60.0);
+        double ds = duration - dm * 60.0;
+        char   buf[24];
+        snprintf(buf, sizeof(buf), "%d:%04.1f", dm, ds);
+        ImVec2 ts = ImGui::CalcTextSize(buf);
+        ImVec2 tp(mx + mw - ts.x - 5.0f, my + 2.0f);
+        dl->AddRectFilled(ImVec2(tp.x - 3.0f, tp.y), ImVec2(tp.x + ts.x + 3.0f, tp.y + ts.y),
+                          IM_COL32(18, 18, 28, 190), 2.0f);
+        dl->AddText(tp, IM_COL32(190, 195, 215, 220), buf);
+    }
 }
 
 // --- beat area ----------------------------------------------------------
@@ -747,22 +760,27 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
     // "expanded".  Collapsed strips shrink to a slim display-only band.
     // Read once through the panel registry so that layout, hit-testing and
     // drawing all agree for the whole frame.
-    const bool show_place = panel_visible(editor, PANEL_INSERT);
-    const bool show_beats = panel_visible(editor, PANEL_BEATS);
+    // The five beat-related strips (insert, taps, auto, timbre, beats) form
+    // one collapsible group: collapsed, only taps and beats remain as slim
+    // display bands and the other three take no space at all.
+    const bool grp        = editor->show_beat_group;
+    const bool show_place = grp && panel_visible(editor, PANEL_INSERT);
+    const bool show_beats = grp && panel_visible(editor, PANEL_BEATS);
     const bool show_tempo = panel_visible(editor, PANEL_TEMPO);
-    const bool show_taps  = panel_visible(editor, PANEL_TAPS);
-    const bool show_auto  = panel_visible(editor, PANEL_AUTO);
-    const bool show_timb  = panel_visible(editor, PANEL_TIMBRE);
+    const bool show_taps  = grp && panel_visible(editor, PANEL_TAPS);
+    const bool show_auto  = grp && panel_visible(editor, PANEL_AUTO);
+    const bool show_timb  = grp && panel_visible(editor, PANEL_TIMBRE);
     const bool show_sect  = panel_visible(editor, PANEL_SECTIONS);
     const bool show_lyr   = panel_visible(editor, PANEL_LYRICS);
     const bool show_chrd  = panel_visible(editor, PANEL_CHORDS);
     const bool show_misc  = panel_visible(editor, PANEL_MISC);
 
-    // Per-strip heights this frame (collapsed strips all share COLLAPSED_H)
-    const float place_h = show_place ? PLACE_STRIP_H    : COLLAPSED_H;
+    // Per-strip heights this frame (collapsed strips all share COLLAPSED_H;
+    // group members other than taps and beats vanish when the group is closed)
+    const float place_h = !grp ? 0.0f : show_place ? PLACE_STRIP_H    : COLLAPSED_H;
     const float tap_h   = show_taps  ? TAP_STRIP_H      : COLLAPSED_H;
-    const float ab_h    = show_auto  ? AUTOBEAT_STRIP_H : COLLAPSED_H;
-    const float tb_h    = show_timb  ? TIMBRE_STRIP_H   : COLLAPSED_H;
+    const float ab_h    = !grp ? 0.0f : show_auto  ? AUTOBEAT_STRIP_H : COLLAPSED_H;
+    const float tb_h    = !grp ? 0.0f : show_timb  ? TIMBRE_STRIP_H   : COLLAPSED_H;
     const float ba_h    = show_beats ? BEAT_AREA_H      : COLLAPSED_H;
     const float sa_h    = show_sect  ? SECTION_H        : COLLAPSED_H;
     const float la_h    = show_lyr   ? LYRIC_H          : COLLAPSED_H;
@@ -809,8 +827,10 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
     ImVec2 avail = ImGui::GetContentRegionAvail();
     // Strips are stacked contiguously, one divider line above each; the
     // spectrogram takes whatever height the (possibly collapsed) strips leave.
+    // A divider line sits above every strip that has any height this frame.
+    const float n_div = grp ? 9.0f : 6.0f;
     float strips_h = (place_h + tap_h + ab_h + tb_h + ba_h + sa_h + la_h + chrd_h + misc_h)
-                   + 9.0f * STRIP_DIV_H + ctx_h;
+                   + n_div * STRIP_DIV_H + ctx_h;
 
     float fixed_h = MINIMAP_H + 2.0f + RULER_H + 2.0f + strips_h;
     float spectro_h = avail.y - fixed_h;
@@ -845,7 +865,7 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
     // single divider line above each.
     float _y = ty + th;
 
-    _y += STRIP_DIV_H;
+    if (grp) _y += STRIP_DIV_H;
     float ps_x = cx, ps_w = cw, ps_y = _y;
     _y += place_h;
 
@@ -853,11 +873,11 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
     float tap_x = cx, tap_w = cw, tap_y = _y;
     _y += tap_h;
 
-    _y += STRIP_DIV_H;
+    if (grp) _y += STRIP_DIV_H;
     float ab_x = cx, ab_w = cw, ab_y = _y;
     _y += ab_h;
 
-    _y += STRIP_DIV_H;
+    if (grp) _y += STRIP_DIV_H;
     float tb_x = cx, tb_w = cw, tb_y = _y;
     _y += tb_h;
 
@@ -892,19 +912,27 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
     annstrip_place(ANN_MISC,   editor, show_misc, cx, misc_y, cw, misc_h);
 
     // Strip rows for the sidebar triangles: id, top y, height this frame.
-    struct StripRow { PanelId id; float y, h; };
-    const StripRow strip_rows[] = {
-        { PANEL_INSERT,   ps_y,   place_h },
-        { PANEL_TAPS,     tap_y,  tap_h   },
-        { PANEL_AUTO,     ab_y,   ab_h    },
-        { PANEL_TIMBRE,   tb_y,   tb_h    },
-        { PANEL_BEATS,    ba_y,   ba_h    },
-        { PANEL_SECTIONS, sa_y,   sa_h    },
-        { PANEL_LYRICS,   la_y,   la_h    },
-        { PANEL_CHORDS,   chrd_y, chrd_h  },
-        { PANEL_MISC,     misc_y, misc_h  },
-    };
-    const int n_strip_rows = (int)(sizeof(strip_rows) / sizeof(strip_rows[0]));
+    // Rows in the beat group carry an indented triangle; the group itself has
+    // an outer triangle in the first sidebar column.  With the group closed
+    // only the tap and beat display bands remain (and expand it on click).
+    struct StripRow { PanelId id; float y, h; bool in_group; };
+    StripRow strip_rows[9];
+    int n_strip_rows = 0;
+    if (grp) {
+        strip_rows[n_strip_rows++] = { PANEL_INSERT,   ps_y,   place_h, true };
+        strip_rows[n_strip_rows++] = { PANEL_TAPS,     tap_y,  tap_h,   true };
+        strip_rows[n_strip_rows++] = { PANEL_AUTO,     ab_y,   ab_h,    true };
+        strip_rows[n_strip_rows++] = { PANEL_TIMBRE,   tb_y,   tb_h,    true };
+        strip_rows[n_strip_rows++] = { PANEL_BEATS,    ba_y,   ba_h,    true };
+    } else {
+        strip_rows[n_strip_rows++] = { PANEL_TAPS,     tap_y,  tap_h,   true };
+        strip_rows[n_strip_rows++] = { PANEL_BEATS,    ba_y,   ba_h,    true };
+    }
+    strip_rows[n_strip_rows++] = { PANEL_SECTIONS, sa_y,   sa_h,   false };
+    strip_rows[n_strip_rows++] = { PANEL_LYRICS,   la_y,   la_h,   false };
+    strip_rows[n_strip_rows++] = { PANEL_CHORDS,   chrd_y, chrd_h, false };
+    strip_rows[n_strip_rows++] = { PANEL_MISC,     misc_y, misc_h, false };
+    const float GRP_COL_W = 14.0f;   // outer sidebar column: the group triangle
 
     // --- Beat position layout pass (rebuilds every frame) ---
     // Computes screen positions + stagger rows for all beats.
@@ -1017,7 +1045,14 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
             for (int i = 0; i < n_strip_rows; i++) {
                 if (click_y >= strip_rows[i].y &&
                     click_y <  strip_rows[i].y + strip_rows[i].h) {
-                    panel_toggle(editor, strip_rows[i].id);
+                    // Group rows: the outer column (or any click while the
+                    // group is closed) toggles the whole group; the indented
+                    // triangle toggles the one strip.
+                    if (strip_rows[i].in_group &&
+                        (!grp || click_x < sb_x + GRP_COL_W))
+                        editor->show_beat_group = !editor->show_beat_group;
+                    else
+                        panel_toggle(editor, strip_rows[i].id);
                     break;
                 }
             }
@@ -1052,11 +1087,18 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
                 for (int i = 0; i < autobeat->beat_count; i++) autobeat->beat_selected[i] = false;
         }
         // Any click outside the section strip clears section selection.
-        if (!s_drag_in_sec)
+        if (!s_drag_in_sec && !io.KeyShift) {
             s_sec_selected = -1;
+            for (int i = 0; i < sectionmap->count; i++)
+                sectionmap->sections[i].selected = false;
+        }
         // Any click outside the lyric strip clears lyric selection and inline edit.
         if (!s_drag_in_lyr) {
-            s_lyr_selected    = -1;
+            if (!io.KeyShift) {
+                s_lyr_selected = -1;
+                for (int i = 0; i < lyricmap->count; i++)
+                    lyricmap->lyrics[i].selected = false;
+            }
             s_lyr_inline_edit = -1;
         }
         // A click outside a lane clears that lane's selection and inline edit.
@@ -1188,7 +1230,18 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
                 if (mx > sx0 && mx < sx1)          { hit = i; hit_end = 2; break; }
             }
 
-            if (hit >= 0) {
+            if (hit >= 0 && io.KeyShift) {
+                // Shift+click: toggle membership in the multi-selection; no drag.
+                Section& hs = sectionmap->sections[hit];
+                hs.selected = !hs.selected;
+                if (hs.selected)                 s_sec_selected = hit;
+                else if (s_sec_selected == hit)  s_sec_selected = -1;
+                s_sec_drag  = false;
+                s_sec_hdrag = false;
+            } else if (hit >= 0) {
+                for (int i = 0; i < sectionmap->count; i++)
+                    sectionmap->sections[i].selected = false;
+                sectionmap->sections[hit].selected = true;
                 s_sec_selected = hit;
                 s_sec_drag     = false;
                 if (hit_end < 2) {
@@ -1210,7 +1263,11 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
                     }
                 }
             } else {
-                s_sec_selected = -1;
+                if (!io.KeyShift) {
+                    s_sec_selected = -1;
+                    for (int i = 0; i < sectionmap->count; i++)
+                        sectionmap->sections[i].selected = false;
+                }
                 s_sec_drag     = true;
                 s_sec_drag_t0  = t_snap;
                 s_sec_drag_t1  = t_snap;
@@ -1253,7 +1310,18 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
                 }
             }
 
-            if (hit >= 0) {
+            if (hit >= 0 && io.KeyShift) {
+                // Shift+click: toggle membership in the multi-selection; no drag.
+                Lyric& hl = lyricmap->lyrics[hit];
+                hl.selected = !hl.selected;
+                if (hl.selected)                 s_lyr_selected = hit;
+                else if (s_lyr_selected == hit)  s_lyr_selected = -1;
+                s_lyr_drag = s_lyr_hdrag = s_lyr_body_drag = false;
+                s_lyr_body_drag_idx = -1;
+            } else if (hit >= 0) {
+                for (int i = 0; i < lyricmap->count; i++)
+                    lyricmap->lyrics[i].selected = false;
+                lyricmap->lyrics[hit].selected = true;
                 s_lyr_selected = hit;
                 s_lyr_drag     = false;
                 if (hit_end < 2) {
@@ -1285,7 +1353,11 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
                     }
                 }
             } else {
-                s_lyr_selected      = -1;
+                if (!io.KeyShift) {
+                    s_lyr_selected = -1;
+                    for (int i = 0; i < lyricmap->count; i++)
+                        lyricmap->lyrics[i].selected = false;
+                }
                 s_lyr_drag          = true;
                 s_lyr_drag_t0       = t_snap;
                 s_lyr_drag_t1       = t_snap;
@@ -1605,6 +1677,134 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
     annstrip_drag(ANN_MISC,   ann);
     annstrip_keys(ann);
 
+    // --- Section / lyric clipboard ---
+    // Ctrl+C / Ctrl+X / Ctrl+V for the section and lyric strips, mirroring the
+    // annotation lanes: offsets kept in beats when a map exists, pastes land at
+    // the playhead snapped to the nearest beat, and the most recent copy
+    // anywhere (chords, misc, sections, lyrics) is the one a paste acts on.
+    {
+        static const int STRIP_CLIP_MAX = 256;
+        struct SecClip { double db0, db1, dt0, dt1; SectionKind kind;
+                         char label[48]; int ts_num, ts_den; };
+        struct LyrClip { double db0, db1, dt0, dt1; char text[128]; };
+        static SecClip s_sec_clip[STRIP_CLIP_MAX];
+        static LyrClip s_lyr_clip[STRIP_CLIP_MAX];
+        static int  s_sec_clip_n = 0,      s_lyr_clip_n = 0;
+        static int  s_sec_clip_serial = -1, s_lyr_clip_serial = -1;
+        static bool s_sec_clip_beats = false, s_lyr_clip_beats = false;
+
+        bool keys_ok = !ImGui::IsAnyItemActive() && (io.KeyCtrl || io.KeySuper);
+        bool copy    = keys_ok && ImGui::IsKeyPressed(ImGuiKey_C, false);
+        bool cutk    = keys_ok && ImGui::IsKeyPressed(ImGuiKey_X, false);
+        bool paste   = keys_ok && ImGui::IsKeyPressed(ImGuiKey_V, false);
+        bool use_beats = beatmap->count >= 2;
+
+        int n_sec_sel = 0, n_lyr_sel = 0;
+        for (int i = 0; i < sectionmap->count; i++)
+            if (sectionmap->sections[i].selected) n_sec_sel++;
+        for (int i = 0; i < lyricmap->count; i++)
+            if (lyricmap->lyrics[i].selected) n_lyr_sel++;
+
+        if ((copy || cutk) && n_sec_sel > 0) {
+            s_sec_clip_n = 0;
+            s_sec_clip_beats = use_beats;
+            double t0 = 0.0, b0 = 0.0;
+            bool   first = true;
+            for (int i = 0; i < sectionmap->count && s_sec_clip_n < STRIP_CLIP_MAX; i++) {
+                const Section& s = sectionmap->sections[i];
+                if (!s.selected) continue;
+                if (first) {
+                    t0 = s.t_start;
+                    b0 = use_beats ? beatmap_beat_pos(beatmap, t0) : 0.0;
+                    first = false;
+                }
+                SecClip& sc = s_sec_clip[s_sec_clip_n++];
+                sc.dt0 = s.t_start - t0;  sc.dt1 = s.t_end - t0;
+                sc.db0 = use_beats ? beatmap_beat_pos(beatmap, s.t_start) - b0 : 0.0;
+                sc.db1 = use_beats ? beatmap_beat_pos(beatmap, s.t_end)   - b0 : 0.0;
+                sc.kind = s.kind;  sc.ts_num = s.ts_num;  sc.ts_den = s.ts_den;
+                memcpy(sc.label, s.label, sizeof(sc.label));
+            }
+            s_sec_clip_serial = strip_clipboard_bump();
+            if (cutk) {
+                undo_push(undo, nullptr, nullptr, sectionmap, nullptr);
+                for (int i = sectionmap->count - 1; i >= 0; i--)
+                    if (sectionmap->sections[i].selected)
+                        sectionmap_remove(sectionmap, i);
+                s_sec_selected = -1;
+            }
+        } else if ((copy || cutk) && n_lyr_sel > 0) {
+            s_lyr_clip_n = 0;
+            s_lyr_clip_beats = use_beats;
+            double t0 = 0.0, b0 = 0.0;
+            bool   first = true;
+            for (int i = 0; i < lyricmap->count && s_lyr_clip_n < STRIP_CLIP_MAX; i++) {
+                const Lyric& ly = lyricmap->lyrics[i];
+                if (!ly.selected) continue;
+                if (first) {
+                    t0 = ly.t_start;
+                    b0 = use_beats ? beatmap_beat_pos(beatmap, t0) : 0.0;
+                    first = false;
+                }
+                LyrClip& lc = s_lyr_clip[s_lyr_clip_n++];
+                lc.dt0 = ly.t_start - t0;  lc.dt1 = ly.t_end - t0;
+                lc.db0 = use_beats ? beatmap_beat_pos(beatmap, ly.t_start) - b0 : 0.0;
+                lc.db1 = use_beats ? beatmap_beat_pos(beatmap, ly.t_end)   - b0 : 0.0;
+                memcpy(lc.text, ly.text, sizeof(lc.text));
+            }
+            s_lyr_clip_serial = strip_clipboard_bump();
+            if (cutk) {
+                undo_push(undo, beatmap, lyricmap);
+                for (int i = lyricmap->count - 1; i >= 0; i--)
+                    if (lyricmap->lyrics[i].selected)
+                        lyricmap_remove(lyricmap, i);
+                s_lyr_selected = -1;
+            }
+        } else if (paste) {
+            double anchor = audio_get_position(audio);
+            if (use_beats) {
+                double b  = beatmap_beat_pos(beatmap, anchor);
+                double nb = floor(b + 0.5);
+                if (fabs(b - nb) <= 0.35) anchor = beatmap_time_at(beatmap, nb);
+            }
+            if (s_sec_clip_n > 0 && s_sec_clip_serial == strip_clipboard_serial()) {
+                undo_push(undo, nullptr, nullptr, sectionmap, nullptr);
+                for (int i = 0; i < sectionmap->count; i++)
+                    sectionmap->sections[i].selected = false;
+                bool   by_beats = s_sec_clip_beats && use_beats;
+                double ab = by_beats ? beatmap_beat_pos(beatmap, anchor) : 0.0;
+                for (int k = 0; k < s_sec_clip_n; k++) {
+                    const SecClip& sc = s_sec_clip[k];
+                    double t0 = by_beats ? beatmap_time_at(beatmap, ab + sc.db0) : anchor + sc.dt0;
+                    double t1 = by_beats ? beatmap_time_at(beatmap, ab + sc.db1) : anchor + sc.dt1;
+                    int idx = sectionmap_add(sectionmap, t0, t1, sc.kind, sc.label);
+                    if (idx >= 0) {
+                        sectionmap->sections[idx].ts_num   = sc.ts_num;
+                        sectionmap->sections[idx].ts_den   = sc.ts_den;
+                        sectionmap->sections[idx].selected = true;
+                        s_sec_selected = idx;
+                    }
+                }
+            } else if (s_lyr_clip_n > 0 && s_lyr_clip_serial == strip_clipboard_serial()) {
+                undo_push(undo, beatmap, lyricmap);
+                for (int i = 0; i < lyricmap->count; i++)
+                    lyricmap->lyrics[i].selected = false;
+                bool   by_beats = s_lyr_clip_beats && use_beats;
+                double ab = by_beats ? beatmap_beat_pos(beatmap, anchor) : 0.0;
+                for (int k = 0; k < s_lyr_clip_n; k++) {
+                    const LyrClip& lc = s_lyr_clip[k];
+                    double t0 = by_beats ? beatmap_time_at(beatmap, ab + lc.db0) : anchor + lc.dt0;
+                    double t1 = by_beats ? beatmap_time_at(beatmap, ab + lc.db1) : anchor + lc.dt1;
+                    int idx = lyricmap_add(lyricmap, t0, t1, lc.text);
+                    if (idx >= 0) {
+                        lyricmap->lyrics[idx].selected = true;
+                        s_lyr_selected = idx;
+                    }
+                }
+            }
+        }
+    }
+
     // Tap rect-select release
     if (s_tap_rect_sel && !ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
         float rsx0 = s_tap_rect_x0 < io.MousePos.x ? s_tap_rect_x0 : io.MousePos.x;
@@ -1744,6 +1944,8 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
                 if (autobeat) for (int i = 0; i < autobeat->beat_count; i++) autobeat->beat_selected[i] = false;
                 s_sec_selected = -1;
                 s_lyr_selected = -1;
+                for (int i = 0; i < sectionmap->count; i++) sectionmap->sections[i].selected = false;
+                for (int i = 0; i < lyricmap->count; i++)   lyricmap->lyrics[i].selected     = false;
                 annstrip_defocus(ANN_CHORDS);
                 annstrip_defocus(ANN_MISC);
             }
@@ -1805,6 +2007,8 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
             for (int i = 0; i < s_tap_count; i++) s_taps[i].selected = false;
             if (autobeat) for (int i = 0; i < autobeat->beat_count; i++) autobeat->beat_selected[i] = false;
             s_sec_selected = -1;
+            for (int i = 0; i < sectionmap->count; i++) sectionmap->sections[i].selected = false;
+            for (int i = 0; i < lyricmap->count; i++)   lyricmap->lyrics[i].selected     = false;
             annstrip_defocus(ANN_CHORDS);
             annstrip_defocus(ANN_MISC);
             s_lyr_selected         = s_lyr_hold_idx;
@@ -1829,6 +2033,40 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
         for (int i = 0; i < s_tap_count; i++)
             if (s_tap_smooth_ok[i]) s_taps[i].time = s_tap_smooth[i];
         tap_preview_update(autobeat);
+    }
+
+    // S key with beats (not taps) selected: the first press opens the Beats
+    // tool, whose smoothing preview appears on the timeline; the next press
+    // accepts the previewed smoothing.
+    if (!ImGui::IsAnyItemActive() && !io.KeyCtrl && !io.KeySuper &&
+            ImGui::IsKeyPressed(ImGuiKey_S, false) && s_tap_smooth_n < 3) {
+        int i0 = -1, i1 = -1;
+        beatmap_selection_range(beatmap, &i0, &i1);
+        if (i0 >= 0 && i1 - i0 + 1 >= 3) {
+            if (!ui_dock_tool_visible(DOCK_BEATS))
+                ui_dock_icon_click(DOCK_BEATS);
+            else if (ui_smoothing_can_accept())
+                ui_smoothing_accept(beatmap, undo, sectionmap, lyricmap,
+                                    annstrip_map(ANN_MISC), annstrip_map(ANN_CHORDS));
+        }
+    }
+
+    // A: open Complete Track and run the analysis.  C: accept its ticked
+    // suggestions.  (Ctrl+C/X/V stay copy/cut/paste.)
+    if (!ImGui::IsAnyItemActive() && !io.KeyCtrl && !io.KeySuper) {
+        if (ImGui::IsKeyPressed(ImGuiKey_A, false)) {
+            if (!ui_dock_tool_visible(DOCK_COMPLETE))
+                ui_dock_icon_click(DOCK_COMPLETE);
+            ToolCtx tc = { editor, audio, beatmap, undo, autobeat, sectionmap,
+                           lyricmap, annstrip_map(ANN_MISC), annstrip_map(ANN_CHORDS), true };
+            ui_complete_hotkey_analyze(tc);
+        }
+        if (ImGui::IsKeyPressed(ImGuiKey_C, false) &&
+                ui_dock_tool_visible(DOCK_COMPLETE)) {
+            ToolCtx tc = { editor, audio, beatmap, undo, autobeat, sectionmap,
+                           lyricmap, annstrip_map(ANN_MISC), annstrip_map(ANN_CHORDS), true };
+            ui_complete_hotkey_accept(tc);
+        }
     }
 
     // I key: insert selected taps into the beatmap as real beats
@@ -1889,14 +2127,25 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
                 IM_COL32(50, 50, 70, 255));
 
     // Strip dividers (one line above each strip) and the sidebar expand /
-    // collapse triangles, one per strip row.
+    // collapse triangles, one per strip row (indented for beat-group rows).
     for (int i = 0; i < n_strip_rows; i++) {
         const StripRow& row = strip_rows[i];
         dl->AddLine(ImVec2(rx, row.y - STRIP_DIV_H), ImVec2(rx + rw, row.y - STRIP_DIV_H),
                     IM_COL32(50, 50, 70, 255));
 
+        bool in_grp_row = row.in_group;
+        bool hov_row = hovered && io.MousePos.x >= sb_x && io.MousePos.x < cx &&
+                       io.MousePos.y >= row.y && io.MousePos.y < row.y + row.h;
+
+        if (in_grp_row && !grp) {
+            // Group closed: the bands are display-only; any sidebar click here
+            // reopens the group (triangle drawn once, below).
+            if (hov_row) ImGui::SetTooltip("Expand the beat strips");
+            continue;
+        }
+
         bool  expanded = panel_visible(editor, row.id);
-        float tcx = sb_x + 8.0f;
+        float tcx = sb_x + (in_grp_row ? GRP_COL_W + 8.0f : 8.0f);
         float tcy = row.y + (row.h < 18.0f ? row.h : 18.0f) * 0.5f;
         ImU32 tri_col = IM_COL32(160, 160, 190, 200);
         if (expanded)
@@ -1908,10 +2157,30 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
                                   ImVec2(tcx - 3.0f, tcy + 4.5f),
                                   ImVec2(tcx + 4.0f, tcy), tri_col);
 
-        if (hovered && io.MousePos.x >= sb_x && io.MousePos.x < cx &&
-            io.MousePos.y >= row.y && io.MousePos.y < row.y + row.h)
-            ImGui::SetTooltip("%s %s", expanded ? "Collapse" : "Expand",
-                              PANELS[row.id].name);
+        if (hov_row) {
+            if (in_grp_row && io.MousePos.x < sb_x + GRP_COL_W)
+                ImGui::SetTooltip("Collapse the beat strips");
+            else
+                ImGui::SetTooltip("%s %s", expanded ? "Collapse" : "Expand",
+                                  PANELS[row.id].name);
+        }
+    }
+
+    // The beat group's own triangle in the outer sidebar column, aligned with
+    // the group's first visible row.
+    {
+        float gcy = grp ? ps_y + (place_h < 18.0f ? place_h : 18.0f) * 0.5f
+                        : tap_y + tap_h * 0.5f;
+        float gcx = sb_x + 7.0f;
+        ImU32 gcol = IM_COL32(200, 190, 140, 220);
+        if (grp)
+            dl->AddTriangleFilled(ImVec2(gcx - 4.5f, gcy - 3.0f),
+                                  ImVec2(gcx + 4.5f, gcy - 3.0f),
+                                  ImVec2(gcx,        gcy + 4.0f), gcol);
+        else
+            dl->AddTriangleFilled(ImVec2(gcx - 3.0f, gcy - 4.5f),
+                                  ImVec2(gcx - 3.0f, gcy + 4.5f),
+                                  ImVec2(gcx + 4.0f, gcy), gcol);
     }
 
     // Frequency axis labels aligned to the spectrogram row
@@ -2102,7 +2371,7 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
     // Placement strip background (always present; collapsed = display band)
     dl->AddRectFilled(ImVec2(ps_x, ps_y), ImVec2(ps_x + ps_w, ps_y + place_h),
                       IM_COL32(12, 16, 22, 255));
-    if (!show_place) {
+    if (!show_place && place_h > 0.0f) {
         // Collapsed: one vertical line per beat, colour-coded like the diamonds.
         dl->PushClipRect(ImVec2(ps_x, ps_y), ImVec2(ps_x + ps_w, ps_y + place_h), true);
         for (int i = 0; i < beatmap->count; i++) {
@@ -2405,7 +2674,7 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
     // --- Auto-beat strip ---
     dl->AddRectFilled(ImVec2(ab_x, ab_y), ImVec2(ab_x + ab_w, ab_y + ab_h),
                       IM_COL32(20, 10, 10, 255));
-    if (!show_auto && autobeat) {
+    if (!show_auto && autobeat && ab_h > 0.0f) {
         dl->PushClipRect(ImVec2(ab_x, ab_y), ImVec2(ab_x + ab_w, ab_y + ab_h), true);
         for (int i = 0; i < autobeat->beat_count; i++) {
             float bx = time_to_x(autobeat->beat_times[i],
@@ -2521,11 +2790,13 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
     }  // end show_autobeat_strip
 
     // --- Timbre strip ---
-    dl->AddRectFilled(ImVec2(tb_x, tb_y), ImVec2(tb_x + tb_w, tb_y + tb_h),
-                      IM_COL32(16, 18, 24, 255));
-    draw_timbre_strip(dl, editor, tb_x, tb_y, tb_w, tb_h, show_timb);
-    if (show_timb)
-        dl->AddText(ImVec2(cx + 4.0f, tb_y + 3.0f), IM_COL32(90, 110, 110, 110), "Timbre");
+    if (tb_h > 0.0f) {
+        dl->AddRectFilled(ImVec2(tb_x, tb_y), ImVec2(tb_x + tb_w, tb_y + tb_h),
+                          IM_COL32(16, 18, 24, 255));
+        draw_timbre_strip(dl, editor, tb_x, tb_y, tb_w, tb_h, show_timb);
+        if (show_timb)
+            dl->AddText(ImVec2(cx + 4.0f, tb_y + 3.0f), IM_COL32(90, 110, 110, 110), "Timbre");
+    }
 
     // Beat area background (always present; collapsed = display band)
     dl->AddRectFilled(ImVec2(ba_x, ba_y), ImVec2(ba_x + ba_w, ba_y + ba_h),
@@ -2742,7 +3013,7 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
         float sx0 = time_to_x(sec.t_start, editor->view_start, editor->view_end, sa_x, sa_w);
         float sx1 = time_to_x(sec.t_end,   editor->view_start, editor->view_end, sa_x, sa_w);
         if (sx1 <= sa_x || sx0 >= sa_x + sa_w) continue;
-        bool  sel = (i == s_sec_selected);
+        bool  sel = sec.selected || (i == s_sec_selected);
         float y0  = sa_y + 2.0f, y1 = sa_y + sa_h - 2.0f;
 
         dl->AddRectFilled(ImVec2(sx0, y0), ImVec2(sx1, y1), s_sec_fill[sec.kind]);
@@ -2855,7 +3126,7 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
         float lx0 = time_to_x(vis_t0, editor->view_start, editor->view_end, la_x, la_w);
         float lx1 = time_to_x(vis_t1, editor->view_start, editor->view_end, la_x, la_w);
         if (lx1 <= la_x || lx0 >= la_x + la_w) continue;
-        bool  sel = (i == s_lyr_selected);
+        bool  sel = ly.selected || (i == s_lyr_selected);
         float y0  = la_y + 3.0f, y1 = la_y + la_h - 3.0f;
 
         dl->AddRectFilled(ImVec2(lx0, y0), ImVec2(lx1, y1),
@@ -2907,40 +3178,6 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
     }
     dl->PopClipRect();
 
-    // --- Lyric Index toggle button (right end of lyric strip) ---
-    {
-        const float BTN_W = 26.0f;
-        const float BTN_H = LYRIC_H - 4.0f;
-        float bx = la_x + la_w - BTN_W - 2.0f;
-        float by = la_y + 2.0f;
-        bool  lyridx_open = ui_dock_tool_visible(DOCK_LYRICS);
-
-        ImGui::SetCursorScreenPos(ImVec2(bx, by));
-        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(0.0f, 0.0f));
-        ImGui::PushStyleColor(ImGuiCol_Button,
-            lyridx_open ? IM_COL32(55, 95, 160, 210) : IM_COL32(28, 28, 50, 180));
-        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, IM_COL32(70, 120, 190, 230));
-        ImGui::PushStyleColor(ImGuiCol_ButtonActive,  IM_COL32(90, 150, 220, 255));
-        if (ImGui::Button("##lyridx_tog", ImVec2(BTN_W, BTN_H)))
-            ui_dock_icon_click(DOCK_LYRICS);
-        ImGui::PopStyleColor(3);
-        ImGui::PopStyleVar();
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Lyric Index");
-
-        // Draw icon: ≡ when closed, × when open
-        float icx = bx + BTN_W * 0.5f;
-        float icy = by + BTN_H * 0.5f;
-        ImU32 ico = lyridx_open ? IM_COL32(220, 190, 120, 230)
-                                : IM_COL32(160, 160, 195, 220);
-        if (lyridx_open) {
-            dl->AddLine(ImVec2(icx - 5.0f, icy - 5.0f), ImVec2(icx + 5.0f, icy + 5.0f), ico, 1.5f);
-            dl->AddLine(ImVec2(icx + 5.0f, icy - 5.0f), ImVec2(icx - 5.0f, icy + 5.0f), ico, 1.5f);
-        } else {
-            dl->AddLine(ImVec2(icx - 6.0f, icy - 3.5f), ImVec2(icx + 6.0f, icy - 3.5f), ico, 1.5f);
-            dl->AddLine(ImVec2(icx - 6.0f, icy),        ImVec2(icx + 6.0f, icy),        ico, 1.5f);
-            dl->AddLine(ImVec2(icx - 6.0f, icy + 3.5f), ImVec2(icx + 6.0f, icy + 3.5f), ico, 1.5f);
-        }
-    }
     }  // end show_lyric_strip
 
     // --- Inline lyric edit (InputText overlay on the lyric block) ---
@@ -3377,10 +3614,13 @@ void ui_timeline_lyric_index_content(EditorState* editor, AudioState* audio,
                     : placed ? "Already placed" : "Place at selected region");
         }
 
-        // Lyric text input (fills remaining row width, minus X delete button)
+        // Lyric text input (fills remaining row width, minus the X delete
+        // button on unplaced rows; placed lyrics have no X here -- delete
+        // those from the strip, where the timing context is visible)
         ImGui::SameLine(0, 2.0f);
         const float del_btn_w = 20.0f;
-        ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - del_btn_w - 2.0f);
+        ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x
+                                - (placed ? 0.0f : del_btn_w + 2.0f));
         // Dim unplaced lyrics so placed ones stand out
         if (!placed)
             ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.62f,0.59f,0.49f,0.76f));
@@ -3397,14 +3637,16 @@ void ui_timeline_lyric_index_content(EditorState* editor, AudioState* audio,
             pending_split_cursor = s_lyr_split_state.cursor;
         }
 
-        // X button to delete this lyric
-        ImGui::SameLine(0, 2.0f);
-        ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.55f,0.12f,0.12f,0.76f));
-        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.72f,0.18f,0.18f,0.90f));
-        ImGui::PushStyleColor(ImGuiCol_ButtonActive,  ImVec4(0.90f,0.25f,0.25f,1.00f));
-        if (ImGui::Button("x", ImVec2(del_btn_w, 0))) pending_delete = i;
-        ImGui::PopStyleColor(3);
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Delete lyric");
+        // X button to delete this lyric -- only while it is not inserted yet
+        if (!placed) {
+            ImGui::SameLine(0, 2.0f);
+            ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.55f,0.12f,0.12f,0.76f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.72f,0.18f,0.18f,0.90f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonActive,  ImVec4(0.90f,0.25f,0.25f,1.00f));
+            if (ImGui::Button("x", ImVec2(del_btn_w, 0))) pending_delete = i;
+            ImGui::PopStyleColor(3);
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Delete lyric");
+        }
 
         ImGui::PopID();
     }
@@ -3419,7 +3661,8 @@ void ui_timeline_lyric_index_content(EditorState* editor, AudioState* audio,
     // ---- Split deferred action ----
     if (pending_split_idx >= 0 && pending_split_idx < lyricmap->count) {
         undo_push(undo, beatmap, lyricmap);
-        lyricmap_split(lyricmap, pending_split_idx, pending_split_cursor, &s_lyr_selected);
+        lyricmap_split(lyricmap, pending_split_idx, pending_split_cursor,
+                       &s_lyr_selected, dur);
     }
 
     // ---- Delete deferred action ----

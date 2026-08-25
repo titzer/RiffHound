@@ -394,7 +394,7 @@ void smooth_params_defaults(SmoothParams* p) {
     if (!p) return;
     p->strength     = 0.5f;
     p->iterations   = 20;
-    p->use_onsets   = false;
+    p->use_onsets   = true;
     p->onset_weight = 0.35f;
     p->onset_window = 0.20f;
     p->max_shift    = 0.050f;   // 50 ms

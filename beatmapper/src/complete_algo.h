@@ -98,6 +98,9 @@ struct CompleteParams {
     float section_max_overlap;   // fraction of a candidate allowed to overlap an existing section (0.1)
     float section_rhythm_weight; // blend of rhythm-map vs chroma in range comparisons (0.4)
     bool  section_discover;      // also find repeats by self-similarity (no template needed)
+    bool  section_partition;     // infer uncovered spans as a partition (DP) rather than sliding matches
+    float section_prior_weight;  // weight of the learned kind-transition prior in the DP (0: off)
+    float section_block_penalty; // fixed DP cost per block, against confetti partitions (1.5)
     int   section_min_measures;  // shortest repeat unit discovery will propose (4)
 
     // --- chords ---

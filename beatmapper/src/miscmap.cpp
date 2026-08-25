@@ -128,6 +128,13 @@ static MiscClipItem s_clip[MISC_CLIP_MAX];
 static int          s_clip_count = 0;
 static bool         s_clip_beats = false;  // beat offsets are meaningful
 static const char*  s_clip_lane  = nullptr;  // prefix of the lane copied from
+static int          s_clip_serial = 0;       // strip serial recorded at copy time
+
+// One serial shared by every strip clipboard in the app, so the latest copy
+// (chords, misc, sections, lyrics) is the one a paste acts on.
+static int s_strip_serial = 0;
+int strip_clipboard_serial() { return s_strip_serial; }
+int strip_clipboard_bump()   { return ++s_strip_serial; }
 
 // Lanes are the same lane when they write the same keyword.  Compared by value
 // rather than by pointer so the answer does not depend on where the literals
@@ -139,6 +146,7 @@ static bool same_lane(const char* a, const char* b) {
 
 int miscmap_clipboard_count(const MiscMap* mm) {
     if (!mm || !same_lane(mm->prefix, s_clip_lane)) return 0;
+    if (s_clip_serial != s_strip_serial) return 0;   // a newer copy elsewhere won
     return s_clip_count;
 }
 
@@ -146,8 +154,9 @@ int miscmap_copy_selection(const MiscMap* mm, const BeatMap* bm) {
     if (miscmap_selected_count(mm) == 0) return 0;  // keep what is already held
 
     miscmap_paste_chain_reset();  // a new clipboard starts a new run
-    s_clip_count = 0;
-    s_clip_lane  = mm->prefix;
+    s_clip_count  = 0;
+    s_clip_lane   = mm->prefix;
+    s_clip_serial = strip_clipboard_bump();
     s_clip_beats = (bm && bm->count >= 2);
     double t0 = 0.0, b0 = 0.0;
     bool   first = true;

@@ -25,6 +25,12 @@ void ui_smoothing_actions(ToolCtx& c);    // Accept / Clear selection
 // ghosts are cleared.
 void ui_smoothing_hidden();
 
+// For the S hotkey: true when a computed preview would actually move a beat,
+// and the accept action itself (same as the Accept smoothing button).
+bool ui_smoothing_can_accept();
+void ui_smoothing_accept(BeatMap* beatmap, UndoStack* undo, SectionMap* sectionmap,
+                         LyricMap* lyricmap, MiscMap* miscmap, MiscMap* chordmap);
+
 // Proposed positions awaiting acceptance, for the timeline to draw as ghosts.
 // times[k] / orig[k] correspond to beat index i0 + k.
 struct SmoothPreview {

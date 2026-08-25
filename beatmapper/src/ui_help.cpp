@@ -24,6 +24,9 @@ static const HelpRow s_rows[] = {
     { "T",                        "Tap a beat at the playhead while playing (a new run of taps selects itself)" },
     { "Shift+T",                  "Tap and fill: taps at the surrounding tempo from the last tap or beat to here" },
     { "S",                        "Smooth the selected taps as previewed (Beats tool smoothing settings)" },
+    { "S (beats selected)",       "Open the smoothing preview; press S again to accept it" },
+    { "A",                        "Run the Complete Track analyzer" },
+    { "C",                        "Accept the ticked Complete Track suggestions" },
     { "L (hold)",                 "While playing with no region: record the next unplaced lyric from key down to key up" },
     { "I",                        "Insert selected taps and auto-beats as real beats" },
 
@@ -51,6 +54,9 @@ static const HelpRow s_rows[] = {
     { "Right-click section",  "Pick its kind (verse, chorus, solo, ...)" },
     { "Double-click section", "Set the section as the loop region" },
     { "Drag lyric strip",     "Create a lyric; double-click to edit its text" },
+    { "Shift+click",          "Add / remove a section or lyric from the selection" },
+    { "Ctrl+C / Ctrl+X",      "Copy / cut the selected sections or lyrics" },
+    { "Ctrl+V",               "Paste them at the playhead, snapped to the beat" },
 
     { nullptr, "Chord and Misc lanes" },
     { "Drag the lane",        "Create an annotation; type its text straight away" },
@@ -71,7 +77,8 @@ void ui_help_render(EditorState* editor) {
     if (!editor || !editor->show_help) return;
 
     ImGui::SetNextWindowSize(ImVec2(560, 560), ImGuiCond_FirstUseEver);
-    if (!ImGui::Begin("Keyboard Shortcuts", &editor->show_help)) {
+    if (!ImGui::Begin("Keyboard Shortcuts", &editor->show_help,
+                      ImGuiWindowFlags_NoCollapse)) {
         ImGui::End();
         return;
     }

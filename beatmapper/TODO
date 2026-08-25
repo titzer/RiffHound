@@ -1,3 +1,30 @@
+- Tweaks
+ - Make Chroma tool smaller
+   - show suggested chord(s); learns from labeled examples in same track
+ - Key bindings and tools on the left?
+   - Space play
+   - + - speed up, slow down
+   - <- -> plus or minus 5 seconds
+   - CMD+O open
+   - CMD+S save
+   - CMD+z undo
+   - S: attempt beat smoothing for selected beats, S again => accept
+   - C: autocomplete section
+     - Add small insert button for each completion suggestion
+   - L: overloaded between lyric insertion and loop mode
+   - T: tap a beat
+   - SHIFT + T: tap and interpolate
+   - SHIFT + Enter: split lyric (should it split off if second is not inserted?)
+ - double click lyric should also highlight for playback
+ - in beat pane, allowing mark beat 1 and setting time sig, creates measure ruler
+ - group chords (like objects in an SVG editor)
+ - Need a mechanism to shift an entire beatmap by half a beat
+
+- Medium functionality
+ - allow inspecting examples of onset timbres (e.g. classify snare)
+ - overlap spectrograph of different parts for visual analysis
+ - lyric search for track, e.g. AZ lyrics?
+
 - Major improvements
 
 1. Beat-detection plugins
@@ -7,6 +34,7 @@ Many tracks have click-track, very even and clean timing.
 Others have messy timing.
 Tempo and beat detection are not just onset, but inertia.
 Inserting all beats by hand, even with extrapolation, smoothing, and beat-detection assist is still laborious.
+Idea: improve training and algorithms using already mapped tracks.
 
 2. Musical score: RiffText
 
@@ -45,7 +73,6 @@ Stretch:
   - Stem extraction
   - Lyric alignment
   - Transcription
-- Load dialog should allow up and down arrows
 - section duplicate tool:
   - duplicates the beat pattern and measures of a given section (e.g. verse)
   - the new pasted section can be dragged on the timeline,
@@ -83,6 +110,9 @@ Stretch:
 
 Track organization and serving
 - host all the tracks and metadata somehow
+
+"Born to be Wild" tempo has a speedup/slowdown around chorus.
+"I'm a Believer" is off by half a beat
 
 Karaoke, Playback/jamming
 - pitch up/down and speed controls

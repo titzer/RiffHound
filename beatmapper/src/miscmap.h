@@ -83,3 +83,10 @@ void miscmap_paste_chain_reset();
 // How many annotations are held for this lane; 0 when the clipboard belongs to
 // another one.
 int miscmap_clipboard_count(const MiscMap* mm);
+
+// Serial of the most recent strip copy anywhere in the app (chord/misc lanes,
+// sections, lyrics -- each keeps its own clipboard).  A clipboard is live only
+// while the serial it recorded at copy time is still current, so whichever
+// strip was copied from last is the one Ctrl+V pastes.
+int strip_clipboard_serial();
+int strip_clipboard_bump();      // a copy happened; returns the new serial

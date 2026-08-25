@@ -23,6 +23,11 @@ void ui_complete_actions(ToolCtx& c);
 // analysis right away, so select-then-click shows results.
 void ui_complete_auto_analyze(ToolCtx& c);
 
+// Hotkeys: A runs the analysis (open the tool first via ui_dock_icon_click);
+// C accepts the ticked candidates.
+void ui_complete_hotkey_analyze(ToolCtx& c);
+void ui_complete_hotkey_accept(ToolCtx& c);
+
 // Call when the panel is not rendered this frame (drops the hover highlight).
 void ui_complete_hidden();
 

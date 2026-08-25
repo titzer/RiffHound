@@ -148,6 +148,21 @@ void ui_smoothing_hidden() {
     preview_clear();
 }
 
+bool ui_smoothing_can_accept() {
+    return s_preview.n > 0 && s_max_shift_s > 1e-6;
+}
+
+void ui_smoothing_accept(BeatMap* beatmap, UndoStack* undo, SectionMap* sectionmap,
+                         LyricMap* lyricmap, MiscMap* miscmap, MiscMap* chordmap)
+{
+    if (!ui_smoothing_can_accept()) return;
+    undo_push(undo, beatmap, lyricmap, sectionmap, miscmap, chordmap);
+    beatmap_retime_annotations(sectionmap, lyricmap, miscmap, chordmap,
+                               s_orig, s_prop, s_preview.n, PIN_TOL);
+    beatmap_apply_times(beatmap, s_preview.i0, s_prop, s_preview.n);
+    s_key_valid = false;
+}
+
 // Selection range the body last settled on, for the actions row.
 static int  s_i0 = -1, s_i1 = -1, s_n_sel = 0, s_n_range = 0;
 static bool s_have_range = false;
@@ -339,18 +354,14 @@ void ui_smoothing_actions(ToolCtx& c)
     float avail_w = ImGui::GetContentRegionAvail().x;
     float half_w = (avail_w - ImGui::GetStyle().ItemSpacing.x) * 0.5f;
 
-    bool can_apply = (s_preview.n > 0 && s_max_shift_s > 1e-6);
+    bool can_apply = ui_smoothing_can_accept();
     if (!can_apply) ImGui::BeginDisabled();
     ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.16f, 0.45f, 0.22f, 1.0f));
     ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.22f, 0.58f, 0.29f, 1.0f));
     ImGui::PushStyleColor(ImGuiCol_ButtonActive,  ImVec4(0.28f, 0.68f, 0.35f, 1.0f));
-    if (ImGui::Button("Accept smoothing", ImVec2(half_w, 0))) {
-        undo_push(c.undo, beatmap, c.lyricmap, c.sectionmap, c.miscmap, c.chordmap);
-        beatmap_retime_annotations(c.sectionmap, c.lyricmap, c.miscmap, c.chordmap,
-                                   s_orig, s_prop, s_preview.n, PIN_TOL);
-        beatmap_apply_times(beatmap, s_preview.i0, s_prop, s_preview.n);
-        s_key_valid = false;
-    }
+    if (ImGui::Button("Accept smoothing (S)", ImVec2(half_w, 0)))
+        ui_smoothing_accept(beatmap, c.undo, c.sectionmap, c.lyricmap,
+                            c.miscmap, c.chordmap);
     ImGui::PopStyleColor(3);
     if (!can_apply) ImGui::EndDisabled();
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))

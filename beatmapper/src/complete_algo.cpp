@@ -53,6 +53,9 @@ void complete_params_defaults(CompleteParams* p) {
     p->section_max_overlap   = 0.10f;
     p->section_rhythm_weight = 0.4f;
     p->section_discover      = true;
+    p->section_partition     = true;
+    p->section_block_penalty = 2.0f;
+    p->section_prior_weight  = 0.0f;   // sparse bigrams mislead more than they help; off by default
     p->section_min_measures  = 4;
 
     p->chord_runs          = true;
@@ -1202,6 +1205,288 @@ static float attach_template_chords(const CompleteInputs& in, const CompletePara
     return mean;
 }
 
+// 1b. Partition DP: sections tile the track, so an uncovered span between
+//     known sections is not a field for independent sliding matches -- it is
+//     a *sequence* of section-sized blocks that must meet the known edges
+//     exactly.  A DP over the span's beats chooses that sequence: template
+//     blocks (compared measure-wise, chroma + rhythm), gently truncated or
+//     extended by measures (a final chorus often repeats its tail), and
+//     per-beat filler for what matches nothing.  Anchoring both ends kills
+//     the off-by-a-few-beats placements the sliding search was prone to.
+
+struct SecTemplate {
+    int b0, n;                 // beat index and length (intervals) in the map
+    SectionKind kind;
+    char label[48], name[48];
+    int ts_num, ts_den;
+};
+
+// Prefix sums of the per-interval features, so any range's mean is O(dim).
+struct FeatSums {
+    int n = 0, rdim = 0;
+    std::vector<double> pc;    // (n+1) * 12
+    std::vector<double> pr;    // (n+1) * rdim
+    void build(const BeatFeatures& f) {
+        n = f.n; rdim = f.rdim;
+        pc.assign((size_t)(n + 1) * 12, 0.0);
+        pr.assign((size_t)(n + 1) * (rdim ? rdim : 1), 0.0);
+        for (int i = 0; i < n; i++) {
+            const float* v = i < (int)f.chroma->entries.size() ? f.chroma->entries[i].v : nullptr;
+            for (int k = 0; k < 12; k++)
+                pc[(size_t)(i + 1) * 12 + k] = pc[(size_t)i * 12 + k] + (v ? v[k] : 0.0f);
+            if (rdim)
+                for (int k = 0; k < rdim; k++)
+                    pr[(size_t)(i + 1) * rdim + k] = pr[(size_t)i * rdim + k] + f.rhythm[(size_t)i * rdim + k];
+        }
+    }
+    // Cosine of the mean feature over [a0,a1) vs [b0,b1), chroma+rhythm blended.
+    float cos_range(int a0, int a1, int b0, int b1, float rw) const {
+        double dot = 0, na = 0, nb = 0;
+        for (int k = 0; k < 12; k++) {
+            double x = (pc[(size_t)a1 * 12 + k] - pc[(size_t)a0 * 12 + k]) / (a1 - a0);
+            double y = (pc[(size_t)b1 * 12 + k] - pc[(size_t)b0 * 12 + k]) / (b1 - b0);
+            dot += x * y; na += x * x; nb += y * y;
+        }
+        float cs = (na > 1e-12 && nb > 1e-12) ? (float)(dot / sqrt(na * nb)) : 0.0f;
+        if (!rdim || rw <= 0.0f) return cs;
+        dot = na = nb = 0;
+        for (int k = 0; k < rdim; k++) {
+            double x = (pr[(size_t)a1 * rdim + k] - pr[(size_t)a0 * rdim + k]) / (a1 - a0);
+            double y = (pr[(size_t)b1 * rdim + k] - pr[(size_t)b0 * rdim + k]) / (b1 - b0);
+            dot += x * y; na += x * x; nb += y * y;
+        }
+        float cr = (na > 1e-12 && nb > 1e-12) ? (float)(dot / sqrt(na * nb)) : 0.0f;
+        return (1.0f - rw) * cs + rw * cr;
+    }
+};
+
+// Similarity of template t placed at beat x with block length len (intervals):
+// measure-by-measure; extra measures beyond the template compare cyclically
+// against its last two measures (a tail that repeats).
+static float block_sim(const FeatSums& fs, const SecTemplate& t, int x, int len,
+                       int ts, float rw)
+{
+    float sum = 0; int cnt = 0;
+    for (int m = 0; m * ts < len; m++) {
+        int d0 = x + m * ts, d1 = std::min(x + (m + 1) * ts, x + len);
+        int tm = m;
+        if (tm * ts >= t.n) {                    // extension: cycle the last two measures
+            int tail = std::max(1, std::min(2, t.n / ts));
+            int first_tail = t.n / ts - tail;
+            tm = first_tail + (tm - t.n / ts) % tail;
+        }
+        int s0 = t.b0 + tm * ts, s1 = std::min(t.b0 + (tm + 1) * ts, t.b0 + t.n);
+        if (s1 <= s0 || d1 <= d0) continue;
+        sum += fs.cos_range(s0, s1, d0, d1, rw);
+        cnt++;
+    }
+    return cnt ? sum / cnt : 0.0f;
+}
+
+// Fill the uncovered beat span [s0, s1] (indices into the map, s1 exclusive as
+// an interval end) with the best sequence of template blocks and filler.
+// open_left / open_right: that edge is the track boundary, not a known
+// section, so a block need not meet it exactly (filler absorbs the rest).
+// Bigram prior over section kinds, learned from the sections already in the
+// map: this song's verses are followed by choruses (or solos), and the DP
+// should prefer sequences the song itself uses.  Distinguishes a solo from a
+// verse over the same twelve bars, which chroma alone cannot.
+struct KindPrior {
+    int seen[SK_COUNT + 1][SK_COUNT + 1] = {};   // index SK_COUNT = span edge / unknown
+    void build(const SectionMap* sm) {
+        std::vector<std::pair<double, int>> seq;
+        for (int i = 0; i < sm->count; i++) seq.push_back({ sm->sections[i].t_start, sm->sections[i].kind });
+        std::sort(seq.begin(), seq.end());
+        for (size_t i = 0; i + 1 < seq.size(); i++)
+            seen[seq[i].second][seq[i + 1].second]++;
+    }
+    float bonus(int a, int b) const {
+        if (a > SK_COUNT || b > SK_COUNT || a < 0 || b < 0) return 0.0f;
+        return seen[a][b] > 0 ? 1.0f : -0.5f;
+    }
+};
+
+static void partition_span(const CompleteInputs& in, const CompleteParams& p,
+                           const BeatFeatures& f, const FeatSums& fs,
+                           const std::vector<SecTemplate>& tm, int ts,
+                           int s0, int s1, int kind_l, int kind_r,
+                           const KindPrior& prior, CompleteProposal* out,
+                           std::vector<CompleteCand>* kept)
+{
+    const BeatMap* bm = in.beatmap;
+    int B = s1 - s0;
+    if (B < 2) return;
+    float rw = p.section_rhythm_weight;
+    const float FILL = 0.45f;                       // per-beat score of "no section here"
+    const float EXT_PEN = 0.01f, TRUNC_PEN = 0.04f; // per measure
+    const float PRIOR_W = p.section_prior_weight;   // score units per transition
+    const float BLOCK_PEN = p.section_block_penalty; // fixed cost per block: no confetti partitions
+    float thr = p.section_sim_threshold;
+    float gate = thr - 0.10f;                        // DP may consider slightly weak blocks...
+
+    // dp state: (position, kind of the last placed block); SK_COUNT = none yet
+    const int K = SK_COUNT + 1;
+    struct Choice { int prev; int pk; int tmpl; int len; float sim; };
+    std::vector<double> dp((size_t)(B + 1) * K, -1e18);
+    std::vector<Choice> bk((size_t)(B + 1) * K, { -1, 0, -1, 0, 0 });
+    int k0 = (kind_l >= 0 && kind_l < SK_COUNT) ? kind_l : SK_COUNT;
+    dp[(size_t)0 * K + k0] = 0.0;
+    for (int x = 0; x < B; x++) {
+        for (int k = 0; k < K; k++) {
+            double d = dp[(size_t)x * K + k];
+            if (d < -1e17) continue;
+            // filler, one beat; the last kind carries through
+            size_t ni = (size_t)(x + 1) * K + k;
+            if (d + FILL > dp[ni]) { dp[ni] = d + FILL; bk[ni] = { x, k, -1, 1, 0 }; }
+            for (size_t ti = 0; ti < tm.size(); ti++) {
+                const SecTemplate& t = tm[ti];
+                int down = (int)(0.4 * t.n / ts);
+                int min_len = std::max(2 * ts, t.n - down * ts);
+                int max_len = std::max(t.n + 8 * ts, (int)(3.5 * t.n) / ts * ts);
+                for (int len = min_len; len <= max_len; len += ts) {
+                    if (x + len > B) break;
+                    float sim = block_sim(fs, t, s0 + x, len, ts, rw);
+                    float pen = 0.0f;
+                    if (len < t.n) pen = TRUNC_PEN * (float)(t.n - len) / ts;
+                    if (len > t.n) pen = EXT_PEN * (float)(len - t.n) / ts;
+                    float eff = sim - pen;
+                    if (eff < gate) continue;
+                    double sc = d + (double)eff * len - BLOCK_PEN + PRIOR_W * prior.bonus(k, t.kind);
+                    // Meeting the right edge earns the closing transition too
+                    if (x + len == B && kind_r >= 0)
+                        sc += PRIOR_W * prior.bonus(t.kind, kind_r);
+                    size_t bi = (size_t)(x + len) * K + t.kind;
+                    if (sc > dp[bi]) { dp[bi] = sc; bk[bi] = { x, k, (int)ti, len, sim }; }
+                }
+            }
+        }
+    }
+    // Backtrack from the best end state
+    int bx = B, bkind = 0; double best = -1e18;
+    for (int k = 0; k < K; k++)
+        if (dp[(size_t)B * K + k] > best) { best = dp[(size_t)B * K + k]; bkind = k; }
+    if (best < -1e17) return;
+    std::vector<Choice> path;
+    int x = bx, k = bkind;
+    while (x > 0) {
+        Choice c = bk[(size_t)x * K + k];
+        if (c.prev < 0) break;
+        path.push_back(c);
+        x = c.prev; k = c.pk;
+    }
+    std::reverse(path.begin(), path.end());
+    int pos = s0;
+    for (const Choice& c : path) {
+        if (c.tmpl >= 0) {
+            const SecTemplate& t = tm[c.tmpl];
+            CompleteCand cand = {};
+            cand.selected = c.sim >= thr;   // ...but a weak one arrives unticked
+            cand.kind = CAND_SECTION;
+            cand.t0 = bm->beats[pos].time;
+            cand.t1 = bm->beats[pos + c.len].time;
+            cand.sim = c.sim; cand.score = c.sim;
+            cand.sec_kind = t.kind; cand.ts_num = t.ts_num; cand.ts_den = t.ts_den;
+            strncpy(cand.label, t.label, sizeof(cand.label) - 1);
+            strncpy(cand.source, t.name, sizeof(cand.source) - 1);
+            char a[16], b[16];
+            fmt_time(a, sizeof(a), cand.t0); fmt_time(b, sizeof(b), cand.t1);
+            int base_n = std::min(c.len, t.n);
+            float cs = attach_template_chords(in, p, f, t.b0, pos, base_n, out, &cand);
+            if (cs >= 0.0f)
+                snprintf(cand.desc, sizeof(cand.desc), "%s  %s-%s  (%d beats%s) sim %.2f + %d chords (check %.2f)",
+                         t.name, a, b, c.len, c.len == t.n ? "" : c.len > t.n ? ", extended" : ", short",
+                         c.sim, cand.chord_n, cs);
+            else
+                snprintf(cand.desc, sizeof(cand.desc), "%s  %s-%s  (%d beats%s) sim %.2f",
+                         t.name, a, b, c.len, c.len == t.n ? "" : c.len > t.n ? ", extended" : ", short",
+                         c.sim);
+            kept->push_back(cand);
+        }
+        pos += c.len;
+    }
+}
+
+static void sections_partition(const CompleteInputs& in, const CompleteParams& p,
+                               const BeatFeatures& f, double gap_thresh,
+                               CompleteProposal* out, std::vector<CompleteCand>* kept)
+{
+    const BeatMap* bm = in.beatmap;
+    const SectionMap* sm = in.sectionmap;
+    if (bm->count < 4 || sm->count == 0) return;
+
+    // Templates: every fully mapped section
+    std::vector<SecTemplate> tm;
+    int ts = 4;
+    for (int s = 0; s < sm->count; s++) {
+        const Section& sec = sm->sections[s];
+        int b0 = nearest_beat(bm, sec.t_start);
+        int b1 = nearest_beat(bm, sec.t_end);
+        int n = b1 - b0;
+        if (n < 2 || !contiguous(bm, b0, n, gap_thresh)) continue;
+        SecTemplate t;
+        t.b0 = b0; t.n = n; t.kind = sec.kind;
+        t.ts_num = sec.ts_num > 0 ? sec.ts_num : 4;
+        t.ts_den = sec.ts_den > 0 ? sec.ts_den : 4;
+        ts = t.ts_num;
+        strncpy(t.label, sec.label, sizeof(t.label) - 1); t.label[sizeof(t.label) - 1] = 0;
+        section_name(sec, t.name, sizeof(t.name));
+        tm.push_back(t);
+    }
+    if (tm.empty()) return;
+    // An anomalously short section (a 4-second "verse" tag) makes a template
+    // that can tile anything in confetti; templates far below the median
+    // length sit out of the DP.
+    {
+        std::vector<int> lens;
+        for (const SecTemplate& t : tm) lens.push_back(t.n);
+        std::sort(lens.begin(), lens.end());
+        int med = lens[lens.size() / 2];
+        std::vector<SecTemplate> keep;
+        for (const SecTemplate& t : tm) if (t.n >= (int)(0.35 * med)) keep.push_back(t);
+        if (!keep.empty()) tm.swap(keep);
+    }
+
+    FeatSums fs;
+    fs.build(f);
+
+    // Uncovered spans between known sections (and the track edges), as beat
+    // index ranges over contiguous beats.
+    struct Edge { double t; };
+    std::vector<std::pair<double, double>> covered;
+    for (int s = 0; s < sm->count; s++)
+        covered.push_back({ sm->sections[s].t_start, sm->sections[s].t_end });
+    std::sort(covered.begin(), covered.end());
+    std::vector<std::pair<double, double>> spans;
+    double cur = 0.0;
+    for (auto& cv : covered) {
+        if (cv.first - cur > 0.5) spans.push_back({ cur, cv.first });
+        cur = std::max(cur, cv.second);
+    }
+    if (in.duration - cur > 0.5) spans.push_back({ cur, in.duration });
+
+    KindPrior prior;
+    prior.build(sm);
+    for (auto& sp : spans) {
+        // Kinds of the known sections either side of the span, for the prior
+        int kind_l = -1, kind_r = -1;
+        for (int q = 0; q < sm->count; q++) {
+            if (fabs(sm->sections[q].t_end - sp.first) < 0.3)   kind_l = sm->sections[q].kind;
+            if (fabs(sm->sections[q].t_start - sp.second) < 0.3) kind_r = sm->sections[q].kind;
+        }
+        int s0 = nearest_beat(bm, sp.first);
+        int s1 = nearest_beat(bm, sp.second);
+        if (fabs(bm->beats[s0].time - sp.first) > 1.0) {          // span edge off the grid
+            // open span at the track edge: clamp to the first/last beat
+            if (sp.first < bm->beats[0].time) s0 = 0; else continue;
+        }
+        if (fabs(bm->beats[s1].time - sp.second) > 1.0) {
+            if (sp.second > bm->beats[bm->count - 1].time) s1 = bm->count - 1; else continue;
+        }
+        if (s1 - s0 < 2 || !contiguous(bm, s0, s1 - s0, gap_thresh)) continue;
+        partition_span(in, p, f, fs, tm, ts, s0, s1, kind_l, kind_r, prior, out, kept);
+    }
+}
+
 static void sections_from_templates(const CompleteInputs& in, const CompleteParams& p,
                                     const BeatFeatures& f, double gap_thresh,
                                     CompleteProposal* out, std::vector<CompleteCand>* kept)
@@ -1408,7 +1693,10 @@ static void infer_sections(const CompleteInputs& in, const CompleteParams& p,
 {
     if (in.beatmap->count < 4) return;
     std::vector<CompleteCand> kept;
-    sections_from_templates(in, p, f, gap_thresh, out, &kept);
+    if (p.section_partition)
+        sections_partition(in, p, f, gap_thresh, out, &kept);
+    else
+        sections_from_templates(in, p, f, gap_thresh, out, &kept);
     if (p.section_discover) sections_from_repeats(in, p, f, gap_thresh, &kept);
     out->cands.insert(out->cands.end(), kept.begin(), kept.end());
 }

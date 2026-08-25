@@ -61,7 +61,7 @@ static int    s_last_algo      = -1;
 
 // Persistent UI state
 static int   s_algo_idx      = 3;   // NNLS Chroma: most accurate for polyphony
-static float s_roll_secs     = 2.0f;
+static float s_roll_secs     = 0.5f;
 
 void ui_chroma_settings(ToolCtx& c)
 {
@@ -81,7 +81,7 @@ void ui_chroma_settings(ToolCtx& c)
     if (ImGui::IsItemHovered() && s_algo_idx >= 0 && s_algo_idx < CHROMA_ALGO_COUNT)
         ImGui::SetTooltip("%s", CHROMA_ALGOS[s_algo_idx].tip);
     ImGui::SetNextItemWidth(avail_w);
-    if (ImGui::SliderFloat("##win", &s_roll_secs, 0.5f, 10.0f, "Rolling window %.1fs"))
+    if (ImGui::SliderFloat("##win", &s_roll_secs, 0.1f, 10.0f, "Rolling window %.2fs"))
         s_last_t_start = s_last_t_end = -99.0;
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Window behind the playhead when no region is selected");
@@ -130,86 +130,63 @@ void ui_chroma_body(ToolCtx& c)
     }
 
 
-    // --- Status line ---
+    // --- Status line (nothing shown while the rolling window follows playback) ---
     if (!pcm)
         ImGui::TextDisabled("(no audio)");
     else if (!have_window)
         ImGui::TextDisabled("(select region or play)");
     else if (editor->has_region)
         ImGui::TextDisabled("%.2fs – %.2fs", t_start, t_end);
-    else
-        ImGui::TextDisabled("rolling  %.2fs", t_end);
 
     ImGui::Spacing();
 
-    // --- Vertical bar layout ---
-    ImDrawList* dl    = ImGui::GetWindowDrawList();
+    // --- Horizontal layout: 12 columns C..B, each a vertical confidence bar
+    // filling upward, with the note name underneath.  Compact by design.
+    ImDrawList* dl     = ImGui::GetWindowDrawList();
     ImVec2      avail  = ImGui::GetContentRegionAvail();
     ImVec2      origin = ImGui::GetCursorScreenPos();
 
-    const float LBL_W    = 26.0f;
-    const float GAP      =  2.0f;
-    const float SQ_GAP   =  4.0f;   // gap between square and confidence bar
-    const float CONF_W   = 100.0f;  // confidence bar width (px)
-    const float CONF_INS =  2.0f;   // vertical inset for confidence bar
-    const float total_h  = avail.y;
-    float bar_h = (total_h - 11.0f * GAP) / 12.0f;
-    if (bar_h < 13.0f) bar_h = 13.0f;
+    const float GAP   = 3.0f;
+    float lh    = ImGui::GetTextLineHeight();
+    float bar_w = (avail.x - 11.0f * GAP) / 12.0f;
+    if (bar_w < 10.0f) bar_w = 10.0f;
+    float bar_h = 64.0f;
+    if (avail.y > 0.0f && avail.y < bar_h + lh + 4.0f)
+        bar_h = avail.y - lh - 4.0f;
+    if (bar_h < 24.0f) bar_h = 24.0f;
 
-    // Row height × 12 drives the dummy; total content width fixed by layout
-    ImGui::Dummy(ImVec2(LBL_W + bar_h + SQ_GAP + CONF_W, 12.0f * (bar_h + GAP) - GAP));
+    ImGui::Dummy(ImVec2(12.0f * (bar_w + GAP) - GAP, bar_h + lh + 2.0f));
 
     editor->chroma_hover_note = -1;
     ImVec2 mouse = ImGui::GetIO().MousePos;
-    float  lh    = ImGui::GetTextLineHeight();
 
-    for (int i = 0; i < 12; i++) {
-        int   note = 11 - i;   // row 0 = B (highest), row 11 = C (lowest)
-        float y0   = origin.y + (float)i * (bar_h + GAP);
-        float y1   = y0 + bar_h;
+    for (int note = 0; note < 12; note++) {
+        float x0 = origin.x + (float)note * (bar_w + GAP);
+        float x1 = x0 + bar_w;
+        float y0 = origin.y;
+        float y1 = y0 + bar_h;
 
-        // Square: bar_h × bar_h
-        float sq_x0 = origin.x + LBL_W;
-        float sq_x1 = sq_x0 + bar_h;
-
-        // Confidence bar
-        float cb_x0 = sq_x1 + SQ_GAP;
-        float cb_x1 = cb_x0 + CONF_W;
-        float cb_y0 = y0 + CONF_INS;
-        float cb_y1 = y1 - CONF_INS;
-
-        bool hov = (mouse.x >= origin.x && mouse.x < cb_x1 &&
-                    mouse.y >= y0        && mouse.y <  y1);
+        bool hov = (mouse.x >= x0 && mouse.x < x1 + GAP &&
+                    mouse.y >= y0 && mouse.y < y1 + lh + 2.0f);
         if (hov) editor->chroma_hover_note = note;
 
-        // Note label
-        ImU32 lbl_col = hov ? IM_COL32(220, 255, 220, 255)
-                            : IM_COL32(170, 178, 170, 210);
-        dl->AddText(ImVec2(origin.x + 2.0f, y0 + (bar_h - lh) * 0.5f),
-                    lbl_col, NOTE_NAMES[note]);
-
-        // Colored square
-        ImU32 fill   = chroma_colormap(s_chroma[note]);
-        ImU32 border = hov ? IM_COL32(160, 255, 160, 220) : IM_COL32(40, 55, 40, 130);
-        dl->AddRectFilled(ImVec2(sq_x0, y0), ImVec2(sq_x1, y1), fill, 2.0f);
-        dl->AddRect      (ImVec2(sq_x0, y0), ImVec2(sq_x1, y1), border, 2.0f);
-
-        // Confidence bar — dark background
-        dl->AddRectFilled(ImVec2(cb_x0, cb_y0), ImVec2(cb_x1, cb_y1),
+        // Bar background
+        dl->AddRectFilled(ImVec2(x0, y0), ImVec2(x1, y1),
                           IM_COL32(18, 20, 18, 210), 2.0f);
-        // Filled portion
-        float fill_w = CONF_W * s_chroma[note];
-        if (fill_w > 0.5f)
-            dl->AddRectFilled(ImVec2(cb_x0, cb_y0), ImVec2(cb_x0 + fill_w, cb_y1),
-                              fill, 2.0f);
-        // Border
-        dl->AddRect(ImVec2(cb_x0, cb_y0), ImVec2(cb_x1, cb_y1),
-                    hov ? IM_COL32(140, 230, 140, 180) : IM_COL32(45, 55, 45, 140),
+        // Filled portion, from the bottom up
+        float v = s_chroma[note];
+        float fh = bar_h * v;
+        if (fh > 0.5f)
+            dl->AddRectFilled(ImVec2(x0, y1 - fh), ImVec2(x1, y1),
+                              chroma_colormap(v), 2.0f);
+        dl->AddRect(ImVec2(x0, y0), ImVec2(x1, y1),
+                    hov ? IM_COL32(140, 230, 140, 200) : IM_COL32(45, 55, 45, 140),
                     2.0f);
-    }
 
-    if (editor->chroma_hover_note >= 0)
-        ImGui::SetTooltip("%s  %.0f%%",
-                          NOTE_NAMES[editor->chroma_hover_note],
-                          s_chroma[editor->chroma_hover_note] * 100.0f);
+        // Note label centred under the bar
+        ImVec2 ts = ImGui::CalcTextSize(NOTE_NAMES[note]);
+        dl->AddText(ImVec2(x0 + (bar_w - ts.x) * 0.5f, y1 + 2.0f),
+                    hov ? IM_COL32(220, 255, 220, 255) : IM_COL32(170, 178, 170, 210),
+                    NOTE_NAMES[note]);
+    }
 }

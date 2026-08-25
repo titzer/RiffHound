@@ -15,7 +15,6 @@ static bool             s_p_init = false;
 static CompleteProposal s_prop;
 static BeatChromaCache  s_cache;
 static bool             s_have_prop   = false;
-static bool             s_show_ghosts = true;
 static bool             s_visible     = false;   // rendered this frame
 static int              s_hover       = -1;
 static double           s_list_r0 = 0.0, s_list_r1 = 0.0;   // region the list is narrowed to
@@ -29,7 +28,7 @@ static const ImU32 COL_HOVER = IM_COL32(255, 200,  90, 255);
 // Public queries
 // ---------------------------------------------------------------------------
 const CompleteProposal* ui_complete_proposal() { return &s_prop; }
-bool ui_complete_ghosts_active()               { return s_visible && s_have_prop && s_show_ghosts; }
+bool ui_complete_ghosts_active()               { return s_visible && s_have_prop; }
 int  ui_complete_hover()                       { return s_hover; }
 
 bool ui_complete_cand_listed(int idx) {
@@ -89,7 +88,47 @@ static void run_analysis(EditorState* editor, AudioState* audio, BeatMap* beatma
     complete_run(in, s_p, &s_cache, &s_prop);
     s_have_prop = true;
     editor->show_timbre_strip = true;
+    editor->show_beat_group   = true;   // the ghosts land in these strips
     s_hover = -1;
+}
+
+// Insert one candidate into the map (no undo handling here).
+static void apply_cand(const CompleteCand& c, BeatMap* beatmap,
+                       SectionMap* sectionmap, MiscMap* chordmap)
+{
+    switch (c.kind) {
+    case CAND_BEATS:
+        for (int i = 0; i < c.n; i++) {
+            int k = c.first + i;
+            if (k >= 0 && k < (int)s_prop.beat_times.size())
+                beatmap_add(beatmap, s_prop.beat_times[k]);
+        }
+        break;
+    case CAND_SECTION:
+        {
+            int idx = sectionmap_add(sectionmap, c.t0, c.t1, c.sec_kind, c.label);
+            if (idx >= 0) {
+                sectionmap->sections[idx].ts_num = c.ts_num > 0 ? c.ts_num : 4;
+                sectionmap->sections[idx].ts_den = c.ts_den > 0 ? c.ts_den : 4;
+            }
+            for (int i = 0; i < c.chord_n; i++) {      // the section's chords, as one unit
+                int k = c.chord_first + i;
+                if (k >= 0 && k < (int)s_prop.chords.size())
+                    miscmap_add(chordmap, s_prop.chords[k].t0, s_prop.chords[k].t1,
+                                s_prop.chords[k].text);
+            }
+        }
+        break;
+    case CAND_CHORDS:
+        for (int i = 0; i < c.n; i++) {
+            int k = c.first + i;
+            if (k >= 0 && k < (int)s_prop.chords.size())
+                miscmap_add(chordmap, s_prop.chords[k].t0, s_prop.chords[k].t1,
+                            s_prop.chords[k].text);
+        }
+        break;
+    default: break;
+    }
 }
 
 static void accept_selected(BeatMap* beatmap, SectionMap* sectionmap, LyricMap* lyricmap,
@@ -107,39 +146,7 @@ static void accept_selected(BeatMap* beatmap, SectionMap* sectionmap, LyricMap* 
             remaining.push_back(c);
             continue;
         }
-        switch (c.kind) {
-        case CAND_BEATS:
-            for (int i = 0; i < c.n; i++) {
-                int k = c.first + i;
-                if (k >= 0 && k < (int)s_prop.beat_times.size())
-                    beatmap_add(beatmap, s_prop.beat_times[k]);
-            }
-            break;
-        case CAND_SECTION:
-            {
-                int idx = sectionmap_add(sectionmap, c.t0, c.t1, c.sec_kind, c.label);
-                if (idx >= 0) {
-                    sectionmap->sections[idx].ts_num = c.ts_num > 0 ? c.ts_num : 4;
-                    sectionmap->sections[idx].ts_den = c.ts_den > 0 ? c.ts_den : 4;
-                }
-                for (int i = 0; i < c.chord_n; i++) {      // the section's chords, as one unit
-                    int k = c.chord_first + i;
-                    if (k >= 0 && k < (int)s_prop.chords.size())
-                        miscmap_add(chordmap, s_prop.chords[k].t0, s_prop.chords[k].t1,
-                                    s_prop.chords[k].text);
-                }
-            }
-            break;
-        case CAND_CHORDS:
-            for (int i = 0; i < c.n; i++) {
-                int k = c.first + i;
-                if (k >= 0 && k < (int)s_prop.chords.size())
-                    miscmap_add(chordmap, s_prop.chords[k].t0, s_prop.chords[k].t1,
-                                s_prop.chords[k].text);
-            }
-            break;
-        default: break;
-        }
+        apply_cand(c, beatmap, sectionmap, chordmap);
     }
     s_prop.cands.swap(remaining);
     s_hover = -1;
@@ -168,6 +175,19 @@ void ui_complete_auto_analyze(ToolCtx& c)
     if (s_have_prop || !c.editor->has_region) return;
     if (!c.audio->loaded || !audio_pcm_data(c.audio, nullptr, nullptr, nullptr)) return;
     run_analysis(c.editor, c.audio, c.beatmap, c.sectionmap, c.chordmap);
+}
+
+void ui_complete_hotkey_analyze(ToolCtx& c)
+{
+    if (!s_p_init) { complete_params_defaults(&s_p); s_p_init = true; }
+    if (!c.audio->loaded || !audio_pcm_data(c.audio, nullptr, nullptr, nullptr)) return;
+    run_analysis(c.editor, c.audio, c.beatmap, c.sectionmap, c.chordmap);
+}
+
+void ui_complete_hotkey_accept(ToolCtx& c)
+{
+    if (!s_have_prop) return;
+    accept_selected(c.beatmap, c.sectionmap, c.lyricmap, c.miscmap, c.chordmap, c.undo);
 }
 
 void ui_complete_settings(ToolCtx& c)
@@ -314,6 +334,14 @@ void ui_complete_settings(ToolCtx& c)
         ImGui::SliderFloat("##srw", &s_p.section_rhythm_weight, 0.0f, 1.0f, "Rhythm vs chroma %.2f");
         tip("Blend of the rhythm map (onset shapes per sub-beat) and chroma when comparing passages\n"
             "(also used for chord progressions)");
+        ImGui::Checkbox("Partition spans (DP)", &s_p.section_partition);
+        tip("Infer each uncovered span as a sequence of section blocks that meet the\n"
+            "known edges exactly, instead of independent sliding matches");
+        if (s_p.section_partition) {
+            ImGui::SetNextItemWidth(w);
+            ImGui::SliderFloat("##sbp", &s_p.section_block_penalty, 0.0f, 12.0f, "Block cost %.1f");
+            tip("Fixed DP cost per block: higher = fewer, longer sections");
+        }
         ImGui::Checkbox("Discover repeats", &s_p.section_discover);
         tip("Find repeated measure-aligned blocks by self-similarity, even with no section to\n"
             "copy from; groups come out as A, B, C (most repeated = chorus)");
@@ -408,8 +436,6 @@ void ui_complete_body(ToolCtx& c)
         s_list_r1 = editor->region_start < editor->region_end ? editor->region_end   : editor->region_start;
     }
     count_listed();
-    ImGui::Checkbox("Ghosts", &s_show_ghosts);
-    ImGui::SameLine();
     if (s_list_narrowed)
         ImGui::TextDisabled("%d of %d in region, %d ticked", s_n_listed, (int)s_prop.cands.size(), s_n_sel);
     else
@@ -424,36 +450,38 @@ void ui_complete_body(ToolCtx& c)
         int last_kind = -1;
         for (int i = 0; i < (int)s_prop.cands.size(); i++) {
             if (!ui_complete_cand_listed(i)) continue;
-            CompleteCand& c = s_prop.cands[i];
-            if ((int)c.kind != last_kind) {
+            CompleteCand& cand = s_prop.cands[i];
+            if ((int)cand.kind != last_kind) {
                 if (last_kind >= 0) ImGui::Spacing();
-                ImGui::TextColored(ImColor(KIND_COL[c.kind]), "%s", KIND_HDR[c.kind]);
-                last_kind = c.kind;
+                ImGui::TextColored(ImColor(KIND_COL[cand.kind]), "%s", KIND_HDR[cand.kind]);
+                last_kind = cand.kind;
             }
             ImGui::PushID(i);
-            ImGui::Checkbox("##sel", &c.selected);
+            ImGui::Checkbox("##sel", &cand.selected);
             bool hov = ImGui::IsItemHovered();
             ImGui::SameLine();
             char lbl[16];
-            snprintf(lbl, sizeof(lbl), "%.2f", c.score);
-            ImGui::TextColored(c.score >= 0.75f ? ImVec4(0.55f, 0.95f, 0.55f, 1.0f)
-                             : c.score >= 0.5f  ? ImVec4(0.95f, 0.85f, 0.45f, 1.0f)
-                                                : ImVec4(0.95f, 0.55f, 0.45f, 1.0f), "%s", lbl);
+            snprintf(lbl, sizeof(lbl), "%.2f", cand.score);
+            ImGui::TextColored(cand.score >= 0.75f ? ImVec4(0.55f, 0.95f, 0.55f, 1.0f)
+                             : cand.score >= 0.5f  ? ImVec4(0.95f, 0.85f, 0.45f, 1.0f)
+                                                   : ImVec4(0.95f, 0.55f, 0.45f, 1.0f), "%s", lbl);
             hov |= ImGui::IsItemHovered();
             ImGui::SameLine();
-            // Dismiss button at the right edge; the description takes the rest
+            // Accept + dismiss buttons at the right edge; the description
+            // takes the rest.
             float x_btn = ImGui::GetFrameHeight();
-            float desc_w = ImGui::GetContentRegionAvail().x - x_btn - ImGui::GetStyle().ItemSpacing.x;
+            float desc_w = ImGui::GetContentRegionAvail().x
+                         - 2.0f * (x_btn + ImGui::GetStyle().ItemSpacing.x);
             if (desc_w < 40.0f) desc_w = 40.0f;
-            ImGui::PushStyleColor(ImGuiCol_Text, c.selected ? IM_COL32(225, 225, 240, 255)
-                                                            : IM_COL32(150, 150, 170, 255));
-            if (ImGui::Selectable(c.desc, false, ImGuiSelectableFlags_AllowDoubleClick, ImVec2(desc_w, 0))) {
+            ImGui::PushStyleColor(ImGuiCol_Text, cand.selected ? IM_COL32(225, 225, 240, 255)
+                                                               : IM_COL32(150, 150, 170, 255));
+            if (ImGui::Selectable(cand.desc, false, ImGuiSelectableFlags_AllowDoubleClick, ImVec2(desc_w, 0))) {
                 // Click: bring it into view.  Double-click: toggle.
-                if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) c.selected = !c.selected;
+                if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) cand.selected = !cand.selected;
                 double span = editor->view_end - editor->view_start;
-                double mid  = 0.5 * (c.t0 + c.t1);
-                if (c.t0 < editor->view_start || c.t1 > editor->view_end) {
-                    double need = (c.t1 - c.t0) * 1.3;
+                double mid  = 0.5 * (cand.t0 + cand.t1);
+                if (cand.t0 < editor->view_start || cand.t1 > editor->view_end) {
+                    double need = (cand.t1 - cand.t0) * 1.3;
                     if (need > span) span = need;
                     editor->view_start = mid - 0.5 * span;
                     editor->view_end   = mid + 0.5 * span;
@@ -465,8 +493,25 @@ void ui_complete_body(ToolCtx& c)
             if (hov) {
                 s_hover = i;
                 ImGui::SetTooltip("%s\nsource: %s\nclick: scroll into view, double-click: toggle",
-                                  c.desc, c.source);
+                                  cand.desc, cand.source);
             }
+            // Tiny green checkmark: insert this one suggestion straight away
+            ImGui::SameLine();
+            ImGui::PushStyleColor(ImGuiCol_Button,        IM_COL32(0, 0, 0, 0));
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, IM_COL32(40, 120, 60, 200));
+            ImGui::PushStyleColor(ImGuiCol_ButtonActive,  IM_COL32(50, 150, 75, 255));
+            bool accept_one = ImGui::Button("##acc", ImVec2(x_btn, 0));
+            ImGui::PopStyleColor(3);
+            {
+                ImVec2 mn = ImGui::GetItemRectMin(), mx = ImGui::GetItemRectMax();
+                float ccx = (mn.x + mx.x) * 0.5f, ccy = (mn.y + mx.y) * 0.5f;
+                ImU32 col = IM_COL32(110, 220, 130, 230);
+                ImDrawList* dl = ImGui::GetWindowDrawList();
+                dl->AddLine(ImVec2(ccx - 4.5f, ccy), ImVec2(ccx - 1.5f, ccy + 3.5f), col, 2.0f);
+                dl->AddLine(ImVec2(ccx - 1.5f, ccy + 3.5f), ImVec2(ccx + 4.5f, ccy - 3.5f), col, 2.0f);
+            }
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Insert this suggestion");
+            // Tiny red x: drop it
             ImGui::SameLine();
             ImGui::PushStyleColor(ImGuiCol_Button,        IM_COL32(0, 0, 0, 0));
             ImGui::PushStyleColor(ImGuiCol_ButtonHovered, IM_COL32(160, 50, 50, 200));
@@ -476,6 +521,11 @@ void ui_complete_body(ToolCtx& c)
             ImGui::PopStyleColor(4);
             if (ImGui::IsItemHovered()) ImGui::SetTooltip("Remove this suggestion");
             ImGui::PopID();
+            if (accept_one) {
+                undo_push(c.undo, c.beatmap, c.lyricmap, c.sectionmap, c.miscmap, c.chordmap);
+                apply_cand(cand, c.beatmap, c.sectionmap, c.chordmap);
+                dismiss = true;
+            }
             if (dismiss) {
                 s_prop.cands.erase(s_prop.cands.begin() + i);
                 s_hover = -1;
