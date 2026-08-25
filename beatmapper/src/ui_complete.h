@@ -28,6 +28,11 @@ void ui_complete_auto_analyze(ToolCtx& c);
 void ui_complete_hotkey_analyze(ToolCtx& c);
 void ui_complete_hotkey_accept(ToolCtx& c);
 
+// True while the analysis worker thread is running.  The worker trains and
+// reads the shape singleton, so tools that touch it (Rhythm Map, the
+// detector's timbre pass) must hold off while this is set.
+bool ui_complete_analysis_running();
+
 // Call when the panel is not rendered this frame (drops the hover highlight).
 void ui_complete_hidden();
 

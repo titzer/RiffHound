@@ -19,6 +19,10 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
                         UndoStack* undo, SectionMap* sectionmap,
                         LyricMap* lyricmap, AutoBeatList* autobeat);
 
+// Drop per-track transient state (recorded taps, their smoothing preview,
+// strip selections, a lyric hold in progress).  Call when a new track loads.
+void ui_timeline_reset();
+
 // Lyric Index content (widgets only, no window).  Rendered by the tool dock
 // into the drawer or a floating window; shares selection state with the
 // timeline's lyric strip.

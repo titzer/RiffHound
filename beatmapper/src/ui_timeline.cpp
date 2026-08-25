@@ -16,6 +16,7 @@
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
+#include <algorithm>
 
 // --- helpers -----------------------------------------------------------
 
@@ -573,15 +574,34 @@ static void draw_complete_chords(ImDrawList* dl, const EditorState* editor,
 // mapped beats; outlined for beats the detector or Complete Track proposed.
 
 
+// The same physical hit is often classified by more than one pass (an onset
+// that is also a mapped beat; a proposed beat that lands on a detected one),
+// which used to stack near-identical boxes.  Marks whose time falls within
+// `sup_tol` of an entry in `suppress` (sorted times of every higher-priority
+// source) are skipped, so each instant shows one box from the best source.
+static bool timbre_time_near(const std::vector<double>& ts, double t, double tol) {
+    size_t lo = 0, hi = ts.size();
+    while (lo < hi) { size_t m = (lo + hi) / 2; if (ts[m] < t) lo = m + 1; else hi = m; }
+    if (lo < ts.size() && ts[lo] - t <= tol) return true;
+    if (lo > 0 && t - ts[lo - 1] <= tol)     return true;
+    return false;
+}
+
 static void draw_timbre_marks(ImDrawList* dl, const EditorState* editor,
                               const std::vector<ShapeMark>& marks, ShapeSource src,
-                              float ax, float ay, float aw, float ah, bool expanded)
+                              float ax, float ay, float aw, float ah, bool expanded,
+                              const std::vector<double>* suppress = nullptr,
+                              double sup_tol = 0.03)
 {
     float y0 = ay + 2.0f, y1 = ay + ah - 2.0f;
+    float last_x = -1e9f;   // marks are chronological: skip same-pixel repeats
     for (const ShapeMark& m : marks) {
         if (m.t + m.win < editor->view_start || m.t > editor->view_end) continue;
+        if (suppress && timbre_time_near(*suppress, m.t, sup_tol)) continue;
         float x0 = time_to_x(m.t,         editor->view_start, editor->view_end, ax, aw);
         float x1 = time_to_x(m.t + m.win, editor->view_start, editor->view_end, ax, aw);
+        if (x1 - x0 < 3.0f && x0 - last_x < 1.0f) continue;
+        last_x = x0;
         if (x1 - x0 < 1.5f) x1 = x0 + 1.5f;
         ImU32 base = ui_rhythm_shape_color(m.shape);
         ImU32 rgb = base & 0x00FFFFFF;
@@ -617,11 +637,24 @@ static void draw_timbre_marks(ImDrawList* dl, const EditorState* editor,
 static void draw_timbre_strip(ImDrawList* dl, const EditorState* editor,
                               float ax, float ay, float aw, float ah, bool expanded)
 {
+    // Priority per instant: mapped beat > proposed > detected > raw onset.
+    // Each lower layer is suppressed where a higher one marks the same time,
+    // so one hit gets one box instead of two or three stacked ones.
+    static std::vector<double> s_sup_beat, s_sup_bp, s_sup_bpd;
+    s_sup_beat.clear(); s_sup_bp.clear(); s_sup_bpd.clear();
+    for (const ShapeMark& m : shape_marks(SHAPE_SRC_BEAT))     s_sup_beat.push_back(m.t);
+    s_sup_bp = s_sup_beat;
+    for (const ShapeMark& m : shape_marks(SHAPE_SRC_PROPOSED)) s_sup_bp.push_back(m.t);
+    std::sort(s_sup_bp.begin(), s_sup_bp.end());
+    s_sup_bpd = s_sup_bp;
+    for (const ShapeMark& m : shape_marks(SHAPE_SRC_DETECTED)) s_sup_bpd.push_back(m.t);
+    std::sort(s_sup_bpd.begin(), s_sup_bpd.end());
+
     dl->PushClipRect(ImVec2(ax, ay), ImVec2(ax + aw, ay + ah), true);
-    draw_timbre_marks(dl, editor, shape_marks(SHAPE_SRC_ONSET),    SHAPE_SRC_ONSET,    ax, ay, aw, ah, expanded);
+    draw_timbre_marks(dl, editor, shape_marks(SHAPE_SRC_ONSET),    SHAPE_SRC_ONSET,    ax, ay, aw, ah, expanded, &s_sup_bpd);
     draw_timbre_marks(dl, editor, shape_marks(SHAPE_SRC_BEAT),     SHAPE_SRC_BEAT,     ax, ay, aw, ah, expanded);
-    draw_timbre_marks(dl, editor, shape_marks(SHAPE_SRC_PROPOSED), SHAPE_SRC_PROPOSED, ax, ay, aw, ah, expanded);
-    draw_timbre_marks(dl, editor, shape_marks(SHAPE_SRC_DETECTED), SHAPE_SRC_DETECTED, ax, ay, aw, ah, expanded);
+    draw_timbre_marks(dl, editor, shape_marks(SHAPE_SRC_PROPOSED), SHAPE_SRC_PROPOSED, ax, ay, aw, ah, expanded, &s_sup_beat);
+    draw_timbre_marks(dl, editor, shape_marks(SHAPE_SRC_DETECTED), SHAPE_SRC_DETECTED, ax, ay, aw, ah, expanded, &s_sup_bp);
     // Hover: which shape, how confident
     if (expanded) {
         ImVec2 mp = ImGui::GetIO().MousePos;
@@ -724,6 +757,14 @@ bool ui_timeline_lyric_hold_armed(const EditorState* editor, const AudioState* a
     if (s_lyr_hold_idx >= 0) return true;
     return audio->loaded && audio->playing && !editor->has_region &&
            first_unplaced_lyric(lyricmap, audio->duration) >= 0;
+}
+
+void ui_timeline_reset() {
+    s_tap_count     = 0;
+    s_tap_smooth_n  = 0;
+    s_last_tap_time = -1e9;
+    s_lyr_hold_idx  = -1;
+    s_lyr_selected  = -1;
 }
 
 static void tap_preview_update(const AutoBeatList* autobeat) {

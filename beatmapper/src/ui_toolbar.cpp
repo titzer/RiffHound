@@ -6,6 +6,7 @@
 #include "platform.h"
 #include "ui_beat_detector.h"
 #include "ui_complete.h"
+#include "ui_timeline.h"
 #include <string.h>
 #include <stdio.h>
 
@@ -245,6 +246,9 @@ void ui_toolbar_render(EditorState* editor, AudioState* audio, BeatMap* beatmap,
             if (!path || !path[0]) return;
             strncpy(s_file_buf, path, sizeof(s_file_buf) - 1);
             undo_clear(undo);
+            // Before the old PCM buffer is freed: waits out a Complete Track
+            // analysis worker that may still be reading it.
+            ui_complete_reset();
             audio_load(audio, editor, s_file_buf);
             char bm_path[512];
             beatmap_path_for_audio(s_file_buf, bm_path, sizeof(bm_path));
@@ -254,7 +258,7 @@ void ui_toolbar_render(EditorState* editor, AudioState* audio, BeatMap* beatmap,
             beatmap->dirty = false;
             editor->has_region = false;
             ui_beat_detector_reset(autobeat);
-            ui_complete_reset();
+            ui_timeline_reset();
             if (sectionmap->count > 0) panel_set_visible(editor, PANEL_SECTIONS, true);
             if (lyricmap->count   > 0) panel_set_visible(editor, PANEL_LYRICS,   true);
             if (miscmap->count    > 0) panel_set_visible(editor, PANEL_MISC,     true);

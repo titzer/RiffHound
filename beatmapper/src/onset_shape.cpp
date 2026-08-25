@@ -6,6 +6,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <algorithm>
+#include <mutex>
 
 void shape_params_defaults(ShapeParams* p) {
     p->k               = 5;
@@ -389,22 +390,39 @@ bool shape_analysis_ensure(ShapeAnalysis* sa, const AudioPcm& a, const BeatMap* 
 // Marks
 // ===========================================================================
 
-static std::vector<ShapeMark> s_marks[SHAPE_SRC_COUNT];
+// Marks are written by whichever thread runs an analysis (the Complete Track
+// background worker included) and read every frame by the UI.  Writers fill a
+// back buffer under the lock; the UI-thread getter swaps a dirty back buffer
+// in, so the reference it returns is only ever touched by the UI thread.
+static std::vector<ShapeMark> s_marks[SHAPE_SRC_COUNT];        // front: UI only
+static std::vector<ShapeMark> s_marks_back[SHAPE_SRC_COUNT];
+static bool                   s_marks_dirty[SHAPE_SRC_COUNT] = {};
+static std::mutex             s_marks_mu;
 
 void shape_marks_set(ShapeSource src, const std::vector<ShapeMark>& marks) {
     if (src < 0 || src >= SHAPE_SRC_COUNT) return;
-    s_marks[src] = marks;
+    std::lock_guard<std::mutex> lk(s_marks_mu);
+    s_marks_back[src]  = marks;
+    s_marks_dirty[src] = true;
 }
 void shape_marks_clear(ShapeSource src) {
     if (src < 0 || src >= SHAPE_SRC_COUNT) return;
-    s_marks[src].clear();
+    std::lock_guard<std::mutex> lk(s_marks_mu);
+    s_marks_back[src].clear();
+    s_marks_dirty[src] = true;
 }
 void shape_marks_clear_all() {
-    for (int i = 0; i < SHAPE_SRC_COUNT; i++) s_marks[i].clear();
+    for (int i = 0; i < SHAPE_SRC_COUNT; i++) shape_marks_clear((ShapeSource)i);
 }
 const std::vector<ShapeMark>& shape_marks(ShapeSource src) {
     static const std::vector<ShapeMark> empty;
     if (src < 0 || src >= SHAPE_SRC_COUNT) return empty;
+    std::lock_guard<std::mutex> lk(s_marks_mu);
+    if (s_marks_dirty[src]) {
+        s_marks[src].swap(s_marks_back[src]);
+        s_marks_back[src].clear();
+        s_marks_dirty[src] = false;
+    }
     return s_marks[src];
 }
 

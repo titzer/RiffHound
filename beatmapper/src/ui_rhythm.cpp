@@ -1,4 +1,5 @@
 #include "ui_rhythm.h"
+#include "ui_complete.h"
 #include "onset_shape.h"
 #include "beat_algo.h"
 #include "imgui.h"
@@ -61,6 +62,11 @@ void ui_rhythm_settings(ToolCtx& c)
 
 void ui_rhythm_body(ToolCtx& c)
 {
+    if (ui_complete_analysis_running()) {
+        // The Complete Track worker is training/reading the shape singleton.
+        ImGui::TextDisabled("Complete Track is analyzing\xe2\x80\xa6");
+        return;
+    }
     const ShapeAnalysis* sa = shape_track();
     ImGui::Checkbox("Timbre strip", &c.editor->show_timbre_strip);
     tip("Show the classified windows on the timeline");
@@ -118,7 +124,8 @@ void ui_rhythm_body(ToolCtx& c)
 void ui_rhythm_actions(ToolCtx& c)
 {
     float w = ImGui::GetContentRegionAvail().x;
-    bool loaded = c.audio->loaded && audio_pcm_data(c.audio, nullptr, nullptr, nullptr);
+    bool loaded = c.audio->loaded && audio_pcm_data(c.audio, nullptr, nullptr, nullptr) &&
+                  !ui_complete_analysis_running();
     if (!loaded) ImGui::BeginDisabled();
     ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.18f, 0.35f, 0.60f, 1.0f));
     ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.24f, 0.45f, 0.75f, 1.0f));

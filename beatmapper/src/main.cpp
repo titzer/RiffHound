@@ -20,6 +20,7 @@
 #include "beat_algo.h"
 #include "ui_dock.h"
 #include "ui_beat_detector.h"
+#include "ui_complete.h"
 #include "ui_help.h"
 #include "panels.h"
 #include "platform.h"
@@ -632,7 +633,9 @@ int main(int argc, char** argv) {
         window_size_save(fw, fh);
     }
 
-    // Cleanup
+    // Cleanup.  ui_complete_reset first: it joins a still-running analysis
+    // worker before the audio buffers it reads are freed.
+    ui_complete_reset();
     undo_shutdown(&undo);
     miscmap_shutdown(&miscmap);
     miscmap_shutdown(&chordmap);

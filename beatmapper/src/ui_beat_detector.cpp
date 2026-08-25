@@ -1,4 +1,5 @@
 #include "ui_beat_detector.h"
+#include "ui_complete.h"
 #include "imgui.h"
 #include <stdio.h>
 #include "onset_shape.h"
@@ -99,7 +100,9 @@ static void run_detection(EditorState* editor, AudioState* audio,
 
     // Timbre of each detected beat, against the track vocabulary when one
     // has been trained (else unclassified boxes that still show the window).
-    {
+    // Skipped while the Complete Track worker owns the shape singleton -- the
+    // classify pass reads the vocabulary the worker may be retraining.
+    if (!ui_complete_analysis_running()) {
         AudioPcm a = { pcm, frame_count, channels, sample_rate };
         double win = shape_track()->win;
         if (win <= 0.0) {

@@ -6,6 +6,9 @@
 #include <math.h>
 #include <string.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include <thread>
+#include <atomic>
 
 // ---------------------------------------------------------------------------
 // State
@@ -23,6 +26,76 @@ static bool             s_list_narrowed = false;
 static const ImU32 COL_DESEL = IM_COL32( 90, 200, 255,  60);
 static const ImU32 COL_SEL   = IM_COL32( 90, 200, 255, 170);
 static const ImU32 COL_HOVER = IM_COL32(255, 200,  90, 255);
+
+// ---------------------------------------------------------------------------
+// Background analysis
+// ---------------------------------------------------------------------------
+// complete_run can take seconds, so it runs on a worker thread against deep
+// snapshots of the maps (the UI stays free to edit the live ones).  The worker
+// writes s_wprop and s_cache only; the shape singleton and the shape-marks
+// store it also touches are read-guarded elsewhere (ui_complete_analysis_
+// running / the double-buffered marks).  Results are swapped in on the UI
+// thread once the worker signals done.
+static std::thread       s_worker;
+static std::atomic<bool> s_running{false};
+static std::atomic<bool> s_done{false};
+static CompleteProposal  s_wprop;          // worker-owned until swapped in
+static CompleteInputs    s_win;            // inputs the worker reads
+static CompleteParams    s_wp;             // params copy the worker reads
+static BeatMap           s_snap_bm;        // deep map snapshots for s_win
+static SectionMap        s_snap_sm;
+static MiscMap           s_snap_cm;
+static bool              s_snap_valid = false;
+
+static void snap_free() {
+    if (!s_snap_valid) return;
+    free(s_snap_bm.beats);    s_snap_bm.beats    = nullptr; s_snap_bm.count = 0;
+    free(s_snap_sm.sections); s_snap_sm.sections = nullptr; s_snap_sm.count = 0;
+    free(s_snap_cm.entries);  s_snap_cm.entries  = nullptr; s_snap_cm.count = 0;
+    s_snap_valid = false;
+}
+
+static void snap_maps(const BeatMap* bm, const SectionMap* sm, const MiscMap* cm) {
+    snap_free();
+    s_snap_bm = *bm;
+    s_snap_bm.beats = (Beat*)malloc((size_t)(bm->count > 0 ? bm->count : 1) * sizeof(Beat));
+    memcpy(s_snap_bm.beats, bm->beats, (size_t)bm->count * sizeof(Beat));
+    s_snap_bm.capacity = bm->count;
+    s_snap_sm = *sm;
+    s_snap_sm.sections = (Section*)malloc((size_t)(sm->count > 0 ? sm->count : 1) * sizeof(Section));
+    memcpy(s_snap_sm.sections, sm->sections, (size_t)sm->count * sizeof(Section));
+    s_snap_sm.capacity = sm->count;
+    s_snap_cm = *cm;
+    s_snap_cm.entries = (MiscAnnotation*)malloc((size_t)(cm->count > 0 ? cm->count : 1) * sizeof(MiscAnnotation));
+    memcpy(s_snap_cm.entries, cm->entries, (size_t)cm->count * sizeof(MiscAnnotation));
+    s_snap_cm.capacity = cm->count;
+    s_snap_valid = true;
+}
+
+bool ui_complete_analysis_running() { return s_running.load(std::memory_order_relaxed); }
+
+// Wait for the worker (used before anything the worker reads goes away, e.g.
+// the PCM buffer on a track load) and drop whatever it produced.
+static void worker_sync_discard() {
+    if (s_worker.joinable()) s_worker.join();
+    s_running.store(false);
+    s_done.store(false);
+    snap_free();
+}
+
+// UI-thread poll: land a finished analysis.
+static void worker_poll(EditorState* editor) {
+    if (!s_running.load() || !s_done.load()) return;
+    if (s_worker.joinable()) s_worker.join();
+    s_running.store(false);
+    s_done.store(false);
+    snap_free();
+    s_prop = std::move(s_wprop);
+    s_wprop = CompleteProposal();
+    s_have_prop = true;
+    s_hover = -1;
+    if (editor) editor->show_timbre_strip = true;
+}
 
 // ---------------------------------------------------------------------------
 // Public queries
@@ -43,9 +116,17 @@ unsigned int ui_complete_ghost_color(int idx) {
     return COL_DESEL;
 }
 
-void ui_complete_hidden() { s_visible = false; s_hover = -1; }
+void ui_complete_hidden() {
+    s_visible = false;
+    s_hover = -1;
+    worker_poll(nullptr);   // land a finished analysis even with the tool closed
+}
 
 void ui_complete_reset() {
+    // A worker may still be reading the PCM buffer and map snapshots; wait it
+    // out and drop its result before anything it reads goes away.
+    worker_sync_discard();
+    s_wprop = CompleteProposal();
     s_prop.beat_times.clear(); s_prop.beat_conf.clear();
     s_prop.chords.clear();     s_prop.cands.clear();
     s_prop.onsets.clear();
@@ -74,22 +155,30 @@ static void tip(const char* s) { if (ImGui::IsItemHovered()) ImGui::SetTooltip("
 static void run_analysis(EditorState* editor, AudioState* audio, BeatMap* beatmap,
                          SectionMap* sectionmap, MiscMap* chordmap)
 {
-    CompleteInputs in = {};
-    in.beatmap    = beatmap;
-    in.sectionmap = sectionmap;
-    in.chordmap   = chordmap;
-    in.audio.pcm  = audio_pcm_data(audio, &in.audio.frame_count, &in.audio.channels,
-                                   &in.audio.sample_rate);
-    in.duration   = audio->duration;
-    in.has_region = editor->has_region;
-    in.region_start = editor->region_start;
-    in.region_end   = editor->region_end;
+    if (s_running.load()) return;         // one analysis at a time
+    if (s_worker.joinable()) s_worker.join();
+
+    snap_maps(beatmap, sectionmap, chordmap);
+    s_win = {};
+    s_win.beatmap    = &s_snap_bm;
+    s_win.sectionmap = &s_snap_sm;
+    s_win.chordmap   = &s_snap_cm;
+    s_win.audio.pcm  = audio_pcm_data(audio, &s_win.audio.frame_count,
+                                      &s_win.audio.channels, &s_win.audio.sample_rate);
+    s_win.duration   = audio->duration;
+    s_win.has_region = editor->has_region;
+    s_win.region_start = editor->region_start;
+    s_win.region_end   = editor->region_end;
     s_p.shape = *shape_params();          // the Rhythm Map tool owns these
-    complete_run(in, s_p, &s_cache, &s_prop);
-    s_have_prop = true;
+    s_wp = s_p;                           // the worker reads its own copy
     editor->show_timbre_strip = true;
     editor->show_beat_group   = true;   // the ghosts land in these strips
-    s_hover = -1;
+    s_done.store(false);
+    s_running.store(true);
+    s_worker = std::thread([] {
+        complete_run(s_win, s_wp, &s_cache, &s_wprop);
+        s_done.store(true);
+    });
 }
 
 // Insert one candidate into the map (no undo handling here).
@@ -398,7 +487,10 @@ void ui_complete_settings(ToolCtx& c)
                 s_p.chroma.attack_frac = pct / 100.0f;
         }
         tip("The larger of the two skips applies (never more than half the beat)");
-        ImGui::TextDisabled("%d beat intervals cached", (int)s_cache.entries.size());
+        if (s_running.load())
+            ImGui::TextDisabled("(analyzing)");
+        else
+            ImGui::TextDisabled("%d beat intervals cached", (int)s_cache.entries.size());
         ImGui::Unindent(6.0f);
     }
 
@@ -411,6 +503,7 @@ void ui_complete_body(ToolCtx& c)
     BeatMap*     beatmap = c.beatmap;
     s_visible = true;
     s_hover   = -1;
+    worker_poll(editor);
 
     ImGui::Checkbox("Beats", &s_p.do_beats);
     tip("Fill unmapped stretches: transfer a matching mapped stretch, or continue the tempo");
@@ -421,12 +514,16 @@ void ui_complete_body(ToolCtx& c)
     ImGui::Checkbox("Chords", &s_p.do_chords);
     tip("Borrow chord charts from matching sections and repeated progressions");
 
+    if (s_running.load())
+        ImGui::TextColored(ImVec4(0.55f, 0.75f, 1.0f, 1.0f),
+                           "Analyzing in the background\xe2\x80\xa6");
     if (s_have_prop) {
         ImGui::TextWrapped("%s", s_prop.status);
     } else {
-        ImGui::TextDisabled(beatmap->count >= 4
-            ? "Analyze to propose beats, sections and chords for the unmapped parts."
-            : "Map a verse or a chorus first; the tool repeats what you have.");
+        if (!s_running.load())
+            ImGui::TextDisabled(beatmap->count >= 4
+                ? "Analyze to propose beats, sections and chords for the unmapped parts."
+                : "Map a verse or a chorus first; the tool repeats what you have.");
         return;
     }
 
@@ -548,15 +645,18 @@ void ui_complete_actions(ToolCtx& c)
     float sp = ImGui::GetStyle().ItemSpacing.x;
     bool loaded = c.audio->loaded && audio_pcm_data(c.audio, nullptr, nullptr, nullptr);
 
-    // Row 1: Analyze
-    if (!loaded) ImGui::BeginDisabled();
+    // Row 1: Analyze (runs on a background thread; the button waits it out)
+    bool busy = s_running.load();
+    if (!loaded || busy) ImGui::BeginDisabled();
     ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.18f, 0.35f, 0.60f, 1.0f));
     ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.24f, 0.45f, 0.75f, 1.0f));
     ImGui::PushStyleColor(ImGuiCol_ButtonActive,  ImVec4(0.30f, 0.55f, 0.85f, 1.0f));
-    if (ImGui::Button(editor->has_region ? "Analyze region" : "Analyze track", ImVec2(avail_w, 0)))
+    if (ImGui::Button(busy ? "Analyzing\xe2\x80\xa6"
+                           : editor->has_region ? "Analyze region" : "Analyze track",
+                      ImVec2(avail_w, 0)))
         run_analysis(editor, c.audio, c.beatmap, c.sectionmap, c.chordmap);
     ImGui::PopStyleColor(3);
-    if (!loaded) ImGui::EndDisabled();
+    if (!loaded || busy) ImGui::EndDisabled();
     tip(editor->has_region
         ? "Fill only gaps inside the selected region; list only matches that fit it"
         : "Fill every unmapped stretch of the track.  Select a region first to restrict it.");
@@ -576,7 +676,9 @@ void ui_complete_actions(ToolCtx& c)
             if (ui_complete_cand_listed(i)) s_prop.cands[i].selected = false;
     tip("Then tick them one at a time");
     ImGui::SameLine();
+    if (busy) ImGui::BeginDisabled();   // reset would block on the worker
     if (ImGui::Button("Discard", ImVec2(w3, 0))) ui_complete_reset();
+    if (busy) ImGui::EndDisabled();
     tip("Drop every proposal");
 
     // Row 3: second-stage smoothing
