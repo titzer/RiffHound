@@ -85,7 +85,7 @@ snap policy, the driver is shared.
 - *Chroma transfer* scores a placement (template, start, stretch) by the mean
   cosine between the template's per-beat chroma and a chroma frame grid
   across the gap, times a coverage factor, minus `warp_weight` × |stretch - 1|.
-- *Rhythm-shape transfer* (default) adds `rhythm_weight` × a rhythm score:
+- *Rhythm-shape transfer* adds `rhythm_weight` × a rhythm score:
   for each template slot that expects a hit, is there an onset of that shape
   in the corresponding slot of the gap (±1 slot)?  Matches add, missing
   expected hits and loud unexpected ones subtract.  The rhythm term is
@@ -94,8 +94,26 @@ snap policy, the driver is shared.
   as a bonus so a passage whose drum pattern differs from the template still
   transfers on chroma alone.  Its snap policy prefers onsets of the shape the
   slot expects, falling back to the nearest onset.
+- *Anchor + region growing* (default) replaces the greedy left-to-right chain
+  with many anchors grown outward (automation.md §5): template placements
+  scored anywhere in the gap (phase-refined, kept by non-maximum
+  suppression), periodicity-supported onsets seeding long template-less
+  stretches, and the gap's mapped edges.  Regions grow beat by beat both
+  ways -- onset-snapped, tempo leashed to the edges' periods -- and where
+  two regions meet, the space is bridged and a bridge far from a whole
+  number of beats is flagged `[grid break?]` (a real tempo discontinuity
+  stays visible instead of dragging everything after it).  Several anchor
+  *scenarios* -- including the plain greedy chain -- are run to complete
+  outcomes and ranked by an outcome score (onset support weighted by the
+  track's on-beat shape prior, template placement quality, tempo smoothness,
+  half-beat flips, period sanity); the best finished result wins, so
+  choosing a strategy is never committing to it.  On the 25-track library
+  this recovers the greedy chain's wins verbatim and adds large gains where
+  the chain drifted (Proud Mary 128 → 226 hits, Save Tonight 201 → 318,
+  Margaritaville 272 → 350 on the drop-50 scenario).
 
-**The fill.**  Greedy, left to right from the gap's left anchor.  At each
+**The greedy fill** (strategies 1-2, and one ranked candidate of strategy 3).
+Left to right from the gap's left anchor.  At each
 position the best (template × stretch ∈ ±8 %, 7 steps × start) is taken if
 its score clears `beat_sim_threshold` (0.55); the template may start up to
 `lookahead_beats` (4) whole beats ahead, paying `lookahead_penalty` per beat,

@@ -726,6 +726,11 @@ static const ImU32 s_sec_border[SK_COUNT] = {
 // tool (which may render inside the dock drawer or a floating window).
 static int s_lyr_selected = -1;
 
+// Shift+click fill: the mouse wheel bumps the number of inserted beats while
+// the preview shows; reset when the anchor beat changes or after a fill.
+static int    s_fill_extra      = 0;
+static double s_fill_anchor_key = -1e300;
+
 // --- Tap strip data ---
 static const int MAX_TAPS = 1024;
 struct TapEntry { double time; bool selected; };
@@ -1193,6 +1198,8 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
                     fill_t1 = t_place;
                     fill_t2 = beatmap->beats[near].time;
                 }
+                // Anchor identity, read before the insertion shifts indices.
+                double fill_akey = beatmap->beats[near].time;
                 // Snap the clicked position itself to nearest onset if feature is on.
                 if (editor->snap_interp_to_onsets && fill_bpm > 0.0) {
                     // Ensure onsets cover the fill range; run detection if needed.
@@ -1202,10 +1209,13 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
                 }
                 beatmap_add(beatmap, t_place);
                 if (fill_bpm > 0.0) {
+                    // Count as previewed: the wheel may have adjusted it.
+                    int n = (int)round((fill_t2 - fill_t1) * fill_bpm / 60.0);
+                    if (fill_akey == s_fill_anchor_key) n += s_fill_extra;
+                    if (n < 1) n = 1;
                     if (editor->snap_interp_to_onsets) {
                         // Inline fill with per-position onset snapping.
                         double snap_win = 0.20 * 60.0 / fill_bpm;
-                        int n = (int)round((fill_t2 - fill_t1) * fill_bpm / 60.0);
                         for (int k = 1; k < n; k++) {
                             double gt = fill_t1 + (fill_t2 - fill_t1) * k / n;
                             gt = snap_to_onset(gt, autobeat, snap_win);
@@ -1213,8 +1223,11 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
                             if (idx >= 0) beatmap->beats[idx].interp = true;
                         }
                     } else {
-                        beatmap_fill(beatmap, fill_t1, fill_t2, fill_bpm);
+                        beatmap_fill(beatmap, fill_t1, fill_t2,
+                                     60.0 * n / std::max(1e-6, fill_t2 - fill_t1));
                     }
+                    s_fill_extra = 0;
+                    s_fill_anchor_key = -1e300;
                 }
             } else {
                 beatmap_add(beatmap, t_place);
@@ -2478,6 +2491,22 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
                     int n_fill = (fill_bpm > 0.0 && fill_t2 > fill_t1 + 1e-6)
                                  ? (int)round((fill_t2 - fill_t1) * fill_bpm / 60.0) : 0;
 
+                    // The anchored beat identifies this fill; the wheel bumps
+                    // the inserted count while the preview is showing.
+                    {
+                        double akey = beatmap->beats[near].time;
+                        if (akey != s_fill_anchor_key) {
+                            s_fill_anchor_key = akey;
+                            s_fill_extra = 0;
+                        }
+                        if (io.MouseWheel != 0.0f && !io.KeyCtrl)
+                            s_fill_extra += io.MouseWheel > 0.0f ? 1 : -1;
+                        if (n_fill > 0) {
+                            n_fill += s_fill_extra;
+                            if (n_fill < 1) { s_fill_extra += 1 - n_fill; n_fill = 1; }
+                        }
+                    }
+
                     // Endpoint diamond in placement strip (highlighted to signal shift mode)
                     {
                         ImVec2 pts[4] = {
@@ -2522,14 +2551,53 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
                         }
                         dl->PopClipRect();
 
-                        // BPM label
-                        char bpm_buf[32];
-                        snprintf(bpm_buf, sizeof(bpm_buf), "%.1f bpm", fill_bpm);
+                        // BPM label: effective tempo for the count being
+                        // inserted, the count itself, and a wheel hint once
+                        // it has been adjusted.
+                        char bpm_buf[48];
+                        double eff_bpm = 60.0 * n_fill / std::max(1e-6, fill_t2 - fill_t1);
+                        snprintf(bpm_buf, sizeof(bpm_buf), "%.1f bpm \xc3\x97%d%s",
+                                 eff_bpm, n_fill, s_fill_extra ? " (wheel)" : "");
                         ImVec2 ts = ImGui::CalcTextSize(bpm_buf);
                         float  lx = phx + r + 4.0f;
                         if (lx + ts.x <= ps_x + ps_w)
                             dl->AddText(ImVec2(lx, phy - ts.y * 0.5f),
                                         IM_COL32(160, 255, 200, 200), bpm_buf);
+                    }
+
+                    // Dead reckoning: where beats land stepping strictly at the
+                    // anchor's instantaneous tempo, no stretching.  Amber and on
+                    // a lower row than the green even-fill markers, so the
+                    // horizontal gap between an amber and a green diamond shows
+                    // how much the tempo rushes or drags across the fill.
+                    if (fill_bpm > 0.0) {
+                        double period = 60.0 / fill_bpm;
+                        if (fill_t2 - fill_t1 > 0.6 * period) {
+                            const ImU32 DR_LINE = IM_COL32(255, 190, 60, 55);
+                            const ImU32 DR_DIA  = IM_COL32(255, 190, 60, 210);
+                            bool  anchor_left = (near < ins);
+                            float cy = ba_y + 0.72f * ba_h;
+                            float rr = DIAMOND_R_INTERP - 1.0f;
+                            for (int k = 1; k <= 512; k++) {
+                                double t = anchor_left ? fill_t1 + k * period
+                                                       : fill_t2 - k * period;
+                                if (anchor_left ? (t > fill_t2 - 0.25 * period)
+                                                : (t < fill_t1 + 0.25 * period)) break;
+                                float sx = time_to_x(t, editor->view_start, editor->view_end, tx, tw);
+                                if (sx >= tx && sx <= tx + tw)
+                                    dl->AddLine(ImVec2(sx, ty), ImVec2(sx, ty + th), DR_LINE, 1.0f);
+                                float bx = time_to_x(t, editor->view_start, editor->view_end, ba_x, ba_w);
+                                if (bx >= ba_x - 8.0f && bx <= ba_x + ba_w + 8.0f && ba_h > 8.0f) {
+                                    ImVec2 pts[4] = {
+                                        { bx,      cy - rr },
+                                        { bx + rr, cy      },
+                                        { bx,      cy + rr },
+                                        { bx - rr, cy      },
+                                    };
+                                    dl->AddPolyline(pts, 4, DR_DIA, ImDrawFlags_Closed, 1.2f);
+                                }
+                            }
+                        }
                     }
                 } else {
                     // --- Normal hover: single outline diamond + instantaneous BPM labels ---
@@ -3379,8 +3447,9 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
         float bpm_w   = 88.0f;
         float count_w = 72.0f;
         float btn_w   = 46.0f;
+        float pm_w    = 20.0f;   // the -/+ count buttons
         float sp      = ImGui::GetStyle().ItemSpacing.x;
-        float panel_w = bpm_w + sp + count_w + sp + btn_w;
+        float panel_w = bpm_w + sp + pm_w + sp + count_w + sp + pm_w + sp + btn_w;
         float px      = mid_x - panel_w * 0.5f;
         if (px < ba_x + 4)             px = ba_x + 4;
         if (px + panel_w > ba_x + ba_w - 4) px = ba_x + ba_w - 4 - panel_w;
@@ -3431,12 +3500,21 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
         }
         ImGui::SameLine();
 
-        // Count drag — editing count recomputes BPM
-        ImGui::SetNextItemWidth(count_w);
-        if (ImGui::DragInt("##ctx_count", &s_ctx_count, 0.2f, 1, 999, "%d beats")) {
-            if (s_ctx_count < 1) s_ctx_count = 1;
+        // Count: -/+ buttons around a drag — editing count recomputes BPM
+        auto ctx_set_count = [&](int nc) {
+            s_ctx_count = nc < 1 ? 1 : nc;
             s_ctx_bpm = (dt > 1e-6) ? (float)(60.0 * (s_ctx_count + 1) / dt) : s_ctx_bpm;
-        }
+        };
+        if (ImGui::Button("-##ctxm", ImVec2(pm_w, 0))) ctx_set_count(s_ctx_count - 1);
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("One beat fewer");
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(count_w);
+        if (ImGui::DragInt("##ctx_count", &s_ctx_count, 0.2f, 1, 999, "%d beats"))
+            ctx_set_count(s_ctx_count);
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Beats to insert (drag, or the -/+ buttons)");
+        ImGui::SameLine();
+        if (ImGui::Button("+##ctxp", ImVec2(pm_w, 0))) ctx_set_count(s_ctx_count + 1);
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("One beat more");
         ImGui::SameLine();
 
         if (ImGui::Button("Fill##ctx", ImVec2(btn_w, 0))) {

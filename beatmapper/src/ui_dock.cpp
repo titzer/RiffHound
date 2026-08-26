@@ -55,6 +55,7 @@ static void beats_body(ToolCtx& c) {
 static void beats_actions(ToolCtx& c) {
     ui_beat_detector_actions(c);
     ui_smoothing_actions(c);
+    ui_beats_edit_actions(c);
 }
 
 struct ToolDesc {
@@ -65,7 +66,7 @@ struct ToolDesc {
 };
 static const ToolDesc TOOLS[DOCK_TOOL_COUNT] = {
     { "Chroma Analyzer", ui_chroma_settings,   ui_chroma_body,   nullptr,             0, false },
-    { "Beats",           beats_settings,       beats_body,       beats_actions,       3, true  },
+    { "Beats",           beats_settings,       beats_body,       beats_actions,       5, true  },
     { "Lyric Index",     nullptr,              lyrics_body,      nullptr,             0, false },
     { "Complete Track",  ui_complete_settings, ui_complete_body, ui_complete_actions, 4, false },
     { "Rhythm Map",      ui_rhythm_settings,   ui_rhythm_body,   ui_rhythm_actions,   1, true  },

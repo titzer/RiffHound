@@ -146,6 +146,10 @@ run on the background worker like the Complete Track analysis now does).
 
 ## 5. Beat tracking: anchor beats and region growing
 
+*Status: first implementation shipped as the Complete Track tool's default
+gap-fill strategy ("Anchor + region growing"); the greedy chain competes as
+one of the ranked outcome candidates.  See complete-track.md.*
+
 The single most important fix.  The greedy left-to-right decode is the known
 weakness: one bad handoff and everything after it drifts (documented in the
 bench results: 189/205 hits on one hidden stretch, 117/246 on another, same

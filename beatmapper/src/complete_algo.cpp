@@ -25,7 +25,7 @@ void complete_params_defaults(CompleteParams* p) {
     p->lookahead_penalty  = 0.10f;     // ... if it beats the immediate option by this much per beat
     p->beat_sim_threshold = 0.55f;
     p->beat_algo_idx      = 0;
-    p->fill_algo_idx      = 1;         // rhythm-shape transfer
+    p->fill_algo_idx      = 2;         // anchor + region growing
     p->rhythm_weight      = 1.0f;
     p->miss_penalty       = 0.15f;
     p->extra_penalty      = 0.15f;
@@ -369,6 +369,7 @@ struct FillCtx {
     std::vector<double>          onsets;   // detector onsets across the gap (sorted)
     std::vector<double>          det;      // detector's own beat grid (seeded, tempo-following)
     int                          so0, so1; // shape-onset index range covering the gap
+    std::vector<float>           beat_prior; // on-beat shape prior (unit length), for ranking
 };
 
 // The beat one step after `pos`: the detector's next beat when it has one in
@@ -378,6 +379,13 @@ static double next_grid_beat(const FillCtx& ctx, double pos, double per) {
     auto it = std::upper_bound(ctx.det.begin(), ctx.det.end(), pos + 0.6 * per);
     if (it != ctx.det.end() && *it <= pos + 1.4 * per) return *it;
     return pos + per;
+}
+
+// Mirror image, for growing a region leftward.
+static double prev_grid_beat(const FillCtx& ctx, double pos, double per) {
+    auto it = std::lower_bound(ctx.det.begin(), ctx.det.end(), pos - 0.6 * per);
+    if (it != ctx.det.begin() && *(it - 1) >= pos - 1.4 * per) return *(it - 1);
+    return pos - per;
 }
 
 struct PlaceScore { float sim, rhythm, score; };
@@ -562,6 +570,12 @@ const BeatFillAlgo BEAT_FILL_ALGOS[] = {
       "(which shape hits on which sub-beat) plus chroma, and snap beats to onsets of the\n"
       "expected shape",
       rhythm_prepare, rhythm_place, rhythm_snap },
+    { "Anchor + region growing",
+      "Grow the beat grid outward from high-confidence anchors -- strong template matches,\n"
+      "the gap's edges, and periodicity-supported onsets -- then reconcile where regions\n"
+      "meet, instead of one greedy left-to-right chain.  Several anchor scenarios are\n"
+      "grown to complete outcomes and the best-scoring result wins.",
+      rhythm_prepare, rhythm_place, rhythm_snap },
 };
 const int BEAT_FILL_ALGO_COUNT = (int)(sizeof(BEAT_FILL_ALGOS) / sizeof(BEAT_FILL_ALGOS[0]));
 
@@ -633,10 +647,11 @@ static Fit best_fit_at(const FillCtx& ctx, const BeatFillAlgo& algo,
 
 // One stretch of proposed beats inside a gap, before snapping/smoothing.
 struct Segment {
-    int    tmpl;          // -1 = tempo fill
+    int    tmpl;          // >= 0 template; -1 tempo fill / bridge; -2 grown from an anchor
     double r;
     float  sim, rhythm, score;
     int    first, n;      // into the gap's beat list
+    bool   seam = false;  // bridge between regions that disagree in phase (grid break?)
 };
 
 static void detect_onsets(const CompleteInputs& in, const CompleteParams& p,
@@ -678,6 +693,509 @@ static void detect_onsets(const CompleteInputs& in, const CompleteParams& p,
     std::sort(det_beats->begin(), det_beats->end());
 }
 
+// ===========================================================================
+// Anchor beats + region growing (automation.md §5)
+// ===========================================================================
+//
+// Instead of one greedy left-to-right chain, the gap is filled from many
+// high-confidence anchors grown outward:
+//   - anchor regions: template placements scored anywhere in the gap, kept by
+//     non-maximum suppression;
+//   - anchor beats: onsets with strong periodic support, seeding stretches no
+//     other anchor covers;
+//   - the gap's edges, which are mapped beats and so anchors of confidence 1.
+// Regions grow beat by beat both ways, snapping to onsets and losing
+// confidence where the audio offers none.  Where two regions meet, the seam
+// is reconciled: the space between is bridged with evenly spaced beats (the
+// shared redistribution pass then splits the residual), and a bridge whose
+// length is far from a whole number of beats is flagged as a possible grid
+// break -- a genuine tempo discontinuity stays visible instead of dragging
+// everything after it.
+//
+// Several anchor *scenarios* (which anchors to trust) are grown to complete
+// outcomes and the finished results ranked -- choosing is not committing;
+// the growth is cheap enough to try alternatives and keep the best.
+
+// Template placement at a fixed position: no sub-beat jitter, no lookahead.
+static Fit anchor_fit_at(const FillCtx& ctx, const BeatFillAlgo& algo,
+                         double pos, double gap_end)
+{
+    const CompleteParams& p = *ctx.p;
+    Fit best; best.tmpl = -1; best.score = -1.0f; best.sim = 0; best.rhythm = 0;
+    best.fitted = 0; best.start = pos; best.r = 1.0;
+    int ws = p.warp_steps < 1 ? 1 : p.warp_steps;
+    for (size_t ti = 0; ti < ctx.tm->size(); ti++) {
+        const Template& t = (*ctx.tm)[ti];
+        int n_int = (int)t.off.size() - 1;
+        if (n_int < 1) continue;
+        for (int wi = 0; wi < ws; wi++) {
+            double r = (ws == 1) ? 1.0 : 1.0 - p.max_warp + 2.0 * p.max_warp * wi / (ws - 1);
+            int fitted = 0;
+            for (int k = 0; k < n_int; k++) {
+                if (pos + r * t.off[k + 1] <= gap_end + 0.5 * ctx.period) fitted = k + 1;
+                else break;
+            }
+            int need = std::max(p.min_template_beats - 1, (n_int + 1) / 2);
+            if (fitted < need) continue;
+            PlaceScore ps;
+            if (!algo.place(ctx, t, pos, r, fitted, &ps)) continue;
+            if (ps.score > best.score) {
+                best.tmpl = (int)ti; best.start = pos; best.r = r;
+                best.fitted = fitted; best.sim = ps.sim; best.rhythm = ps.rhythm;
+                best.score = ps.score;
+            }
+        }
+    }
+    return best;
+}
+
+// One grown region: an anchored core (template beats, a periodicity-supported
+// onset, or a gap edge) plus the beats grown outward from it.
+struct GrowRegion {
+    std::vector<double> bt;      // beats, sorted
+    std::vector<int>    bk;      // template beat index per beat (-1 = grown)
+    int    tmpl = -1;            // >= 0: template anchor region
+    double r = 1.0;
+    float  sim = 0, rhythm = 0, score = 0;
+    int    left_ext = 0;         // grown beats beyond the anchored core, per side
+    int    right_ext = 0;
+    double fl = 0, fr = 0;       // frontier times (the anchor position when empty)
+    double per_l = 0, per_r = 0; // frontier periods
+    float  conf_l = 0, conf_r = 0;
+    bool   done_l = false, done_r = false;
+};
+
+// Which anchors a growth run trusts.
+struct AnchorScenario {
+    const char* name;
+    bool  templates;      // use template anchor regions
+    bool  onset_anchors;  // seed uncovered stretches from periodic onsets
+    float thr_bonus;      // added to the template acceptance threshold
+    int   skip_best;      // ignore the N best template fits (alternate tiling)
+};
+
+static void anchor_grow_propose(FillCtx& ctx, const BeatFillAlgo& algo,
+                                const std::vector<Template>& tm,
+                                const std::vector<Fit>& fits_sorted,
+                                const AnchorScenario& sc,
+                                std::vector<double>* beats, std::vector<int>* beat_tmpl,
+                                std::vector<int>* beat_k, std::vector<Segment>* segs,
+                                float* seam_acc)
+{
+    *seam_acc = 0.0f;
+    const CompleteParams& p = *ctx.p;
+    const Gap& g = ctx.gap;
+    const double period = ctx.period;
+    const double win = std::max(1e-6, p.onset_window * period);
+    std::vector<GrowRegion> regs;
+
+    auto local_per = [&](double t) {
+        double frac = (t - g.t0) / std::max(1e-6, g.t1 - g.t0);
+        double per  = g.period_l + (g.period_r - g.period_l) * frac;
+        return per > 0 ? per : period;
+    };
+
+    // --- Edge anchors: the gap's bounding mapped beats, confidence 1 ---
+    if (g.has_l) {
+        GrowRegion R; R.fl = R.fr = g.t0;
+        R.per_l = R.per_r = g.period_l > 0 ? g.period_l : period;
+        R.conf_l = R.conf_r = 1.0f; R.done_l = true;
+        regs.push_back(R);
+    }
+    if (g.has_r) {
+        GrowRegion R; R.fl = R.fr = g.t1;
+        R.per_l = R.per_r = g.period_r > 0 ? g.period_r : period;
+        R.conf_l = R.conf_r = 1.0f; R.done_r = true;
+        regs.push_back(R);
+    }
+
+    // --- Template anchor regions, by non-maximum suppression on score ---
+    if (sc.templates) {
+        int skipped = 0;
+        for (const Fit& f : fits_sorted) {
+            if (f.score < p.beat_sim_threshold + sc.thr_bonus) continue;
+            if (skipped < sc.skip_best) { skipped++; continue; }
+            const Template& t = tm[f.tmpl];
+            double f0 = f.start, f1 = f.start + f.r * t.off[f.fitted];
+            bool clash = false;
+            for (const GrowRegion& R : regs) {
+                if (R.fr <= R.fl) continue;                  // edge anchors: no span
+                double o = std::min(f1, R.fr) - std::max(f0, R.fl);
+                if (o > 0.2 * (f1 - f0)) { clash = true; break; }
+            }
+            if (clash) continue;
+            GrowRegion R;
+            R.tmpl = f.tmpl; R.r = f.r; R.sim = f.sim; R.rhythm = f.rhythm;
+            R.score = std::max(0.0f, std::min(1.0f, f.score));
+            double lo = g.has_l ? g.t0 + 0.4 * period : g.t0 - 1e-9;
+            double hi = g.has_r ? g.t1 - 0.4 * period : g.t1 + 1e-9;
+            for (int k = 0; k <= f.fitted; k++) {
+                double bt = f.start + f.r * t.off[k];
+                if (bt < lo) continue;
+                if (bt > hi) break;
+                R.bt.push_back(bt); R.bk.push_back(k);
+            }
+            if ((int)R.bt.size() < 2) continue;
+            int n_int = (int)t.off.size() - 1;
+            double per_t = n_int > 0 ? f.r * t.off[n_int] / n_int : period;
+            R.fl = R.bt.front(); R.fr = R.bt.back();
+            R.per_l = R.per_r = per_t > 0 ? per_t : period;
+            R.conf_l = R.conf_r = 0.5f + 0.4f * R.score;
+            regs.push_back(R);
+        }
+    }
+
+    // --- Onset anchor beats: periodicity-supported onsets seeding stretches
+    // no other anchor covers ---
+    if (sc.onset_anchors) {
+        std::vector<std::pair<double, double>> covered;
+        for (const GrowRegion& R : regs) covered.push_back({ R.fl, R.fr });
+        std::sort(covered.begin(), covered.end());
+        auto seed_stretch = [&](double a, double b) {
+            if (b - a < 8.0 * period) return;
+            struct OA { double t; int support; };
+            std::vector<OA> cands;
+            for (double o : ctx.onsets) {
+                if (o < a + 2.0 * period || o > b - 2.0 * period) continue;
+                double per_u = local_per(o);
+                int sup = 0;
+                for (int m = -2; m <= 2; m++) {
+                    if (!m) continue;
+                    bool fnd;
+                    nearest_onset(ctx.onsets, o + m * per_u, 0.15 * per_u, &fnd);
+                    if (fnd) sup++;
+                }
+                // Prefer onsets the detector also called a beat: the seed
+                // then carries a phase, not just a period.
+                bool on_det;
+                nearest_onset(ctx.det, o, 0.2 * per_u, &on_det);
+                if (on_det) sup += 2;
+                if (sup >= 3) cands.push_back({ o, sup });
+            }
+            std::sort(cands.begin(), cands.end(),
+                      [](const OA& x, const OA& y) { return x.support > y.support; });
+            std::vector<double> placed;
+            for (const OA& oa : cands) {
+                bool near = false;
+                for (double q : placed)
+                    if (fabs(q - oa.t) < 6.0 * period) { near = true; break; }
+                if (near) continue;
+                placed.push_back(oa.t);
+                GrowRegion R;
+                R.bt.push_back(oa.t); R.bk.push_back(-1);
+                R.fl = R.fr = oa.t;
+                R.per_l = R.per_r = local_per(oa.t);
+                R.conf_l = R.conf_r = std::min(0.75f, 0.55f + 0.05f * (oa.support - 3));
+                regs.push_back(R);
+            }
+        };
+        double u0 = g.t0;
+        for (const auto& c : covered) {
+            if (c.first > u0) seed_stretch(u0, c.first);
+            u0 = std::max(u0, c.second);
+        }
+        seed_stretch(u0, g.t1);
+    }
+
+    // --- Region growing: every open frontier extends one beat per round,
+    // snapping to onsets, until it runs out of confidence, hits a bound, or
+    // reaches another region's territory ---
+    auto blocked = [&](const GrowRegion* self, double t) {
+        for (const GrowRegion& R : regs) {
+            if (&R == self) continue;
+            if (t >= R.fl - 0.55 * period && t <= R.fr + 0.55 * period) return true;
+        }
+        return false;
+    };
+    bool any = true;
+    int  guard = 0;
+    while (any && guard++ < 4000) {
+        any = false;
+        for (GrowRegion& R : regs) {
+            if (!R.done_r) {
+                double per  = R.per_r > 0 ? R.per_r : period;
+                double pred = p.grid_follow ? next_grid_beat(ctx, R.fr, per) : R.fr + per;
+                if (pred < R.fr + 0.5 * per) pred = R.fr + per;
+                double hi = g.has_r ? g.t1 - 0.5 * period : g.t1 + 1e-9;
+                if (pred > hi || blocked(&R, pred)) {
+                    R.done_r = true;
+                } else {
+                    bool found;
+                    double sn = algo.snap(ctx, nullptr, -1, pred, &found);
+                    double nb; float c = R.conf_r;
+                    if (found) {
+                        double dist = fabs(sn - pred) / win;
+                        nb = pred + p.onset_weight * (sn - pred);
+                        c  = 0.6f * c + 0.4f * (float)(1.0 - 0.5 * std::min(1.0, dist));
+                        // Track tempo, but leashed to the edges' period: an
+                        // eighth-note-dense detector grid must not walk the
+                        // period down step by step.
+                        double lp = local_per(nb);
+                        R.per_r = std::min(1.25 * lp, std::max(0.8 * lp,
+                                           0.75 * per + 0.25 * (nb - R.fr)));
+                    } else {
+                        nb = pred; c *= 0.78f;
+                    }
+                    if (nb <= R.fr + 0.4 * per) {
+                        R.done_r = true;
+                    } else {
+                        R.bt.push_back(nb); R.bk.push_back(-1);
+                        if (R.tmpl >= 0) R.right_ext++;
+                        R.fr = nb; R.conf_r = c; any = true;
+                    }
+                }
+            }
+            if (!R.done_l) {
+                double per  = R.per_l > 0 ? R.per_l : period;
+                double pred = p.grid_follow ? prev_grid_beat(ctx, R.fl, per) : R.fl - per;
+                if (pred > R.fl - 0.5 * per) pred = R.fl - per;
+                double lo = g.has_l ? g.t0 + 0.5 * period : g.t0 - 1e-9;
+                if (pred < lo || blocked(&R, pred)) {
+                    R.done_l = true;
+                } else {
+                    bool found;
+                    double sn = algo.snap(ctx, nullptr, -1, pred, &found);
+                    double nb; float c = R.conf_l;
+                    if (found) {
+                        double dist = fabs(sn - pred) / win;
+                        nb = pred + p.onset_weight * (sn - pred);
+                        c  = 0.6f * c + 0.4f * (float)(1.0 - 0.5 * std::min(1.0, dist));
+                        double lp = local_per(nb);
+                        R.per_l = std::min(1.25 * lp, std::max(0.8 * lp,
+                                           0.75 * per + 0.25 * (R.fl - nb)));
+                    } else {
+                        nb = pred; c *= 0.78f;
+                    }
+                    if (nb >= R.fl - 0.4 * per) {
+                        R.done_l = true;
+                    } else {
+                        R.bt.insert(R.bt.begin(), nb); R.bk.insert(R.bk.begin(), -1);
+                        if (R.tmpl >= 0) R.left_ext++;
+                        R.fl = nb; R.conf_l = c; any = true;
+                    }
+                }
+            }
+        }
+    }
+
+    // --- Assembly: regions left to right; the space between neighbours is
+    // bridged with evenly spaced beats (interpolating from both sides), and a
+    // bridge far from a whole number of beats is flagged as a grid break ---
+    std::vector<const GrowRegion*> chunks;
+    for (const GrowRegion& R : regs)
+        if (!R.bt.empty()) chunks.push_back(&R);
+    std::sort(chunks.begin(), chunks.end(),
+              [](const GrowRegion* a, const GrowRegion* b) { return a->bt.front() < b->bt.front(); });
+
+    double prev_t    = g.t0;
+    double prev_per  = g.period_l > 0 ? g.period_l : period;
+    bool   have_prev = g.has_l;
+
+    auto push = [&](double t, int tmpl, int k) {
+        beats->push_back(t); beat_tmpl->push_back(tmpl); beat_k->push_back(k);
+    };
+    auto last_placed = [&]() {
+        return beats->empty() ? (have_prev ? prev_t : -1e300) : beats->back();
+    };
+    auto bridge_to = [&](double t_to, double per_to) {
+        double from = last_placed();
+        if (from < -1e200) return;
+        double d = t_to - from;
+        double pm = 0.5 * ((prev_per > 0 ? prev_per : period) + (per_to > 0 ? per_to : period));
+        if (pm <= 0) pm = period;
+        int k = (int)floor(d / pm + 0.5);
+        if (k < 1) k = 1;
+        double mism = fabs(d - k * pm) / pm;
+        // Every meeting of two regions contributes its phase disagreement to
+        // the outcome ranking -- the gap's mapped edges are the phase truth,
+        // so a mis-phased anchor shows up here as seams against its
+        // neighbours even when nothing needs inserting.
+        *seam_acc += (float)std::min(0.5, std::max(0.0, mism - 0.1));
+        if (k >= 2) {
+            Segment s; s.tmpl = -1; s.r = 1.0; s.sim = 0; s.rhythm = 0;
+            s.seam  = mism > 0.25;
+            s.score = s.seam ? 0.3f : 0.4f;
+            s.first = (int)beats->size();
+            for (int i = 1; i < k; i++) push(from + d * i / k, -1, -1);
+            s.n = (int)beats->size() - s.first;
+            if (s.n > 0) segs->push_back(s);
+        }
+    };
+
+    // Open head with no left edge: cover it at low confidence.
+    if (!g.has_l && !chunks.empty()) {
+        double first_t = chunks[0]->bt.front();
+        double per = chunks[0]->per_l > 0 ? chunks[0]->per_l : period;
+        if (first_t - g.t0 > 1.5 * per) {
+            std::vector<double> hb;
+            for (double t = first_t - per; t >= g.t0; t -= per) hb.push_back(t);
+            std::reverse(hb.begin(), hb.end());
+            Segment s; s.tmpl = -1; s.r = 1.0; s.sim = 0; s.rhythm = 0;
+            s.score = 0.3f; s.first = 0;
+            for (double t : hb) push(t, -1, -1);
+            s.n = (int)beats->size();
+            if (s.n > 0) segs->push_back(s);
+            have_prev = true;
+        }
+    }
+
+    for (const GrowRegion* R : chunks) {
+        bridge_to(R->bt.front(), R->per_l);
+        int n = (int)R->bt.size();
+        int core0 = R->tmpl >= 0 ? R->left_ext : 0;
+        int core1 = R->tmpl >= 0 ? n - R->right_ext : n;
+        auto emit_span = [&](int i0, int i1, int tmpl_id) {
+            int first = (int)beats->size();
+            for (int i = i0; i < i1; i++) {
+                double t = R->bt[i];
+                if (t <= last_placed() + 0.3 * period) continue;
+                push(t, tmpl_id, tmpl_id >= 0 ? R->bk[i] : -1);
+            }
+            int cnt = (int)beats->size() - first;
+            if (cnt > 0) {
+                Segment s;
+                s.tmpl = tmpl_id; s.r = tmpl_id >= 0 ? R->r : 1.0;
+                s.sim = tmpl_id >= 0 ? R->sim : 0;
+                s.rhythm = tmpl_id >= 0 ? R->rhythm : 0;
+                s.score = tmpl_id >= 0 ? R->score : 0.5f;
+                s.first = first; s.n = cnt;
+                segs->push_back(s);
+            }
+        };
+        emit_span(0, core0, -2);
+        emit_span(core0, core1, R->tmpl >= 0 ? R->tmpl : -2);
+        emit_span(core1, n, -2);
+        prev_t    = last_placed();
+        prev_per  = R->per_r > 0 ? R->per_r : period;
+        have_prev = true;
+    }
+
+    if (g.has_r) {
+        bridge_to(g.t1, g.period_r);
+    } else {
+        // Open tail: cover what growth did not reach, at low confidence.
+        double per  = prev_per > 0 ? prev_per : period;
+        double from = last_placed();
+        if (from < -1e200) { from = g.t0; have_prev = true; }
+        if (g.t1 - from > 1.5 * per) {
+            Segment s; s.tmpl = -1; s.r = 1.0; s.sim = 0; s.rhythm = 0;
+            s.score = 0.3f; s.first = (int)beats->size();
+            double pos = from; int gq = 0;
+            while (gq++ < 100000) {
+                pos = p.grid_follow ? next_grid_beat(ctx, pos, per) : pos + per;
+                if (pos > g.t1) break;
+                push(pos, -1, -1);
+            }
+            s.n = (int)beats->size() - s.first;
+            if (s.n > 0) segs->push_back(s);
+        }
+    }
+}
+
+// Rank a completed outcome (any strategy's).  Judged post hoc on the beat
+// sequence itself, edges included, so the greedy chain and every growth
+// scenario compete on equal terms:
+//   - onset support (how much of the audio agrees a beat is there);
+//   - phase flips: an interval far from a whole multiple of its local period
+//     -- a lattice shifted half a beat against the mapped edges buys exactly
+//     one such interval per flip, so each costs dearly;
+//   - period sanity against the edges' periods (catches a fill that walked
+//     down to eighth notes or up to half time);
+//   - tempo smoothness, and a nod toward template-anchored coverage.
+static float grow_outcome_score(const FillCtx& ctx, const std::vector<double>& proposed,
+                                const std::vector<Segment>& segs)
+{
+    const Gap& g = ctx.gap;
+    if (proposed.empty()) return -1e9f;
+    double win = std::max(1e-6, ctx.p->onset_window * ctx.period);
+    // Onset support, weighted by the on-beat shape prior when the vocabulary
+    // knows one: a half-beat-shifted lattice still finds onsets on eighth-note
+    // tracks, but they are the wrong *kind* of onset (hats, not kick/snare),
+    // and that is the phase discrimination raw support lacks.
+    const ShapeAnalysis* sa = ctx.shapes;
+    bool use_prior = sa && sa->vocab.valid && !ctx.beat_prior.empty();
+    float support = 0;
+    for (double t : proposed) {
+        bool f; double o = nearest_onset(ctx.onsets, t, win, &f);
+        if (!f) continue;
+        float w = 1.0f;
+        if (use_prior) {
+            int  j = shape_onset_at(*sa, o - win);
+            int  bj = -1; double bd = win;
+            for (; j < (int)sa->onset_t.size() && sa->onset_t[j] <= o + win; j++) {
+                double d = fabs(sa->onset_t[j] - o);
+                if (d < bd) { bd = d; bj = j; }
+            }
+            if (bj >= 0) {
+                const float* soft = &sa->onset_soft[(size_t)bj * sa->vocab.k];
+                float dot = 0, nn = 0;
+                for (int c = 0; c < sa->vocab.k; c++) {
+                    dot += soft[c] * ctx.beat_prior[c];
+                    nn  += soft[c] * soft[c];
+                }
+                float cs = (nn > 1e-9f) ? dot / sqrtf(nn) : 0.0f;
+                w = 0.4f + 0.6f * std::max(0.0f, std::min(1.0f, cs));
+            }
+        }
+        support += w * (1.0f - 0.5f * (float)(fabs(o - t) / win));
+    }
+    support /= (float)proposed.size();
+
+    std::vector<double> seq;
+    if (g.has_l) seq.push_back(g.t0);
+    seq.insert(seq.end(), proposed.begin(), proposed.end());
+    if (g.has_r) seq.push_back(g.t1);
+    std::vector<double> iv;
+    for (size_t i = 1; i < seq.size(); i++) iv.push_back(seq[i] - seq[i - 1]);
+    if (iv.empty()) return -1e9f;
+
+    float  flips = 0;
+    double rough = 0; int rn = 0;
+    for (size_t i = 0; i < iv.size(); i++) {
+        size_t a = i >= 4 ? i - 4 : 0;
+        size_t b = std::min(iv.size(), i + 5);
+        std::vector<double> w(iv.begin() + a, iv.begin() + b);
+        std::nth_element(w.begin(), w.begin() + w.size() / 2, w.end());
+        double m = w[w.size() / 2];
+        if (m > 1e-6) {
+            // Only intervals close to a HALF-integer multiple of the local
+            // period count as flips: onset-pulled jitter reaches +-40% and
+            // must not register, or jittery-but-right loses to smooth-but-
+            // half-shifted (which pays only at its two transitions).
+            double r  = iv[i] / m;
+            double fr = fabs(r - floor(r + 0.5));
+            if (fr >= 0.42) flips += 1.0f;
+        }
+        if (i > 0 && iv[i] > 1e-3 && iv[i - 1] > 1e-3) {
+            rough += fabs(log(iv[i] / iv[i - 1]));
+            rn++;
+        }
+    }
+    if (rn) rough /= rn;
+
+    double mean_iv = (seq.back() - seq.front()) / (double)iv.size();
+    double period_pen = std::max(0.0, fabs(log(mean_iv / ctx.period)) - 0.15);
+
+    // Template quality coverage: beats explained by a template, weighted by
+    // how well the scorer liked the placement (independent anchoring earns
+    // higher placement scores than a drifting chain).
+    double tq = 0; int tot_n = 0;
+    for (const Segment& s : segs) {
+        if (s.tmpl >= 0) tq += (double)s.score * s.n;
+        tot_n += s.n;
+    }
+    float tmpl_q = tot_n ? (float)(tq / tot_n) : 0.0f;
+
+    if (getenv("COMPLETE_DEBUG"))
+        fprintf(stderr, "    [outcome: sup %.3f tq %.3f rough %.3f flips %.0f ppen %.3f]\n",
+                support, tmpl_q, rough, flips, period_pen);
+    // Flips stay a mild per-event cost: a chain that *drifts* into the wrong
+    // phase shows no abrupt interval at all, so onset support must be able to
+    // outvote a couple of honest seams.
+    return support + 0.35f * tmpl_q - 0.5f * (float)rough
+         - 0.02f * flips - 1.0f * (float)std::min(1.0, period_pen);
+}
+
 static void fill_gap(const CompleteInputs& in, const CompleteParams& p,
                      const std::vector<Template>& tm, const ShapeAnalysis* shapes,
                      const Gap& g, CompleteProposal* out)
@@ -698,9 +1216,15 @@ static void fill_gap(const CompleteInputs& in, const CompleteParams& p,
     algo.prepare(&ctx);
 
     std::vector<double>  beats;      // proposed, excluding anchors
-    std::vector<int>     beat_tmpl;  // template index per beat (-1 tempo)
+    std::vector<int>     beat_tmpl;  // template index per beat (-1 tempo, -2 grown)
     std::vector<int>     beat_k;     // template beat index per beat
     std::vector<Segment> segs;
+
+    // Greedy left-to-right chain: the native driver for strategies 0 and 1,
+    // and one of the ranked candidate outcomes for strategy 2.
+    auto run_greedy = [&](std::vector<double>& beats, std::vector<int>& beat_tmpl,
+                          std::vector<int>& beat_k, std::vector<Segment>& segs) {
+    double period = ctx.period;
 
     double pos = g.t0;
     bool   at_anchor = g.has_l;
@@ -778,6 +1302,117 @@ static void fill_gap(const CompleteInputs& in, const CompleteParams& p,
         }
     }
     close_tempo_run();
+    };  // end greedy chain
+
+    if (ai == 2) {
+        // --- Anchor beats + region growing ---
+        // Template fits are computed once; the greedy chain and each anchor
+        // scenario are run to complete outcomes and the finished results are
+        // ranked -- choosing a strategy is not committing to it.
+
+        // On-beat shape prior for the outcome ranking: what kinds of onsets
+        // the already-mapped beats sit on.
+        if (shapes && shapes->vocab.valid) {
+            std::vector<float> pr(shapes->vocab.k, 0.0f);
+            int n = 0;
+            const BeatMap* bm = in.beatmap;
+            for (int i = 0; i < bm->count; i++) {
+                double t  = bm->beats[i].time;
+                int    j0 = shape_onset_at(*shapes, t - 0.1 * ctx.period);
+                for (int j = j0; j < (int)shapes->onset_t.size() &&
+                                 shapes->onset_t[j] <= t + 0.1 * ctx.period; j++) {
+                    for (int c = 0; c < shapes->vocab.k; c++)
+                        pr[c] += shapes->onset_soft[(size_t)j * shapes->vocab.k + c];
+                    n++;
+                }
+            }
+            if (n >= 8) {
+                float nn = 0;
+                for (float v : pr) nn += v * v;
+                if (nn > 1e-9f) {
+                    for (float& v : pr) v /= sqrtf(nn);
+                    ctx.beat_prior = pr;
+                }
+            }
+        }
+
+        std::vector<double> starts;
+        if (g.has_l) starts.push_back(g.t0);
+        if (!ctx.det.empty()) {
+            for (double t : ctx.det)
+                if (t > g.t0 + 0.25 * period && t < g.t1 - 0.25 * period) starts.push_back(t);
+        } else {
+            for (double t = g.t0 + period; t < g.t1 - period; t += period) starts.push_back(t);
+        }
+        std::vector<Fit> fits;
+        if (!tm.empty())
+            for (double s0 : starts) {
+                Fit f = anchor_fit_at(ctx, algo, s0, g.t1);
+                if (f.tmpl >= 0 && f.score >= p.beat_sim_threshold) fits.push_back(f);
+            }
+        // Phase refinement: the candidate starts came from the detector's
+        // grid, which can sit off the true beat; rescore each accepted fit at
+        // small offsets around its start so an anchor carries the phase the
+        // scorer likes best, not the detector's.
+        for (Fit& f : fits) {
+            const Template& t = tm[f.tmpl];
+            for (int q = -3; q <= 3; q++) {
+                if (!q) continue;
+                double st = f.start + q * period / 6.0;
+                PlaceScore ps;
+                if (!algo.place(ctx, t, st, f.r, f.fitted, &ps)) continue;
+                if (ps.score > f.score) {
+                    f.score = ps.score; f.start = st;
+                    f.sim = ps.sim; f.rhythm = ps.rhythm;
+                }
+            }
+        }
+        std::sort(fits.begin(), fits.end(),
+                  [](const Fit& a, const Fit& b) { return a.score > b.score; });
+
+        static const AnchorScenario SCENARIOS[] = {
+            { "full",           true,  true,  0.00f, 0 },
+            { "no-onset-seeds", true,  false, 0.00f, 0 },
+            { "strict-anchors", true,  true,  0.10f, 0 },
+            { "no-templates",   false, true,  0.00f, 0 },
+            { "edges-only",     false, false, 0.00f, 0 },
+            { "alt-tiling",     true,  true,  0.00f, 1 },
+        };
+        const int NSC = (int)(sizeof(SCENARIOS) / sizeof(SCENARIOS[0]));
+        float best_sc = -1e18f;
+        {
+            // The greedy chain competes on the same outcome score: where it
+            // is right (clean template runs) it wins; where it drifts, a
+            // grown alternative overtakes it.
+            std::vector<double> b; std::vector<int> t2, k2; std::vector<Segment> sg;
+            run_greedy(b, t2, k2, sg);
+            float score = grow_outcome_score(ctx, b, sg);
+            if (getenv("COMPLETE_DEBUG"))
+                fprintf(stderr, "  anchor scenario %-14s: %3d beats %2d segs  outcome %.3f\n",
+                        "greedy-chain", (int)b.size(), (int)sg.size(), score);
+            if (score > best_sc) {
+                best_sc = score;
+                beats.swap(b); beat_tmpl.swap(t2); beat_k.swap(k2); segs.swap(sg);
+            }
+        }
+        for (int si = 0; si < NSC; si++) {
+            const AnchorScenario& sc = SCENARIOS[si];
+            if (fits.empty() && si > 0 && !sc.onset_anchors) continue;   // duplicates "full"
+            std::vector<double> b; std::vector<int> t2, k2; std::vector<Segment> sg;
+            float seam_acc = 0.0f;
+            anchor_grow_propose(ctx, algo, tm, fits, sc, &b, &t2, &k2, &sg, &seam_acc);
+            float score = grow_outcome_score(ctx, b, sg);
+            if (getenv("COMPLETE_DEBUG"))
+                fprintf(stderr, "  anchor scenario %-14s: %3d beats %2d segs  seams %.2f  outcome %.3f\n",
+                        sc.name, (int)b.size(), (int)sg.size(), seam_acc, score);
+            if (score > best_sc) {
+                best_sc = score;
+                beats.swap(b); beat_tmpl.swap(t2); beat_k.swap(k2); segs.swap(sg);
+            }
+        }
+    } else {
+        run_greedy(beats, beat_tmpl, beat_k, segs);
+    }
 
     // Seam repair: a template allowed to start off the grid can leave a
     // half-beat interval against the beat before it.  Drop the offending beat
@@ -814,9 +1449,11 @@ static void fill_gap(const CompleteInputs& in, const CompleteParams& p,
             if (segs[k].n <= 0) segs.erase(segs.begin() + k); else k++;
     }
 
-    // Tempo runs bounded on both sides by known beats: redistribute evenly.
+    // Tempo runs and bridges bounded on both sides by known beats:
+    // redistribute evenly.  Grown segments (-2) keep their onset-snapped
+    // positions -- evening them out would undo the growth.
     for (Segment& s : segs) {
-        if (s.tmpl >= 0 || s.n <= 0) continue;
+        if (s.tmpl != -1 || s.n <= 0) continue;
         bool has_left  = (s.first > 0) || g.has_l;
         double tl = s.first > 0 ? beats[s.first - 1] : g.t0;
         int    ri = s.first + s.n;
@@ -867,7 +1504,12 @@ static void fill_gap(const CompleteInputs& in, const CompleteParams& p,
         std::vector<double> x(s.n);
         for (int i = 0; i < s.n; i++) {
             int bi = s.first + i;
-            x[i] = (s.tmpl >= 0 && beat_k[bi] >= 0) ? tm[s.tmpl].off[beat_k[bi]] : (double)i * ctx.period;
+            // Grown segments use their own (already tempo-tracked) spacing as
+            // the abscissa, so the least-squares refit re-centres on onsets
+            // without fighting the local tempo the growth followed.
+            x[i] = (s.tmpl >= 0 && beat_k[bi] >= 0) ? tm[s.tmpl].off[beat_k[bi]]
+                 : (s.tmpl == -2)                   ? beats[bi] - beats[s.first]
+                                                    : (double)i * ctx.period;
         }
         int nf = 0; double sx = 0, sy = 0, sxx = 0, sxy = 0;
         for (int i = 0; i < s.n; i++) {
@@ -942,20 +1584,30 @@ static void fill_gap(const CompleteInputs& in, const CompleteParams& p,
             c.sim   = s.sim;
             c.score = std::max(0.0f, std::min(1.0f, s.score));
             strncpy(c.source, t.name, sizeof(c.source) - 1);
-            if (ai == 1)
+            if (ai >= 1)
                 snprintf(c.desc, sizeof(c.desc), "%d beats from \"%s\" x%.3f  %s-%s  rhythm %.2f chroma %.2f warp %.1f%%",
                          s.n, t.name, s.r, a, b, s.rhythm, s.sim, 100.0 * c.warp);
             else
                 snprintf(c.desc, sizeof(c.desc), "%d beats from \"%s\" x%.3f  %s-%s  sim %.2f warp %.1f%%",
                          s.n, t.name, s.r, a, b, s.sim, 100.0 * c.warp);
+        } else if (s.tmpl == -2) {
+            double bpm = s.n > 0 ? 60.0 * s.n / std::max(1e-6, c.t1 - tl) : 0.0;
+            c.warp  = 0; c.sim = 0;
+            float cs = 0; for (int i = 0; i < s.n; i++) cs += conf[s.first + i];
+            c.score = s.n ? 0.85f * cs / s.n : 0.4f;
+            strncpy(c.source, "region-grow", sizeof(c.source) - 1);
+            snprintf(c.desc, sizeof(c.desc), "%d beats grown from anchor ~%.0f BPM  %s-%s",
+                     s.n, bpm, a, b);
         } else {
             double bpm = s.n > 0 ? 60.0 * s.n / std::max(1e-6, c.t1 - tl) : 0.0;
             c.warp  = 0; c.sim = 0;
             float cs = 0; for (int i = 0; i < s.n; i++) cs += conf[s.first + i];
             c.score = s.n ? 0.8f * cs / s.n : 0.4f;
-            strncpy(c.source, "tempo", sizeof(c.source) - 1);
-            snprintf(c.desc, sizeof(c.desc), "%d beats, tempo fill ~%.0f BPM  %s-%s",
-                     s.n, bpm, a, b);
+            if (s.seam && c.score > 0.35f) c.score = 0.35f;
+            strncpy(c.source, s.seam ? "bridge (grid break?)" : "tempo", sizeof(c.source) - 1);
+            snprintf(c.desc, sizeof(c.desc), "%d beats, %s ~%.0f BPM  %s-%s%s",
+                     s.n, ai == 2 ? "bridge" : "tempo fill", bpm, a, b,
+                     s.seam ? "  [grid break?]" : "");
         }
         out->cands.push_back(c);
     }

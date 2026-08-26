@@ -296,7 +296,7 @@ void ui_complete_settings(ToolCtx& c)
         ImGui::SetNextItemWidth(w);
         ImGui::Combo("##fillalgo", &s_p.fill_algo_idx, FillGetter::get, nullptr, complete_fill_algo_count());
         tip(complete_fill_algo_tip(s_p.fill_algo_idx));
-        if (s_p.fill_algo_idx == 1) {
+        if (s_p.fill_algo_idx >= 1) {   // both rhythm-scored strategies
             ImGui::SetNextItemWidth(w);
             ImGui::SliderFloat("##rw", &s_p.rhythm_weight, 0.0f, 2.0f, "Rhythm bonus %.2f");
             tip("Added to the chroma score in proportion to how well the onset shapes match\n"

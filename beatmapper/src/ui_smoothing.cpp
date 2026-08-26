@@ -3,6 +3,8 @@
 #include "imgui.h"
 #include <math.h>
 #include <string.h>
+#include <vector>
+#include <algorithm>
 
 // ---------------------------------------------------------------------------
 // Persistent state
@@ -346,6 +348,98 @@ void ui_smoothing_body(ToolCtx& c)
                                 n_pinned, n_pinned == 1 ? "" : "s");
     }
     (void)avail_w;
+}
+
+// --- Selection range edits -------------------------------------------------
+// The classic rescue jobs: a stretch mapped half a beat off (shift +-1/2),
+// accidental double-time (halve), accidental half-time (subdivide).
+
+void ui_beats_edit_actions(ToolCtx& c)
+{
+    BeatMap* bm = c.beatmap;
+    float avail_w = ImGui::GetContentRegionAvail().x;
+    float sp      = ImGui::GetStyle().ItemSpacing.x;
+
+    std::vector<int> sel;
+    for (int i = 0; i < bm->count; i++)
+        if (bm->beats[i].selected) sel.push_back(i);
+    const int n_sel = (int)sel.size();
+
+    // Interval at beat i, from its neighbours (before any mutation).
+    auto local_iv = [&](int i) {
+        if (i + 1 < bm->count) return bm->beats[i + 1].time - bm->beats[i].time;
+        if (i > 0)             return bm->beats[i].time - bm->beats[i - 1].time;
+        return 0.5;
+    };
+
+    auto shift_sel = [&](double frac) {
+        undo_push(c.undo, bm, c.lyricmap, c.sectionmap, c.miscmap, c.chordmap);
+        std::vector<double> oldt(n_sel), newt(n_sel);
+        for (int k = 0; k < n_sel; k++) {
+            oldt[k] = bm->beats[sel[k]].time;
+            newt[k] = oldt[k] + frac * local_iv(sel[k]);
+        }
+        // Annotation edges pinned to the moved beats follow them.
+        beatmap_retime_annotations(c.sectionmap, c.lyricmap, c.miscmap, c.chordmap,
+                                   oldt.data(), newt.data(), n_sel, 1e-4);
+        for (int k = 0; k < n_sel; k++) bm->beats[sel[k]].time = newt[k];
+        std::sort(bm->beats, bm->beats + bm->count,
+                  [](const Beat& a, const Beat& b) { return a.time < b.time; });
+        bm->dirty = true;
+    };
+
+    auto halve = [&](bool keep_first) {
+        undo_push(c.undo, bm, c.lyricmap);
+        // Drop every other selected beat; descending keeps indices valid.
+        for (int k = n_sel - 1; k >= 0; k--)
+            if ((k % 2) == (keep_first ? 1 : 0))
+                beatmap_remove(bm, sel[k]);
+    };
+
+    // Row 1: shift by half a beat either way
+    bool can1 = n_sel >= 1;
+    float half_w = (avail_w - sp) * 0.5f;
+    if (!can1) ImGui::BeginDisabled();
+    if (ImGui::Button("Shift -\xc2\xbd beat", ImVec2(half_w, 0))) shift_sel(-0.5);
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+        ImGui::SetTooltip("Move every selected beat back by half its local interval\n"
+                          "(annotation edges pinned to those beats follow)");
+    ImGui::SameLine();
+    if (ImGui::Button("Shift +\xc2\xbd beat", ImVec2(half_w, 0))) shift_sel(0.5);
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+        ImGui::SetTooltip("Move every selected beat forward by half its local interval");
+    if (!can1) ImGui::EndDisabled();
+
+    // Row 2: subdivide / halve
+    bool can2 = n_sel >= 2;
+    float third_w = (avail_w - 2.0f * sp) / 3.0f;
+    if (!can2) ImGui::BeginDisabled();
+    if (ImGui::Button("Subdivide \xc3\x97""2", ImVec2(third_w, 0))) {
+        undo_push(c.undo, bm, c.lyricmap);
+        for (int k = n_sel - 1; k > 0; k--) {
+            int i = sel[k - 1], j = sel[k];
+            if (j != i + 1) continue;          // only pairs adjacent in the map
+            double mid = 0.5 * (bm->beats[i].time + bm->beats[j].time);
+            int idx = beatmap_add(bm, mid);
+            if (idx >= 0) {
+                bm->beats[idx].interp   = true;
+                bm->beats[idx].selected = true;
+            }
+        }
+    }
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+        ImGui::SetTooltip("Insert a beat at the midpoint of every selected pair\n"
+                          "(fix an accidental half-time stretch)");
+    ImGui::SameLine();
+    if (ImGui::Button("Halve (1st)", ImVec2(third_w, 0))) halve(true);
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+        ImGui::SetTooltip("Delete every other selected beat, keeping the first\n"
+                          "(fix an accidental double-time stretch)");
+    ImGui::SameLine();
+    if (ImGui::Button("Halve (2nd)", ImVec2(third_w, 0))) halve(false);
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+        ImGui::SetTooltip("Delete every other selected beat, keeping the second");
+    if (!can2) ImGui::EndDisabled();
 }
 
 void ui_smoothing_actions(ToolCtx& c)

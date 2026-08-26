@@ -21,6 +21,11 @@ void ui_smoothing_settings(ToolCtx& c);   // presets and knobs
 void ui_smoothing_body(ToolCtx& c);       // selection, preview statistics
 void ui_smoothing_actions(ToolCtx& c);    // Accept / Clear selection
 
+// Range edits on the selected beats: shift by +-1/2 beat (a stretch mapped
+// half a beat off), subdivide x2 (accidental half-time), halve (accidental
+// double-time).  Rendered as part of the Beats tool's actions.
+void ui_beats_edit_actions(ToolCtx& c);
+
 // Call when the panel is not rendered this frame, so the timeline preview
 // ghosts are cleared.
 void ui_smoothing_hidden();
