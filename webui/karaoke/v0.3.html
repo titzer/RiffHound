@@ -1481,7 +1481,7 @@ const SETTINGS = [
               { v: "boxes", label: "Boxes", icon: ICO.boxes },
               { v: "hand", label: "Hand", icon: ICO.hand }] },
   { name: "strumPane", scope: "display", group: "chords", label: "Strum pane",
-    type: "choice", def: "off", flag: "pane", after: "layout,strum",
+    type: "choice", def: "split", flag: "pane", after: "layout,strum",
     options: [{ v: "off", label: "Off", icon: ICO.off },
               { v: "split", label: "Split", icon: ICO.split },
               { v: "hand", label: "Hand", icon: ICO.hand }] },
@@ -1564,7 +1564,10 @@ const LYRIC_BALL = 22, HOP_ROOM = 46, LEAD_STEP = 52, BALL = 34, BALL_ZONE = 76;
 const zoom = () => num("zoom");
 const hopRoom = () => HOP_ROOM * zoom();
 const ballSize = () => LYRIC_BALL * zoom();
-const paneOn = () => state.strumPane !== "off";
+/* Like the lyric band below: the pane only takes its band when the track has
+   a strum pattern to put in it. The setting survives untouched, so a track
+   that does strum gets the pane back without anyone reaching for the menu. */
+const paneOn = () => state.strumPane !== "off" && strumLines.length > 0;
 const chordsOn = () => state.chordPanel;
 const zone = () => (state.chordCue === "off" ? 14 : BALL_ZONE);
 /* The lyric band earns its space by having something to sing: switched off,
@@ -1785,6 +1788,9 @@ function placeChords(y, band) {
 }
 
 function placePane(y, band) {
+  /* The data-pane flag only says the setting is on; a track with no strum
+     pattern gets no band, and a zero-height frame would still draw its edge. */
+  spane.style.display = band > 0 ? "" : "none";
   const countH = Math.round(band * .2), bandH = band - countH;
   const upY = Math.round(bandH * .24), midY = Math.round(bandH * .5);
   const downY = Math.round(bandH * .76);
