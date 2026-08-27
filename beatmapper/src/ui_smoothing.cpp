@@ -1,5 +1,6 @@
 #include "ui_smoothing.h"
 #include "ui_beat_detector.h"
+#include "ui_timeline.h"
 #include "imgui.h"
 #include <math.h>
 #include <string.h>
@@ -60,15 +61,14 @@ static void preview_clear() {
     s_max_shift_s = s_mean_shift_s = 0.0;
 }
 
-// Recompute the proposed positions for beats [i0, i1].
-static void preview_compute(const BeatMap* bm, int i0, int i1,
-                            const AutoBeatList* ab)
+// Recompute the proposed positions for an arbitrary chronological time list
+// (map beats, taps, detected beats, or a mix of them).
+static void preview_compute_times(const double* times, int n, const AutoBeatList* ab)
 {
-    int n = i1 - i0 + 1;
     if (n > MAX_SMOOTH) n = MAX_SMOOTH;
 
     for (int k = 0; k < n; k++) {
-        s_orig[k] = bm->beats[i0 + k].time;
+        s_orig[k] = times[k];
         s_prop[k] = s_orig[k];
     }
 
@@ -88,10 +88,65 @@ static void preview_compute(const BeatMap* bm, int i0, int i1,
     }
     if (n > 0) s_mean_shift_s /= n;
 
-    s_have_preview   = true;
-    s_preview.i0     = i0;
-    s_preview.i1     = i0 + n - 1;
-    s_preview.n      = n;
+    s_have_preview = true;
+    s_preview.i0   = -1;
+    s_preview.i1   = -1;
+    s_preview.n    = n;
+}
+
+// Recompute the proposed positions for beats [i0, i1].
+static void preview_compute(const BeatMap* bm, int i0, int i1,
+                            const AutoBeatList* ab)
+{
+    int n = i1 - i0 + 1;
+    if (n > MAX_SMOOTH) n = MAX_SMOOTH;
+    static std::vector<double> tmp;
+    tmp.resize((size_t)n);
+    for (int k = 0; k < n; k++) tmp[k] = bm->beats[i0 + k].time;
+    preview_compute_times(tmp.data(), n, ab);
+    s_preview.i0 = i0;
+    s_preview.i1 = i0 + n - 1;
+}
+
+// --- combined selection ----------------------------------------------------
+// The tool's selection-based operations treat every selected beat-like item
+// the same, wherever it lives: the beat map, the tap strip, or the detector's
+// list.  A MixRef remembers where each one came from so results write back.
+
+struct MixRef { int src; int idx; };   // src: 0 = map beat, 1 = tap, 2 = detected
+
+static std::vector<MixRef> s_mix;      // refs parallel to the mixed preview
+static bool                s_mix_mode = false;
+
+static void autobeat_sort(AutoBeatList* ab) {
+    if (!ab) return;
+    for (int a = 1; a < ab->beat_count; a++)
+        for (int b = a; b > 0 && ab->beat_times[b] < ab->beat_times[b - 1]; b--) {
+            std::swap(ab->beat_times[b],    ab->beat_times[b - 1]);
+            std::swap(ab->beat_selected[b], ab->beat_selected[b - 1]);
+        }
+}
+
+static int gather_selection(ToolCtx& c, std::vector<MixRef>* refs,
+                            std::vector<double>* times,
+                            int* n_map, int* n_tap, int* n_ab)
+{
+    struct Item { double t; MixRef r; };
+    std::vector<Item> v;
+    *n_map = *n_tap = *n_ab = 0;
+    for (int i = 0; i < c.beatmap->count; i++)
+        if (c.beatmap->beats[i].selected) { v.push_back({ c.beatmap->beats[i].time, { 0, i } }); (*n_map)++; }
+    int ntap = 0;
+    TapEntry* taps = ui_timeline_taps(&ntap);
+    for (int i = 0; i < ntap; i++)
+        if (taps[i].selected) { v.push_back({ taps[i].time, { 1, i } }); (*n_tap)++; }
+    if (c.autobeat)
+        for (int i = 0; i < c.autobeat->beat_count; i++)
+            if (c.autobeat->beat_selected[i]) { v.push_back({ c.autobeat->beat_times[i], { 2, i } }); (*n_ab)++; }
+    std::sort(v.begin(), v.end(), [](const Item& a, const Item& b) { return a.t < b.t; });
+    refs->clear(); times->clear();
+    for (const Item& it : v) { refs->push_back(it.r); times->push_back(it.t); }
+    return (int)v.size();
 }
 
 // Endpoints of annotations are treated as "on a beat" within this tolerance.
@@ -157,11 +212,44 @@ bool ui_smoothing_can_accept() {
 void ui_smoothing_accept(BeatMap* beatmap, UndoStack* undo, SectionMap* sectionmap,
                          LyricMap* lyricmap, MiscMap* miscmap, MiscMap* chordmap)
 {
-    if (!ui_smoothing_can_accept()) return;
+    if (!ui_smoothing_can_accept() || s_preview.i0 < 0) return;
     undo_push(undo, beatmap, lyricmap, sectionmap, miscmap, chordmap);
     beatmap_retime_annotations(sectionmap, lyricmap, miscmap, chordmap,
                                s_orig, s_prop, s_preview.n, PIN_TOL);
     beatmap_apply_times(beatmap, s_preview.i0, s_prop, s_preview.n);
+    s_key_valid = false;
+}
+
+// Accept for a mixed selection: each smoothed time writes back to wherever
+// its item lives (map / taps / detected), map beats dragging their pinned
+// annotations along as usual.
+static void accept_mixed(ToolCtx& c)
+{
+    if (!ui_smoothing_can_accept() || !s_mix_mode) return;
+    if ((int)s_mix.size() < s_preview.n) return;
+    undo_push(c.undo, c.beatmap, c.lyricmap, c.sectionmap, c.miscmap, c.chordmap);
+    std::vector<double> mo, mn;
+    for (int k = 0; k < s_preview.n; k++)
+        if (s_mix[k].src == 0) { mo.push_back(s_orig[k]); mn.push_back(s_prop[k]); }
+    if (!mo.empty())
+        beatmap_retime_annotations(c.sectionmap, c.lyricmap, c.miscmap, c.chordmap,
+                                   mo.data(), mn.data(), (int)mo.size(), PIN_TOL);
+    int ntap = 0;
+    TapEntry* taps = ui_timeline_taps(&ntap);
+    for (int k = 0; k < s_preview.n; k++) {
+        const MixRef& r = s_mix[k];
+        switch (r.src) {
+        case 0: if (r.idx < c.beatmap->count) { c.beatmap->beats[r.idx].time = s_prop[k]; c.beatmap->dirty = true; } break;
+        case 1: if (r.idx < ntap) taps[r.idx].time = s_prop[k]; break;
+        case 2: if (c.autobeat && r.idx < c.autobeat->beat_count) c.autobeat->beat_times[r.idx] = s_prop[k]; break;
+        }
+    }
+    // The smoother preserves order within the selection, but a moved item can
+    // cross an unselected neighbour in its own store: re-sort each store.
+    std::sort(c.beatmap->beats, c.beatmap->beats + c.beatmap->count,
+              [](const Beat& a, const Beat& b) { return a.time < b.time; });
+    ui_timeline_taps_sort();
+    autobeat_sort(c.autobeat);
     s_key_valid = false;
 }
 
@@ -254,6 +342,69 @@ void ui_smoothing_body(ToolCtx& c)
 
     ImGui::TextDisabled("Smoothing");
 
+    // Combined selection: map beats, taps, detected beats.  With only map
+    // beats selected, the classic semantics apply (the selection's index
+    // range, unselected interior beats included); as soon as taps or
+    // detected beats are in the selection, exactly the selected items are
+    // smoothed together.
+    static std::vector<double> s_mix_t;
+    int n_map = 0, n_tap = 0, n_ab = 0;
+    gather_selection(c, &s_mix, &s_mix_t, &n_map, &n_tap, &n_ab);
+    s_mix_mode = (n_tap + n_ab) > 0;
+
+    if (s_mix_mode) {
+        int  n = (int)s_mix_t.size();
+        bool capped = n > MAX_SMOOTH;
+        if (capped) n = MAX_SMOOTH;
+        bool have_range = n >= 3;
+        s_i0 = s_i1 = -1; s_n_sel = n; s_n_range = n; s_have_range = have_range;
+
+        ImGui::Text("%d selected (%d map, %d tap%s, %d detected)",
+                    n, n_map, n_tap, n_tap == 1 ? "" : "s", n_ab);
+        if (!have_range)
+            ImGui::TextDisabled("Need at least 3 selected.");
+        if (capped)
+            ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.3f, 1.0f), "Capped at %d.", MAX_SMOOTH);
+
+        if (s_p.use_onsets && have_range) {
+            double t0 = s_mix_t.front(), t1 = s_mix_t[n - 1];
+            int n_on = onsets_in_range(autobeat, t0, t1);
+            if (n_on == 0) {
+                ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.3f, 1.0f), "No onsets in range.");
+                ImGui::SameLine();
+                if (ImGui::SmallButton("Detect in range")) {
+                    ui_beat_detector_ensure_onsets(audio, beatmap, autobeat, t0, t1);
+                    s_key_valid = false;
+                }
+            } else {
+                ImGui::TextDisabled("%d onsets in range", n_on);
+            }
+        }
+
+        if (have_range) {
+            double checksum = 0.0;
+            for (int k = 0; k < n; k++) checksum += s_mix_t[k] * (k + 1);
+            PreviewKey key;
+            key.i0 = -1; key.i1 = n;
+            key.beat_count   = n_map * 1000000 + n_tap * 1000 + n_ab;
+            key.onset_count  = s_p.use_onsets && autobeat ? autobeat->onset_count : 0;
+            key.checksum     = checksum;
+            key.strength     = s_p.strength;
+            key.iterations   = s_p.iterations;
+            key.use_onsets   = s_p.use_onsets;
+            key.onset_weight = s_p.onset_weight;
+            key.onset_window = s_p.onset_window;
+            key.max_shift    = s_p.max_shift;
+            if (!s_key_valid || !key_equal(key, s_key)) {
+                preview_compute_times(s_mix_t.data(), n, autobeat);
+                s_key = key; s_key_valid = true;
+            }
+        } else {
+            preview_clear();
+        }
+        s_preview.active = s_have_preview && s_show_ghosts;
+    } else {
+
     int i0 = -1, i1 = -1;
     int  n_sel     = beatmap_selection_range(beatmap, &i0, &i1);
     int  n_full    = (i0 >= 0) ? (i1 - i0 + 1) : 0;
@@ -264,7 +415,9 @@ void ui_smoothing_body(ToolCtx& c)
     s_i0 = i0; s_i1 = i1; s_n_sel = n_sel; s_n_range = n_range; s_have_range = have_range;
 
     if (n_sel == 0) {
-        ImGui::TextDisabled("Select a range of beats, or just a start\nand an end beat, in the Beats strip.");
+        ImGui::TextDisabled("Select any beats -- mapped, tapped or detected --\n"
+                            "in their strips.  A map-only selection smooths the\n"
+                            "whole index range between its endpoints.");
     } else if (!have_range) {
         ImGui::TextDisabled("Selected %d beat%s spanning %d \xe2\x80\x94 need at least 3.",
                             n_sel, n_sel == 1 ? "" : "s", n_full);
@@ -317,6 +470,8 @@ void ui_smoothing_body(ToolCtx& c)
     }
     s_preview.active = s_have_preview && s_show_ghosts;
 
+    }  // end map-only path
+
     if (s_preview.n > 0) {
         if (ImGui::BeginTable("##sm_stats", 3, ImGuiTableFlags_SizingStretchProp)) {
             ImGui::TableNextRow();
@@ -352,48 +507,128 @@ void ui_smoothing_body(ToolCtx& c)
 
 // --- Selection range edits -------------------------------------------------
 // The classic rescue jobs: a stretch mapped half a beat off (shift +-1/2),
-// accidental double-time (halve), accidental half-time (subdivide).
+// accidental double-time (halve), accidental half-time (subdivide).  Works
+// on the combined selection: mapped beats, taps and detected beats alike,
+// each edit landing back in the item's own store.
 
 void ui_beats_edit_actions(ToolCtx& c)
 {
-    BeatMap* bm = c.beatmap;
+    BeatMap*      bm = c.beatmap;
+    AutoBeatList* ab = c.autobeat;
     float avail_w = ImGui::GetContentRegionAvail().x;
     float sp      = ImGui::GetStyle().ItemSpacing.x;
 
-    std::vector<int> sel;
-    for (int i = 0; i < bm->count; i++)
-        if (bm->beats[i].selected) sel.push_back(i);
-    const int n_sel = (int)sel.size();
+    std::vector<MixRef> sel;
+    std::vector<double> selt;
+    int n_map = 0, n_tap = 0, n_ab = 0;
+    const int n_sel = gather_selection(c, &sel, &selt, &n_map, &n_tap, &n_ab);
 
-    // Interval at beat i, from its neighbours (before any mutation).
-    auto local_iv = [&](int i) {
-        if (i + 1 < bm->count) return bm->beats[i + 1].time - bm->beats[i].time;
-        if (i > 0)             return bm->beats[i].time - bm->beats[i - 1].time;
+    int ntap = 0;
+    TapEntry* taps = ui_timeline_taps(&ntap);
+
+    // Local interval of an item, from its neighbours in its own store
+    // (computed before any mutation).
+    auto item_iv = [&](const MixRef& r, double t) -> double {
+        switch (r.src) {
+        case 0:
+            if (r.idx + 1 < bm->count) return bm->beats[r.idx + 1].time - t;
+            if (r.idx > 0)             return t - bm->beats[r.idx - 1].time;
+            break;
+        case 1:
+            if (r.idx + 1 < ntap) return taps[r.idx + 1].time - t;
+            if (r.idx > 0)        return t - taps[r.idx - 1].time;
+            break;
+        case 2:
+            if (ab) {
+                if (r.idx + 1 < ab->beat_count) return ab->beat_times[r.idx + 1] - t;
+                if (r.idx > 0)                  return t - ab->beat_times[r.idx - 1];
+            }
+            break;
+        }
         return 0.5;
+    };
+
+    auto set_time = [&](const MixRef& r, double t) {
+        switch (r.src) {
+        case 0: if (r.idx < bm->count) { bm->beats[r.idx].time = t; bm->dirty = true; } break;
+        case 1: if (r.idx < ntap) taps[r.idx].time = t; break;
+        case 2: if (ab && r.idx < ab->beat_count) ab->beat_times[r.idx] = t; break;
+        }
+    };
+
+    auto resort_all = [&]() {
+        std::sort(bm->beats, bm->beats + bm->count,
+                  [](const Beat& a, const Beat& b) { return a.time < b.time; });
+        ui_timeline_taps_sort();
+        autobeat_sort(ab);
     };
 
     auto shift_sel = [&](double frac) {
         undo_push(c.undo, bm, c.lyricmap, c.sectionmap, c.miscmap, c.chordmap);
-        std::vector<double> oldt(n_sel), newt(n_sel);
-        for (int k = 0; k < n_sel; k++) {
-            oldt[k] = bm->beats[sel[k]].time;
-            newt[k] = oldt[k] + frac * local_iv(sel[k]);
-        }
-        // Annotation edges pinned to the moved beats follow them.
-        beatmap_retime_annotations(c.sectionmap, c.lyricmap, c.miscmap, c.chordmap,
-                                   oldt.data(), newt.data(), n_sel, 1e-4);
-        for (int k = 0; k < n_sel; k++) bm->beats[sel[k]].time = newt[k];
-        std::sort(bm->beats, bm->beats + bm->count,
-                  [](const Beat& a, const Beat& b) { return a.time < b.time; });
-        bm->dirty = true;
+        std::vector<double> newt(n_sel);
+        for (int k = 0; k < n_sel; k++)
+            newt[k] = selt[k] + frac * item_iv(sel[k], selt[k]);
+        // Annotation edges pinned to moved MAP beats follow them.
+        std::vector<double> mo, mn;
+        for (int k = 0; k < n_sel; k++)
+            if (sel[k].src == 0) { mo.push_back(selt[k]); mn.push_back(newt[k]); }
+        if (!mo.empty())
+            beatmap_retime_annotations(c.sectionmap, c.lyricmap, c.miscmap, c.chordmap,
+                                       mo.data(), mn.data(), (int)mo.size(), 1e-4);
+        for (int k = 0; k < n_sel; k++) set_time(sel[k], newt[k]);
+        resort_all();
     };
 
     auto halve = [&](bool keep_first) {
         undo_push(c.undo, bm, c.lyricmap);
-        // Drop every other selected beat; descending keeps indices valid.
-        for (int k = n_sel - 1; k >= 0; k--)
-            if ((k % 2) == (keep_first ? 1 : 0))
-                beatmap_remove(bm, sel[k]);
+        std::vector<int> rm_map, rm_tap, rm_ab;
+        for (int k = 0; k < n_sel; k++) {
+            if ((k % 2) != (keep_first ? 1 : 0)) continue;
+            if (sel[k].src == 0)      rm_map.push_back(sel[k].idx);
+            else if (sel[k].src == 1) rm_tap.push_back(sel[k].idx);
+            else                      rm_ab.push_back(sel[k].idx);
+        }
+        std::sort(rm_map.rbegin(), rm_map.rend());
+        std::sort(rm_tap.rbegin(), rm_tap.rend());
+        std::sort(rm_ab.rbegin(),  rm_ab.rend());
+        for (int i : rm_map) beatmap_remove(bm, i);
+        for (int i : rm_tap) ui_timeline_tap_remove(i);
+        if (ab)
+            for (int i : rm_ab) {
+                for (int j = i; j + 1 < ab->beat_count; j++) {
+                    ab->beat_times[j]    = ab->beat_times[j + 1];
+                    ab->beat_selected[j] = ab->beat_selected[j + 1];
+                }
+                ab->beat_count--;
+            }
+    };
+
+    // True when any item -- of any store -- lies strictly between t0 and t1,
+    // in which case a midpoint insertion would collide with it.
+    auto blocked_between = [&](double t0, double t1) {
+        double lo = t0 + 1e-6, hi = t1 - 1e-6;
+        int a = 0, b2 = bm->count;
+        while (a < b2) { int m = (a + b2) / 2; if (bm->beats[m].time <= lo) a = m + 1; else b2 = m; }
+        if (a < bm->count && bm->beats[a].time < hi) return true;
+        for (int i = 0; i < ntap; i++)
+            if (taps[i].time > lo && taps[i].time < hi) return true;
+        if (ab)
+            for (int i = 0; i < ab->beat_count; i++)
+                if (ab->beat_times[i] > lo && ab->beat_times[i] < hi) return true;
+        return false;
+    };
+
+    auto ab_insert = [&](double t) {
+        if (!ab || ab->beat_count >= MAX_BEAT_CANDS) return;
+        int pos = 0;
+        while (pos < ab->beat_count && ab->beat_times[pos] < t) pos++;
+        for (int j = ab->beat_count; j > pos; j--) {
+            ab->beat_times[j]    = ab->beat_times[j - 1];
+            ab->beat_selected[j] = ab->beat_selected[j - 1];
+        }
+        ab->beat_times[pos] = t;
+        ab->beat_selected[pos] = true;
+        ab->beat_count++;
     };
 
     // Row 1: shift by half a beat either way
@@ -402,8 +637,9 @@ void ui_beats_edit_actions(ToolCtx& c)
     if (!can1) ImGui::BeginDisabled();
     if (ImGui::Button("Shift -\xc2\xbd beat", ImVec2(half_w, 0))) shift_sel(-0.5);
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-        ImGui::SetTooltip("Move every selected beat back by half its local interval\n"
-                          "(annotation edges pinned to those beats follow)");
+        ImGui::SetTooltip("Move every selected beat -- mapped, tapped or detected --\n"
+                          "back by half its local interval (annotation edges pinned\n"
+                          "to moved map beats follow)");
     ImGui::SameLine();
     if (ImGui::Button("Shift +\xc2\xbd beat", ImVec2(half_w, 0))) shift_sel(0.5);
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
@@ -417,13 +653,18 @@ void ui_beats_edit_actions(ToolCtx& c)
     if (ImGui::Button("Subdivide \xc3\x97""2", ImVec2(third_w, 0))) {
         undo_push(c.undo, bm, c.lyricmap);
         for (int k = n_sel - 1; k > 0; k--) {
-            int i = sel[k - 1], j = sel[k];
-            if (j != i + 1) continue;          // only pairs adjacent in the map
-            double mid = 0.5 * (bm->beats[i].time + bm->beats[j].time);
-            int idx = beatmap_add(bm, mid);
-            if (idx >= 0) {
-                bm->beats[idx].interp   = true;
-                bm->beats[idx].selected = true;
+            double t0 = selt[k - 1], t1 = selt[k];
+            if (t1 - t0 < 1e-3) continue;
+            if (blocked_between(t0, t1)) continue;
+            double mid = 0.5 * (t0 + t1);
+            switch (sel[k - 1].src) {           // midpoint joins the left item's store
+            case 0: {
+                int idx = beatmap_add(bm, mid);
+                if (idx >= 0) { bm->beats[idx].interp = true; bm->beats[idx].selected = true; }
+                break;
+            }
+            case 1: ui_timeline_tap_insert(mid); break;
+            case 2: ab_insert(mid); break;
             }
         }
     }
@@ -453,19 +694,34 @@ void ui_smoothing_actions(ToolCtx& c)
     ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.16f, 0.45f, 0.22f, 1.0f));
     ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.22f, 0.58f, 0.29f, 1.0f));
     ImGui::PushStyleColor(ImGuiCol_ButtonActive,  ImVec4(0.28f, 0.68f, 0.35f, 1.0f));
-    if (ImGui::Button("Accept smoothing (S)", ImVec2(half_w, 0)))
-        ui_smoothing_accept(beatmap, c.undo, c.sectionmap, c.lyricmap,
-                            c.miscmap, c.chordmap);
+    if (ImGui::Button("Accept smoothing (S)", ImVec2(half_w, 0))) {
+        if (s_mix_mode)
+            accept_mixed(c);
+        else
+            ui_smoothing_accept(beatmap, c.undo, c.sectionmap, c.lyricmap,
+                                c.miscmap, c.chordmap);
+    }
     ImGui::PopStyleColor(3);
     if (!can_apply) ImGui::EndDisabled();
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
         ImGui::SetTooltip(can_apply ? "Move the beats to the previewed positions (Ctrl+Z undoes)"
-                                    : "Select at least 3 beats to smooth");
+                                    : "Select at least 3 beats -- mapped, tapped or detected -- to smooth");
     ImGui::SameLine();
-    bool any_sel = beatmap_selected_count(beatmap) > 0;
+    int ntap = 0;
+    TapEntry* taps = ui_timeline_taps(&ntap);
+    bool any_tap = false, any_ab = false;
+    for (int i = 0; i < ntap && !any_tap; i++) any_tap = taps[i].selected;
+    if (c.autobeat)
+        for (int i = 0; i < c.autobeat->beat_count && !any_ab; i++)
+            any_ab = c.autobeat->beat_selected[i];
+    bool any_sel = beatmap_selected_count(beatmap) > 0 || any_tap || any_ab;
     if (!any_sel) ImGui::BeginDisabled();
     if (ImGui::Button("Clear selection", ImVec2(half_w, 0))) {
         beatmap_clear_selection(beatmap);
+        for (int i = 0; i < ntap; i++) taps[i].selected = false;
+        if (c.autobeat)
+            for (int i = 0; i < c.autobeat->beat_count; i++)
+                c.autobeat->beat_selected[i] = false;
         preview_clear();
     }
     if (!any_sel) ImGui::EndDisabled();

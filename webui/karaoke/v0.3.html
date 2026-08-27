@@ -4284,7 +4284,7 @@ function openMenu(open) {
 function openTrackPanel(open) {
   trackPanel.hidden = !open;
   titleBtn.setAttribute("aria-expanded", open);
-  if (open) { renderResults(searchBox.value); openMenu(false); }
+  if (open) { renderResults(searchBox.value); openMenu(false); searchBox.focus(); }
 }
 
 function toggleFullscreen() {
@@ -4331,7 +4331,10 @@ addEventListener("keydown", e => {
      rest all arrive here as plain letters otherwise. Shift is left alone, so
      an upper-case letter still works. */
   if (e.metaKey || e.ctrlKey || e.altKey) return;
-  if (e.target.tagName === "INPUT" && /^(text|search)$/.test(e.target.type)) return;
+  /* Escape is the exception: the load dialog opens with the search box
+     focused, so swallowing it here would leave the panel with no way out. */
+  if (e.target.tagName === "INPUT" && /^(text|search)$/.test(e.target.type)
+      && e.key !== "Escape") return;
 
   const colour = { g: "green", a: "amber", r: "red" }[e.key.toLowerCase()];
   if (colour) ["controlColour", "lyricColour", "chordColour"]

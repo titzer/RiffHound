@@ -733,9 +733,33 @@ static double s_fill_anchor_key = -1e300;
 
 // --- Tap strip data ---
 static const int MAX_TAPS = 1024;
-struct TapEntry { double time; bool selected; };
-static TapEntry s_taps[MAX_TAPS];
+static TapEntry s_taps[MAX_TAPS];   // TapEntry lives in ui_timeline.h
 static int      s_tap_count = 0;
+
+TapEntry* ui_timeline_taps(int* count) {
+    if (count) *count = s_tap_count;
+    return s_taps;
+}
+
+void ui_timeline_taps_sort() {
+    for (int a = 1; a < s_tap_count; a++)
+        for (int b = a; b > 0 && s_taps[b].time < s_taps[b - 1].time; b--) {
+            TapEntry tmp = s_taps[b]; s_taps[b] = s_taps[b - 1]; s_taps[b - 1] = tmp;
+        }
+}
+
+bool ui_timeline_tap_insert(double t) {
+    if (s_tap_count >= MAX_TAPS) return false;
+    s_taps[s_tap_count++] = { t, true };
+    ui_timeline_taps_sort();
+    return true;
+}
+
+void ui_timeline_tap_remove(int idx) {
+    if (idx < 0 || idx >= s_tap_count) return;
+    for (int i = idx; i + 1 < s_tap_count; i++) s_taps[i] = s_taps[i + 1];
+    s_tap_count--;
+}
 
 // Smoothing preview for the selected taps: where each would land with the
 // Beats tool's smoothing settings.  Recomputed every frame (taps are few);
@@ -2956,6 +2980,25 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
                                editor->tempo_avg_window,
                                IM_COL32( 80, 220, 130, 230), 2.0f);
         }
+        // Complete Track proposal: tempo of each proposed beat run, in its
+        // ghost colour, so the auto-completed grid's BPM reads alongside the
+        // mapped beats' graph.
+        if (ui_complete_ghosts_active()) {
+            const CompleteProposal* cp = ui_complete_proposal();
+            for (int ci = 0; ci < (int)cp->cands.size(); ci++) {
+                const CompleteCand& cc = cp->cands[ci];
+                if (cc.kind != CAND_BEATS || cc.n < 2) continue;
+                if (!ui_complete_cand_listed(ci)) continue;
+                if (cc.first < 0 || cc.first + cc.n > (int)cp->beat_times.size()) continue;
+                if (cc.t1 < editor->view_start || cc.t0 > editor->view_end) continue;
+                ImU32 col = ui_complete_ghost_color(ci);
+                ImU32 dim = (col & 0x00FFFFFF) | ((ImU32)((col >> 24) / 2) << 24);
+                TimeSeq gseq = { nullptr, &cp->beat_times[cc.first], cc.n };
+                draw_tempo_ticks(dl, gseq, ba_x, ba_y, ba_w, ba_h,
+                                 editor->view_start, editor->view_end, lo, hi,
+                                 col, dim, 1.5f);
+            }
+        }
         dl->PopClipRect();
     }
 
@@ -3006,9 +3049,9 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
         if (pv->active && pv->n > 0 && ba_h > 0.0f) {
             const ImU32 GHOST = IM_COL32(120, 255, 170, 190);
             for (int k = 0; k < pv->n; k++) {
-                int idx = pv->i0 + k;
-                if (idx < 0 || idx >= beatmap->count) break;
-                double t_old = beatmap->beats[idx].time;
+                // orig[] carries the pre-smoothing positions, so the preview
+                // draws for any source (map beats, taps, detected beats).
+                double t_old = pv->orig[k];
                 double t_new = pv->times[k];
                 float  x_old = time_to_x(t_old, editor->view_start, editor->view_end, ba_x, ba_w);
                 float  x_new = time_to_x(t_new, editor->view_start, editor->view_end, ba_x, ba_w);

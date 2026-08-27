@@ -23,6 +23,17 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
 // strip selections, a lyric hold in progress).  Call when a new track loads.
 void ui_timeline_reset();
 
+// --- taps, for the Beats tool ---------------------------------------------
+// The tool's selection-based operations (smoothing, shift, subdivide, halve)
+// treat selected taps like any other selected beat; this is the access the
+// tool needs.  Times edited in place must stay chronological -- call
+// ui_timeline_taps_sort() after edits that may reorder.
+struct TapEntry { double time; bool selected; };
+TapEntry* ui_timeline_taps(int* count);
+void      ui_timeline_taps_sort();
+bool      ui_timeline_tap_insert(double t);   // added selected; false when full
+void      ui_timeline_tap_remove(int idx);
+
 // Lyric Index content (widgets only, no window).  Rendered by the tool dock
 // into the drawer or a floating window; shares selection state with the
 // timeline's lyric strip.
