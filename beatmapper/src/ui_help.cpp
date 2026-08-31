@@ -17,7 +17,7 @@ static const HelpRow s_rows[] = {
     { nullptr, "Beats" },
     { "Click insert strip",       "Place a beat at the cursor" },
     { "Shift+click insert strip", "Place a beat and fill the gap at the nearest tempo" },
-    { "  (while previewing)",     "Wheel adjusts the beat count; green = even fill, amber = strict tempo" },
+    { "  (while previewing)",     "Green = even fill, amber = strict tempo" },
     { "Click beat",               "Select a beat; drag to move it" },
     { "Shift+click beat",         "Add / remove a beat from the selection" },
     { "Drag in beats strip",      "Rectangle-select beats" },

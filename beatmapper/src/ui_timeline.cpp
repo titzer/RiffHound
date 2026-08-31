@@ -726,10 +726,9 @@ static const ImU32 s_sec_border[SK_COUNT] = {
 // tool (which may render inside the dock drawer or a floating window).
 static int s_lyr_selected = -1;
 
-// Shift+click fill: the mouse wheel bumps the number of inserted beats while
-// the preview shows; reset when the anchor beat changes or after a fill.
-static int    s_fill_extra      = 0;
-static double s_fill_anchor_key = -1e300;
+// A gap shorter than this is a doubled/garbage beat, not a tempo; taking its
+// instantaneous BPM would fill with thousands of beats (400 BPM ceiling).
+static const double FILL_MIN_GAP = 0.15;
 
 // --- Tap strip data ---
 static const int MAX_TAPS = 1024;
@@ -1209,7 +1208,7 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
                     // Earlier beat is nearer: BPM = (Bn - Bn-1)
                     if (near > 0) {
                         double d = beatmap->beats[near].time - beatmap->beats[near-1].time;
-                        if (d > 1e-6) fill_bpm = 60.0 / d;
+                        if (d > FILL_MIN_GAP) fill_bpm = 60.0 / d;
                     }
                     fill_t1 = beatmap->beats[near].time;
                     fill_t2 = t_place;
@@ -1217,13 +1216,11 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
                     // Later beat is nearer: BPM = (Bn+1 - Bn)
                     if (near < beatmap->count - 1) {
                         double d = beatmap->beats[near+1].time - beatmap->beats[near].time;
-                        if (d > 1e-6) fill_bpm = 60.0 / d;
+                        if (d > FILL_MIN_GAP) fill_bpm = 60.0 / d;
                     }
                     fill_t1 = t_place;
                     fill_t2 = beatmap->beats[near].time;
                 }
-                // Anchor identity, read before the insertion shifts indices.
-                double fill_akey = beatmap->beats[near].time;
                 // Snap the clicked position itself to nearest onset if feature is on.
                 if (editor->snap_interp_to_onsets && fill_bpm > 0.0) {
                     // Ensure onsets cover the fill range; run detection if needed.
@@ -1233,13 +1230,10 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
                 }
                 beatmap_add(beatmap, t_place);
                 if (fill_bpm > 0.0) {
-                    // Count as previewed: the wheel may have adjusted it.
-                    int n = (int)round((fill_t2 - fill_t1) * fill_bpm / 60.0);
-                    if (fill_akey == s_fill_anchor_key) n += s_fill_extra;
-                    if (n < 1) n = 1;
                     if (editor->snap_interp_to_onsets) {
                         // Inline fill with per-position onset snapping.
                         double snap_win = 0.20 * 60.0 / fill_bpm;
+                        int n = (int)round((fill_t2 - fill_t1) * fill_bpm / 60.0);
                         for (int k = 1; k < n; k++) {
                             double gt = fill_t1 + (fill_t2 - fill_t1) * k / n;
                             gt = snap_to_onset(gt, autobeat, snap_win);
@@ -1247,11 +1241,8 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
                             if (idx >= 0) beatmap->beats[idx].interp = true;
                         }
                     } else {
-                        beatmap_fill(beatmap, fill_t1, fill_t2,
-                                     60.0 * n / std::max(1e-6, fill_t2 - fill_t1));
+                        beatmap_fill(beatmap, fill_t1, fill_t2, fill_bpm);
                     }
-                    s_fill_extra = 0;
-                    s_fill_anchor_key = -1e300;
                 }
             } else {
                 beatmap_add(beatmap, t_place);
@@ -2500,36 +2491,20 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
                     if (near < ins) {
                         if (near > 0) {
                             double d = beatmap->beats[near].time - beatmap->beats[near-1].time;
-                            if (d > 1e-6) fill_bpm = 60.0 / d;
+                            if (d > FILL_MIN_GAP) fill_bpm = 60.0 / d;
                         }
                         fill_t1 = beatmap->beats[near].time;
                         fill_t2 = t_hover;
                     } else {
                         if (near < beatmap->count - 1) {
                             double d = beatmap->beats[near+1].time - beatmap->beats[near].time;
-                            if (d > 1e-6) fill_bpm = 60.0 / d;
+                            if (d > FILL_MIN_GAP) fill_bpm = 60.0 / d;
                         }
                         fill_t1 = t_hover;
                         fill_t2 = beatmap->beats[near].time;
                     }
                     int n_fill = (fill_bpm > 0.0 && fill_t2 > fill_t1 + 1e-6)
                                  ? (int)round((fill_t2 - fill_t1) * fill_bpm / 60.0) : 0;
-
-                    // The anchored beat identifies this fill; the wheel bumps
-                    // the inserted count while the preview is showing.
-                    {
-                        double akey = beatmap->beats[near].time;
-                        if (akey != s_fill_anchor_key) {
-                            s_fill_anchor_key = akey;
-                            s_fill_extra = 0;
-                        }
-                        if (io.MouseWheel != 0.0f && !io.KeyCtrl)
-                            s_fill_extra += io.MouseWheel > 0.0f ? 1 : -1;
-                        if (n_fill > 0) {
-                            n_fill += s_fill_extra;
-                            if (n_fill < 1) { s_fill_extra += 1 - n_fill; n_fill = 1; }
-                        }
-                    }
 
                     // Endpoint diamond in placement strip (highlighted to signal shift mode)
                     {
@@ -2576,12 +2551,11 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
                         dl->PopClipRect();
 
                         // BPM label: effective tempo for the count being
-                        // inserted, the count itself, and a wheel hint once
-                        // it has been adjusted.
+                        // inserted, and the count itself.
                         char bpm_buf[48];
                         double eff_bpm = 60.0 * n_fill / std::max(1e-6, fill_t2 - fill_t1);
-                        snprintf(bpm_buf, sizeof(bpm_buf), "%.1f bpm \xc3\x97%d%s",
-                                 eff_bpm, n_fill, s_fill_extra ? " (wheel)" : "");
+                        snprintf(bpm_buf, sizeof(bpm_buf), "%.1f bpm \xc3\x97%d",
+                                 eff_bpm, n_fill);
                         ImVec2 ts = ImGui::CalcTextSize(bpm_buf);
                         float  lx = phx + r + 4.0f;
                         if (lx + ts.x <= ps_x + ps_w)
