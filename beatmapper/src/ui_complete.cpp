@@ -166,6 +166,9 @@ static void run_analysis(EditorState* editor, AudioState* audio, BeatMap* beatma
     s_win.audio.pcm  = audio_pcm_data(audio, &s_win.audio.frame_count,
                                       &s_win.audio.channels, &s_win.audio.sample_rate);
     s_win.duration   = audio->duration;
+    static char s_path[512];
+    strncpy(s_path, audio->filename, sizeof(s_path) - 1); s_path[sizeof(s_path) - 1] = 0;
+    s_win.audio_path = s_path;
     s_win.has_region = editor->has_region;
     s_win.region_start = editor->region_start;
     s_win.region_end   = editor->region_end;
@@ -462,6 +465,11 @@ void ui_complete_settings(ToolCtx& c)
         ImGui::SliderFloat("##cm", &s_p.chord_margin, 0.02f, 0.5f, "Min margin %.2f");
         tip("Winner must beat the runner-up triad by this much");
         if (!s_p.chord_fallback) ImGui::EndDisabled();
+        ImGui::Checkbox("External model (madmom)", &s_p.chord_external);
+        tip("Run the learned chord recogniser (madmom CNN+CRF via\n"
+            "scripts/chords_madmom.py, or $BM_CHORD_CMD) over the track and let its\n"
+            "chart fill the spans nothing template-based claimed.  The first run on a\n"
+            "track takes ~30 s; results are cached on disk after that.");
         ImGui::Unindent(6.0f);
     }
     if (settings_header("Chroma per beat##cp")) {

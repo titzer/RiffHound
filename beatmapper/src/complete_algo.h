@@ -99,9 +99,12 @@ struct CompleteParams {
     float section_rhythm_weight; // blend of rhythm-map vs chroma in range comparisons (0.4)
     bool  section_discover;      // also find repeats by self-similarity (no template needed)
     bool  section_partition;     // infer uncovered spans as a partition (DP) rather than sliding matches
-    float section_prior_weight;  // weight of the learned kind-transition prior in the DP (0: off)
-    float section_block_penalty; // fixed DP cost per block, against confetti partitions (1.5)
+    float section_prior_weight;  // weight of the learned kind-transition prior in the DP (0.5; 0: off)
+    float section_block_penalty; // fixed DP cost per block, against confetti partitions (1.0)
+    float section_ext_penalty;   // DP cost per measure a block extends past its template (0.01)
+    float section_trunc_penalty; // DP cost per measure a block truncates its template (0.04)
     int   section_min_measures;  // shortest repeat unit discovery will propose (4)
+    float section_start_margin;  // discovery: shift a unit's start to a later measure only when it repeats this much better (<0: never shift)
 
     // --- chords ---
     bool  chord_runs;            // slide runs of mapped chords across the chord-free grid
@@ -110,10 +113,14 @@ struct CompleteParams {
     bool  chord_fallback;        // per-beat inference from learned chord models (or triads)
     float chord_margin;          // (unused by the decoder; kept for the UI)
     float chord_transition;      // decoder: cost of changing chord between beats (0.15)
-    float chord_measure_bonus;   // decoder: fraction of that cost waived on measure starts (0.5)
+    float chord_measure_bonus;   // decoder: fraction of that cost waived on measure starts (0.75)
     float chord_unseen_penalty;  // decoder: emission penalty for triads the map never used (0.1); >=1 disables them
     float chord_prior_beats;     // learned model = (n*learned + prior*triad)/(n+prior) (4)
     bool  chord_learn_rate;      // scale chord_transition by the map's median chord length / 4
+    bool  chord_external;        // call the external learned chord model (madmom CNN+CRF)
+                                 // via BM_CHORD_CMD or scripts/chords_madmom.py; needs audio_path
+    float chord_external_blend;  // > 0: external labels become per-beat emission bonuses in the
+                                 // decoder instead of standalone chord spans (0.25 is sensible)
 
     // --- chroma per beat ---
     BeatChromaParams chroma;
@@ -130,6 +137,7 @@ struct CompleteInputs {
     const SectionMap* sectionmap;
     const MiscMap*    chordmap;
     AudioPcm          audio;
+    const char*       audio_path;   // for external model calls (may be null)
     double            duration;
     bool              has_region;
     double            region_start, region_end;

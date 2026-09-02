@@ -6,3 +6,4 @@ bmbench
 bench/
 bench/*.tsv
 bench/*.log
+external/

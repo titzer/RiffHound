@@ -98,6 +98,44 @@ List every settable parameter with its default and a one-line description.
 Names are the `CompleteParams` field names, with nested ones dotted:
 `smooth2.strength`, `chroma.algo_idx`, `shape.k`, ...
 
+### `suite`
+
+The systematic scenario matrix; run it on a track or on a directory of
+track/`.txt` pairs (e.g. `bench/tracks-anno`, symlinks to the well-annotated
+tracks in `~/playalong` and `~/backing_tracks`).
+
+```
+bmbench bench/tracks-anno suite --tsv --header
+bmbench bench/tracks-anno suite --only all/cold
+bmbench bench/tracks-anno suite --only sect/loo      # leave-one-section-out
+bmbench bench/tracks-anno suite --only all/loso      # leave-WHOLE-section-out
+```
+
+Rows: `beats/tail-50`, `beats/mid-25`, `beats/chroma-alt`, `sect/discover`,
+`sect/tail-50`, `chords/tail-50`, `chords/decoder`, `all/keepsec0`,
+`all/tail-60`, `all/chords-first`, and `all/cold` (nothing kept at all: the
+detector finds tempo and phase, discovery finds the sections, the triad /
+external decoder the chords).  Two aggregate modes run one scenario per
+section and print one summed row: `sect/loo` hides one section instance
+(sections + chords; beats stay) for every section whose kind appears three or
+more times, and `all/loso` hides *everything* over each section of at least 8
+beats -- the section must be recovered on re-inferred beats.
+
+### External chord models
+
+`--set chord_external=1` adds an out-of-process chord recogniser to the chord
+stage.  One-time setup: `make chord-models` (or
+`scripts/setup-chord-models.sh [madmom|btc] [--force|--check]`), which builds
+the Python environments under `external/` and verifies them.  The command is `$BM_CHORD_CMD <audio>` when set, else
+`external/venv/bin/python scripts/chords_madmom.py <audio>` (madmom CNN+CRF,
+~83 % maj/min on Isophonics; `scripts/chords_btc.py` in `external/venv-btc`
+is the BTC large-vocabulary alternative and also emits 7th/sus chords).
+Output is one `start<TAB>end<TAB>label` line per chord; both scripts cache
+per track under `~/.cache/beatmapper/chords/`, so only the first run pays the
+model.  Model chords fill the spans no template-based source claimed, snapped
+to the beat grid; with `--set chord_external_blend=0.25` they instead become
+per-beat emission bonuses inside the Viterbi decoder.
+
 ## Scenarios that have been useful
 
 ```sh
@@ -133,13 +171,55 @@ cb_ok cb_n`.
 ## What it has found so far
 
 - The chroma algorithm dominates chord accuracy: HPS + Peaks 76 % vs NNLS
-  41 % on Nowhere Man; decoder knobs move it a few points.
+  41 % on Nowhere Man; decoder knobs move it a few points.  The whitened
+  log-frequency chroma (Cho & Bello front end) averaged with HPS + Peaks
+  ("Whitened + HPS/Peaks", now the default) took the decoder from 76 % to
+  83 % of chord beats over the 18-track set.
 - Sub-beat start slack in the beat fill was the source of half-beat seams
   (15 → 1 on one scenario with `jitter_beats=0`).
 - Section/chord edges mapped to the first beat at-or-after the edge shifted
   templates a beat late; nearest-beat snapping fixed it (`--edge-ms`).
 - Beat completion on real songs is brittle to the greedy chain: the same
   parameters give 189/205 hits on one hidden stretch and 117/246 on another.
+- The detector's tempo autocorrelation carried a DC pedestal that flattened
+  its peaks; de-meaned harmonic-sum scoring with a mild log-Gaussian prior
+  and a low-band (kick/bass) term fixed the tempo estimate on 17/18 tracks,
+  and cold-start beats went from 46 % to 90 % across the set.
+- The Ellis DP's tightness was in raw flux units, so its meaning depended on
+  the recording level; the ODF is normalised to unit variance now and the
+  default tightness is 50 (was 400).
+- Two half-beat-shift generators in seeded fills: the seed-phase cosine bias
+  extrapolated minutes past the mapped region (now tapered with distance to
+  the nearest seed), and the least-squares refit flattening long tempo-fill
+  segments into one constant-tempo line (long segments now refit on their
+  own tracked spacing).  keepsec0 worst cases went from 28-54 % to 93-100 %.
+- Template self-confidence could outvote audio evidence in the outcome
+  ranking (0.35 weight on template quality vs a 0.27 onset-support deficit,
+  Hold My Hand); the weight is 0.12 now and the detector's raw grid competes
+  as its own ranked outcome.
+- Discovery locked onto 4-measure sub-repeats of 12-bar forms; a unit is now
+  the shortest length whose consecutive repeats resemble each other clearly
+  more than the unit's own halves do (BBKing cold sections 0/4 → 4/4).
+- The song's own section-kind bigrams break verse-vs-solo ties in the
+  partition DP: `section_prior_weight=0.5` (now the default) took LOO
+  section recovery from 119 to 123 of 153 (Hotel California 4/11 → 7/11).
+- External learned chord models beat the triad decoder cold (madmom CNN+CRF
+  62 % vs 53 % of chord beats with nothing annotated) but do not improve on
+  within-song transfer once a few sections carry chords.  Known cases where
+  the model and the annotator disagree on major-vs-minor (Country-E-188) or
+  on the tuning reference of an off-pitch recording (BTC on Mary Jane's
+  Last Dance) score as misses.
+
+## Known-hard cases
+
+- `Cripple Creek 110 BPM in A` keepsec0/cold: the truth beats sit on the
+  quiet side of the banjo pattern; every audio-driven phase choice prefers
+  the loud offbeats.  Only the seed phase knows better, and extending its
+  reach breaks tempo-drifting tracks that need the opposite.
+- `I Cant Explain` cold: tempo estimate halves (prior tips it at 69 vs 139).
+- Cold-start section discovery on verse/chorus material with weak harmonic
+  contrast still over- and under-segments; edges land on measures but the
+  unit boundaries are subjective.
 
 ## Adding a scenario or a metric
 

@@ -1,4 +1,4 @@
-.PHONY: all clean run bench
+.PHONY: all clean run bench chord-models
 
 UNAME    := $(shell uname)
 TARGET   := beatmapper
@@ -43,6 +43,7 @@ SOURCES := \
     $(SRC_DIR)/chroma_nnls.cpp \
     $(SRC_DIR)/chroma_peaks.cpp \
     $(SRC_DIR)/chroma_resonate.cpp \
+    $(SRC_DIR)/chroma_whitened.cpp \
     $(IMGUI_DIR)/imgui.cpp \
     $(IMGUI_DIR)/imgui_demo.cpp \
     $(IMGUI_DIR)/imgui_draw.cpp \
@@ -93,7 +94,7 @@ BENCH_SRCS := $(SRC_DIR)/bench.cpp $(SRC_DIR)/audio.cpp $(SRC_DIR)/wsola.cpp \
     $(SRC_DIR)/lyricmap.cpp $(SRC_DIR)/miscmap.cpp $(SRC_DIR)/chroma_algo.cpp \
     $(SRC_DIR)/beat_algo.cpp $(SRC_DIR)/beat_spectral_flux.cpp \
     $(SRC_DIR)/chroma_goertzel.cpp $(SRC_DIR)/chroma_hps.cpp $(SRC_DIR)/chroma_nnls.cpp \
-    $(SRC_DIR)/chroma_peaks.cpp $(SRC_DIR)/chroma_resonate.cpp \
+    $(SRC_DIR)/chroma_peaks.cpp $(SRC_DIR)/chroma_resonate.cpp $(SRC_DIR)/chroma_whitened.cpp \
     $(SRC_DIR)/beat_chroma.cpp $(SRC_DIR)/onset_shape.cpp $(SRC_DIR)/complete_algo.cpp
 BENCH_OBJS := $(BENCH_SRCS:.cpp=.o)
 ifeq ($(UNAME), Darwin)
@@ -124,3 +125,10 @@ clean:
 
 run: all
 	./$(TARGET)
+
+# External learned chord models (madmom CNN+CRF, BTC large-vocab): venvs and
+# the BTC checkout under external/, verified idempotently.  See
+# scripts/setup-chord-models.sh --help for options (madmom|btc, --force,
+# --check).
+chord-models:
+	scripts/setup-chord-models.sh

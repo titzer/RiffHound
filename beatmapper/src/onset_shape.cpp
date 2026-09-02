@@ -297,7 +297,7 @@ static void harvest_onsets(const AudioPcm& a, double duration, float threshold,
     const double CHUNK = 20.0, PAD = 0.5;
     BeatAlgoParams bp = {};
     bp.min_bpm = 60; bp.max_bpm = 200; bp.onset_threshold = threshold;
-    bp.dp_tightness = 400; bp.pre_onset_ms = 0;
+    bp.dp_tightness = 50; bp.pre_onset_ms = 0;
     for (double t0 = 0.0; t0 < duration; t0 += CHUNK) {
         double t1 = std::min(duration, t0 + CHUNK + PAD);
         if (t1 - t0 < 0.3) break;

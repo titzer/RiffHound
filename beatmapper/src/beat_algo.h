@@ -29,7 +29,7 @@ struct BeatAlgoParams {
     float min_bpm;          // minimum expected tempo          (default  60)
     float max_bpm;          // maximum expected tempo          (default 200)
     float onset_threshold;  // flux peak threshold multiplier  (default 1.5)
-    float dp_tightness;     // Ellis DP temporal adherence     (default 400)
+    float dp_tightness;     // Ellis DP temporal adherence     (default 50, on the unit-variance ODF)
     float pre_onset_ms;     // shift beats this far before onset peak (default 30)
 
     // Optional: accepted beats within the window to bootstrap tempo/phase.

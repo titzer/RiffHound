@@ -37,9 +37,32 @@ const ChromaAlgoDesc CHROMA_ALGOS[] = {
         "the best pair for telling chords apart in a mix",
         chroma_hps_peaks
     },
+    {
+        "Whitened Log-Freq",
+        "Log-frequency spectrum with tuning correction, log compression and octave-wide\n"
+        "spectral whitening (Cho & Bello / Mauch): the chord-recognition front end",
+        chroma_whitened
+    },
+    {
+        "Whitened + HPS/Peaks",
+        "Average of the whitened log-frequency chroma and HPS+Peaks: the whitened view\n"
+        "removes drums and timbre, the harmonic views sharpen the fundamentals",
+        chroma_whitened_hps_peaks
+    },
 };
 
-const int CHROMA_ALGO_COUNT = 7;
+const int CHROMA_ALGO_COUNT = 9;
+
+void chroma_whitened_hps_peaks(const float* pcm, uint64_t n, uint32_t ch, uint32_t sr,
+                               double t0, double t1, float out[12])
+{
+    float a[12], b[12];
+    chroma_whitened(pcm, n, ch, sr, t0, t1, a);
+    chroma_hps_peaks(pcm, n, ch, sr, t0, t1, b);
+    float mx = 0.0f;
+    for (int i = 0; i < 12; i++) { out[i] = 0.5f * (a[i] + b[i]); if (out[i] > mx) mx = out[i]; }
+    if (mx > 1e-9f) for (int i = 0; i < 12; i++) out[i] /= mx;
+}
 
 void chroma_hps_peaks(const float* pcm, uint64_t n, uint32_t ch, uint32_t sr,
                       double t0, double t1, float out[12])

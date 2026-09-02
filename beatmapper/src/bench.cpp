@@ -92,7 +92,10 @@ static const PDesc PARAMS[] = {
     PB(section_partition,    "partition-DP section inference"),
     PF(section_prior_weight, "kind-transition prior weight in the DP"),
     PF(section_block_penalty,"fixed DP cost per block"),
+    PF(section_ext_penalty,  "DP cost per extended measure"),
+    PF(section_trunc_penalty,"DP cost per truncated measure"),
     PI(section_min_measures, "shortest discovered repeat unit"),
+    PF(section_start_margin, "discovery start-shift margin (<0 off)"),
     PB(chord_runs,           "progression repeat matching"),
     PI(chord_run_beats,      "max progression template beats"),
     PF(chord_sim_threshold,  "progression match threshold"),
@@ -103,6 +106,8 @@ static const PDesc PARAMS[] = {
     PF(chord_unseen_penalty, "decoder: penalty for triads not in the map (>=1 disables)"),
     PF(chord_prior_beats,    "learned chord model triad prior weight"),
     PB(chord_learn_rate,     "scale change cost by the map's median chord length"),
+    PB(chord_external,       "external learned chord model (madmom; needs scripts/chords_madmom.py)"),
+    PF(chord_external_blend, "blend external labels into the decoder as emission bonuses (0 = spans)"),
     PI(chroma.algo_idx,      "CHROMA_ALGOS index for beat chroma"),
     PF(chroma.attack_ms,     "beat chroma: skip attack ms"),
     PF(chroma.attack_frac,   "beat chroma: skip attack fraction"),
@@ -375,6 +380,7 @@ static void run_scenario(const TrackData& td, MapSet* ms, CompleteParams p,
     const Truth& tr = td.tr;
     CompleteInputs in = {};
     in.beatmap = &ms->bm; in.sectionmap = &ms->sm; in.chordmap = &ms->cm;
+    in.audio_path = td.audio.c_str();
     in.audio.pcm = td.pcm; in.audio.frame_count = td.nf; in.audio.channels = 1;
     in.audio.sample_rate = td.sr;
     in.duration = td.duration;
@@ -511,6 +517,7 @@ static const Scen SUITE[] = {
     { "all/keepsec0",     L_ALL, 0, 0, true,  "b,s,c",       1, nullptr },
     { "all/tail-60",      L_ALL, 0.40, 1.0, false, "b,s,c",  1, nullptr },
     { "all/chords-first", L_ALL, 0.40, 1.0, false, "b,c,s",  1, nullptr },
+    { "all/cold",         L_ALL, 0.0, 1.0, false, "b,s,c",   1, nullptr },
 };
 static const int N_SUITE = (int)(sizeof(SUITE) / sizeof(SUITE[0]));
 
@@ -583,6 +590,51 @@ static void run_loo(const TrackData& td, const CompleteParams& base, bool tsv, b
         ms.free();
     }
     metrics_print(td.name.c_str(), "sect/loo", agg, tsv);
+}
+
+// Leave-whole-section-out: for every section of at least 8 beats, hide
+// EVERYTHING over its span -- beats, the section, its chords -- and run the
+// full pipeline (beats, then sections, then chords) over the hole.  Harder
+// than sect/loo: the section must be recovered on re-inferred beats.  One
+// aggregated metrics row.
+static void run_loso(const TrackData& td, const CompleteParams& base, bool tsv, bool verbose)
+{
+    const Truth& tr = td.tr;
+    Metrics agg;
+    agg.has_beats = true;
+    agg.has_sections = true;
+    for (size_t i = 0; i < tr.sections.size(); i++) {
+        const Section& sec = tr.sections[i];
+        int nb = 0;
+        for (double t : tr.beats)
+            if (t >= sec.t_start - 1e-3 && t <= sec.t_end + 1e-3) nb++;
+        if (nb < 8) continue;
+
+        MapSet ms; ms.init(tr);
+        hide_range(tr, &ms, L_ALL, sec.t_start + 1e-3, sec.t_end - 1e-3);
+        CompleteParams p = base;
+        RunOpts opts; opts.order = "b,s,c"; opts.smooth2 = 1;
+        Metrics m;
+        shape_analysis_clear(shape_track());
+        run_scenario(td, &ms, p, opts, &m);
+        agg.n_hidden += m.n_hidden; agg.bn += m.bn;
+        agg.hit50 += m.hit50; agg.hit90 += m.hit90;
+        agg.half += m.half; agg.missed += m.missed;
+        agg.mean_ms += m.mean_ms * m.bn; agg.max_ms = std::max(agg.max_ms, m.max_ms);
+        agg.sec_true += m.sec_true; agg.sec_found += m.sec_found; agg.sec_false += m.sec_false;
+        agg.cb_ok += m.cb_ok; agg.cb_n += m.cb_n;
+        if (verbose) {
+            char name[64];
+            if (sec.label[0]) snprintf(name, sizeof(name), "%s %s", SECTION_KIND_NAMES[sec.kind], sec.label);
+            else snprintf(name, sizeof(name), "%s", SECTION_KIND_NAMES[sec.kind]);
+            printf("    %-16s %7.2f-%-7.2f beats %d/%d  sect %d/%d(+%d)  chords %d/%d\n",
+                   name, sec.t_start, sec.t_end,
+                   m.hit50, m.bn, m.sec_found, m.sec_true, m.sec_false, m.cb_ok, m.cb_n);
+        }
+        ms.free();
+    }
+    if (agg.bn) agg.mean_ms /= agg.bn;
+    metrics_print(td.name.c_str(), "all/loso", agg, tsv);
 }
 
 static const char* TSV_HEADER =
@@ -784,12 +836,20 @@ int main(int argc, char** argv) {
                 hidden[i] = td.tr.beats[i] >= reg0 && td.tr.beats[i] <= reg1;
             Metrics m;
             score_beats(prop, td.tr, hidden, &m);
+            {
+                std::vector<double> tb;
+                for (double t : td.tr.beats) if (t >= reg0 && t <= reg1) tb.push_back(t);
+                double truth_bpm = tb.size() > 1 ? 60.0 * (tb.size() - 1) / (tb.back() - tb.front()) : 0.0;
+                fprintf(stderr, "  est %.1f BPM, truth %.1f BPM, %d det beats\n",
+                        ab.estimated_bpm, truth_bpm, ab.beat_count);
+            }
             metrics_print(td.name.c_str(), "detect", m, tsv);
             track_free(&td);
             continue;
         }
         if (cmd == "suite") {
             if (only && !strcmp(only, "sect/loo")) run_loo(td, p, tsv, list || !tsv);
+            else if (only && !strcmp(only, "all/loso")) run_loso(td, p, tsv, list);
             else run_suite(td, p, only, tsv);
             track_free(&td);
             continue;

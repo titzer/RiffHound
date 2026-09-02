@@ -14,6 +14,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#include <vector>
+#include <algorithm>
 
 static const int BF_FFT  = 2048;
 static const int BF_HOP  = 512;
@@ -26,9 +28,10 @@ static const int BF_BINS = BF_FFT / 2;
 static float* compute_flux(const float* pcm, uint64_t total_frames,
                            uint32_t channels, uint32_t sample_rate,
                            double t_start, double t_end,
-                           int* out_n)
+                           int* out_n, float** out_low)
 {
     *out_n = 0;
+    if (out_low) *out_low = nullptr;
     if (!pcm || total_frames == 0 || sample_rate == 0 || channels == 0) return nullptr;
 
     uint64_t s0 = (uint64_t)(t_start * sample_rate);
@@ -40,12 +43,17 @@ static float* compute_flux(const float* pcm, uint64_t total_frames,
     if (n <= 0) return nullptr;
 
     float* flux = (float*)calloc(n, sizeof(float));
+    float* lowf = out_low ? (float*)calloc(n, sizeof(float)) : nullptr;
     float* re   = (float*)malloc(BF_FFT * sizeof(float));
     float* im   = (float*)malloc(BF_FFT * sizeof(float));
     float* prev = (float*)calloc(BF_BINS, sizeof(float));
-    if (!flux || !re || !im || !prev) {
-        free(flux); free(re); free(im); free(prev); return nullptr;
+    if (!flux || !re || !im || !prev || (out_low && !lowf)) {
+        free(flux); free(lowf); free(re); free(im); free(prev); return nullptr;
     }
+    // "Low" = bins below ~260 Hz: kick and bass, the onsets that sit on the
+    // beat (not the hats and snares that sit between).
+    int low_bins = (int)(260.0 * BF_FFT / sample_rate) + 1;
+    if (low_bins > BF_BINS) low_bins = BF_BINS;
 
     // Hann window
     float window[BF_FFT];
@@ -69,18 +77,34 @@ static float* compute_flux(const float* pcm, uint64_t total_frames,
         chroma_fft(re, im, BF_FFT);
 
         // Spectral flux: sum of positive magnitude differences (half-wave rectified)
-        float sf = 0.0f;
+        float sf = 0.0f, sl = 0.0f;
         for (int b = 0; b < BF_BINS; b++) {
             float mag  = sqrtf(re[b]*re[b] + im[b]*im[b]);
             float diff = mag - prev[b];
-            if (diff > 0.0f) sf += diff;
+            if (diff > 0.0f) { sf += diff; if (b < low_bins) sl += diff; }
             prev[b] = mag;
         }
         flux[f] = sf;
+        if (lowf) lowf[f] = sl;
     }
 
     free(re); free(im); free(prev);
+
+    // Normalise the ODF to unit standard deviation: the DP's tightness and
+    // the grid-bias amplitude are meaningful only relative to the ODF scale,
+    // which otherwise varies by orders of magnitude with the recording level.
+    {
+        double mean = 0.0;
+        for (int i = 0; i < n; i++) mean += flux[i];
+        mean /= n;
+        double var = 0.0;
+        for (int i = 0; i < n; i++) { double d = flux[i] - mean; var += d * d; }
+        float inv = var > 1e-12 ? (float)(1.0 / sqrt(var / n)) : 1.0f;
+        for (int i = 0; i < n; i++) flux[i] *= inv;
+        if (lowf) for (int i = 0; i < n; i++) lowf[i] *= inv;
+    }
     *out_n = n;
+    if (out_low) *out_low = lowf;
     return flux;
 }
 
@@ -121,7 +145,7 @@ static void find_onsets(const float* flux, int n, double t_start,
 // Step 2b: estimate beat period in ODF frames via autocorrelation.
 // Checks whether double the best lag is also strong (avoids subdivision lock).
 // ---------------------------------------------------------------------------
-static float estimate_period(const float* flux, int n,
+static float estimate_period(const float* flux, const float* lowflux, int n,
                               float min_bpm, float max_bpm,
                               uint32_t sample_rate)
 {
@@ -129,34 +153,88 @@ static float estimate_period(const float* flux, int n,
     int lag_min  = (int)(fps * 60.0f / max_bpm);
     int lag_max  = (int)(fps * 60.0f / min_bpm);
     if (lag_min < 1)    lag_min = 1;
-    if (lag_max >= n)   lag_max = n - 1;
+    if (lag_max >= n / 2) lag_max = n / 2 - 1;
     if (lag_min > lag_max) return fps;  // fallback to 1 BPS
 
-    float best_val = -1.0f;
-    int   best_lag =  lag_min;
-
-    for (int lag = lag_min; lag <= lag_max; lag++) {
-        int   cnt = n - lag;
-        float ac  = 0.0f;
-        for (int i = 0; i < cnt; i++) ac += flux[i] * flux[i + lag];
-        ac /= (float)cnt;
-        if (ac > best_val) { best_val = ac; best_lag = lag; }
+    // De-meaned, variance-normalised autocorrelation: the raw product carries
+    // a large DC pedestal that flattens the peaks and lets noise pick the
+    // argmax.  Computed out to 3*lag_max for the harmonic sum below.
+    int ac_max = std::min(n - 1, 3 * lag_max);
+    std::vector<float> ac(ac_max + 1, 0.0f);
+    double mean = 0.0;
+    for (int i = 0; i < n; i++) mean += flux[i];
+    mean /= n;
+    double var = 0.0;
+    for (int i = 0; i < n; i++) { double d = flux[i] - mean; var += d * d; }
+    if (var < 1e-12) return fps;
+    for (int lag = 1; lag <= ac_max; lag++) {
+        double s = 0.0;
+        int cnt = n - lag;
+        for (int i = 0; i < cnt; i++) s += (flux[i] - mean) * (flux[i + lag] - mean);
+        ac[lag] = (float)(s / var);         // ~[-1, 1], relative to full-signal variance
     }
+    auto ac_at = [&](float lag) -> float {
+        int l0 = (int)lag;
+        if (l0 < 1 || l0 + 1 > ac_max) return 0.0f;
+        float fr = lag - l0;
+        return ac[l0] * (1.0f - fr) + ac[l0 + 1] * fr;
+    };
 
-    // Prefer double the period if it's nearly as strong (avoids 8th-note lock).
-    int double_lag = best_lag * 2;
-    if (double_lag <= lag_max) {
-        int   cnt = n - double_lag;
-        float ac2 = 0.0f;
-        if (cnt > 0) {
-            for (int i = 0; i < cnt; i++) ac2 += flux[i] * flux[i + double_lag];
-            ac2 /= (float)cnt;
-            if (ac2 >= best_val * 0.70f)
-                best_lag = double_lag;
+    // The same autocorrelation over the low-band ODF: kick and bass move at
+    // the beat, not at the eighth-note subdivision, so their periodicity
+    // breaks the octave tie the broadband ODF cannot.
+    std::vector<float> acl;
+    if (lowflux) {
+        double lmean = 0.0;
+        for (int i = 0; i < n; i++) lmean += lowflux[i];
+        lmean /= n;
+        double lvar = 0.0;
+        for (int i = 0; i < n; i++) { double d = lowflux[i] - lmean; lvar += d * d; }
+        if (lvar > 1e-12) {
+            acl.assign(ac_max + 1, 0.0f);
+            for (int lag = 1; lag <= ac_max; lag++) {
+                double s = 0.0;
+                int cnt = n - lag;
+                for (int i = 0; i < cnt; i++) s += (lowflux[i] - lmean) * (lowflux[i + lag] - lmean);
+                acl[lag] = (float)(s / lvar);
+            }
         }
     }
+    auto acl_at = [&](float lag) -> float {
+        if (acl.empty()) return 0.0f;
+        int l0 = (int)lag;
+        if (l0 < 1 || l0 + 1 > ac_max) return 0.0f;
+        float fr = lag - l0;
+        return acl[l0] * (1.0f - fr) + acl[l0 + 1] * fr;
+    };
 
-    return (float)best_lag;
+    // Harmonic scoring with a mild log-Gaussian tempo prior (centre 120 BPM):
+    // the true beat period is supported by its own multiples, a 1.5x lock is
+    // not, and the prior discourages eighth-note and half-time locks when the
+    // evidence is ambiguous.
+    float best_val = -1e9f;
+    float best_lag = (float)lag_min;
+    for (int lag = lag_min; lag <= lag_max; lag++) {
+        float sec   = (float)lag / fps;
+        float lg    = log2f(sec / 0.6f);
+        float prior = expf(-0.5f * lg * lg / (1.4f * 1.4f));
+        float val   = prior * (ac_at((float)lag) + 0.5f * ac_at(2.0f * lag)
+                               + 0.33f * ac_at(3.0f * lag)
+                               + acl_at((float)lag) + 0.5f * acl_at(2.0f * lag));
+        if (val > best_val) { best_val = val; best_lag = (float)lag; }
+    }
+    if (getenv("TEMPO_DEBUG")) {
+        for (float mul : { 0.5f, 2.0f/3.0f, 1.0f, 4.0f/3.0f, 1.5f, 2.0f }) {
+            float lag = best_lag * mul;
+            if (lag < 1 || lag > (float)lag_max) continue;
+            float sec = lag / fps;
+            float lg  = log2f(sec / 0.6f);
+            fprintf(stderr, "  [tempo] %6.1f BPM  ac %.3f ac2 %.3f ac3 %.3f  low %.3f low2 %.3f  prior %.2f\n",
+                    60.0f / sec, ac_at(lag), ac_at(2 * lag), ac_at(3 * lag),
+                    acl_at(lag), acl_at(2 * lag), expf(-0.5f * lg * lg / (1.4f * 1.4f)));
+        }
+    }
+    return best_lag;
 }
 
 // ---------------------------------------------------------------------------
@@ -251,14 +329,15 @@ void beat_spectral_flux(const float* pcm, uint64_t frame_count,
     float min_bpm  = (params->min_bpm  > 0.0f) ? params->min_bpm  : 60.0f;
     float max_bpm  = (params->max_bpm  > 0.0f) ? params->max_bpm  : 200.0f;
     float thresh   = (params->onset_threshold > 0.0f) ? params->onset_threshold : 1.5f;
-    float tight    = (params->dp_tightness   > 0.0f) ? params->dp_tightness   : 400.0f;
+    float tight    = (params->dp_tightness   > 0.0f) ? params->dp_tightness   : 50.0f;
     double pre_sec = (double)params->pre_onset_ms / 1000.0;
 
-    // 1. Spectral flux ODF
+    // 1. Spectral flux ODF (plus a low-band ODF for downbeat-phase checks)
     int    n_flux = 0;
+    float* lowflux = nullptr;
     float* flux   = compute_flux(pcm, frame_count, channels, sample_rate,
-                                 t_start, t_end, &n_flux);
-    if (!flux || n_flux < 4) { free(flux); return; }
+                                 t_start, t_end, &n_flux, &lowflux);
+    if (!flux || n_flux < 4) { free(flux); free(lowflux); return; }
 
     double hop_sec = (double)BF_HOP / sample_rate;
     float  fps     = (float)sample_rate / BF_HOP;
@@ -278,9 +357,9 @@ void beat_spectral_flux(const float* pcm, uint64_t frame_count,
                 ibis[n_ibis++] = (float)ibi;
         }
         tau = (n_ibis > 0) ? array_median(ibis, n_ibis) * fps
-                           : estimate_period(flux, n_flux, min_bpm, max_bpm, sample_rate);
+                           : estimate_period(flux, lowflux, n_flux, min_bpm, max_bpm, sample_rate);
     } else {
-        tau = estimate_period(flux, n_flux, min_bpm, max_bpm, sample_rate);
+        tau = estimate_period(flux, lowflux, n_flux, min_bpm, max_bpm, sample_rate);
     }
     if (tau < 1.0f) tau = 1.0f;
 
@@ -333,6 +412,7 @@ void beat_spectral_flux(const float* pcm, uint64_t frame_count,
         steadiness *= steadiness;  // square: very steady grids get a big boost
 
         // c) Apply cosine bias in-place
+        if (getenv("BM_NO_GRID_BIAS")) steadiness = 0.0f;
         if (steadiness > 0.01f) {
             float flux_mean = 0.0f;
             for (int f = 0; f < n_flux; f++) flux_mean += flux[f];
@@ -340,10 +420,23 @@ void beat_spectral_flux(const float* pcm, uint64_t frame_count,
 
             float amplitude = steadiness * 4.0f * flux_mean;
             for (int f = 0; f < n_flux; f++) {
-                double phase_sec = fmod(t_start + (double)f * hop_sec - seed_anchor,
-                                        tau_sec);
+                double t = t_start + (double)f * hop_sec;
+                double phase_sec = fmod(t - seed_anchor, tau_sec);
                 if (phase_sec < 0.0) phase_sec += tau_sec;
-                float bias = amplitude * cosf(2.0f * 3.14159265f *
+                // The seeds' phase is only trustworthy near the seeds: a
+                // constant-phase cosine extrapolated minutes past the mapped
+                // region drifts against the real tempo and then *fights* the
+                // audio, planting the fill half a beat off.  Full strength
+                // within ~4 beats of a seed, fading to nothing by ~30.
+                double dist = 1e18;
+                for (int j = 0; j < ns; j++) {
+                    double d = fabs(seeds[j] - t);
+                    if (d < dist) dist = d;
+                }
+                double d_beats = dist / tau_sec;
+                float  taper = d_beats <= 4.0 ? 1.0f
+                             : (float)exp(-(d_beats - 4.0) / 10.0);
+                float bias = taper * amplitude * cosf(2.0f * 3.14159265f *
                                               (float)(phase_sec / tau_sec));
                 flux[f] = fmaxf(0.0f, flux[f] + bias);
             }
@@ -354,10 +447,40 @@ void beat_spectral_flux(const float* pcm, uint64_t frame_count,
     int beat_frames[MAX_BEAT_CANDS];
     int beat_count  = 0;
     dp_beat_track(flux, n_flux, tau, tight, beat_frames, &beat_count, MAX_BEAT_CANDS);
+
+    if (beat_count == 0) { free(flux); free(lowflux); return; }
+
     free(flux);
     flux = nullptr;
 
-    if (beat_count == 0) return;
+    // 4.5. Downbeat-phase check (unseeded only: seeds carry the phase).  The
+    // DP follows the loudest periodic onsets, which on backbeat-heavy tracks
+    // are the off-beats.  Kick and bass sit on the beat: if the half-period-
+    // shifted grid collects clearly more low-band flux, flip the phase.
+    if ((params->seed_count < 2 || !params->seed_times) && lowflux && beat_count >= 8) {
+        int half = (int)(tau * 0.5f + 0.5f);
+        auto low_at = [&](int f) -> float {
+            float best = 0.0f;
+            for (int d = -1; d <= 1; d++) {
+                int i = f + d;
+                if (i >= 0 && i < n_flux && lowflux[i] > best) best = lowflux[i];
+            }
+            return best;
+        };
+        float on = 0.0f, shifted = 0.0f;
+        for (int i = 0; i < beat_count; i++) {
+            on      += low_at(beat_frames[i]);
+            shifted += low_at(beat_frames[i] + half);
+        }
+        if (shifted > 1.3f * on) {
+            for (int i = 0; i < beat_count; i++) {
+                beat_frames[i] += half;
+                if (beat_frames[i] >= n_flux) beat_frames[i] = n_flux - 1;
+            }
+        }
+    }
+    free(lowflux);
+    lowflux = nullptr;
 
     // 5. Fine-tune: shift all DP beats by the median residual offset to seed
     //    beats.  The grid bias has already done the heavy lifting; this corrects
