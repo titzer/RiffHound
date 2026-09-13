@@ -63,7 +63,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 MEDIA_EXT = (".mp3", ".m4a", ".ogg", ".webm", ".flac", ".wav",
              ".mp4", ".m4v", ".mov")
 RESCAN_AFTER = 5.0          # seconds; a listing this stale is re-walked
-PAGE = "v0.3.html"
+PAGE = "v0.4.html"
 
 # A folder holding this file is not part of the library.  A library that keeps
 # its untouched copies in originals/ has every track twice -- once to play and
@@ -94,14 +94,16 @@ def chart_flags(path):
     try:
         st = path.stat()
     except OSError:
-        return {"beats": False, "chords": False, "lyrics": False, "loops": False}
+        return {"beats": False, "chords": False, "lyrics": False, "loops": False,
+                "melody": False}
 
     key = (str(path), st.st_size, st.st_mtime_ns)
     hit = _flags.get(str(path))
     if hit and hit[0] == key:
         return hit[1]
 
-    has = {"beats": False, "chords": False, "lyrics": False, "loops": False}
+    has = {"beats": False, "chords": False, "lyrics": False, "loops": False,
+           "melody": False}
     try:
         with path.open("r", errors="replace") as f:
             for line in f:
@@ -118,6 +120,8 @@ def chart_flags(path):
                     has["lyrics"] = True
                 elif tok.startswith("loop:"):
                     has["loops"] = True
+                elif tok == "voice:":
+                    has["melody"] = True
                 if all(has.values()):
                     break
     except OSError:
