@@ -95,7 +95,7 @@ def chart_flags(path):
         st = path.stat()
     except OSError:
         return {"beats": False, "chords": False, "lyrics": False, "loops": False,
-                "melody": False}
+                "melody": False, "trade": False}
 
     key = (str(path), st.st_size, st.st_mtime_ns)
     hit = _flags.get(str(path))
@@ -103,7 +103,8 @@ def chart_flags(path):
         return hit[1]
 
     has = {"beats": False, "chords": False, "lyrics": False, "loops": False,
-           "melody": False}
+           "melody": False, "trade": False}
+    roles = set()
     try:
         with path.open("r", errors="replace") as f:
             for line in f:
@@ -122,6 +123,10 @@ def chart_flags(path):
                     has["loops"] = True
                 elif tok == "voice:":
                     has["melody"] = True
+                elif tok.rstrip(":") in ("licks", "backing"):
+                    # Trading needs both halves; one alone is just a mark.
+                    roles.add(tok.rstrip(":"))
+                    has["trade"] = len(roles) == 2
                 if all(has.values()):
                     break
     except OSError:

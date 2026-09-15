@@ -1577,7 +1577,7 @@ function parseVoice(src, tonicDefault) {
 
 function parseTimeseries(text) {
   const lyrics = [], sections = [], beats = [], chords = [], strums = [], loops = [];
-  const voices = [], keys = [];
+  const voices = [], keys = [], parts = [], licks = [];
   const notes = [];   /* things worth telling the user about the file itself */
   let gid = 0;
 
@@ -1672,6 +1672,25 @@ function parseTimeseries(text) {
       continue;
     }
 
+    /* "licks" and "backing" are the two halves of a trading track: the same
+       passage twice, once with the lead playing over it and once without.
+       Bar k of one answers bar k of the other, which is what lets the player
+       hand the lead back and forth between the record and the person in
+       the room. Anything after the keyword is a label. */
+    const part = /^(licks|backing)\b[\s:]*(.*)$/.exec(event);
+    if (part) {
+      parts.push({ role: part[1], t_start, t_end, label: part[2].trim() });
+      continue;
+    }
+    /* "lick" is one phrase of the lead, as played: pickup, tail and all,
+       with no regard for the bar lines. Trading by licks takes its turns
+       from these. */
+    const lick = /^lick\b[\s:]*(.*)$/.exec(event);
+    if (lick) {
+      licks.push({ t_start, t_end, label: lick[1].trim() });
+      continue;
+    }
+
     for (const kind of SECTION_KINDS) {
       if (event === kind || event.startsWith(kind + ":") || event.startsWith(kind + " ")) {
         const rest = event.slice(kind.length).replace(/^[\s:]+/, "").trim();
@@ -1690,6 +1709,8 @@ function parseTimeseries(text) {
   loops.sort((a, b) => a.t_start - b.t_start);
   voices.sort((a, b) => a.t_start - b.t_start);
   keys.sort((a, b) => a.t_start - b.t_start);
+  parts.sort((a, b) => a.t_start - b.t_start);
+  licks.sort((a, b) => a.t_start - b.t_start);
   beats.sort((a, b) => a - b);
 
   /* When a line should appear, and whether that lead-in is long enough to
@@ -1714,7 +1735,7 @@ function parseTimeseries(text) {
     l.rest = next - l.t_end >= REST_MIN ? l.t_end : null;
   });
 
-  return { lyrics, sections, beats, chords, strums, loops, voices, keys, notes };
+  return { lyrics, sections, beats, chords, strums, loops, voices, keys, parts, licks, notes };
 }
 
 /* Real accidental glyphs, kerned back against the letter they belong to. */
@@ -1916,6 +1937,8 @@ const showLyrics = () => state.lyricsPanel && lyricLines.length > 0;
 const highBounce = () => chordsOn() && !showLyrics();
 
 let lyricLines = [], sections = [], beatGrid = [], chordLine = [], loopRanges = [];
+let tradeParts = [];   /* the map's licks/backing ranges, if it has them */
+let lickSpans  = [];   /* the map's individual "lick" phrases, in the licks half */
 
 /* The beatmap's own grid, when it has one. Bouncing on recorded beats rather
    than a fixed rate is the difference between following the record and
@@ -2578,23 +2601,33 @@ function ghostChords() {
    clock, because the beats are wherever the record put them. */
 let loopGhostOn = false;
 
+/* The bars of a span, in track time: { w0, w1, bar } each, bar being the
+   track's own measure number. Bars anchor to the section the span starts in
+   — section starts are downbeats by construction — and number on from the
+   bars before it. A partial bar at either edge is kept, as the slice it is. */
+function barsIn(from, to) {
+  const s = sections.find(x => from >= x.t_start - .001 && from < x.t_end);
+  const bpb = s?.beatsPerBar || sections[0]?.beatsPerBar || 4;
+  const anchor = s ? beatPos(s.t_start) : 0;
+  const base = Math.round(anchor / bpb);
+  const b0 = beatPos(from) - anchor, b1 = beatPos(to) - anchor;
+  const out = [];
+  for (let j = Math.floor(b0 / bpb + 1e-6); j * bpb < b1 - 1e-6; j++) {
+    const bs = Math.max(b0, j * bpb), be = Math.min(b1, (j + 1) * bpb);
+    const w0 = beatTime(bs + anchor), w1 = beatTime(be + anchor);
+    if (w1 - w0 <= 1e-6) continue;
+    out.push({ w0, w1, bar: base + j + 1 });
+  }
+  return out;
+}
+
 function loopGhost() {
   const ms = [];
   let acc = 0;
   for (const l of looper.buf) {
-    /* Bars anchor to the section the loop starts in — section starts are
-       downbeats by construction — and number on from the bars before it. */
-    const s = sections.find(x => l.from >= x.t_start - .001 && l.from < x.t_end);
-    const bpb = s?.beatsPerBar || sections[0]?.beatsPerBar || 4;
-    const anchor = s ? beatPos(s.t_start) : 0;
-    const base = Math.round(anchor / bpb);
-    const b0 = beatPos(l.from) - anchor, b1 = beatPos(l.to) - anchor;
-    for (let j = Math.floor(b0 / bpb + 1e-6); j * bpb < b1 - 1e-6; j++) {
-      const bs = Math.max(b0, j * bpb), be = Math.min(b1, (j + 1) * bpb);
-      const w0 = beatTime(bs + anchor);
-      const d = beatTime(be + anchor) - w0;
-      if (d <= 1e-6) continue;
-      ms.push({ p0: acc, p1: acc + d, bar: base + j + 1, wall: w0 });
+    for (const b of barsIn(l.from, l.to)) {
+      const d = b.w1 - b.w0;
+      ms.push({ p0: acc, p1: acc + d, bar: b.bar, wall: b.w0 });
       acc += d;
     }
   }
@@ -3635,6 +3668,8 @@ function drawTransport() {
    audibly worse, and it says so. */
 const looper = {
   buf: [],           /* the programme: { name, from, to } in track seconds */
+  trade: 0,          /* bars (or licks) per turn while trading, 0 when the buffer is hand-built */
+  tradeUnit: "bar",  /* what a turn is counted in: "bar" or "lick" */
   seg: 0,            /* which entry is sounding */
   on: false,         /* buffer engaged: the engine (or fallback) owns playback */
   mode: "engine",    /* "engine" until proven otherwise, then "fallback" */
@@ -4028,22 +4063,129 @@ function loopOff() {
 
 /* ── the loop buffer's edits ──────────────────────────────────────────── */
 function bufAdd(l) {
+  looper.trade = 0;
   looper.buf.push({ name: l.name, from: l.t_start, to: l.t_end });
   loopApply(looper.buf.length === 1 ? l.t_start : null);
 }
 
 function bufRemove(i) {
+  looper.trade = 0;
   looper.buf.splice(i, 1);
   if (looper.seg >= i && looper.seg > 0) looper.seg--;
   loopApply(null);
 }
 
 function bufClear() {
+  looper.trade = 0;
   looper.buf = [];
   loopApply(null);
 }
 
+/* ── trading licks ────────────────────────────────────────────────────────
+   A track with "licks" and "backing" ranges is the same passage twice: once
+   with a lead player on it, once bare. Trading turns the two into one
+   programme that walks the passage bar by bar, taking each turn of `n` bars
+   from alternate halves — bars 1–2 from the licks, bars 3–4 from the
+   backing, bars 5–6 from the licks… — so the form keeps moving while the
+   lead passes between the record and the room. It is a buffer like any
+   other, so the engine wraps it, the ghost charts it and a chip lights as
+   it plays; the only difference is that it is built, not queued, and a
+   hand edit turns it back into a plain buffer. */
+const tradeable = () =>
+  tradeParts.some(p => p.role === "licks") && tradeParts.some(p => p.role === "backing");
+
+function tradeProgramme(n) {
+  const licks = tradeParts.find(p => p.role === "licks");
+  const backing = tradeParts.find(p => p.role === "backing");
+  if (!licks || !backing) return [];
+  const bl = barsIn(licks.t_start, licks.t_end);
+  const bb = barsIn(backing.t_start, backing.t_end);
+  const count = Math.min(bl.length, bb.length);
+  const buf = [];
+  for (let k = 0, turn = 0; k < count; k += n, turn++) {
+    const bars = turn % 2 ? bb : bl;
+    const last = Math.min(k + n, count) - 1;
+    const who = turn % 2 ? "you" : "lick";
+    const span = last > k ? `${k + 1}–${last + 1}` : `${k + 1}`;
+    buf.push({ name: `${who} ${span}`, from: bars[k].w0, to: bars[last].w1 });
+  }
+  return buf;
+}
+
+/* Trading by licks. The lead does not stop on the bar line — it runs over,
+   comes in early, and on some tracks barely pauses — so a turn is a phrase
+   as recorded rather than a count of bars. The passage plays through once,
+   in form order, from the backing half; a call turn cuts to the licks half
+   for exactly the window its licks occupy, and every other window of `n`
+   licks is left to the player. Both halves are the same form, so a cut can
+   land anywhere: a point in the licks half maps to the backing half by its
+   beat position, which follows the grid rather than a fixed offset. */
+const lickable = () => tradeable() && lickSpans.length > 0;
+
+function lickProgramme(n) {
+  const licks = tradeParts.find(p => p.role === "licks");
+  const backing = tradeParts.find(p => p.role === "backing");
+  if (!licks || !backing || !lickSpans.length) return [];
+  const b0 = beatPos(licks.t_start), c0 = beatPos(backing.t_start);
+  const toBacking = t => beatTime(c0 + beatPos(t) - b0);
+  const buf = [];
+  const MIN = .05;
+  const push = (name, from, to) => {
+    if (to - from > MIN) buf.push({ name, from, to });
+  };
+
+  let at = licks.t_start;        /* form position reached so far, licks-half time */
+  for (let k = 0, turn = 0; k < lickSpans.length; k += n, turn++) {
+    const last = Math.min(k + n, lickSpans.length) - 1;
+    /* A window never starts before the previous one ended: annotations
+       that overlap a little are trimmed rather than played twice. */
+    const w0 = Math.max(at, lickSpans[k].t_start);
+    const w1 = Math.max(w0, Math.min(licks.t_end, lickSpans[last].t_end));
+    if (w1 <= w0) continue;
+    const span = last > k ? `${k + 1}–${last + 1}` : `${k + 1}`;
+    if (turn % 2) {
+      /* The player's turn starts where the last one ended: the gap before
+         the window is theirs too, and the chip says so. */
+      push(`you ${span}`, toBacking(at), toBacking(w1));
+    } else {
+      /* A breath before the record's phrase is not worth a chip of its own;
+         the licks half is just as quiet there, so the call starts early. */
+      const lead = w0 - at < .25 ? at : w0;
+      push("…", toBacking(at), toBacking(lead));
+      push(`lick ${span}`, lead, w1);
+    }
+    at = w1;
+  }
+  push("…", toBacking(at), toBacking(licks.t_end));
+  return buf;
+}
+
+function setTrade(n, unit) {
+  if (!n || !tradeable()) return bufClear();
+  unit = unit || looper.tradeUnit;
+  if (unit === "lick" && !lickable()) unit = "bar";
+  const buf = unit === "lick" ? lickProgramme(n) : tradeProgramme(n);
+  if (!buf.length) return bufClear();
+  looper.trade = n;
+  looper.tradeUnit = unit;
+  looper.buf = buf;
+  looper.seg = 0;
+  loopApply(buf[0].from);
+}
+
+/* T cycles the turn: off, one bar, two bars, then — where the map has
+   them — one lick, two licks, and off again. */
+function cycleTrade() {
+  if (!tradeable()) return;
+  const steps = [[0, "bar"], [1, "bar"], [2, "bar"]];
+  if (lickable()) steps.push([1, "lick"], [2, "lick"]);
+  let i = steps.findIndex(([n, u]) => n === looper.trade && (n === 0 || u === looper.tradeUnit));
+  const [n, u] = steps[(i + 1) % steps.length];
+  setTrade(n, u);
+}
+
 function bufMove(i, j) {
+  looper.trade = 0;
   const [x] = looper.buf.splice(i, 1);
   looper.buf.splice(j, 0, x);
   if (looper.seg === i) looper.seg = j;
@@ -4054,17 +4196,35 @@ function bufMove(i, j) {
 
 /* ── the strips ───────────────────────────────────────────────────────── */
 function renderLoopBar() {
-  loopBar.replaceChildren(...loopRanges.map(l => {
+  const kids = loopRanges.map(l => {
     const b = document.createElement("button");
+    b.className = "range";
     b.textContent = "⟳ " + l.name;
     b.title = `${fmtTime(l.t_start)} – ${fmtTime(l.t_end)} — add to the loop buffer`;
     b.onclick = () => bufAdd(l);
     return b;
-  }));
+  });
+  /* Trading builds the whole buffer at a press; pressing the lit one stops. */
+  if (tradeable()) {
+    const units = lickable() ? ["bar", "lick"] : ["bar"];
+    for (const unit of units) for (const n of [1, 2]) {
+      const b = document.createElement("button");
+      b.className = "trade";
+      b.dataset.n = n;
+      b.dataset.unit = unit;
+      b.textContent = `⇄ trade ${n} ${unit}${n > 1 ? "s" : ""}`;
+      b.title = unit === "bar"
+        ? `${n}-bar turns: the record's licks, then you over the backing (T cycles)`
+        : `${n}-lick turns: the record plays a phrase as marked, then you take the next (T cycles)`;
+      b.onclick = () => setTrade(looper.trade === n && looper.tradeUnit === unit ? 0 : n, unit);
+      kids.push(b);
+    }
+  }
+  loopBar.replaceChildren(...kids);
   /* Both strips come and go together: the buffer is *available* whenever
      there are loopable sections, empty or not. Their height changes the
      stage's, so the panels re-place. */
-  const show = loopRanges.length > 0;
+  const show = loopRanges.length > 0 || tradeable();
   const moved = show === loopBar.hidden;
   loopBar.hidden = loopBuffer.hidden = !show;
   if (moved) layout();
@@ -4111,8 +4271,11 @@ function renderLoopBuf() {
 
 function drawLoopStrips() {
   const inBuf = new Set(looper.buf.map(l => l.name));
-  [...loopBar.children].forEach((b, i) =>
+  [...loopBar.querySelectorAll(".range")].forEach((b, i) =>
     b.classList.toggle("active", inBuf.has(loopRanges[i]?.name)));
+  [...loopBar.querySelectorAll(".trade")].forEach(b =>
+    b.classList.toggle("active", looper.on && looper.trade === +b.dataset.n
+                                 && looper.tradeUnit === b.dataset.unit));
   [...loopBuffer.querySelectorAll(".chip")].forEach((b, i) =>
     b.classList.toggle("active", looper.on && i === looper.seg));
   drawTicks();
@@ -4218,6 +4381,7 @@ function command(msg) {
     : seek(player.time + Number(msg.by));
   if (cmd === "loop") {
     /* The socket's single range is a one-entry programme. */
+    looper.trade = 0;
     looper.buf = msg.from == null ? []
       : [{ name: msg.name || "loop", from: Number(msg.from), to: Number(msg.to) }];
     loopApply(looper.buf.length ? looper.buf[0].from : null);
@@ -4474,7 +4638,8 @@ const serverTracks = r => r.tracks.map(t => ({
    and re-read only where the file has changed. Until that finishes a local
    track counts as unknown and passes every filter: hiding something because we
    have not looked yet is the one answer that is definitely wrong. */
-const NOTHING = { beats: false, chords: false, lyrics: false, loops: false, melody: false };
+const NOTHING = { beats: false, chords: false, lyrics: false, loops: false, melody: false,
+                  trade: false };
 const localFlags = new Map();   // track id -> { beats, chords, lyrics, loops }
 const localSeen = new Map();    // track id -> "size:mtime" already read
 
@@ -4500,7 +4665,9 @@ async function scanLocalCharts() {
                              chords: p.chords.length > 0,
                              lyrics: p.lyrics.length > 0,
                              loops: p.loops.length > 0,
-                             melody: p.voices.length > 0 });
+                             melody: p.voices.length > 0,
+                             trade: p.parts.some(x => x.role === "licks")
+                                 && p.parts.some(x => x.role === "backing") });
       localSeen.set(e.id, stamp);
       found = true;
     } catch { localFlags.set(e.id, NOTHING); }
@@ -4644,14 +4811,22 @@ async function openTrack(entry, opts = {}) {
      same track mid-practice: entries whose named ranges still exist re-map
      to wherever those ranges now are, and the playhead stays put. */
   loopRanges = parsed.loops;
+  tradeParts = parsed.parts;
+  lickSpans = parsed.licks;
   if (opts.reload) {
-    looper.buf = looper.buf.map(b => {
+    /* A trade programme is derived, so it is derived again from the new
+       ranges rather than matched chip by chip. */
+    looper.buf = looper.trade
+      ? (looper.tradeUnit === "lick" ? lickProgramme(looper.trade) : tradeProgramme(looper.trade))
+      : looper.buf.map(b => {
       const l = loopRanges.find(x => x.name === b.name);
       return l && { name: l.name, from: l.t_start, to: l.t_end };
     }).filter(Boolean);
+    if (!looper.buf.length) looper.trade = 0;
     if (looper.on) looper.buf.length ? loopApply(null) : loopOff();
   } else {
     looper.buf = [];
+    looper.trade = 0;
     looper.on = false;
     looper.playing = false;
     looper.seg = 0;
@@ -4908,7 +5083,8 @@ const FILTERS = [
   { key: "chords", label: "Chords" },
   { key: "lyrics", label: "Lyrics" },
   { key: "loops", label: "Loops" },
-  { key: "melody", label: "Melody" }
+  { key: "melody", label: "Melody" },
+  { key: "trade", label: "Trade" }
 ];
 
 function buildTrackPanel() {
@@ -5237,6 +5413,7 @@ addEventListener("keydown", e => {
   else if (e.key.toLowerCase() === "s") togglePane();
   else if (e.key.toLowerCase() === "m") toggleVoice();
   else if (e.key.toLowerCase() === "o") bufClear();
+  else if (e.key.toLowerCase() === "t") cycleTrade();
   /* The shifted faces of the same two keys count too: reaching for "faster"
      and landing on + is the same intent, and the guard above has already let
      shifted keys through. */
