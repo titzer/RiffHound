@@ -40,7 +40,7 @@ MiscMap* annstrip_map(AnnStripId id);
 PanelId  annstrip_panel(AnnStripId id);
 
 // The height this lane is currently set to, in pixels.  Editable by dragging
-// the lane's bottom edge; the value lives in EditorState so it survives a
+// the lane's top edge up; the value lives in EditorState so it survives a
 // track change and is one of the things the Settings popup can reach.
 float annstrip_height(const EditorState* e, AnnStripId id);
 int   annstrip_rows  (float height);        // rows that fit in that height
@@ -70,6 +70,13 @@ void annstrip_draw(AnnStripId id, const AnnStripCtx& c, ImDrawList* dl,
 // The inline text editor, an InputText laid over the focused annotation.  Adds
 // ImGui widgets, so it must run outside the draw-list-only passes.
 void annstrip_edit(AnnStripId id, const AnnStripCtx& c);
+
+// Add an annotation to a lane from outside it -- a key that marks the
+// selected region, say.  Undoable; the new entry becomes the lane's focus and
+// selection, and the lane is shown if it was collapsed, so the result is not
+// invisible.  Returns the entry's index, or -1.
+int annstrip_insert(AnnStripId id, const AnnStripCtx& c, double t0, double t1,
+                    const char* text);
 
 // Mouse released anywhere: end whatever the lanes were tracking.
 void annstrip_release_all();

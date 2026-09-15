@@ -227,7 +227,7 @@ static void accept_mixed(ToolCtx& c)
 {
     if (!ui_smoothing_can_accept() || !s_mix_mode) return;
     if ((int)s_mix.size() < s_preview.n) return;
-    undo_push(c.undo, c.beatmap, c.lyricmap, c.sectionmap, c.miscmap, c.chordmap);
+    undo_push(c.undo, c.beatmap, c.lyricmap, c.sectionmap, c.miscmap, c.chordmap, c.taps);
     std::vector<double> mo, mn;
     for (int k = 0; k < s_preview.n; k++)
         if (s_mix[k].src == 0) { mo.push_back(s_orig[k]); mn.push_back(s_prop[k]); }
@@ -564,7 +564,7 @@ void ui_beats_edit_actions(ToolCtx& c)
     };
 
     auto shift_sel = [&](double frac) {
-        undo_push(c.undo, bm, c.lyricmap, c.sectionmap, c.miscmap, c.chordmap);
+        undo_push(c.undo, bm, c.lyricmap, c.sectionmap, c.miscmap, c.chordmap, c.taps);
         std::vector<double> newt(n_sel);
         for (int k = 0; k < n_sel; k++)
             newt[k] = selt[k] + frac * item_iv(sel[k], selt[k]);
@@ -580,7 +580,7 @@ void ui_beats_edit_actions(ToolCtx& c)
     };
 
     auto halve = [&](bool keep_first) {
-        undo_push(c.undo, bm, c.lyricmap);
+        undo_push(c.undo, bm, c.lyricmap, nullptr, nullptr, nullptr, c.taps);
         std::vector<int> rm_map, rm_tap, rm_ab;
         for (int k = 0; k < n_sel; k++) {
             if ((k % 2) != (keep_first ? 1 : 0)) continue;
@@ -651,7 +651,7 @@ void ui_beats_edit_actions(ToolCtx& c)
     float third_w = (avail_w - 2.0f * sp) / 3.0f;
     if (!can2) ImGui::BeginDisabled();
     if (ImGui::Button("Subdivide \xc3\x97""2", ImVec2(third_w, 0))) {
-        undo_push(c.undo, bm, c.lyricmap);
+        undo_push(c.undo, bm, c.lyricmap, nullptr, nullptr, nullptr, c.taps);
         for (int k = n_sel - 1; k > 0; k--) {
             double t0 = selt[k - 1], t1 = selt[k];
             if (t1 - t0 < 1e-3) continue;

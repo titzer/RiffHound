@@ -9,6 +9,7 @@
 #include "miscmap.h"
 #include "beat_algo.h"
 #include "undo.h"
+#include "tapmap.h"
 #include "imgui.h"
 
 // Main timeline widget: spectrogram + time ruler + beat markers + section/lyric overlays.
@@ -27,12 +28,18 @@ void ui_timeline_reset();
 // The tool's selection-based operations (smoothing, shift, subdivide, halve)
 // treat selected taps like any other selected beat; this is the access the
 // tool needs.  Times edited in place must stay chronological -- call
-// ui_timeline_taps_sort() after edits that may reorder.
-struct TapEntry { double time; bool selected; };
+// ui_timeline_taps_sort() after edits that may reorder.  The map itself is
+// what undo snapshots: pass ui_timeline_tapmap() to undo_push / undo_pop.
+TapMap*   ui_timeline_tapmap();
 TapEntry* ui_timeline_taps(int* count);
 void      ui_timeline_taps_sort();
 bool      ui_timeline_tap_insert(double t);   // added selected; false when full
 void      ui_timeline_tap_remove(int idx);
+
+// Ctrl+Z pressed in a Lyric Index text field that holds no pending edit: the
+// field is released and the press is handed up to be treated as a global undo
+// (main.cpp performs it, since it owns every layer).  Returns true once.
+bool ui_timeline_take_undo_request();
 
 // Lyric Index content (widgets only, no window).  Rendered by the tool dock
 // into the drawer or a floating window; shares selection state with the

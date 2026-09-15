@@ -1,6 +1,14 @@
 #include "platform.h"
 #include <gtk/gtk.h>
 #include <string.h>
+#include <unistd.h>
+
+bool platform_exe_path(char* out_path, int out_size) {
+    ssize_t n = readlink("/proc/self/exe", out_path, out_size - 1);
+    if (n <= 0) return false;
+    out_path[n] = '\0';
+    return true;
+}
 
 // GTK must be initialized before any dialog is shown.
 // Calling this multiple times is safe.

@@ -13,6 +13,7 @@
 #include "panels.h"
 #include "undo.h"
 #include "imgui.h"
+#include "imgui_internal.h"   // ClearActiveID: release a lyric field on Ctrl+Z
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
@@ -435,6 +436,25 @@ static ImFont* s_lyric_font() {
 struct LyrSplitState { bool req; int cursor; };
 static LyrSplitState s_lyr_split_state;
 
+// ---- Ctrl+Z inside a lyric text field -------------------------------------
+// An active text field owns Ctrl+Z (ImGui undoes typing with it), so the
+// global undo in main.cpp stays out of the way while one is active.  After a
+// split the user is often still in the field, or has clicked into one of the
+// halves, and expects Ctrl+Z to take the split back.  When the field holds
+// exactly what it held on activation there is no typing to undo, so the
+// field is released and the press is handed up to the global undo instead.
+// A field with pending typing keeps ImGui's own undo; once that has reverted
+// everything, the next Ctrl+Z is global again.
+static int  s_lyr_edit_idx = -1;      // lyric whose text field was active last frame
+static char s_lyr_edit_orig[128];     // its text when the field was activated
+static bool s_lyr_undo_req = false;
+
+bool ui_timeline_take_undo_request() {
+    bool r = s_lyr_undo_req;
+    s_lyr_undo_req = false;
+    return r;
+}
+
 static int lyr_split_callback(ImGuiInputTextCallbackData* d) {
     if (ImGui::IsKeyDown(ImGuiMod_Shift) &&
             ImGui::IsKeyPressed(ImGuiKey_Enter, false)) {
@@ -731,40 +751,32 @@ static int s_lyr_selected = -1;
 static const double FILL_MIN_GAP = 0.15;
 
 // --- Tap strip data ---
-static const int MAX_TAPS = 1024;
-static TapEntry s_taps[MAX_TAPS];   // TapEntry lives in ui_timeline.h
-static int      s_tap_count = 0;
+// One TapMap (tapmap.h), snapshotted by undo like the other layers.
+static TapMap s_tm;
+static int    s_tap_run_count = 0;   // s_tm.count as of the last T press
+
+TapMap* ui_timeline_tapmap() { return &s_tm; }
 
 TapEntry* ui_timeline_taps(int* count) {
-    if (count) *count = s_tap_count;
-    return s_taps;
+    if (count) *count = s_tm.count;
+    return s_tm.taps;
 }
 
-void ui_timeline_taps_sort() {
-    for (int a = 1; a < s_tap_count; a++)
-        for (int b = a; b > 0 && s_taps[b].time < s_taps[b - 1].time; b--) {
-            TapEntry tmp = s_taps[b]; s_taps[b] = s_taps[b - 1]; s_taps[b - 1] = tmp;
-        }
-}
+void ui_timeline_taps_sort() { tapmap_sort(&s_tm); }
 
 bool ui_timeline_tap_insert(double t) {
-    if (s_tap_count >= MAX_TAPS) return false;
-    s_taps[s_tap_count++] = { t, true };
-    ui_timeline_taps_sort();
+    if (!tapmap_add(&s_tm, t, true)) return false;
+    tapmap_sort(&s_tm);
     return true;
 }
 
-void ui_timeline_tap_remove(int idx) {
-    if (idx < 0 || idx >= s_tap_count) return;
-    for (int i = idx; i + 1 < s_tap_count; i++) s_taps[i] = s_taps[i + 1];
-    s_tap_count--;
-}
+void ui_timeline_tap_remove(int idx) { tapmap_remove(&s_tm, idx); }
 
 // Smoothing preview for the selected taps: where each would land with the
 // Beats tool's smoothing settings.  Recomputed every frame (taps are few);
 // the S key applies it.  s_tap_smooth[i] is valid when s_tap_smooth_ok[i].
-static double s_tap_smooth[MAX_TAPS];
-static bool   s_tap_smooth_ok[MAX_TAPS];
+static double s_tap_smooth[TAP_MAX];
+static bool   s_tap_smooth_ok[TAP_MAX];
 static int    s_tap_smooth_n = 0;       // selected taps in the preview
 static double s_last_tap_time = -1e9;   // a pause ends a run of taps
 
@@ -788,7 +800,8 @@ bool ui_timeline_lyric_hold_armed(const EditorState* editor, const AudioState* a
 }
 
 void ui_timeline_reset() {
-    s_tap_count     = 0;
+    tapmap_clear(&s_tm);
+    s_tap_run_count = 0;
     s_tap_smooth_n  = 0;
     s_last_tap_time = -1e9;
     s_lyr_hold_idx  = -1;
@@ -796,15 +809,15 @@ void ui_timeline_reset() {
 }
 
 static void tap_preview_update(const AutoBeatList* autobeat) {
-    for (int i = 0; i < s_tap_count; i++) s_tap_smooth_ok[i] = false;
+    for (int i = 0; i < s_tm.count; i++) s_tap_smooth_ok[i] = false;
     s_tap_smooth_n = 0;
-    int idx[MAX_TAPS]; int n = 0;
-    for (int i = 0; i < s_tap_count; i++) if (s_taps[i].selected) idx[n++] = i;
+    int idx[TAP_MAX]; int n = 0;
+    for (int i = 0; i < s_tm.count; i++) if (s_tm.taps[i].selected) idx[n++] = i;
     if (n < 3) return;
     // chronological, in case taps were recorded out of order
-    for (int a = 1; a < n; a++) for (int b = a; b > 0 && s_taps[idx[b]].time < s_taps[idx[b - 1]].time; b--) { int t = idx[b]; idx[b] = idx[b - 1]; idx[b - 1] = t; }
-    double arr[MAX_TAPS];
-    for (int k = 0; k < n; k++) arr[k] = s_taps[idx[k]].time;
+    for (int a = 1; a < n; a++) for (int b = a; b > 0 && s_tm.taps[idx[b]].time < s_tm.taps[idx[b - 1]].time; b--) { int t = idx[b]; idx[b] = idx[b - 1]; idx[b - 1] = t; }
+    double arr[TAP_MAX];
+    for (int k = 0; k < n; k++) arr[k] = s_tm.taps[idx[k]].time;
     const SmoothParams* sp = ui_smoothing_params();
     beat_smooth_times(arr, n, sp,
                       (autobeat && autobeat->onset_count > 0) ? autobeat->onset_times : nullptr,
@@ -1151,7 +1164,7 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
         // them (extending a selection across strips is still possible).
         if (!io.KeyShift && !sidebar_click) {
             if (!s_drag_in_beats)    beatmap_clear_selection(beatmap);
-            if (!s_drag_in_tap)      for (int i = 0; i < s_tap_count; i++) s_taps[i].selected = false;
+            if (!s_drag_in_tap)      for (int i = 0; i < s_tm.count; i++) s_tm.taps[i].selected = false;
             if (!s_drag_in_autobeat && autobeat)
                 for (int i = 0; i < autobeat->beat_count; i++) autobeat->beat_selected[i] = false;
         }
@@ -1440,23 +1453,23 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
             // Hit-test taps
             int   hit  = -1;
             float best = 8.0f;
-            for (int i = 0; i < s_tap_count; i++) {
-                float bx = time_to_x(s_taps[i].time,
+            for (int i = 0; i < s_tm.count; i++) {
+                float bx = time_to_x(s_tm.taps[i].time,
                                      editor->view_start, editor->view_end, tap_x, tap_w);
                 float dx = fabsf(io.MousePos.x - bx);
                 if (dx < best) { best = dx; hit = i; }
             }
             if (hit >= 0) {
                 if (io.KeyShift) {
-                    s_taps[hit].selected = !s_taps[hit].selected;
+                    s_tm.taps[hit].selected = !s_tm.taps[hit].selected;
                 } else {
-                    for (int i = 0; i < s_tap_count; i++) s_taps[i].selected = false;
-                    s_taps[hit].selected = true;
+                    for (int i = 0; i < s_tm.count; i++) s_tm.taps[i].selected = false;
+                    s_tm.taps[hit].selected = true;
                 }
                 s_tap_rect_sel = false;
             } else {
                 if (!io.KeyShift)
-                    for (int i = 0; i < s_tap_count; i++) s_taps[i].selected = false;
+                    for (int i = 0; i < s_tm.count; i++) s_tm.taps[i].selected = false;
                 s_tap_rect_sel = true;
                 s_tap_rect_x0  = io.MousePos.x;
             }
@@ -1878,11 +1891,11 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
     if (s_tap_rect_sel && !ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
         float rsx0 = s_tap_rect_x0 < io.MousePos.x ? s_tap_rect_x0 : io.MousePos.x;
         float rsx1 = s_tap_rect_x0 < io.MousePos.x ? io.MousePos.x : s_tap_rect_x0;
-        for (int i = 0; i < s_tap_count; i++) {
-            float bx = time_to_x(s_taps[i].time,
+        for (int i = 0; i < s_tm.count; i++) {
+            float bx = time_to_x(s_tm.taps[i].time,
                                  editor->view_start, editor->view_end, tap_x, tap_w);
             if (bx >= rsx0 && bx <= rsx1)
-                s_taps[i].selected = true;
+                s_tm.taps[i].selected = true;
         }
         s_tap_rect_sel = false;
     }
@@ -2006,10 +2019,20 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
         }
         if (tap) {
             double t = audio_get_position(audio);
-            bool new_run = (t - s_last_tap_time > 3.0) || (t < s_last_tap_time);
+            // A run ends after a 3 s silence, on a seek backwards, or when the
+            // strip changed under it (undo, Delete, a Beats tool edit): the next
+            // tap starts a run of its own, with its own undo entry.
+            bool new_run = (t - s_last_tap_time > 3.0) || (t < s_last_tap_time) ||
+                           (s_tm.count != s_tap_run_count);
+            // A run of taps is one undoable action (Ctrl+Z takes the whole run
+            // back, the way Delete takes the selected run); a fill is its own
+            // action, since it lands a whole stretch at once.
+            if (new_run || fill)
+                undo_push(undo, nullptr, nullptr, nullptr, nullptr, nullptr, &s_tm);
+            int taps_before = s_tm.count;
             if (new_run) {
                 beatmap_clear_selection(beatmap);
-                for (int i = 0; i < s_tap_count; i++) s_taps[i].selected = false;
+                for (int i = 0; i < s_tm.count; i++) s_tm.taps[i].selected = false;
                 if (autobeat) for (int i = 0; i < autobeat->beat_count; i++) autobeat->beat_selected[i] = false;
                 s_sec_selected = -1;
                 s_lyr_selected = -1;
@@ -2022,8 +2045,8 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
                 // Anchor and tempo from taps and mapped beats together: the
                 // two most recent events before the playhead.
                 double anchor = -1.0, prev = -1.0;
-                for (int i = 0; i < s_tap_count; i++) {
-                    double tt = s_taps[i].time;
+                for (int i = 0; i < s_tm.count; i++) {
+                    double tt = s_tm.taps[i].time;
                     if (tt >= t - 1e-3) continue;
                     if (tt > anchor) { prev = anchor; anchor = tt; }
                     else if (tt > prev) prev = tt;
@@ -2038,18 +2061,18 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
                 if (anchor > 0.0 && period > 0.2 && period < 2.5 && t - anchor > 1.5 * period) {
                     int n = (int)floor((t - anchor) / period + 0.5);
                     if (n > 1) {
-                        for (int k = 1; k < n && s_tap_count < MAX_TAPS; k++)
-                            s_taps[s_tap_count++] = { anchor + (t - anchor) * k / n, true };
+                        for (int k = 1; k < n; k++)
+                            if (!tapmap_add(&s_tm, anchor + (t - anchor) * k / n, true)) break;
                     }
                 }
             }
-            if (s_tap_count < MAX_TAPS)
-                s_taps[s_tap_count++] = { t, true };
+            tapmap_add(&s_tm, t, true);
             // Keep chronological: fills and out-of-order taps land mid-array
-            for (int a = 1; a < s_tap_count; a++)
-                for (int b = a; b > 0 && s_taps[b].time < s_taps[b - 1].time; b--)
-                    { TapEntry tmp = s_taps[b]; s_taps[b] = s_taps[b - 1]; s_taps[b - 1] = tmp; }
+            tapmap_sort(&s_tm);
+            if ((new_run || fill) && s_tm.count == taps_before)
+                undo_drop_last(undo);   // strip full: nothing to take back
             s_last_tap_time = t;
+            s_tap_run_count = s_tm.count;
         }
     }
 
@@ -2073,7 +2096,7 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
             lyricmap->dirty = true;
             // Only this lyric is selected
             beatmap_clear_selection(beatmap);
-            for (int i = 0; i < s_tap_count; i++) s_taps[i].selected = false;
+            for (int i = 0; i < s_tm.count; i++) s_tm.taps[i].selected = false;
             if (autobeat) for (int i = 0; i < autobeat->beat_count; i++) autobeat->beat_selected[i] = false;
             s_sec_selected = -1;
             for (int i = 0; i < sectionmap->count; i++) sectionmap->sections[i].selected = false;
@@ -2099,8 +2122,9 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
     // S key: apply the smoothing preview to the selected taps
     if (!ImGui::IsAnyItemActive() && !io.KeyCtrl && !io.KeySuper &&
             ImGui::IsKeyPressed(ImGuiKey_S, false) && s_tap_smooth_n >= 3) {
-        for (int i = 0; i < s_tap_count; i++)
-            if (s_tap_smooth_ok[i]) s_taps[i].time = s_tap_smooth[i];
+        undo_push(undo, nullptr, nullptr, nullptr, nullptr, nullptr, &s_tm);
+        for (int i = 0; i < s_tm.count; i++)
+            if (s_tap_smooth_ok[i]) s_tm.taps[i].time = s_tap_smooth[i];
         tap_preview_update(autobeat);
     }
 
@@ -2127,13 +2151,15 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
             if (!ui_dock_tool_visible(DOCK_COMPLETE))
                 ui_dock_icon_click(DOCK_COMPLETE);
             ToolCtx tc = { editor, audio, beatmap, undo, autobeat, sectionmap,
-                           lyricmap, annstrip_map(ANN_MISC), annstrip_map(ANN_CHORDS), true };
+                           lyricmap, annstrip_map(ANN_MISC), annstrip_map(ANN_CHORDS),
+                           &s_tm, true };
             ui_complete_hotkey_analyze(tc);
         }
         if (ImGui::IsKeyPressed(ImGuiKey_C, false) &&
                 ui_dock_tool_visible(DOCK_COMPLETE)) {
             ToolCtx tc = { editor, audio, beatmap, undo, autobeat, sectionmap,
-                           lyricmap, annstrip_map(ANN_MISC), annstrip_map(ANN_CHORDS), true };
+                           lyricmap, annstrip_map(ANN_MISC), annstrip_map(ANN_CHORDS),
+                           &s_tm, true };
             ui_complete_hotkey_accept(tc);
         }
     }
@@ -2141,29 +2167,31 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
     // I key: insert selected taps into the beatmap as real beats
     if (!ImGui::IsAnyItemActive() && ImGui::IsKeyPressed(ImGuiKey_I, false)) {
         bool any = false;
-        for (int i = 0; i < s_tap_count; i++)
-            if (s_taps[i].selected) { any = true; break; }
+        for (int i = 0; i < s_tm.count; i++)
+            if (s_tm.taps[i].selected) { any = true; break; }
         if (any) {
-            undo_push(undo, beatmap, lyricmap);
-            for (int i = 0; i < s_tap_count; i++)
-                if (s_taps[i].selected)
-                    beatmap_add(beatmap, s_taps[i].time);
+            // Taps go into the snapshot too, so undo puts them back on the strip.
+            undo_push(undo, beatmap, lyricmap, nullptr, nullptr, nullptr, &s_tm);
+            for (int i = 0; i < s_tm.count; i++)
+                if (s_tm.taps[i].selected)
+                    beatmap_add(beatmap, s_tm.taps[i].time);
             int j = 0;
-            for (int i = 0; i < s_tap_count; i++)
-                if (!s_taps[i].selected)
-                    s_taps[j++] = s_taps[i];
-            s_tap_count = j;
+            for (int i = 0; i < s_tm.count; i++)
+                if (!s_tm.taps[i].selected)
+                    s_tm.taps[j++] = s_tm.taps[i];
+            s_tm.count = j;
         }
     }
 
     // Delete/Backspace: remove selected taps
-    if (!ImGui::IsAnyItemActive() &&
+    if (!ImGui::IsAnyItemActive() && tapmap_any_selected(&s_tm) &&
             (ImGui::IsKeyPressed(ImGuiKey_Delete) || ImGui::IsKeyPressed(ImGuiKey_Backspace))) {
+        undo_push(undo, nullptr, nullptr, nullptr, nullptr, nullptr, &s_tm);
         int j = 0;
-        for (int i = 0; i < s_tap_count; i++)
-            if (!s_taps[i].selected)
-                s_taps[j++] = s_taps[i];
-        s_tap_count = j;
+        for (int i = 0; i < s_tm.count; i++)
+            if (!s_tm.taps[i].selected)
+                s_tm.taps[j++] = s_tm.taps[i];
+        s_tm.count = j;
     }
 
     // I key: also inserts selected auto-beats into the beatmap
@@ -2662,12 +2690,12 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
                       IM_COL32(10, 18, 14, 255));
     if (!show_taps) {
         dl->PushClipRect(ImVec2(tap_x, tap_y), ImVec2(tap_x + tap_w, tap_y + tap_h), true);
-        for (int i = 0; i < s_tap_count; i++) {
-            float bx = time_to_x(s_taps[i].time,
+        for (int i = 0; i < s_tm.count; i++) {
+            float bx = time_to_x(s_tm.taps[i].time,
                                  editor->view_start, editor->view_end, tap_x, tap_w);
             if (bx < tap_x || bx > tap_x + tap_w) continue;
             draw_beat_line(dl, bx, tap_y, tap_y + tap_h,
-                           s_taps[i].selected ? IM_COL32(100, 200, 255, 220)
+                           s_tm.taps[i].selected ? IM_COL32(100, 200, 255, 220)
                                               : IM_COL32(120, 200, 140, 190));
         }
         dl->PopClipRect();
@@ -2684,23 +2712,23 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
         float tap_hover_best = 9.0f;
         bool  in_tap_y = (io.MousePos.y >= tap_y && io.MousePos.y < tap_y + TAP_STRIP_H);
         if (in_tap_y) {
-            for (int i = 0; i < s_tap_count; i++) {
+            for (int i = 0; i < s_tm.count; i++) {
                 float bx = (span > 0.0 && tap_w > 0)
-                    ? tap_x + (float)((s_taps[i].time - editor->view_start) / span * tap_w)
+                    ? tap_x + (float)((s_tm.taps[i].time - editor->view_start) / span * tap_w)
                     : tap_x;
                 float dx = fabsf(io.MousePos.x - bx);
                 if (dx < tap_hover_best) { tap_hover_best = dx; tap_hover = i; }
             }
         }
         dl->PushClipRect(ImVec2(tap_x, tap_y), ImVec2(tap_x + tap_w, tap_y + TAP_STRIP_H), true);
-        for (int i = 0; i < s_tap_count; i++) {
+        for (int i = 0; i < s_tm.count; i++) {
             float bx = (span > 0.0 && tap_w > 0)
-                ? tap_x + (float)((s_taps[i].time - editor->view_start) / span * tap_w)
+                ? tap_x + (float)((s_tm.taps[i].time - editor->view_start) / span * tap_w)
                 : tap_x;
             bool  hov    = (i == tap_hover);
             float r      = hov ? TAP_R + 2.0f : TAP_R;
             if (bx < tap_x - r || bx > tap_x + tap_w + r) continue;
-            bool  sel    = s_taps[i].selected;
+            bool  sel    = s_tm.taps[i].selected;
             ImU32 fill   = hov  ? IM_COL32(200, 240, 255, 255)
                          : sel  ? IM_COL32(100, 200, 255, 220)
                                 : IM_COL32(120, 200, 140, 190);
@@ -2710,10 +2738,10 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
             draw_diamond(dl, bx, strip_cy, r, fill, border);
         }
         // Smoothing preview: where a selected tap would move (S applies)
-        for (int i = 0; i < s_tap_count; i++) {
-            if (!s_tap_smooth_ok[i] || fabs(s_tap_smooth[i] - s_taps[i].time) < 0.001) continue;
+        for (int i = 0; i < s_tm.count; i++) {
+            if (!s_tap_smooth_ok[i] || fabs(s_tap_smooth[i] - s_tm.taps[i].time) < 0.001) continue;
             float x_old = (span > 0.0 && tap_w > 0)
-                ? tap_x + (float)((s_taps[i].time - editor->view_start) / span * tap_w) : tap_x;
+                ? tap_x + (float)((s_tm.taps[i].time - editor->view_start) / span * tap_w) : tap_x;
             float x_new = (span > 0.0 && tap_w > 0)
                 ? tap_x + (float)((s_tap_smooth[i] - editor->view_start) / span * tap_w) : tap_x;
             if (x_new < tap_x - 8.0f || x_new > tap_x + tap_w + 8.0f) continue;
@@ -2733,10 +2761,10 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
                                   IM_COL32(100, 200, 255, 40));
         }
         // Instantaneous BPM as data labels between taps
-        if (editor->show_bpm_labels && s_tap_count >= 2) {
-            static double s_tap_times[MAX_TAPS];
-            for (int i = 0; i < s_tap_count; i++) s_tap_times[i] = s_taps[i].time;
-            TimeSeq seq = { nullptr, s_tap_times, s_tap_count };
+        if (editor->show_bpm_labels && s_tm.count >= 2) {
+            static double s_tap_times[TAP_MAX];
+            for (int i = 0; i < s_tm.count; i++) s_tap_times[i] = s_tm.taps[i].time;
+            TimeSeq seq = { nullptr, s_tap_times, s_tm.count };
             draw_bpm_labels(dl, seq, tap_x, tap_y, tap_w, TAP_STRIP_H,
                             editor->view_start, editor->view_end,
                             false, 0.0f, 0.0f, TAP_R,
@@ -2745,7 +2773,7 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
         dl->PopClipRect();
         // Hover BPM labels: instantaneous tempo to the left/right of the hovered tap
         if (tap_hover >= 0 && in_tap_y) {
-            float bx = time_to_x(s_taps[tap_hover].time,
+            float bx = time_to_x(s_tm.taps[tap_hover].time,
                                   editor->view_start, editor->view_end, tap_x, tap_w);
             float r = TAP_R + 2.0f;
             float ly = bpm_label_y(strip_cy, r, ImGui::GetTextLineHeight(),
@@ -2753,7 +2781,7 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
             char  buf[32];
             ImVec2 ts;
             if (tap_hover > 0) {
-                double dt = s_taps[tap_hover].time - s_taps[tap_hover - 1].time;
+                double dt = s_tm.taps[tap_hover].time - s_tm.taps[tap_hover - 1].time;
                 if (dt > 1e-6) {
                     snprintf(buf, sizeof(buf), "%.1f", 60.0 / dt);
                     ts = ImGui::CalcTextSize(buf);
@@ -2763,8 +2791,8 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
                                     IM_COL32(160, 230, 160, 220), buf);
                 }
             }
-            if (tap_hover < s_tap_count - 1) {
-                double dt = s_taps[tap_hover + 1].time - s_taps[tap_hover].time;
+            if (tap_hover < s_tm.count - 1) {
+                double dt = s_tm.taps[tap_hover + 1].time - s_tm.taps[tap_hover].time;
                 if (dt > 1e-6) {
                     snprintf(buf, sizeof(buf), "%.1f", 60.0 / dt);
                     ts = ImGui::CalcTextSize(buf);
@@ -3583,6 +3611,7 @@ void ui_timeline_lyric_index_content(EditorState* editor, AudioState* audio,
                                      BeatMap* beatmap, UndoStack* undo,
                                      LyricMap* lyricmap)
 {
+    ImGuiIO& io = ImGui::GetIO();
     if (s_lyr_selected >= lyricmap->count) s_lyr_selected = -1;
     double dur      = audio->duration;
     bool   has_audio = (dur > 0.0);
@@ -3650,6 +3679,7 @@ void ui_timeline_lyric_index_content(EditorState* editor, AudioState* audio,
     int pending_delete       = -1;
     int pending_split_idx    = -1;
     int pending_split_cursor = 0;
+    int active_lyr_idx       = -1;   // text field active this frame, for Ctrl+Z routing
 
     // 'L' shortcut: place the first unplaced lyric at the current region
     if (first_unplaced_idx >= 0 && editor->has_region &&
@@ -3761,13 +3791,26 @@ void ui_timeline_lyric_index_content(EditorState* editor, AudioState* audio,
         if (!placed)
             ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.62f,0.59f,0.49f,0.76f));
         s_lyr_split_state = {};
+        // Ctrl+Z with nothing typed since activation: release the field before
+        // InputText runs (so it neither eats the key nor writes its stale text
+        // back later) and hand the press to the global undo.
+        if (s_lyr_edit_idx == i && (io.KeyCtrl || io.KeySuper) &&
+                ImGui::IsKeyPressed(ImGuiKey_Z, false) &&
+                strcmp(ly.text, s_lyr_edit_orig) == 0) {
+            ImGui::ClearActiveID();
+            s_lyr_undo_req = true;
+        }
         if (ImGui::InputText("##t", ly.text, sizeof(ly.text),
                              ImGuiInputTextFlags_CallbackAlways, lyr_split_callback))
             lyricmap->dirty = true;
         if (!placed)
             ImGui::PopStyleColor();
+        if (ImGui::IsItemActivated()) {
+            strncpy(s_lyr_edit_orig, ly.text, sizeof(s_lyr_edit_orig) - 1);
+            s_lyr_edit_orig[sizeof(s_lyr_edit_orig) - 1] = '\0';
+        }
         // Typing in the text field selects the lyric in the strip too
-        if (ImGui::IsItemActive()) s_lyr_selected = i;
+        if (ImGui::IsItemActive()) { s_lyr_selected = i; active_lyr_idx = i; }
         if (s_lyr_split_state.req) {
             pending_split_idx    = i;
             pending_split_cursor = s_lyr_split_state.cursor;
@@ -3793,6 +3836,8 @@ void ui_timeline_lyric_index_content(EditorState* editor, AudioState* audio,
     ImGui::PopStyleVar(2);
     ImGui::EndChild();
     ImGui::PopFont();
+
+    s_lyr_edit_idx = active_lyr_idx;
 
     // ---- Split deferred action ----
     if (pending_split_idx >= 0 && pending_split_idx < lyricmap->count) {

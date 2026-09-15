@@ -1,9 +1,14 @@
 #pragma once
 
+// Room for a whole phrase of notation on one line: a "voice:" melody written
+// in RiffText runs to a few hundred characters for a long lyric line, and the
+// old 128 cut it off mid-note without saying so.
+#define ANN_TEXT_MAX 1024
+
 struct MiscAnnotation {
     double t_start;
     double t_end;
-    char   text[128];  // everything after t_start and t_end on the original line
+    char   text[ANN_TEXT_MAX];  // everything after t_start and t_end on the original line
     bool   selected;   // member of the multi-selection that cut/copy act on
 };
 

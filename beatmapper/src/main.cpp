@@ -30,6 +30,7 @@
 #include <string.h>
 #include <strings.h>
 #include <unistd.h>
+#include <errno.h>
 
 // Derive a suggested beatmap filename from an audio filepath.
 // e.g. "/path/to/track.mp3" → "track.txt"
@@ -239,11 +240,14 @@ int main(int argc, char** argv) {
     // If files were passed on the command line, resolve each to an audio file
     // (a .txt or bare stem finds its companion .m4a/.mp3/.wav), add all that
     // resolve to the recent list, and open the last one.
+    double start_at = -1.0;   // "--at SECONDS": where to put the playhead
     if (argc >= 2) {
         char last_file[512] = "";
         for (int i = 1; i < argc; i++) {
             char resolved[512];
-            if (resolve_audio_arg(argv[i], resolved, sizeof(resolved))) {
+            if (strcmp(argv[i], "--at") == 0 && i + 1 < argc) {
+                start_at = atof(argv[++i]);
+            } else if (resolve_audio_arg(argv[i], resolved, sizeof(resolved))) {
                 recent_add(&recent, resolved);
                 strncpy(last_file, resolved, sizeof(last_file) - 1);
             } else {
@@ -259,6 +263,7 @@ int main(int argc, char** argv) {
                 beatmap.count = 0;
             strncpy(beatmap.save_path, bm_path, sizeof(beatmap.save_path) - 1);
             beatmap.dirty = false;
+            if (start_at > 0.0) audio_seek(&audio, start_at);
             {
                 char dir[512];
                 strncpy(dir, last_file, sizeof(dir) - 1); dir[sizeof(dir) - 1] = 0;
@@ -271,6 +276,27 @@ int main(int argc, char** argv) {
 
     static bool show_demo       = false;
     static bool show_quit_modal = false;
+
+    // Save to the known path, or ask for one.  False when there was nothing
+    // to save to and the dialog was cancelled.
+    auto save_chart = [&]() -> bool {
+        if (beatmap.save_path[0] != '\0')
+            return beatmap_save(&beatmap, &sectionmap, &lyricmap, &miscmap, &chordmap, beatmap.save_path);
+        char suggested[256] = "beatmap.txt";
+        if (audio.loaded)
+            beatmap_suggested_name(audio.filename, suggested, sizeof(suggested));
+        char sp[512] = {};
+        if (!platform_save_beatmap_dialog(sp, sizeof(sp), suggested)) return false;
+        return beatmap_save(&beatmap, &sectionmap, &lyricmap, &miscmap, &chordmap, sp);
+    };
+
+    // "Save and Restart": the process replaces itself with a fresh launch of
+    // the same binary on the same track, so a rebuild can be picked up
+    // without losing the place.  The launch happens after the normal
+    // teardown, so the window size is written and the audio device let go.
+    bool   restart       = false;
+    char   restart_track[512] = "";
+    double restart_at    = 0.0;
 
     // Main loop
     double frame_t0 = glfwGetTime();
@@ -329,6 +355,13 @@ int main(int argc, char** argv) {
         ImGui_ImplGlfw_NewFrame();
         ImGui::NewFrame();
 
+        // Ctrl+Z pressed in a Lyric Index text field that had nothing typed
+        // to undo: the field let go of the key last frame, so it is a global
+        // undo now (see ui_timeline_take_undo_request).
+        if (ui_timeline_take_undo_request())
+            undo_pop(&undo, &beatmap, &lyricmap, &sectionmap, &miscmap, &chordmap,
+                     ui_timeline_tapmap());
+
         // Global shortcuts — checked after NewFrame, blocked only when a text input is active.
         if (!ImGui::IsAnyItemActive()) {
             if (ImGui::IsKeyPressed(ImGuiKey_Space)) {
@@ -358,6 +391,14 @@ int main(int argc, char** argv) {
             // H → toggle the keyboard shortcut window
             if (ImGui::IsKeyPressed(ImGuiKey_H))
                 panel_toggle(&editor, PANEL_HELP);
+
+            // K → mark the selected region as a lick, in the misc lane.  Licks
+            // are phrases, not bars: the region is taken as drawn, pickup and
+            // tail included, with no snapping to the beat.
+            if (ImGui::IsKeyPressed(ImGuiKey_K) && editor.has_region) {
+                AnnStripCtx ann = { &editor, &beatmap, &undo, audio_get_position(&audio) };
+                annstrip_insert(ANN_MISC, ann, editor.region_start, editor.region_end, "lick");
+            }
 
 
             // Delete / Backspace → selected beats take priority; fall back to
@@ -403,9 +444,11 @@ int main(int argc, char** argv) {
                 ui_toolbar_open_dialog();
 
 
-            // Ctrl+Z → undo (each snapshot restores only the layers it covered)
-            if (ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_Z))
-                undo_pop(&undo, &beatmap, &lyricmap, &sectionmap, &miscmap, &chordmap);
+            // Ctrl/Cmd+Z → undo (each snapshot restores only the layers it covered)
+            if ((ImGui::GetIO().KeyCtrl || ImGui::GetIO().KeySuper) &&
+                ImGui::IsKeyPressed(ImGuiKey_Z))
+                undo_pop(&undo, &beatmap, &lyricmap, &sectionmap, &miscmap, &chordmap,
+                         ui_timeline_tapmap());
 
             // Ctrl+= / Ctrl+- → lyric font size
             if (ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_Equal))
@@ -414,18 +457,8 @@ int main(int argc, char** argv) {
                 ui_timeline_lyric_font_smaller();
 
             // Ctrl+S → Save Beatmap (silent overwrite if a path is already known)
-            if (ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_S)) {
-                if (beatmap.save_path[0] != '\0') {
-                    beatmap_save(&beatmap, &sectionmap, &lyricmap, &miscmap, &chordmap, beatmap.save_path);
-                } else {
-                    char suggested[256] = "beatmap.txt";
-                    if (audio.loaded)
-                        beatmap_suggested_name(audio.filename, suggested, sizeof(suggested));
-                    char sp[512] = {};
-                    if (platform_save_beatmap_dialog(sp, sizeof(sp), suggested))
-                        beatmap_save(&beatmap, &sectionmap, &lyricmap, &miscmap, &chordmap, sp);
-                }
-            }
+            if (ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_S))
+                save_chart();
         }
 
         // Full-screen dockable main window
@@ -452,16 +485,13 @@ int main(int argc, char** argv) {
                 if (ImGui::BeginMenu("File")) {
                     if (ImGui::MenuItem("Open Audio...")) { ui_toolbar_open_dialog(); }
                     ImGui::Separator();
-                    if (ImGui::MenuItem("Save Beatmap", "Ctrl+S")) {
-                        if (beatmap.save_path[0] != '\0') {
-                            beatmap_save(&beatmap, &sectionmap, &lyricmap, &miscmap, &chordmap, beatmap.save_path);
-                        } else {
-                            char suggested[256] = "beatmap.txt";
-                            if (audio.loaded)
-                                beatmap_suggested_name(audio.filename, suggested, sizeof(suggested));
-                            char sp[512] = {};
-                            if (platform_save_beatmap_dialog(sp, sizeof(sp), suggested))
-                                beatmap_save(&beatmap, &sectionmap, &lyricmap, &miscmap, &chordmap, sp);
+                    if (ImGui::MenuItem("Save Beatmap", "Ctrl+S")) save_chart();
+                    if (ImGui::MenuItem("Save and Restart", nullptr, false, audio.loaded)) {
+                        if (save_chart()) {
+                            restart = true;
+                            strncpy(restart_track, audio.filename, sizeof(restart_track) - 1);
+                            restart_at = audio_get_position(&audio);
+                            glfwSetWindowShouldClose(window, 1);
                         }
                     }
                     if (ImGui::MenuItem("Load Beatmap...")) {
@@ -572,16 +602,7 @@ int main(int argc, char** argv) {
             ImGui::Text("The beatmap has unsaved changes.");
             ImGui::Spacing();
             if (ImGui::Button("Save and Quit", ImVec2(130, 0))) {
-                if (beatmap.save_path[0] != '\0') {
-                    beatmap_save(&beatmap, &sectionmap, &lyricmap, &miscmap, &chordmap, beatmap.save_path);
-                } else {
-                    char suggested[256] = "beatmap.txt";
-                    if (audio.loaded)
-                        beatmap_suggested_name(audio.filename, suggested, sizeof(suggested));
-                    char sp[512] = {};
-                    if (platform_save_beatmap_dialog(sp, sizeof(sp), suggested))
-                        beatmap_save(&beatmap, &sectionmap, &lyricmap, &miscmap, &chordmap, sp);
-                }
+                save_chart();
                 glfwSetWindowShouldClose(window, 1);
                 ImGui::CloseCurrentPopup();
             }
@@ -651,5 +672,19 @@ int main(int argc, char** argv) {
 
     glfwDestroyWindow(window);
     glfwTerminate();
+
+    if (restart) {
+        char exe[4096];
+        if (!platform_exe_path(exe, sizeof(exe))) {
+            strncpy(exe, argv[0], sizeof(exe) - 1);
+            exe[sizeof(exe) - 1] = '\0';
+        }
+        char at[32];
+        snprintf(at, sizeof(at), "%.3f", restart_at);
+        char* args[] = { exe, restart_track, (char*)"--at", at, nullptr };
+        execv(exe, args);
+        fprintf(stderr, "beatmapper: could not restart %s: %s\n", exe, strerror(errno));
+        return 1;
+    }
     return 0;
 }

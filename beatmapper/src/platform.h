@@ -17,6 +17,10 @@ bool platform_open_beatmap_dialog(char* out_path, int out_size);
 // Must be called once after the window is created.
 void platform_install_fullscreen_shortcut();
 
+// The running executable's path, for re-launching it.  Returns false when
+// the OS will not say, in which case argv[0] is the best that can be done.
+bool platform_exe_path(char* out_path, int out_size);
+
 // Show the OS native "save file" dialog for .txt files.
 // suggested_name: default filename shown in the dialog (basename only, no path).
 bool platform_save_beatmap_dialog(char* out_path, int out_size,

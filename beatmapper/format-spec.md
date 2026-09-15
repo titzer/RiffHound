@@ -78,3 +78,50 @@ Lyrics typically are divided into musical lines.
 53.544372	59.576257	lyric: There's a lady who's sure all that glitters is gold
 59.633291	63.157361	lyric: And she's buying a stairway to Heaven
 ------------------------
+
+### Voice Format
+A "voice:" entry is one phrase of the melody, written in RiffText, and is
+usually timed to match the lyric line it is sung to. The text is a tonic,
+a bar, and comma-separated steps; each step is a chromatic interval from
+the tonic (0 the tonic, 12 the octave above, -5 the fourth below) or "_"
+for a rest, followed by a duration. With no duration a step is a quarter
+note.
+---voice1.txt-----------
+# Misc
+7.825536	7.825536	key: D3
+13.991650	19.250809	voice: D3 | -5e,-5e,0q,2q,4q,4e,2e,0q,0q
+19.899076	25.515890	voice: 0e,0e,2q,4q,2q,0q,-3q,-5q.
+------------------------
+Durations: w h q e s t for whole, half, quarter, eighth, sixteenth and
+thirty-second; a trailing "." dots the note (q. is a beat and a half);
+"/N" divides it (e/3 is one of a triplet of eighths); "^" ties durations
+into one note (q^e is held for a beat and a half), and a step that is just
+"^e" extends the previous note by an eighth.
+
+The tonic carries its octave, so a line is absolute pitch. A "key:" entry
+supplies the tonic for every voice line after it that leaves its own out;
+a mode suffix ("key: Em") is accepted and ignored. Notes are laid on the
+beat grid from the entry's start time, one beat per quarter note, so the
+sum of the durations should match the entry's span in beats; a reader
+reports a line where they disagree.
+
+### Trading Format
+A track for trading licks is the same passage recorded twice: once with a
+lead player on it and once bare. Two "Misc" entries mark the halves, and
+bar k of one answers bar k of the other, so they should be the same
+length in bars and start on a downbeat. Anything after the keyword is a
+label. A player alternates turns of one or two bars between the two --
+the record's licks, then the person in the room over the backing -- with
+the form advancing through both.
+A "lick" entry marks one phrase of the lead inside the licks half, as
+played: it starts on the pickup and ends where the last note dies, with no
+regard for the bar lines. Licks may abut or overlap slightly; a reader
+trims an overlap rather than playing it twice. With licks marked, a player
+can trade by phrase instead of by bar.
+---trade.txt------------
+# Misc
+0.729551	77.503117	licks
+3.000844	9.059628	lick
+9.530094	11.577250	lick
+77.503117	154.310036	backing
+------------------------

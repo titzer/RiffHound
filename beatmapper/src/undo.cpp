@@ -12,6 +12,7 @@ static void snapshot_free(UndoSnapshot* s) {
     free(s->sections);
     free(s->misc);
     free(s->chords);
+    free(s->taps);
     memset(s, 0, sizeof(*s));
 }
 
@@ -34,7 +35,8 @@ static void* dup_array(const void* src, int count, size_t elem_size) {
 }
 
 void undo_push(UndoStack* us, const BeatMap* bm, const LyricMap* lm,
-               const SectionMap* sm, const MiscMap* mm, const MiscMap* cm) {
+               const SectionMap* sm, const MiscMap* mm, const MiscMap* cm,
+               const TapMap* tm) {
     if (us->size == UNDO_MAX) {
         // Discard oldest to make room
         snapshot_free(&us->slots[us->head]);
@@ -50,6 +52,7 @@ void undo_push(UndoStack* us, const BeatMap* bm, const LyricMap* lm,
     s.has_sections = (sm != nullptr);
     s.has_misc     = (mm != nullptr);
     s.has_chords   = (cm != nullptr);
+    s.has_taps     = (tm != nullptr);
 
     if (bm && bm->count > 0) {
         s.beats = (Beat*)dup_array(bm->beats, bm->count, sizeof(Beat));
@@ -71,6 +74,10 @@ void undo_push(UndoStack* us, const BeatMap* bm, const LyricMap* lm,
         s.chords = (MiscAnnotation*)dup_array(cm->entries, cm->count, sizeof(MiscAnnotation));
         if (s.chords) s.chord_count = cm->count;
     }
+    if (tm && tm->count > 0) {
+        s.taps = (TapEntry*)dup_array(tm->taps, tm->count, sizeof(TapEntry));
+        if (s.taps) s.tap_count = tm->count;
+    }
     us->size++;
 }
 
@@ -81,7 +88,7 @@ void undo_drop_last(UndoStack* us) {
 }
 
 bool undo_pop(UndoStack* us, BeatMap* bm, LyricMap* lm,
-              SectionMap* sm, MiscMap* mm, MiscMap* cm) {
+              SectionMap* sm, MiscMap* mm, MiscMap* cm, TapMap* tm) {
     if (us->size == 0) return false;
     us->size--;
     int idx = (us->head + us->size) % UNDO_MAX;
@@ -143,6 +150,13 @@ bool undo_pop(UndoStack* us, BeatMap* bm, LyricMap* lm,
         cm->selected_idx = -1;
         s.chords         = nullptr;
         s.chord_count    = 0;
+    }
+
+    if (tm && s.has_taps) {
+        // The tap map is a fixed array, so copy in rather than adopt.
+        int n = s.tap_count < TAP_MAX ? s.tap_count : TAP_MAX;
+        if (n > 0) memcpy(tm->taps, s.taps, (size_t)n * sizeof(TapEntry));
+        tm->count = n;
     }
 
     // Free anything the caller did not take ownership of.

@@ -2,6 +2,19 @@
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 #include "platform.h"
 #include <string.h>
+#include <stdlib.h>
+#include <mach-o/dyld.h>
+
+bool platform_exe_path(char* out_path, int out_size) {
+    char raw[4096];
+    uint32_t n = sizeof(raw);
+    if (_NSGetExecutablePath(raw, &n) != 0) return false;
+    char real[PATH_MAX];
+    const char* p = realpath(raw, real) ? real : raw;
+    if ((int)strlen(p) >= out_size) return false;
+    strcpy(out_path, p);
+    return true;
+}
 
 bool platform_open_file_dialog(char* out_path, int out_size) {
     NSOpenPanel* panel = [NSOpenPanel openPanel];

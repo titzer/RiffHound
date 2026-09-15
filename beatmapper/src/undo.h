@@ -3,6 +3,7 @@
 #include "lyricmap.h"
 #include "sectionmap.h"
 #include "miscmap.h"
+#include "tapmap.h"
 
 static const int UNDO_MAX = 64;
 
@@ -25,6 +26,9 @@ struct UndoSnapshot {
     MiscAnnotation* chords;
     int             chord_count;
     bool            has_chords;
+    TapEntry*       taps;
+    int             tap_count;
+    bool            has_taps;
 };
 
 // Circular-buffer undo stack.
@@ -47,7 +51,7 @@ void undo_clear(UndoStack* us);
 // operation leaves alone.
 void undo_push(UndoStack* us, const BeatMap* bm, const LyricMap* lm,
                const SectionMap* sm = nullptr, const MiscMap* mm = nullptr,
-               const MiscMap* cm = nullptr);
+               const MiscMap* cm = nullptr, const TapMap* tm = nullptr);
 
 // Discard the most recent snapshot without restoring it.
 // Call this when a pushed operation turned out to be a no-op, so that Ctrl+Z
@@ -59,6 +63,6 @@ void undo_drop_last(UndoStack* us);
 // are left untouched.
 bool undo_pop(UndoStack* us, BeatMap* bm, LyricMap* lm,
               SectionMap* sm = nullptr, MiscMap* mm = nullptr,
-              MiscMap* cm = nullptr);
+              MiscMap* cm = nullptr, TapMap* tm = nullptr);
 
 bool undo_can_undo(const UndoStack* us);

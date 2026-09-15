@@ -13,15 +13,35 @@
 const float ANN_PAD      = 4.0f;   // strip edge to the first row
 const float ANN_ROW_H    = 20.0f;  // one annotation row
 const float ANN_ROW_GAP  = 2.0f;
-const float ANN_GRIP_H   = 4.0f;   // bottom band that resizes the lane -- the
+const float ANN_GRIP_H   = 4.0f;   // top band that resizes the lane -- the
                                    // padding itself, so it never covers a row
-const float ANN_MIN_H    = ANN_PAD * 2 + ANN_ROW_H;
-const float ANN_MAX_H    = ANN_PAD * 2 + ANN_ROW_H * 8 + ANN_ROW_GAP * 7;
+#define ANN_MAX_ROWS 8
 
 int annstrip_rows(float height) {
     float room = height - ANN_PAD * 2 + ANN_ROW_GAP;
     int   n    = (int)(room / (ANN_ROW_H + ANN_ROW_GAP));
-    return n < 1 ? 1 : n;
+    if (n < 1) n = 1;
+    if (n > ANN_MAX_ROWS) n = ANN_MAX_ROWS;
+    return n;
+}
+
+// The height that holds exactly n rows.  Lanes are sized in whole rows: a
+// height between two row counts only adds blank padding, and dragging that
+// padding in and out is fiddly for no gain.
+static float height_for_rows(int n) {
+    if (n < 1) n = 1;
+    if (n > ANN_MAX_ROWS) n = ANN_MAX_ROWS;
+    return ANN_PAD * 2 + ANN_ROW_H * n + ANN_ROW_GAP * (n - 1);
+}
+
+// The row count nearest a height, for the drag: the lane steps to the next
+// row once the cursor has travelled half a row towards it.
+static int rows_nearest(float height) {
+    float room = height - ANN_PAD * 2 + ANN_ROW_GAP;
+    int   n    = (int)(room / (ANN_ROW_H + ANN_ROW_GAP) + 0.5f);
+    if (n < 1) n = 1;
+    if (n > ANN_MAX_ROWS) n = ANN_MAX_ROWS;
+    return n;
 }
 
 // --- one lane -------------------------------------------------------------
@@ -57,8 +77,9 @@ struct AnnStrip {
     float  rect_x0;
     bool   body_drag;      // translate the whole selection
     double body_grab, body_t0, body_delta;
-    bool   grip;           // dragging the lane's own bottom edge
-    float  grip_dy;        // cursor to bottom edge at grab
+    bool   grip;           // dragging the lane's own top edge
+    float  grip_h0;        // lane height at grab
+    float  grip_my0;       // cursor y at grab
 
     int    focus;          // the entry inline editing and edge drags act on
     int    focus_sync;     // last value stamped into the map
@@ -108,10 +129,7 @@ MiscMap* annstrip_map  (AnnStripId id) { return s_ann[id].map; }
 PanelId  annstrip_panel(AnnStripId id) { return s_ann[id].panel; }
 
 float annstrip_height(const EditorState* e, AnnStripId id) {
-    float h = e->*(s_ann[id].height);
-    if (h < ANN_MIN_H) h = ANN_MIN_H;
-    if (h > ANN_MAX_H) h = ANN_MAX_H;
-    return h;
+    return height_for_rows(annstrip_rows(e->*(s_ann[id].height)));
 }
 
 // --- helpers --------------------------------------------------------------
@@ -189,8 +207,6 @@ static void sync_focus(AnnStrip& s) {
 // row deep and only actual overlap costs vertical space.  When everything is
 // occupied it joins the row that frees up soonest, which keeps the damage local
 // rather than hiding the entry entirely.
-
-#define ANN_MAX_ROWS 8
 
 // The row an entry was laid out on.  Anything the layout did not reach --
 // added since, or lost to a failed allocation -- falls back to the top row
@@ -286,10 +302,14 @@ bool annstrip_click(AnnStripId id, const AnnStripCtx& c, float mx, float my) {
     s.in     = true;
     s_active = id;
 
-    // The bottom band resizes the lane rather than editing what is in it.
-    if (my >= s.y + s.h - ANN_GRIP_H) {
-        s.grip    = true;
-        s.grip_dy = (s.y + s.h) - my;
+    // The top band resizes the lane rather than editing what is in it.  The
+    // strips stack up from the bottom of the window, so a lane that grows
+    // keeps its bottom edge and pushes its top into the spectrogram: the top
+    // edge is the one that moves, and so the one to take hold of.
+    if (my < s.y + ANN_GRIP_H) {
+        s.grip     = true;
+        s.grip_h0  = s.h;
+        s.grip_my0 = my;
         s.creating = s.hdrag = s.rect_sel = s.body_drag = false;
         return true;
     }
@@ -370,15 +390,17 @@ void annstrip_drag(AnnStripId id, const AnnStripCtx& c) {
     bool dragging   = ImGui::IsMouseDragging(ImGuiMouseButton_Left);
     bool released   = !ImGui::IsMouseDown(ImGuiMouseButton_Left);
 
-    // Lane resize: the bottom edge follows the cursor, within what the lane
-    // can be.  Height is in pixels rather than a row count so the drag is
-    // continuous and the rows appear as they fit.
+    // Lane resize: the top edge follows the cursor, within what the lane can
+    // be -- up is taller.  Measured from the grab rather than from where the
+    // lane is now: its top moves with every change of height, so a formula
+    // that re-read it each frame fed its own result back and ran the lane to
+    // one extreme with the cursor held still.  Height is in pixels rather
+    // than a row count so the drag is continuous and the rows appear as they
+    // fit.
     if (s.grip) {
         if (dragging) {
-            float h = io.MousePos.y + s.grip_dy - s.y;
-            if (h < ANN_MIN_H) h = ANN_MIN_H;
-            if (h > ANN_MAX_H) h = ANN_MAX_H;
-            e->*(s.height) = h;
+            float h = s.grip_h0 + (s.grip_my0 - io.MousePos.y);
+            e->*(s.height) = height_for_rows(rows_nearest(h));
         }
         if (released) s.grip = false;
     }
@@ -469,6 +491,26 @@ void annstrip_drag(AnnStripId id, const AnnStripCtx& c) {
     }
 
     s.map->selected_idx = s.focus_sync = s.focus;
+}
+
+int annstrip_insert(AnnStripId id, const AnnStripCtx& c, double t0, double t1,
+                    const char* text) {
+    AnnStrip& s = s_ann[id];
+    if (!s.map) return -1;
+    if (t1 < t0) { double t = t0; t0 = t1; t1 = t; }
+    if (t1 - t0 <= 0.001) return -1;
+
+    push_undo(s, c.undo);
+    int idx = miscmap_add(s.map, t0, t1, text ? text : "");
+    if (idx < 0) { undo_drop_last(c.undo); return -1; }
+
+    miscmap_clear_selection(s.map);
+    s.map->entries[idx].selected = true;
+    s.focus   = idx;
+    s.editing = -1;
+    s_active  = (int)id;
+    panel_set_visible(c.editor, s.panel, true);
+    return idx;
 }
 
 void annstrip_release_all() {
@@ -636,10 +678,10 @@ void annstrip_draw(AnnStripId id, const AnnStripCtx& c, ImDrawList* dl,
     // The resize grip, drawn as what it is: a band you can pull.
     ImGuiIO& io = ImGui::GetIO();
     bool over = io.MousePos.x >= s.x && io.MousePos.x < s.x + s.w &&
-                io.MousePos.y >= s.y + s.h - ANN_GRIP_H && io.MousePos.y < s.y + s.h;
+                io.MousePos.y >= s.y && io.MousePos.y < s.y + ANN_GRIP_H;
     if (over || s.grip) {
-        dl->AddRectFilled(ImVec2(s.x, s.y + s.h - ANN_GRIP_H),
-                          ImVec2(s.x + s.w, s.y + s.h), s.edge_sel);
+        dl->AddRectFilled(ImVec2(s.x, s.y),
+                          ImVec2(s.x + s.w, s.y + ANN_GRIP_H), s.edge_sel);
         ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNS);
     }
 }

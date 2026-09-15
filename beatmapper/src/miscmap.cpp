@@ -121,7 +121,7 @@ int miscmap_move_selection(MiscMap* mm, double dt, int* focus_idx) {
 struct MiscClipItem {
     double dt_start, dt_end;   // seconds, relative to the group's first start
     double db_start, db_end;   // beats, relative to the group's first start
-    char   text[128];
+    char   text[ANN_TEXT_MAX];
 };
 
 static MiscClipItem s_clip[MISC_CLIP_MAX];

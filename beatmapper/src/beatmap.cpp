@@ -144,7 +144,7 @@ bool beatmap_load(BeatMap* bm, SectionMap* sm, LyricMap* lm, MiscMap* mm,
         return false;
     }
 
-    char line[512];
+    char line[ANN_TEXT_MAX + 256];   // two times plus the longest annotation
     while (fgets(line, sizeof(line), f)) {
         // Strip inline comments.  A '#' only starts one at the start of a line
         // or after whitespace: cutting at the first '#' unconditionally eats
@@ -186,7 +186,7 @@ bool beatmap_load(BeatMap* bm, SectionMap* sm, LyricMap* lm, MiscMap* mm,
             // survives as the text it was written with.
             const char* rest = p + off;
             while (*rest == ' ' || *rest == '\t') rest++;
-            char text[128] = {};
+            char text[ANN_TEXT_MAX] = {};
             strncpy(text, rest, sizeof(text) - 1);
             int ll = (int)strlen(text);
             while (ll > 0 && text[ll - 1] <= ' ') text[--ll] = '\0';
@@ -254,7 +254,7 @@ bool beatmap_load(BeatMap* bm, SectionMap* sm, LyricMap* lm, MiscMap* mm,
                 }
             } else if (mm) {
                 // Unrecognized line: store as misc annotation preserving original text
-                char misc_text[128] = {};
+                char misc_text[ANN_TEXT_MAX] = {};
                 const char* rest = p + off;
                 while (*rest == ' ' || *rest == '\t') rest++;
                 if (*rest && *rest != '\n' && *rest != '\r')

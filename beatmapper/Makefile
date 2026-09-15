@@ -18,6 +18,7 @@ SOURCES := \
     $(SRC_DIR)/sectionmap.cpp \
     $(SRC_DIR)/lyricmap.cpp \
     $(SRC_DIR)/undo.cpp \
+    $(SRC_DIR)/tapmap.cpp \
     $(SRC_DIR)/recent.cpp \
     $(SRC_DIR)/library.cpp \
     $(SRC_DIR)/ui_timeline.cpp \

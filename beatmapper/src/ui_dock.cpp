@@ -354,7 +354,8 @@ void ui_dock_render(EditorState* editor, AudioState* audio, BeatMap* beatmap,
     ImGuiIO& io = ImGui::GetIO();
     float dock_w = ui_dock_width();
     float win_h  = io.DisplaySize.y;
-    ToolCtx c = { editor, audio, beatmap, undo, autobeat, sectionmap, lyricmap, miscmap, chordmap, true };
+    ToolCtx c = { editor, audio, beatmap, undo, autobeat, sectionmap, lyricmap, miscmap, chordmap,
+                  ui_timeline_tapmap(), true };
 
     ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x - dock_w, 0));
     ImGui::SetNextWindowSize(ImVec2(dock_w, win_h));

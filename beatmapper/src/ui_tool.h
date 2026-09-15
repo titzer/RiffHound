@@ -8,6 +8,7 @@
 #include "miscmap.h"
 #include "beat_algo.h"
 #include "undo.h"
+#include "tapmap.h"
 
 // What every dockable tool is handed each frame.  Passed, not stored: all of
 // it changes every frame.
@@ -21,6 +22,7 @@ struct ToolCtx {
     LyricMap*     lyricmap;
     MiscMap*      miscmap;
     MiscMap*      chordmap;
+    TapMap*       taps;        // the tap strip (ui_timeline_tapmap())
     bool          in_drawer;   // docked in the side drawer (else a floating window)
 };
 
