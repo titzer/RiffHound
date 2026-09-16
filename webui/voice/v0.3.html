@@ -342,6 +342,7 @@
 		maxHistory: 2000,
 		bufSize: 4096,
 		pianoOctaveShift: 0,
+		heldKeys: [],
 		disposers: [],
 		noteNames: ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
 	};
@@ -388,6 +389,31 @@
 	function pianoBounds() {
 		var base = 36 + app.pianoOctaveShift * 12;
 		return { minMidi: base, maxMidi: base + 36 };
+	}
+
+	// Computer-keyboard layout for the 37 visible piano keys, indexed by semitone
+	// offset from pianoBounds().minMidi. Mirrors the piano: white keys sit on the
+	// Z row (lower) and Q row (upper); black keys sit on the row above each, in
+	// the physical gap between the two white keys they fall between.
+	//
+	//   lower:  S D   G H J   L ;          upper:  2 3 4   6 7   9 0 -
+	//          Z X C V B N M , . /                Q W E R T Y U I O P [ ]
+	//          C D E F G A B C D E                F G A B C D E F G A B C
+	var PIANO_KEYS = [
+		["KeyZ", "Z"], ["KeyS", "S"], ["KeyX", "X"], ["KeyD", "D"], ["KeyC", "C"],
+		["KeyV", "V"], ["KeyG", "G"], ["KeyB", "B"], ["KeyH", "H"], ["KeyN", "N"], ["KeyJ", "J"], ["KeyM", "M"],
+		["Comma", ","], ["KeyL", "L"], ["Period", "."], ["Semicolon", ";"], ["Slash", "/"],
+		["KeyQ", "Q"], ["Digit2", "2"], ["KeyW", "W"], ["Digit3", "3"], ["KeyE", "E"], ["Digit4", "4"], ["KeyR", "R"],
+		["KeyT", "T"], ["Digit6", "6"], ["KeyY", "Y"], ["Digit7", "7"], ["KeyU", "U"],
+		["KeyI", "I"], ["Digit9", "9"], ["KeyO", "O"], ["Digit0", "0"], ["KeyP", "P"], ["Minus", "-"],
+		["BracketLeft", "["], ["BracketRight", "]"]
+	];
+	var keyCodeToOffset = {};
+	for (var ki = 0; ki < PIANO_KEYS.length; ki++) keyCodeToOffset[PIANO_KEYS[ki][0]] = ki;
+
+	function keyLabelForMidi(midi) {
+		var off = midi - pianoBounds().minMidi;
+		return (off >= 0 && off < PIANO_KEYS.length) ? PIANO_KEYS[off][1] : null;
 	}
 
 	function midiToName(midi) {
@@ -1045,6 +1071,25 @@
 			                (pc === 0               ? "#7a8fa8" : "#647a8f");
 			ctx.fillText(midiToName(m), xc, h - 2);
 		}
+
+		// ── Pass 7: computer-keyboard key labels ──
+		// White keys: just above the note name. Black keys: at the bottom of the key.
+		var noteFontPx = Math.max(7, Math.min(11, Math.round(wkW * 0.55)));
+		var keyFontPx  = Math.max(7, Math.min(10, Math.round(u * 0.6)));
+		ctx.font = "bold " + keyFontPx + "px system-ui";
+		for (var m = minMidi; m <= maxMidi; m++) {
+			var label = keyLabelForMidi(m);
+			if (label === null) continue;
+			var isPressed = (m === pressedMidi);
+			if (!isBlack(m)) {
+				ctx.fillStyle = isPressed ? "#1f4d33" : "#3b4b5c";
+				ctx.fillText(label, (wkLeftX(m) + wkRightX(m)) / 2, h - 4 - noteFontPx);
+			} else {
+				if (bkW < keyFontPx) continue;
+				ctx.fillStyle = isPressed ? "#c9f7db" : "#8496ab";
+				ctx.fillText(label, (m - minMidi + 0.5) * u, bkH - 3);
+			}
+		}
 	}
 
 	function drawAll() {
@@ -1159,6 +1204,51 @@
 		});
 		on(app.els.piano, "touchend", function () { stopPianoNote(); });
 		on(app.els.piano, "touchcancel", function () { stopPianoNote(); });
+
+		// Piano key interaction (computer keyboard)
+		function isTypingTarget(t) {
+			if (!t || !t.tagName) return false;
+			var tag = t.tagName.toLowerCase();
+			return tag === "input" || tag === "select" || tag === "textarea" || t.isContentEditable;
+		}
+		function keyboardMidi(code) {
+			var off = keyCodeToOffset[code];
+			return (off === undefined) ? null : pianoBounds().minMidi + off;
+		}
+		function releaseAllKeys() {
+			if (!app.heldKeys.length) return;
+			app.heldKeys.length = 0;
+			stopPianoNote();
+		}
+		on(window, "keydown", function (e) {
+			if (e.metaKey || e.ctrlKey || e.altKey || isTypingTarget(e.target)) return;
+			if (e.code === "ArrowUp" || e.code === "ArrowDown") {
+				e.preventDefault();
+				if (!e.repeat) (e.code === "ArrowUp" ? app.els.octUp : app.els.octDown).click();
+				return;
+			}
+			var midi = keyboardMidi(e.code);
+			if (midi === null) return;
+			e.preventDefault();
+			if (e.repeat) return;
+			var idx = app.heldKeys.indexOf(e.code);
+			if (idx >= 0) app.heldKeys.splice(idx, 1);
+			app.heldKeys.push(e.code);
+			playPianoNote(midi);
+		});
+		on(window, "keyup", function (e) {
+			var idx = app.heldKeys.indexOf(e.code);
+			if (idx < 0) return;
+			app.heldKeys.splice(idx, 1);
+			// Monophonic: fall back to the most recently pressed key still held.
+			if (app.heldKeys.length) {
+				var midi = keyboardMidi(app.heldKeys[app.heldKeys.length - 1]);
+				if (midi !== null && midi !== app.pianoActiveNote) playPianoNote(midi);
+			} else if (!pianoMouseDown) {
+				stopPianoNote();
+			}
+		});
+		on(window, "blur", releaseAllKeys);
 
 		on(document, "click", closeAllPops);
 		on(window, "resize", drawAll);
