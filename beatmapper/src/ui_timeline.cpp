@@ -1740,15 +1740,16 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
         s_lyr_body_drag_idx = -1;
     }
 
-    // Rect selection release: select all visible beats whose centre falls inside the rect
+    // Rect selection release: select every visible beat in the rect's time
+    // range.  Only the x extent counts: zoomed out, crowded diamonds are
+    // staggered onto different rows purely so they can be seen, and a
+    // rectangle that had to cover the rows too would take a random-looking
+    // subset of the stretch -- which then halves or smooths as one.
     if (s_rect_sel && !ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
         float rsx0 = s_rect_x0 < io.MousePos.x ? s_rect_x0 : io.MousePos.x;
         float rsx1 = s_rect_x0 < io.MousePos.x ? io.MousePos.x : s_rect_x0;
-        float rsy0 = s_rect_y0 < io.MousePos.y ? s_rect_y0 : io.MousePos.y;
-        float rsy1 = s_rect_y0 < io.MousePos.y ? io.MousePos.y : s_rect_y0;
         for (int i = 0; i < s_vis_n; i++) {
-            if (s_vis[i].bx >= rsx0 && s_vis[i].bx <= rsx1 &&
-                s_vis[i].cy >= rsy0 && s_vis[i].cy <= rsy1)
+            if (s_vis[i].bx >= rsx0 && s_vis[i].bx <= rsx1)
                 beatmap->beats[s_vis[i].idx].selected = true;
         }
         s_rect_sel = false;

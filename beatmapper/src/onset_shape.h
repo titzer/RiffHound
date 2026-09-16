@@ -37,6 +37,13 @@ void shape_params_defaults(ShapeParams* p);
 void shape_descriptor(const AudioPcm& a, double t, double win, const ShapeParams& p,
                       std::vector<float>* out, float* energy);
 
+// Spectral shape of the audio in [t0, t1): mean log-band energy over
+// log-spaced bands, with the mean across bands removed so that level drops
+// out and what remains is the balance -- where the energy sits.  A verse
+// with a singer and a solo over the same chords differ here, not in chroma.
+void shape_band_profile(const AudioPcm& a, double t0, double t1, int bands,
+                        std::vector<float>* out);
+
 struct ShapeVocab {
     bool  valid = false;
     int   k = 0, dim = 0;

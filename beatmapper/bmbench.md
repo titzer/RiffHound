@@ -67,8 +67,11 @@ phase-error statistic the chroma-only strategy was bad at), `missed` hidden
 truth beats with no proposal within tolerance, mean and max error, and the
 number of template transfers vs. tempo runs.
 
-Section metrics (`--stages`): hidden sections recovered (both edges within
-0.25 s and the same kind), and spurious proposals inside the truth range.
+Section metrics: hidden sections recovered (both edges within 0.25 s and
+the same kind), spurious proposals inside the truth range, and `sec_near`:
+misses whose nearest same-kind proposal has both edges within a beat -- the
+count to watch for phase slips.  With `--list`, every miss prints its
+nearest proposal and the signed edge errors in beats.
 
 Chord metrics (`--stages`): chords proposed for hidden ones, chords with the
 right name at the right time (start within 0.15 s), and **chord beats** --
@@ -91,6 +94,13 @@ Train the onset-shape vocabulary and report, per shape, the hit count, level,
 mean membership and how many hits fall on beats, on half-beats, or elsewhere
 relative to the truth beats.  A shape with many on-beat hits and few
 half-beat hits is what the rhythm-shape strategy keys on.
+
+### `chroma`
+
+Per-beat chroma with the truth chord: one TSV line per truth beat interval
+(track, index, t0, t1, chord token, twelve values).  Works on a directory.
+This is the training set for `scripts/train_chords.py`, which fits the
+corpus chord emission model in `src/chord_model.h` (see below).
 
 ### `params`
 
@@ -132,9 +142,29 @@ the Python environments under `external/` and verifies them.  The command is `$B
 is the BTC large-vocabulary alternative and also emits 7th/sus chords).
 Output is one `start<TAB>end<TAB>label` line per chord; both scripts cache
 per track under `~/.cache/beatmapper/chords/`, so only the first run pays the
-model.  Model chords fill the spans no template-based source claimed, snapped
-to the beat grid; with `--set chord_external_blend=0.25` they instead become
-per-beat emission bonuses inside the Viterbi decoder.
+model.  Model chords enter the Viterbi decoder as per-beat emission bonuses
+(`chord_external_blend`, 0.1 with in-song models; `chord_external_blend_cold`,
+0.25 when the map has no chords), scaled by an optional fourth column of
+confidence.  `chord_external_tool` picks the recogniser: 0 madmom, 1 the
+ensemble (`scripts/chords_ensemble.py`: every installed model, confident
+where they agree; the default), 2 BTC.  `chord_external_blend=0` restores
+span filling.
+
+Two more emission terms need no external process.  `chord_corpus_weight_cold`
+(0.2; `chord_corpus_weight` 0 with in-song models) mixes in the corpus-trained
+model from `src/chord_model.h`: a transposition-tied softmax over the 24
+triads, fitted by `scripts/train_chords.py` on the `chroma` dump of the
+mapped tracks (66.5 % per-beat leave-one-track-out against the hand triad's
+57 %, with the neighbouring beats' chroma as context).  Retrain after
+mapping more tracks:
+
+```sh
+./bmbench bench/tracks-anno chroma > chroma.tsv
+external/venv/bin/python scripts/train_chords.py chroma.tsv --context --no-eval --header src/chord_model.h
+```
+
+`chord_key_bonus` (0.05) favours unseen triads diatonic to the song's key,
+estimated from its mapped chords or, cold, by Krumhansl profile correlation.
 
 ## Scenarios that have been useful
 
@@ -164,9 +194,14 @@ for t in 0.05 0.1 0.2 0.4; do
 done
 ```
 
-TSV columns, in order: `algo hidden n hit bad half missed mean_ms max_ms
-transfers tempo_runs sec_found sec_true sec_false ch_found ch_true ch_text_ok
-cb_ok cb_n`.
+TSV columns, in order: `track scenario hidden n hit50 hit90 half missed
+mean_ms max_ms sec_found sec_true sec_false sec_near cb_ok cb_n`.
+
+`scripts/bench-par.py BINARY DIR ONLY [args]` runs one process per track in
+parallel and concatenates the rows (a full `sect/loo` pass over the 18
+tracks takes ~30 s instead of 2.5 min); `--list` lines come out on stderr
+prefixed with the track.  Snapshot the binary first (`cp bmbench bmbench-tN`)
+so a rebuild mid-sweep does not change what later tracks run.
 
 ## What it has found so far
 
@@ -209,6 +244,22 @@ cb_ok cb_n`.
   the model and the annotator disagree on major-vs-minor (Country-E-188) or
   on the tuning reference of an off-pitch recording (BTC on Mary Jane's
   Last Dance) score as misses.
+
+- Section proposals slipping a whole beat late in chains: the partition DP
+  let filler advance one beat while measure-granularity similarity could not
+  tell the phases apart.  Locking block starts to the mapped sections'
+  measure phase (`section_phase_lock`) took sect/tail-50 from 41 to 57 of
+  110 with the one-beat near-misses going from 16 to 0.
+- Right edges, wrong kind was the rest of the leave-one-out misses: a
+  spectral-balance profile per beat (`section_timbre_weight` 0.45, 24
+  bands) took sect/loo from 122 to 127 of 153 and false from 49 to 43;
+  all/loso 134 -> 137.
+- Cold chords without an external model: corpus emission model + key bonus,
+  58.2 -> 64.9 % of chord beats.  With the external ensemble, 67.6 %
+  (madmom alone 67.1, BTC alone 65.9); the ensemble also edges the decoder
+  scenario, 84.6 -> 85.0 %.  Blending external labels as emissions rather
+  than filling spans is what keeps the in-song models in charge (span
+  filling scored 69 % where the decoder alone scores 83 %).
 
 ## Known-hard cases
 

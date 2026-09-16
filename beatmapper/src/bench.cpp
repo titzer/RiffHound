@@ -91,6 +91,9 @@ static const PDesc PARAMS[] = {
     PB(section_discover,     "discover repeats by self-similarity"),
     PB(section_partition,    "partition-DP section inference"),
     PF(section_prior_weight, "kind-transition prior weight in the DP"),
+    PB(section_phase_lock, "DP blocks start on the mapped sections' measure phase"),
+    PF(section_timbre_weight, "spectral-balance weight in section similarity"),
+    PI(section_timbre_bands, "bands in the spectral-balance profile"),
     PF(section_block_penalty,"fixed DP cost per block"),
     PF(section_ext_penalty,  "DP cost per extended measure"),
     PF(section_trunc_penalty,"DP cost per truncated measure"),
@@ -108,6 +111,11 @@ static const PDesc PARAMS[] = {
     PB(chord_learn_rate,     "scale change cost by the map's median chord length"),
     PB(chord_external,       "external learned chord model (madmom; needs scripts/chords_madmom.py)"),
     PF(chord_external_blend, "blend external labels into the decoder as emission bonuses (0 = spans)"),
+    PF(chord_external_blend_cold, "external emission bonus when no chords are mapped"),
+    PF(chord_corpus_weight, "corpus-trained emission model weight in the decoder"),
+    PF(chord_corpus_weight_cold, "corpus emission weight when no chords are mapped"),
+    PF(chord_key_bonus, "emission bonus for unseen triads diatonic to the estimated key"),
+    PI(chord_external_tool, "external recogniser: 0 madmom, 1 ensemble, 2 BTC"),
     PI(chroma.algo_idx,      "CHROMA_ALGOS index for beat chroma"),
     PF(chroma.attack_ms,     "beat chroma: skip attack ms"),
     PF(chroma.attack_frac,   "beat chroma: skip attack fraction"),
@@ -287,6 +295,7 @@ struct Metrics {
     int    transfers = 0, tempo_runs = 0;
     // sections
     int sec_found = 0, sec_true = 0, sec_false = 0;
+    int sec_near = 0;   // hidden sections whose best same-kind proposal is within a beat on both edges, but not a hit
     // chords
     int cb_ok = 0, cb_n = 0, ch_found = 0, ch_named = 0;
     bool has_beats = false, has_sections = false;
@@ -372,6 +381,14 @@ struct RunOpts {
     double r0 = 0, r1 = 0;
 };
 
+// The truth's beat interval around t, for expressing an edge error in beats.
+static double ibi_near(const Truth& tr, double t) {
+    size_t k = std::lower_bound(tr.beats.begin(), tr.beats.end(), t) - tr.beats.begin();
+    if (k + 1 < tr.beats.size()) return tr.beats[k + 1] - tr.beats[k];
+    if (k >= 1 && k < tr.beats.size()) return tr.beats[k] - tr.beats[k - 1];
+    return 0.5;
+}
+
 // Run the inference stages in opts.order on the (already hidden) map set,
 // accepting everything between stages, and fill in the metrics.
 static void run_scenario(const TrackData& td, MapSet* ms, CompleteParams p,
@@ -437,6 +454,12 @@ static void run_scenario(const TrackData& td, MapSet* ms, CompleteParams p,
             // outside the annotated section span is unknowable, not wrong.
             double ann0 = 1e18, ann1 = -1e18;
             for (const Section& ts2 : tr.sections) { ann0 = std::min(ann0, ts2.t_start); ann1 = std::max(ann1, ts2.t_end); }
+            // Per hidden section: was it hit, and which proposal came nearest
+            // (same kind, or a discovered repeat) -- so a miss can say how far.
+            std::vector<char>   sec_hit(tr.sections.size(), 0);
+            std::vector<double> near_d(tr.sections.size(), 1e9), near_t0(tr.sections.size(), 0),
+                                near_t1(tr.sections.size(), 0);
+            std::vector<int>    near_kind(tr.sections.size(), -1);
             for (const CompleteCand& c : out.cands) {
                 if (c.kind != CAND_SECTION) continue;
                 if (c.t0 > ann1 - 0.5 || c.t1 < ann0 + 0.5) continue;
@@ -444,16 +467,42 @@ static void run_scenario(const TrackData& td, MapSet* ms, CompleteParams p,
                 // cannot know the truth's names: judge them on edges alone.
                 bool from_discovery = strncmp(c.source, "repeat", 6) == 0;
                 bool ok = false;
-                for (size_t i = 0; i < tr.sections.size(); i++)
-                    if (sec_hidden[i] && fabs(tr.sections[i].t_start - c.t0) < 0.25 &&
-                        fabs(tr.sections[i].t_end - c.t1) < 0.25 &&
-                        (from_discovery || tr.sections[i].kind == c.sec_kind)) { ok = true; break; }
+                for (size_t i = 0; i < tr.sections.size(); i++) {
+                    if (!sec_hidden[i]) continue;
+                    bool kind_ok = from_discovery || tr.sections[i].kind == c.sec_kind;
+                    if (kind_ok && fabs(tr.sections[i].t_start - c.t0) < 0.25 &&
+                        fabs(tr.sections[i].t_end - c.t1) < 0.25) { ok = true; sec_hit[i] = 1; }
+                    double d = fabs(tr.sections[i].t_start - c.t0) + fabs(tr.sections[i].t_end - c.t1);
+                    if (kind_ok && d < near_d[i]) {
+                        near_d[i] = d; near_t0[i] = c.t0; near_t1[i] = c.t1; near_kind[i] = c.sec_kind;
+                    }
+                }
                 if (ok) m->sec_found++; else m->sec_false++;
                 int idx = sectionmap_add(&ms->sm, c.t0, c.t1, c.sec_kind, c.label);
                 if (idx >= 0) ms->sm.sections[idx].ts_num = c.ts_num;
                 for (int i = 0; i < c.chord_n; i++) {
                     const ChordProposal& cp = out.chords[c.chord_first + i];
                     miscmap_add(&ms->cm, cp.t0, cp.t1, cp.text);
+                }
+            }
+            for (size_t i = 0; i < tr.sections.size(); i++) {
+                if (!sec_hidden[i] || sec_hit[i]) continue;
+                bool near = false;
+                double e0 = 0, e1 = 0;
+                if (near_d[i] < 1e9) {
+                    e0 = (near_t0[i] - tr.sections[i].t_start) / ibi_near(tr, tr.sections[i].t_start);
+                    e1 = (near_t1[i] - tr.sections[i].t_end)   / ibi_near(tr, tr.sections[i].t_end);
+                    near = fabs(e0) <= 1.05 && fabs(e1) <= 1.05;
+                }
+                if (near) m->sec_near++;
+                if (opts.list) {
+                    const Section& ts2 = tr.sections[i];
+                    printf("    MISS %-12s %7.2f-%-7.2f", SECTION_KIND_NAMES[ts2.kind], ts2.t_start, ts2.t_end);
+                    if (near_d[i] < 1e9)
+                        printf("  nearest %s %7.2f-%-7.2f (beats %+.2f/%+.2f)%s\n",
+                               SECTION_KIND_NAMES[near_kind[i]], near_t0[i], near_t1[i], e0, e1,
+                               near ? "  ~1 beat" : "");
+                    else printf("  nothing of that kind proposed\n");
                 }
             }
         }
@@ -523,9 +572,9 @@ static const int N_SUITE = (int)(sizeof(SUITE) / sizeof(SUITE[0]));
 
 static void metrics_print(const char* track, const char* scen, const Metrics& m, bool tsv) {
     if (tsv) {
-        printf("%s\t%s\t%d\t%d\t%d\t%d\t%d\t%d\t%.1f\t%.1f\t%d\t%d\t%d\t%d\t%d\n",
+        printf("%s\t%s\t%d\t%d\t%d\t%d\t%d\t%d\t%.1f\t%.1f\t%d\t%d\t%d\t%d\t%d\t%d\n",
                track, scen, m.n_hidden, m.bn, m.hit50, m.hit90, m.half, m.missed, m.mean_ms, m.max_ms,
-               m.sec_found, m.sec_true, m.sec_false, m.cb_ok, m.cb_n);
+               m.sec_found, m.sec_true, m.sec_false, m.sec_near, m.cb_ok, m.cb_n);
         return;
     }
     printf("  %-18s", scen);
@@ -535,7 +584,7 @@ static void metrics_print(const char* track, const char* scen, const Metrics& m,
     else if (m.has_beats)
         printf("  beats: none proposed (%d hidden)", m.n_hidden);
     if (m.has_sections)
-        printf("  sect %d/%d (+%d wrong)", m.sec_found, m.sec_true, m.sec_false);
+        printf("  sect %d/%d (+%d wrong, %d within a beat)", m.sec_found, m.sec_true, m.sec_false, m.sec_near);
     if (m.cb_n > 0)
         printf("  chords %3d%% of %d beats", 100 * m.cb_ok / m.cb_n, m.cb_n);
     printf("\n");
@@ -560,13 +609,14 @@ static void run_loo(const TrackData& td, const CompleteParams& base, bool tsv, b
         hide_range(tr, &ms, L_SECTIONS | L_CHORDS,
                    tr.sections[i].t_start + 1e-3, tr.sections[i].t_end - 1e-3);
         CompleteParams p = base;
-        RunOpts opts; opts.order = "s";
+        RunOpts opts; opts.order = "s"; opts.list = verbose;
         Metrics m;
         shape_analysis_clear(shape_track());
         run_scenario(td, &ms, p, opts, &m);
         agg.sec_true += m.sec_true;
         agg.sec_found += m.sec_found;
         agg.sec_false += m.sec_false;
+        agg.sec_near += m.sec_near;
         agg.cb_ok += m.cb_ok; agg.cb_n += m.cb_n;
         if (verbose && m.sec_found < m.sec_true) {
             char name[64];
@@ -584,7 +634,20 @@ static void run_loo(const TrackData& td, const CompleteParams& base, bool tsv, b
                 double d = fabs(c.t_start - tr.sections[i].t_start) + fabs(c.t_end - tr.sections[i].t_end);
                 if (d < best) { best = d; b0 = c.t_start; b1 = c.t_end; bk = SECTION_KIND_NAMES[c.kind]; }
             }
-            if (best < 1e9) printf("  nearest %s %7.2f-%-7.2f (edge err %.2fs)\n", bk, b0, b1, best);
+            if (best < 1e9) {
+                // Edge errors in beats, signed (+ = proposal late), so a
+                // one-beat slip reads as +1.0/+1.0 rather than as seconds.
+                auto ibi_at = [&](double t) {
+                    size_t k = std::lower_bound(tr.beats.begin(), tr.beats.end(), t) - tr.beats.begin();
+                    if (k + 1 < tr.beats.size()) return tr.beats[k + 1] - tr.beats[k];
+                    if (k >= 1 && k < tr.beats.size()) return tr.beats[k] - tr.beats[k - 1];
+                    return 0.5;
+                };
+                double e0 = (b0 - tr.sections[i].t_start) / ibi_at(tr.sections[i].t_start);
+                double e1 = (b1 - tr.sections[i].t_end)   / ibi_at(tr.sections[i].t_end);
+                printf("  nearest %s %7.2f-%-7.2f (edge err %.2fs; beats %+.2f/%+.2f)\n",
+                       bk, b0, b1, best, e0, e1);
+            }
             else printf("  nothing proposed\n");
         }
         ms.free();
@@ -613,7 +676,7 @@ static void run_loso(const TrackData& td, const CompleteParams& base, bool tsv, 
         MapSet ms; ms.init(tr);
         hide_range(tr, &ms, L_ALL, sec.t_start + 1e-3, sec.t_end - 1e-3);
         CompleteParams p = base;
-        RunOpts opts; opts.order = "b,s,c"; opts.smooth2 = 1;
+        RunOpts opts; opts.order = "b,s,c"; opts.smooth2 = 1; opts.list = verbose;
         Metrics m;
         shape_analysis_clear(shape_track());
         run_scenario(td, &ms, p, opts, &m);
@@ -622,6 +685,7 @@ static void run_loso(const TrackData& td, const CompleteParams& base, bool tsv, 
         agg.half += m.half; agg.missed += m.missed;
         agg.mean_ms += m.mean_ms * m.bn; agg.max_ms = std::max(agg.max_ms, m.max_ms);
         agg.sec_true += m.sec_true; agg.sec_found += m.sec_found; agg.sec_false += m.sec_false;
+        agg.sec_near += m.sec_near;
         agg.cb_ok += m.cb_ok; agg.cb_n += m.cb_n;
         if (verbose) {
             char name[64];
@@ -639,10 +703,10 @@ static void run_loso(const TrackData& td, const CompleteParams& base, bool tsv, 
 
 static const char* TSV_HEADER =
     "track\tscenario\thidden\tn\thit50\thit90\thalf\tmissed\tmean_ms\tmax_ms\t"
-    "sec_found\tsec_true\tsec_false\tcb_ok\tcb_n\n";
+    "sec_found\tsec_true\tsec_false\tsec_near\tcb_ok\tcb_n\n";
 
 static void run_suite(const TrackData& td, const CompleteParams& base, const char* only,
-                      bool tsv)
+                      bool tsv, bool verbose)
 {
     if (!tsv)
         printf("== %s  (%d beats, %d sections, %d chords)\n", td.name.c_str(),
@@ -670,6 +734,7 @@ static void run_suite(const TrackData& td, const CompleteParams& base, const cha
         RunOpts opts;
         opts.order = sc.order;
         opts.smooth2 = sc.smooth2;
+        opts.list = verbose;
         Metrics m;
         shape_analysis_clear(shape_track());   // no cross-scenario reuse
         run_scenario(td, &ms, p, opts, &m);
@@ -691,7 +756,8 @@ static void usage() {
         "            --order b,s,c  --algo NAME|IDX  --set NAME=VALUE  --smooth2 N\n"
         "            --tsv [--header]  --list  --dump  --debug\n"
         "  detect:   --region T0-T1 [--set det_*=...]\n"
-        "  shapes:   [--set shape.*=...]\n");
+        "  shapes:   [--set shape.*=...]\n"
+        "  chroma:   per-beat chroma + truth chord, one TSV line per beat (for training)\n");
 }
 
 static bool is_dir(const char* p) {
@@ -787,7 +853,7 @@ int main(int argc, char** argv) {
         if (d) closedir(d);
         std::sort(targets.begin(), targets.end());
         if (targets.empty()) { fprintf(stderr, "no track/.txt pairs in %s\n", target); return 1; }
-        if (cmd != "suite") { fprintf(stderr, "a directory target needs the suite command\n"); return 2; }
+        if (cmd != "suite" && cmd != "chroma") { fprintf(stderr, "a directory target needs the suite or chroma command\n"); return 2; }
     } else {
         targets.push_back(target);
     }
@@ -798,6 +864,23 @@ int main(int argc, char** argv) {
         TrackData td;
         if (!track_load(t.c_str(), map_path.c_str(), &td)) return 1;
 
+        if (cmd == "chroma") {
+            // Per-beat chroma with the truth chord, for training chord
+            // profiles on the mapped corpus: one line per truth beat interval.
+            BeatChromaCache cache;
+            AudioPcm au = { td.pcm, td.nf, 1, td.sr };
+            beat_chroma_ensure(&cache, au, td.tr.beats.data(), (int)td.tr.beats.size(), p.chroma);
+            for (size_t i = 0; i + 1 < td.tr.beats.size() && i < cache.entries.size(); i++) {
+                double t0 = td.tr.beats[i], t1 = td.tr.beats[i + 1], mid = 0.5 * (t0 + t1);
+                char tok[32] = "-";
+                for (const MiscAnnotation& c : td.tr.chords)
+                    if (c.t_start <= mid && c.t_end > mid) { chord_token(c.text, tok, sizeof(tok)); break; }
+                printf("%s\t%d\t%.3f\t%.3f\t%s", td.name.c_str(), (int)i, t0, t1, tok);
+                for (int k = 0; k < 12; k++) printf("\t%.5f", cache.entries[i].v[k]);
+                printf("\n");
+            }
+            continue;
+        }
         if (cmd == "shapes") {
             ShapeAnalysis* sa = shape_track();
             MapSet ms; ms.init(td.tr);
@@ -850,7 +933,7 @@ int main(int argc, char** argv) {
         if (cmd == "suite") {
             if (only && !strcmp(only, "sect/loo")) run_loo(td, p, tsv, list || !tsv);
             else if (only && !strcmp(only, "all/loso")) run_loso(td, p, tsv, list);
-            else run_suite(td, p, only, tsv);
+            else run_suite(td, p, only, tsv, list);
             track_free(&td);
             continue;
         }

@@ -57,6 +57,36 @@ static double band_frame(const AudioPcm& a, int64_t fs, int64_t flen, int nfft,
     return n ? ms / n : 0.0;
 }
 
+void shape_band_profile(const AudioPcm& a, double t0, double t1, int bands,
+                        std::vector<float>* out)
+{
+    bands = bands < 4 ? 4 : (bands > 64 ? 64 : bands);
+    out->assign(bands, 0.0f);
+    if (t1 <= t0 || a.sample_rate == 0) return;
+    const int nfft = 2048, flen = 2048, hop = 1024;
+    int64_t s0 = (int64_t)(t0 * a.sample_rate), s1 = (int64_t)(t1 * a.sample_rate);
+    if (s1 - s0 < flen / 2) s1 = s0 + flen / 2;
+    std::vector<float> re(nfft), im(nfft), tmp(bands);
+    std::vector<int> edge(bands + 1);
+    for (int b = 0; b <= bands; b++) {
+        double f = F_LO * pow(F_HI / F_LO, (double)b / bands);
+        int bin = (int)(f * nfft / a.sample_rate);
+        if (bin < 1) bin = 1;
+        if (bin > nfft / 2) bin = nfft / 2;
+        edge[b] = bin;
+    }
+    for (int b = 1; b <= bands; b++) if (edge[b] <= edge[b - 1]) edge[b] = edge[b - 1] + 1;
+    int n = 0;
+    for (int64_t fs = s0; fs + flen / 2 <= s1 && n < 32; fs += hop, n++) {
+        band_frame(a, fs, flen, nfft, edge, bands, re, im, tmp.data());
+        for (int b = 0; b < bands; b++) (*out)[b] += tmp[b];
+    }
+    if (!n) return;
+    float mean = 0.0f;
+    for (int b = 0; b < bands; b++) { (*out)[b] /= n; mean += (*out)[b] / bands; }
+    for (int b = 0; b < bands; b++) (*out)[b] -= mean;
+}
+
 void shape_descriptor(const AudioPcm& a, double t, double win, const ShapeParams& p,
                       std::vector<float>* out, float* energy)
 {

@@ -100,6 +100,9 @@ struct CompleteParams {
     bool  section_discover;      // also find repeats by self-similarity (no template needed)
     bool  section_partition;     // infer uncovered spans as a partition (DP) rather than sliding matches
     float section_prior_weight;  // weight of the learned kind-transition prior in the DP (0.5; 0: off)
+    bool  section_phase_lock;    // partition blocks start only on the measure phase the mapped sections share
+    float section_timbre_weight; // weight of the per-beat spectral balance in section similarity (0: off)
+    int   section_timbre_bands;  // log-spaced bands in that profile (16)
     float section_block_penalty; // fixed DP cost per block, against confetti partitions (1.0)
     float section_ext_penalty;   // DP cost per measure a block extends past its template (0.01)
     float section_trunc_penalty; // DP cost per measure a block truncates its template (0.04)
@@ -120,6 +123,11 @@ struct CompleteParams {
     bool  chord_external;        // call the external learned chord model (madmom CNN+CRF)
                                  // via BM_CHORD_CMD or scripts/chords_madmom.py; needs audio_path
     float chord_external_blend;  // > 0: external labels become per-beat emission bonuses in the
+    float chord_external_blend_cold; // the same bonus when the map has no chords to learn from (0: use chord_external_blend)
+    float chord_corpus_weight;   // weight of the corpus-trained chord emission model in the decoder (0: off)
+    float chord_corpus_weight_cold; // the same when the map has no chords to learn from
+    float chord_key_bonus;       // emission bonus for triads diatonic to the song's key (0: off)
+    int   chord_external_tool;   // 0: madmom, 1: ensemble of every installed model, 2: BTC (or $BM_CHORD_CMD)
                                  // decoder instead of standalone chord spans (0.25 is sensible)
 
     // --- chroma per beat ---

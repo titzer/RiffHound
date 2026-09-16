@@ -159,14 +159,35 @@ prefix-summed chroma + rhythm features), gently truncated or extended by
 whole measures -- extra measures compare cyclically against the template's
 last two, so a final chorus that repeats its tail matches as one long block
 -- and per-beat filler for what matches nothing.  Each block costs a fixed
-`section_block_penalty` (8), which is what keeps the DP from covering a
+`section_block_penalty` (1.0), which is what keeps the DP from covering a
 hidden chorus with confetti of small high-similarity fragments; blocks whose
 similarity clears the DP's soft gate but not `section_sim_threshold` arrive
 deselected.  Anchoring both ends makes the off-by-a-few-beats placements of a
-sliding search structurally impossible for interior spans.  (A learned
-kind-transition prior exists behind `section_prior_weight` but defaults to
-off: with only a handful of known sections the bigram counts are too sparse
-to help.)
+sliding search structurally impossible for interior spans.  A learned
+kind-transition prior (`section_prior_weight`, 0.5) breaks verse-vs-solo
+ties with the song's own section-kind bigrams.
+
+Blocks start only on the *measure phase* the mapped sections share
+(`section_phase_lock`, on; the majority of section starts modulo the meter,
+or no lock when they disagree).  Without it, one beat of filler let a whole
+chain of blocks slip a beat late: measure-granularity similarity hardly
+notices a block that starts a beat off, so the small biases of the features
+-- onsets near a beat binning into the previous interval, chroma skipping
+each beat's attack -- decided the phase, and a span whose right edge was
+the open end of the track paid for the slip exactly once.  Every one-beat
+miss in the tail-50 scenario was this (16 of 69 misses, on five tracks);
+the lock removed all of them (41 -> 57 of 110 recovered).
+
+Similarity blends three per-beat features: chroma, the onset-shape rhythm
+vector, and a *spectral-balance profile* -- mean log energy over 24
+log-spaced bands with the level removed (`section_timbre_weight` 0.45,
+`section_timbre_bands` 24).  With the beat grid known, the misses that
+remained were almost all right edges with the wrong kind -- a solo for a
+verse, a chorus for a verse, over the same chords -- which chroma cannot
+tell apart and a singer's presence can.  Leave-one-out recovery went from
+122 to 127 of 153, false proposals from 49 to 43.  Discovery (matching a
+passage against its own repeats) leaves timbre out: the balance drifts
+within a song and it only added junk there.
 
 On the 25-track library's leave-one-out benchmark (hide one instance of a
 section kind that appears three times; its siblings remain) the partition DP
@@ -201,7 +222,9 @@ bridge halves, and two 16-bar solo blocks.
 
 All section and chord edges are mapped to the **nearest** beat, not the first
 beat at or after -- an edge sitting a few milliseconds past its beat used to
-shift a whole template one beat late.
+shift a whole template one beat late.  The bench's `--list` output reports
+every missed section's edge error in beats (and `sec_near` counts misses
+within a beat), which is how the phase slip above was found.
 
 ## Stage 3: chords
 

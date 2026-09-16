@@ -465,11 +465,20 @@ void ui_complete_settings(ToolCtx& c)
         ImGui::SliderFloat("##cm", &s_p.chord_margin, 0.02f, 0.5f, "Min margin %.2f");
         tip("Winner must beat the runner-up triad by this much");
         if (!s_p.chord_fallback) ImGui::EndDisabled();
-        ImGui::Checkbox("External model (madmom)", &s_p.chord_external);
-        tip("Run the learned chord recogniser (madmom CNN+CRF via\n"
-            "scripts/chords_madmom.py, or $BM_CHORD_CMD) over the track and let its\n"
-            "chart fill the spans nothing template-based claimed.  The first run on a\n"
-            "track takes ~30 s; results are cached on disk after that.");
+        ImGui::Checkbox("External model", &s_p.chord_external);
+        tip("Run a learned chord recogniser over the track and blend its labels into\n"
+            "the decoder as per-beat evidence (weighted by its confidence).  The first\n"
+            "run on a track takes ~30 s per model; results are cached on disk after that.\n"
+            "Any tool that prints start/end/label lines plugs in via $BM_CHORD_CMD.");
+        if (!s_p.chord_external) ImGui::BeginDisabled();
+        ImGui::SetNextItemWidth(w);
+        const char* tools[] = { "madmom CNN+CRF", "Ensemble (madmom + BTC)", "BTC transformer" };
+        if (s_p.chord_external_tool < 0 || s_p.chord_external_tool > 2) s_p.chord_external_tool = 0;
+        ImGui::Combo("##ext_tool", &s_p.chord_external_tool, tools, 3);
+        tip("madmom: major/minor, robust to tuning.  BTC: large vocabulary (7ths, sus)\n"
+            "but transposes off-pitch recordings.  Ensemble: both, confident where they\n"
+            "agree.  Set up with `make chord-models`.");
+        if (!s_p.chord_external) ImGui::EndDisabled();
         ImGui::Unindent(6.0f);
     }
     if (settings_header("Chroma per beat##cp")) {
