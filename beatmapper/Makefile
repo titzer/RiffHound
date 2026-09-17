@@ -1,4 +1,4 @@
-.PHONY: all clean run bench chord-models
+.PHONY: all clean run bench chord-models icon app
 
 UNAME    := $(shell uname)
 TARGET   := beatmapper
@@ -45,6 +45,7 @@ SOURCES := \
     $(SRC_DIR)/chroma_peaks.cpp \
     $(SRC_DIR)/chroma_resonate.cpp \
     $(SRC_DIR)/chroma_whitened.cpp \
+    $(SRC_DIR)/icon_data.cpp \
     $(IMGUI_DIR)/imgui.cpp \
     $(IMGUI_DIR)/imgui_demo.cpp \
     $(IMGUI_DIR)/imgui_draw.cpp \
@@ -123,6 +124,40 @@ $(SRC_DIR)/platform_macos.o: $(SRC_DIR)/platform_macos.mm
 
 clean:
 	rm -f $(TARGET) $(OBJECTS) $(DEPS) $(BENCH) $(BENCH_OBJS) $(BENCH_OBJS:.o=.d)
+	rm -rf $(APP) $(ICONSET)
+
+# Regenerate the embedded icon from icon.png (needs python3 + Pillow).
+icon:
+	python3 scripts/make-icon.py --cpp $(SRC_DIR)/icon_data.cpp
+
+# macOS bundle so Finder, the Dock and Spotlight show the icon.  The bundle's
+# executable is a shim that cds to this directory before exec'ing the real
+# binary, because the app finds scripts/ and external/ relative to the CWD;
+# rebuilding beatmapper is therefore enough, no need to re-run this.
+APP     := Beatmapper.app
+ICONSET := Beatmapper.iconset
+app: $(TARGET)
+	python3 scripts/make-icon.py --iconset $(ICONSET)
+	rm -rf $(APP)
+	mkdir -p $(APP)/Contents/MacOS $(APP)/Contents/Resources
+	iconutil -c icns $(ICONSET) -o $(APP)/Contents/Resources/Beatmapper.icns
+	rm -rf $(ICONSET)
+	printf '#!/bin/sh\ncd "%s" && exec ./$(TARGET) "$$@"\n' "$(CURDIR)" > $(APP)/Contents/MacOS/Beatmapper
+	chmod +x $(APP)/Contents/MacOS/Beatmapper
+	printf '%s\n' \
+	  '<?xml version="1.0" encoding="UTF-8"?>' \
+	  '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">' \
+	  '<plist version="1.0"><dict>' \
+	  '  <key>CFBundleName</key><string>Beatmapper</string>' \
+	  '  <key>CFBundleDisplayName</key><string>Beatmapper</string>' \
+	  '  <key>CFBundleIdentifier</key><string>org.riffhound.beatmapper</string>' \
+	  '  <key>CFBundleVersion</key><string>1.0</string>' \
+	  '  <key>CFBundlePackageType</key><string>APPL</string>' \
+	  '  <key>CFBundleExecutable</key><string>Beatmapper</string>' \
+	  '  <key>CFBundleIconFile</key><string>Beatmapper</string>' \
+	  '  <key>NSHighResolutionCapable</key><true/>' \
+	  '</dict></plist>' > $(APP)/Contents/Info.plist
+	@echo "built $(APP)"
 
 run: all
 	./$(TARGET)

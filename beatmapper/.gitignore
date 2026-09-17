@@ -7,3 +7,5 @@ bench/
 bench/*.tsv
 bench/*.log
 external/
+Beatmapper.app/
+Beatmapper.iconset/

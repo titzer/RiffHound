@@ -15,6 +15,7 @@
 #include "undo.h"
 #include "recent.h"
 #include "library.h"
+#include "icon_data.h"
 #include "ui_timeline.h"
 #include "ui_toolbar.h"
 #include "beat_algo.h"
@@ -155,6 +156,7 @@ int main(int argc, char** argv) {
     glfwMakeContextCurrent(window);
     glfwSwapInterval(1);  // vsync
     platform_install_fullscreen_shortcut();
+    platform_set_app_icon(window, ICON_RGBA, ICON_W, ICON_H);
 
     // ImGui setup
     IMGUI_CHECKVERSION();

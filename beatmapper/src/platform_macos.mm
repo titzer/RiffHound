@@ -103,3 +103,23 @@ bool platform_save_beatmap_dialog(char* out_path, int out_size,
     }
     return false;
 }
+
+void platform_set_app_icon(GLFWwindow* window, const unsigned char* rgba, int w, int h) {
+    (void)window;  // macOS icons belong to the app, not the window
+    unsigned char* planes[1] = { (unsigned char*)rgba };
+    NSBitmapImageRep* rep = [[NSBitmapImageRep alloc]
+        initWithBitmapDataPlanes:planes
+                      pixelsWide:w
+                      pixelsHigh:h
+                   bitsPerSample:8
+                 samplesPerPixel:4
+                        hasAlpha:YES
+                        isPlanar:NO
+                  colorSpaceName:NSDeviceRGBColorSpace
+                    bitmapFormat:NSBitmapFormatAlphaNonpremultiplied
+                     bytesPerRow:w * 4
+                    bitsPerPixel:32];
+    NSImage* image = [[NSImage alloc] initWithSize:NSMakeSize(w, h)];
+    [image addRepresentation:rep];
+    [NSApp setApplicationIconImage:image];
+}

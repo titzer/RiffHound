@@ -2,6 +2,8 @@
 
 // Platform-specific helpers: system file dialog, etc.
 
+struct GLFWwindow;
+
 // Show the OS native "open file" dialog filtered to audio files.
 // Fills out_path and returns true if the user selected a file.
 // Returns false if the user cancelled.
@@ -25,3 +27,8 @@ bool platform_exe_path(char* out_path, int out_size);
 // suggested_name: default filename shown in the dialog (basename only, no path).
 bool platform_save_beatmap_dialog(char* out_path, int out_size,
                                   const char* suggested_name);
+
+// Give the process its icon (Dock on macOS, window/taskbar elsewhere) from
+// straight RGBA pixels, row-major, top row first.  Call once after the
+// window is created.
+void platform_set_app_icon(GLFWwindow* window, const unsigned char* rgba, int w, int h);

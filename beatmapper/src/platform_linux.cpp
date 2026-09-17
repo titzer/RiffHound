@@ -1,5 +1,6 @@
 #include "platform.h"
 #include <gtk/gtk.h>
+#include <GLFW/glfw3.h>
 #include <string.h>
 #include <unistd.h>
 
@@ -132,4 +133,9 @@ void platform_install_fullscreen_shortcut() {
   // event monitor like NSEvent. The fullscreen shortcut (e.g. F11 or your
   // chosen binding) should be handled in your GLFW key callback instead.
   // This function intentionally left as a no-op.
+}
+
+void platform_set_app_icon(GLFWwindow* window, const unsigned char* rgba, int w, int h) {
+    GLFWimage img = { w, h, (unsigned char*)rgba };
+    glfwSetWindowIcon(window, 1, &img);
 }
