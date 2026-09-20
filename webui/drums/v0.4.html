@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>RiffHound Drum Machine v0.2</title>
+<title>RiffHound Drum Machine v0.4</title>
 <style>
   /* Minimal, readable, big-click targets */
   body { font-family: sans-serif; background: #fff; color: #000; margin: 0; }
@@ -30,7 +30,8 @@
   body.playing #top #btnTap, body.playing #top #btnPause { background: #f4f4f4; color: #000; border: 1px solid #bbb; }
   button.flash { background: #4CAF50; color: #fff; }
 
-  #repeatViz { padding: 1vh 1vw; display: flex; gap: 1rem; align-items: center; }
+  #repeatViz { padding: 1vh 1vw; display: flex; flex-wrap: wrap; gap: 1rem; align-items: center; }
+  #editControls { display: flex; gap: 0.5em; align-items: center; flex-wrap: wrap; }
   #repeatViz .label { font-weight: bold; }
   #repeatBoxes { display: flex; gap: 0.4rem; }
   .repeatBox { width: 48px; height: 48px; border: 2px solid #999; background: #f0f0f0; display: flex; align-items: center; justify-content: center; font-weight: bold; font-size: 16px; border-radius: 4px; }
@@ -123,7 +124,7 @@
     box-sizing: border-box;
   }
   /* bouncing-ball lanes: one above the drum grid (expanded or collapsed) and one above the riff */
-  .ballLane { position: relative; height: 6vh; pointer-events: none; }
+  .ballLane { position: relative; height: 9.6vh; pointer-events: none; }   /* hop = lane height - ball size = 7.2vh */
   .ball { position: absolute; left: 0; bottom: 0; width: 2.4vh; height: 2.4vh; border-radius: 50%; background: #8389ff; transform-origin: center bottom; will-change: transform; }
   body.playing .ball { background: #007700; }
   #ball2 { transform: scale(0); }
@@ -151,9 +152,9 @@
   body.collapsed.playing .cell.columnActive:not(.on) { background: #9fd89f; }
   #btnCollapse { font-size: 2.2vh; padding: 0.4vh 1vw; margin-left: auto; }
 
-  /* riff pane: one-voice rhythm riff (beats are boxes, subdivided into 2/3/4/6 slots). Centered on its own scale,
+  /* riff pane: one-voice rhythm riff (beats are boxes, subdivided into 1-6 slots). Centered on its own scale,
      unless it is as long as the drum pattern, in which case it lines up with the drum columns */
-  #riffPane { padding: 1vh 0; border-top: 1px solid #ccc; margin-top: 1vh; }
+  #riffPane { padding: 1vh 0; border-top: 1px solid #ccc; margin-top: 80px; }
   #riffTop, #riffKnobs, #riffTextRow { padding: 0.5vh 1vw; display: flex; flex-wrap: wrap; gap: 0.6em 1em; align-items: center; font-size: 2vh; }
   #riffTop button, #riffTop select { font-size: 2vh; padding: 0.5vh 1vw; }
   #riffTop label, #riffKnobs label { display: inline-flex; align-items: center; gap: 0.4em; white-space: nowrap; }
@@ -167,7 +168,7 @@
   #riffLane.big .riffSlot { font-size: 3.4vh; }
   .riffBeat { position: absolute; top: 0; height: 100%; display: flex; box-sizing: border-box; border: 2px solid #000; background: #fafafa; }
   .riffBeat.barStart { border-left-width: 5px; }
-  /* subdivision count under each beat box; click to cycle it */
+  /* subdivision count under each beat box; click to cycle it (.trip: a tuplet, i.e. 3/5/6 against the 16th grid) */
   .riffDiv { position: absolute; top: calc(100% + 0.4vh); transform: translateX(-50%); min-width: 2.2em; box-sizing: border-box; padding: 0 0.5em; text-align: center; font-size: 1.7vh; font-weight: bold; line-height: 1.4; color: #555; background: #f4f4f4; border: 1px solid #bbb; border-radius: 1vh; cursor: pointer; user-select: none; }
   .riffDiv:hover { background: #e4e4e4; }
   .riffDiv.trip { color: #bb5500; border-color: #bb5500; }
@@ -184,6 +185,9 @@
   .riffBeatNum { position: absolute; top: 2px; transform: translateX(-50%); padding: 0 0.35em; border-radius: 0.8vh; background: rgba(255, 255, 255, 0.85); color: #000; font-size: 1.6vh; font-weight: bold; line-height: 1.25; pointer-events: none; }
   #riffLane.big .riffBeatNum { font-size: 2.2vh; }
   .riffTail { position: absolute; top: 35%; height: 30%; background: #8389ff; opacity: 0.6; pointer-events: none; border-radius: 0 1vh 1vh 0; }
+  #patternTextRow { padding: 1vh 1vw; display: flex; gap: 0.5em; align-items: center; }
+  #riffTextRow.hidden, #patternTextRow.hidden { display: none; }
+  #btnRiffText.active, #btnPatternText.active { background: #d0d4ff; border-color: #8389ff; }
   #riffText { flex: 1; min-width: 0; font-family: monospace; font-size: 1.8vh; }
   #riffText.bad { background: #ffe0e0; }
 
@@ -191,7 +195,7 @@
   input, select { font-size: 2.2vh; }
 </style>
 </head>
-<body>
+<body class="collapsed">
   <div id="top">
     <button id="btnPlay"   class="primary">▶️ Play</button>
     <button id="btnPause">⏸ Pause</button>
@@ -210,26 +214,26 @@
       <option value="4">4× + fill</option>
       <option value="8">8× + fill</option>
     </select>
-    <button id="btnCollapse">▾ Editor</button>
+    <div id="editControls">
+      <select id="selPreset" style="font-size: 2vh; padding: 0.4vh 0.5vw;"></select>
+      <select id="selSteps" style="font-size: 2vh; padding: 0.4vh 0.5vw;">
+        <option value="16"    selected>16 steps (4/4, 2 bars)</option>
+        <option value="24_34">24 steps (3/4, 4 bars)</option>
+        <option value="24_68">24 steps (6/8, 4 bars)</option>
+        <option value="32">32 steps (4/4, 4 bars)</option>
+      </select>
+      <button id="btnClear"    style="font-size: 2vh; padding: 0.5vh 1.2vw;">🧹 Clear</button>
+      <button id="btnSimplify" style="font-size: 2vh; padding: 0.5vh 1.2vw;">✂️ Simplify</button>
+      <button id="btnPermute"  style="font-size: 2vh; padding: 0.5vh 1.2vw;">🔀 Permute</button>
+      <button id="btnPatternText" style="font-size: 2vh; padding: 0.5vh 1.2vw;">📝 Text</button>
+    </div>
+    <button id="btnCollapse">▸ Editor</button>
   </div>
 
   <div id="ballLane" class="ballLane"><div id="ball" class="ball"></div><div id="ball2" class="ball"></div><div id="padMain" class="pad">↺</div><div id="padFill" class="pad">↺</div></div>
   <div id="grid"></div>
 
-  <div id="editControls" style="padding: 0.5vh 1vw; display: flex; gap: 0.5em; align-items: center; flex-wrap: wrap;">
-    <select id="selPreset" style="font-size: 2vh; padding: 0.4vh 0.5vw;"></select>
-    <select id="selSteps" style="font-size: 2vh; padding: 0.4vh 0.5vw;">
-      <option value="16"    selected>16 steps (4/4, 2 bars)</option>
-      <option value="24_34">24 steps (3/4, 4 bars)</option>
-      <option value="24_68">24 steps (6/8, 4 bars)</option>
-      <option value="32">32 steps (4/4, 4 bars)</option>
-    </select>
-    <button id="btnClear"    style="font-size: 2vh; padding: 0.5vh 1.2vw;">🧹 Clear</button>
-    <button id="btnSimplify" style="font-size: 2vh; padding: 0.5vh 1.2vw;">✂️ Simplify</button>
-    <button id="btnPermute"  style="font-size: 2vh; padding: 0.5vh 1.2vw;">🔀 Permute</button>
-  </div>
-
-  <div style="padding: 1vh 1vw; display: flex; gap: 0.5em; align-items: center;">
+  <div id="patternTextRow" class="hidden">
     <span style="font-weight: bold;">Pattern:</span>
     <input id="patternText" type="text" spellcheck="false" style="flex: 1; min-width: 0; font-family: monospace; font-size: 1.8vh;">
   </div>
@@ -239,23 +243,26 @@
       <span class="title">Riff</span>
       <button id="btnRiffNew">🎲 New</button>
       <button id="btnRiffVary">〰️ Vary</button>
+      <button id="btnRiffBack" title="Rotate the riff back one beat (wraps; also [)">⏪ Beat</button>
+      <button id="btnRiffFwd"  title="Rotate the riff forward one beat (wraps; also ])">⏩ Beat</button>
       <label><input id="chkRiffAuto" type="checkbox"> Auto: vary every
         <select id="selRiffEvery">
           <option value="1">1</option><option value="2">2</option><option value="4" selected>4</option><option value="8">8</option><option value="16">16</option>
         </select> plays</label>
       <span id="riffCount"></span>
-      <label>Length <select id="selRiffBars">
+      <select id="selRiffBars" title="Riff length">
         <option value="1" selected>1 bar</option><option value="2">2 bars</option><option value="4">4 bars</option>
-      </select></label>
-      <label>Note <select id="selRiffNote"></select></label>
+      </select>
+      <select id="selRiffNote" title="Riff note"></select>
       <button id="btnRiffMute">🔊 Riff</button>
       <label>Vol <input id="rngRiffVol" type="range" min="0" max="100" value="60"></label>
+      <button id="btnRiffText">📝 Text</button>
     </div>
     <div id="riffBallLane" class="ballLane"><div id="riffBall" class="ball"></div><div id="riffBall2" class="ball"></div><div id="riffPad" class="pad">↺</div></div>
     <div id="riffLane"></div>
     <div id="riffKnobs"></div>
-    <div id="riffTextRow">
-      <span style="font-weight: bold;">Riff:</span>
+    <div id="riffTextRow" class="hidden">
+      <span style="font-weight: bold;">Pattern:</span>
       <input id="riffText" type="text" spellcheck="false">
     </div>
   </div>
@@ -277,6 +284,7 @@ let currentStep = 0;        // which step is currently playing (0..steps-1)
 let startTime = 0;          // audio time for transport start
 let nextSchedStep = 0;      // next absolute step (since transport start) whose audio hasn't been scheduled yet
 const SCHED_AHEAD = 0.1;    // seconds of audio scheduled ahead of the clock, so every note gets an exact start time
+const RIFF_ONSET_LAG = 0.008; // seconds the riff ball trails the clock: a low pluck is heard a little after it starts, a drum hit isn't
 const taps = [];
 let repeatCount = 3;        // how many times to repeat before playing fill
 let currentIteration = 1;   // current iteration (1..repeatCount)
@@ -284,11 +292,12 @@ let fillEnabled = true;     // false = "No fill": loop the main pattern forever 
 function isFillIteration(it) { return fillEnabled && it === repeatCount; } // does this iteration end with the fill?
 function getFillLength() { return getBarSize() === 6 ? 6 : 4; } // one bar in 6/8, half bar in 4/4
 let deserializing = false;  // flag to prevent pattern text updates during deserialization
-let collapsed = false;      // editor pane collapsed to the mini display
+let collapsed = true;       // editor pane collapsed to the mini display (the default; body starts with class "collapsed")
 
 // --- Riff state ---
 // A riff is a list of beats; each beat is a string with one char per slot, and the string length is the beat's
-// subdivision: 1 = quarter, 2 = 8ths, 3 = 8th-note triplets, 4 = 16ths (in 6/8 a beat is a dotted quarter: 1, 3 = 8ths, 6 = 16ths).
+// subdivision: 1 = quarter, 2 = 8ths, 3 = 8th-note triplets, 4 = 16ths, 5 = quintuplet, 6 = sextuplet
+// (in 6/8 a beat is a dotted quarter: 1, 3 = 8ths, 6 = 16ths).
 // Slot chars: '.' rest, 'x' staccato, 'X' accented staccato, 'o' long, 'O' accented long,
 // '-' tie: the note sounding in the previous slot carries on through this one (only valid after a voiced slot).
 let riff = null;            // { beatDiv, barSize, beats: [...] } — beatDiv/barSize record the meter it was made for
@@ -476,11 +485,17 @@ function voiceRiff(t, len, accent) { // plucky filtered saw+square; len = gate t
   const g = ctx.createGain();
   const peak = accent ? 0.5 : 0.3;
   g.gain.setValueAtTime(0.0001, t);
-  g.gain.linearRampToValueAtTime(peak, t + 0.004);
+  g.gain.linearRampToValueAtTime(peak, t + 0.0015);   // fast attack, so the onset reads as sharply as a drum hit
   g.gain.setValueAtTime(peak * 0.8, t + len);
   g.gain.exponentialRampToValueAtTime(0.0001, t + len + 0.05);
   o1.connect(lp); o2.connect(lp); lp.connect(g).connect(bus.riff);
   o1.start(t); o2.start(t); o1.stop(t + len + 0.08); o2.stop(t + len + 0.08);
+  // a short pick transient marks the exact onset (the low tone alone takes a cycle or two to register)
+  const s = ctx.createBufferSource(); s.buffer = noiseBuf;
+  const hp = ctx.createBiquadFilter(); hp.type = 'highpass'; hp.frequency.value = 3000;
+  const cg = ctx.createGain(); cg.gain.setValueAtTime(accent ? 0.12 : 0.07, t); cg.gain.exponentialRampToValueAtTime(0.0001, t + 0.008);
+  s.connect(hp).connect(cg).connect(bus.riff);
+  s.start(t); s.stop(t + 0.01);
 }
 
 function triggerVoice(id, t) {
@@ -861,7 +876,7 @@ function updateRiffBall(elapsed) { // same, over the riff's own length and singl
   const g = riffGeom;
   if (!g || !riff) return;
   const bd = riff.beatDiv, len = riff.beats.length * bd;
-  const pos = Math.max(0, elapsed) / stepDuration();
+  const pos = Math.max(0, elapsed - RIFF_ONSET_LAG) / stepDuration();
   const from = Math.floor(pos / bd) * bd, to = from + bd;
   const p = (pos - from) / bd;
   el.riffPad.style.setProperty('--glow', (from > 0 && from % len === 0) ? Math.max(0, 1 - p / 0.25) : 0);
@@ -880,11 +895,14 @@ function refreshBall() { // re-place the drum ball after a layout or transport c
 // =========================
 function riffBeatsPerBar() { return getBarSize() / getBeatDiv(); }
 
-function riffDivs() { return timeSig === '6/8' ? [1, 3, 6] : [1, 2, 3, 4]; } // subdivisions a beat can have
+function riffDivs() { return timeSig === '6/8' ? [1, 3, 6] : [1, 2, 3, 4, 5, 6]; } // subdivisions a beat can have
+function isTuplet(div) { return timeSig !== '6/8' && (div === 3 || div === 5 || div === 6); } // odd against the 16th grid
 
 function slotStrengths(div) { // metrical weight of each slot within a beat
   if (div === 1) return [1];
   if (timeSig === '6/8') return div === 6 ? [1, .25, .5, .25, .5, .25] : [1, .5, .5];
+  if (div === 5) return [1, .25, .35, .25, .35];
+  if (div === 6) return [1, .2, .3, .5, .2, .3];       // two triplets: the second half-beat is the secondary accent
   return div === 4 ? [1, .25, .5, .25] : div === 3 ? [1, .3, .4] : [1, .5];
 }
 
@@ -898,7 +916,7 @@ function pickBeatDiv() { // subdivision for a new beat, from the 16ths / Triplet
 
 function generateBeat(isDownbeat) { // one beat's slot string
   const k = riffKnob, div = pickBeatDiv(), w = slotStrengths(div);
-  const triplet = div === 3 && timeSig !== '6/8';
+  const triplet = isTuplet(div);
   let out = '';
   for (let i = 0; i < div; i++) {
     // syncopation slides the hit probability from favoring strong slots to favoring weak ones
@@ -1010,13 +1028,14 @@ function varyRiffBeats(beats) { // similar-but-different: a few small edits, sca
 // =========================
 // Riff: text, display, playback
 // =========================
-function serializeRiff() { // beats separated by ',', bars by ' | '
+function serializeRiff() { // "riff=" then beats separated by ',', bars by ' | ' (the key matches the drum pattern's "drums=")
   const bpb = riffBeatsPerBar(), bars = [];
   for (let i = 0; i < riff.beats.length; i += bpb) bars.push(riff.beats.slice(i, i + bpb).join(','));
-  return bars.join(' | ');
+  return 'riff=' + bars.join(' | ');
 }
 
 function parseRiff(text) { // returns beats, or null if the text isn't a valid riff for the current meter
+  text = text.replace(/^\s*riff\s*=/i, '').replace(/;\s*$/, '');   // the "riff=" key is optional when pasting
   const beats = text.split(/[\s,|]+/).filter(t => t.length);
   if (!beats.length || !beats.every(b => riffDivs().includes(b.length) && /^[.xXoO-]+$/.test(b))) return null;
   const bars = beats.length / riffBeatsPerBar();
@@ -1080,7 +1099,7 @@ function renderRiff() { // draw the riff: lined up with the drum columns if it i
     }));
     el.riffLane.appendChild(be);
     const dv = document.createElement('div');
-    dv.className = 'riffDiv' + (beat.length === 3 && timeSig !== '6/8' ? ' trip' : '');
+    dv.className = 'riffDiv' + (isTuplet(beat.length) ? ' trip' : '');
     dv.textContent = beat.length;
     dv.title = 'Subdivisions in this beat (click to change)';
     dv.style.left = `${left + bi * bd * pitch + (bd * pitch - gap) / 2}px`;
@@ -1117,7 +1136,7 @@ function renderRiff() { // draw the riff: lined up with the drum columns if it i
     el.riffLane.appendChild(num);
   });
   riffGeom = { left, pitch, gap, size, ballX, firstX: ballX(0), padX: padLeft + padW / 2,
-               hop: el.riffBallLane.clientHeight - size, inX: Math.min(ballX(-bd), -size) };
+               hop: el.riffBallLane.clientHeight - size, inX: ballX(-bd) }; // new ball starts one beat left of beat 1: same speed as every other hop
   // a dot at the point of the ball's arc where each note starts (ties start nothing): same math as hopBalls
   el.riffBallLane.querySelectorAll('.riffDot').forEach(d => d.remove());
   riffOnsets.forEach(o => {
@@ -1578,6 +1597,15 @@ function actionSetRiffBars(n) { // change riff length: longer = the riff continu
 
 function actionVaryRiff() { setRiff(varyRiffBeats(riff.beats)); }
 
+function actionRotateRiff(by) { // shift the riff by whole beats, wrapping around (ties across the seam stay intact: the riff is cyclic)
+  const n = riff.beats.length, k = ((by % n) + n) % n;
+  if (!k) return;
+  const beats = riff.beats.slice(n - k).concat(riff.beats.slice(0, n - k)); // forward: every beat lands one later, the last wraps to the front
+  const plays = riffPlays;
+  setRiff(beats);
+  riffPlays = plays; updateRiffCount(); // a hand edit doesn't restart the auto count
+}
+
 function actionEditRiffSlot(bi, k, hold) { // click: rest → note → accent → tie (if the slot before is voiced) → rest; shift-click: staccato ↔ held
   const c = riff.beats[bi][k];
   const before = k > 0 ? riff.beats[bi][k - 1] : riff.beats[(bi + riff.beats.length - 1) % riff.beats.length].slice(-1);
@@ -1621,6 +1649,14 @@ function actionCollapseToggle() { // collapse/expand the editing pane
   refreshLayout();
 }
 
+function toggleTextRow(row, btn, input) { // show/hide a text form of the pattern or riff
+  const shown = row.classList.toggle('hidden') === false;
+  btn.classList.toggle('active', shown);
+  if (shown) input.focus();
+}
+function actionPatternTextToggle() { toggleTextRow(el.patternTextRow, el.btnPatternText, el.patternText); }
+function actionRiffTextToggle()    { toggleTextRow(el.riffTextRow, el.btnRiffText, el.riffText); }
+
 function actionFullscreenToggle() { // enter or leave browser fullscreen
   if (document.fullscreenElement) document.exitFullscreen();
   else document.documentElement.requestFullscreen().catch(() => {});
@@ -1635,6 +1671,8 @@ function actionKeyDown(e) { // global keyboard shortcuts
   if (e.code === 'KeyF' && plainKey) { e.preventDefault(); actionFullscreenToggle(); return; } // F toggles fullscreen
   if (e.code === 'KeyR' && plainKey) { e.preventDefault(); actionNewRiff(); return; }  // R: new riff
   if (e.code === 'KeyV' && plainKey) { e.preventDefault(); actionVaryRiff(); return; } // V: vary the riff
+  if (e.code === 'BracketLeft'  && plainKey) { e.preventDefault(); actionRotateRiff(-1); return; } // [ ]: rotate the riff a beat
+  if (e.code === 'BracketRight' && plainKey) { e.preventDefault(); actionRotateRiff(1);  return; }
   if (typingText()) return; // '-' is a tie in the riff text
   if (e.code === 'Minus' || e.code === 'NumpadSubtract') {
     // Round up to nearest 5, then subtract 5
@@ -1690,6 +1728,8 @@ function initRiffControls() { // build knob sliders and wire the riff pane
   bus.riff.gain.value = el.rngRiffVol.value / 100;
   el.btnRiffNew.addEventListener('click', actionNewRiff);
   el.btnRiffVary.addEventListener('click', actionVaryRiff);
+  el.btnRiffBack.addEventListener('click', () => actionRotateRiff(-1));
+  el.btnRiffFwd.addEventListener('click', () => actionRotateRiff(1));
   el.btnRiffMute.addEventListener('click', actionRiffMuteToggle);
   el.chkRiffAuto.addEventListener('change', e => { riffAuto = e.target.checked; riffPlays = 0; updateRiffCount(); });
   el.selRiffEvery.addEventListener('change', e => { riffEvery = parseInt(e.target.value, 10); riffPlays = 0; updateRiffCount(); });
@@ -1742,13 +1782,15 @@ function init() {
   el.bpmDisplay = document.getElementById('bpmDisplay');
   el.repeatBoxes = document.getElementById('repeatBoxes');
   el.patternText = document.getElementById('patternText');
+  el.patternTextRow = document.getElementById('patternTextRow');
+  el.btnPatternText = document.getElementById('btnPatternText');
   el.btnCollapse = document.getElementById('btnCollapse');
   el.ballLane    = document.getElementById('ballLane');
   el.ball        = document.getElementById('ball');
   el.ball2       = document.getElementById('ball2');
   el.padMain     = document.getElementById('padMain');
   el.padFill     = document.getElementById('padFill');
-  ['riffBallLane', 'riffBall', 'riffBall2', 'riffPad', 'riffLane', 'riffKnobs', 'riffText', 'riffCount', 'btnRiffNew', 'btnRiffVary', 'btnRiffMute',
+  ['riffBallLane', 'riffBall', 'riffBall2', 'riffPad', 'riffLane', 'riffKnobs', 'riffText', 'riffTextRow', 'btnRiffText', 'riffCount', 'btnRiffNew', 'btnRiffVary', 'btnRiffBack', 'btnRiffFwd', 'btnRiffMute',
    'chkRiffAuto', 'selRiffEvery', 'selRiffBars', 'selRiffNote', 'rngRiffVol'].forEach(id => { el[id] = document.getElementById(id); });
   initRiffControls();
 
@@ -1797,6 +1839,8 @@ function init() {
   });
   el.patternText.addEventListener('input', e => deserializePattern(e.target.value));
   el.btnCollapse.addEventListener('click', actionCollapseToggle);
+  el.btnRiffText.addEventListener('click', actionRiffTextToggle);
+  el.btnPatternText.addEventListener('click', actionPatternTextToggle);
   window.addEventListener('resize', refreshLayout);
   document.body.addEventListener('keydown', actionKeyDown);
 
@@ -1830,13 +1874,15 @@ Key bindings:
   <li>F: toggle fullscreen (ESC also exits)</li>
   <li>R: new riff</li>
   <li>V: vary the riff</li>
+  <li>[ and ]: rotate the riff back / forward one beat (wrapping around)</li>
   <li>-: decrease tempo</li>
   <li>+: increase tempo</li>
 </ul>
 
 Riff pane: a one-note rhythm riff that plays in sync with the drums. It is drawn centered on its own scale (large when
 it is a single bar), and lines up with the drum columns when it is as long as the drum pattern. Each black box is a
-beat; the number under it is how many slots it is split into (1 quarter, 2 eighths, 3 triplet, 4 sixteenths; in 6/8: 1, 3, 6) —
+beat; the number under it is how many slots it is split into (1 quarter, 2 eighths, 3 triplet, 4 sixteenths, 5 quintuplet,
+6 sextuplet; in 6/8: 1, 3, 6) —
 click the number to cycle it. Click a slot to cycle rest → note → accent (&gt;) → tie → rest; shift-click
 switches a note between staccato and long. A tie (offered only when the slot before it is voiced) carries the previous note on
 through that slot, including across a beat boundary. The Riff text uses one character per slot (<code>.</code> rest, <code>x</code> staccato,
