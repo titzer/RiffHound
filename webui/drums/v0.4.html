@@ -7,8 +7,8 @@
 <style>
   /* Minimal, readable, big-click targets */
   body { font-family: sans-serif; background: #fff; color: #000; margin: 0; }
-  #top { display: flex; flex-wrap: nowrap; gap: 1vh; padding: 1vh; background: #eee; align-items: stretch; }
-  #top button, #top select { flex: 1 1 0; font-size: 3.2vh; padding: 1.2vh 1vw; }
+  #top { display: flex; flex-wrap: nowrap; gap: 0.6vh; padding: 0.6vh; background: #eee; align-items: stretch; }
+  #top button, #top select { flex: 1 1 0; font-size: 3.2vh; padding: 0.7vh 1vw; }
   button { cursor: pointer; border: 1px solid #bbb; }
   /* Top row buttons: blue by default, green when playing */
   #top button { background: #8389ff; color: #fff; border: 1px solid #8389ff; }
@@ -30,8 +30,9 @@
   body.playing #top #btnTap, body.playing #top #btnPause { background: #f4f4f4; color: #000; border: 1px solid #bbb; }
   button.flash { background: #4CAF50; color: #fff; }
 
-  #repeatViz { padding: 1vh 1vw; display: flex; flex-wrap: wrap; gap: 1rem; align-items: center; }
-  #editControls { display: flex; gap: 0.5em; align-items: center; flex-wrap: wrap; }
+  #repeatViz { padding: 0.4vh 1vw; display: flex; flex-wrap: wrap; gap: 0.6rem; align-items: center; }
+  #editControls { display: flex; gap: 0.4em; align-items: center; flex-wrap: wrap; }
+  #editControls button, #editControls select { padding: 0.3vh 0.8vw; }
   #repeatViz .label { font-weight: bold; }
   #repeatBoxes { display: flex; gap: 0.4rem; }
   .repeatBox { width: 48px; height: 48px; border: 2px solid #999; background: #f0f0f0; display: flex; align-items: center; justify-content: center; font-weight: bold; font-size: 16px; border-radius: 4px; }
@@ -41,23 +42,21 @@
   body.playing .repeatBox.typeB { background: linear-gradient(to top left, #bb5500 35%, #d0ffd0 35%); border-color: #007700; color: #007700; }
   .repeatBox.active { box-shadow: 0 0 0 4px #8389ff; outline: 3px solid #8389ff; }
 
-  #grid { padding: 0 6vw 1vh 1vw; display: grid; grid-template-columns: auto auto 1fr; column-gap: .4rem; row-gap: .2rem; }
+  #grid { padding: 0 6vw 0.5vh 1vw; display: grid; grid-template-columns: auto auto 1fr; column-gap: .4rem; row-gap: 0; }
   .row { display: grid; grid-column: 1 / -1; grid-template-columns: subgrid; align-items: center; }
   .row .name { min-width: 6ch; text-align: right; }
   button.voiceMute { min-width: 6ch; text-align: center; font-size: 1.8vh; padding: 0.4vh 0.4vw; border-radius: 3px; background: #8389ff; color: #fff; border: 1px solid #8389ff; }
   body.playing button.voiceMute { background: #007700; color: #fff; border-color: #007700; }
   button.voiceMute.active { background: #ffcc00; color: #000; border-color: #ffcc00; }
   body.playing button.voiceMute.active { background: #ffcc00; color: #000; border-color: #ffcc00; }
-  .steps { display: grid; gap: 2px; grid-auto-flow: column; width: 100%; }
-  .cell { height: 8vh; border: 1px solid #bbb; background: #fafafa; display: inline-flex; align-items: center; justify-content: center; font-size: 12px; user-select: none; box-sizing: border-box; position: relative; }
+  /* gapless grid, like the collapsed view: cells touch, separated by white hairlines; beats are shaded a little darker */
+  .steps { display: grid; gap: 0; grid-auto-flow: column; width: 100%; }
+  .cell { height: 6vh; border: 0 solid #fff; border-width: 0 1px 1px 0; background: #eee; display: inline-flex; align-items: center; justify-content: center; font-size: 12px; user-select: none; box-sizing: border-box; position: relative; }
+  .cell { border-color: #fff !important; }         /* state rules below recolor the fill, never the hairlines (the playhead frame outranks this) */
+  .cell.beat:not(.on) { background: #e0e0e0; }
 
   /* on cells: blue when stopped or future (not yet played) */
-  .cell.on { background: #8389ff; color: #fff; border-color: #8389ff; }
-  /* beat borders — always black */
-  .cell.beat { border: 2px solid #000; }
-  body.playing .cell.beat { border-color: #000; }
-  .cell.on.beat { border-color: #000; }
-  body.playing .cell.on.beat { border-color: #000; }
+  .cell.on { background: #8389ff; color: #fff; }
   /* bar start: darker blue tint when stopped/future */
   .cell.on.barStart { background-color: #6066cc; }
   /* bar start circle: gray when off, black when on */
@@ -69,19 +68,16 @@
   body.playing .cell.on.barStart.columnActive { background-color: #2f8f2f; }
   body.playing .cell.on.fill.columnActive { background: #007700; border-color: #007700; }
   /* past cells (already played): light green */
-  body.playing .cell.on.past { background: #99cc99; color: #333; border-color: #99cc99; }
-  body.playing .cell.on.past.beat { border-color: #000; }
+  body.playing .cell.on.past { background: #99cc99; color: #333; }
   body.playing .cell.on.barStart.past { background-color: #77aa77; }
   /* fill pattern: orange when stopped; blue when playing+future; light green when playing+past */
   .cell.fill { background-color: #ffe0e0; }
-  .cell.on.fill { background-color: #bb5500; border-color: #bb5500; }
-  body.playing .cell.on.fill { background: #8389ff; border-color: #8389ff; }
-  body.playing .cell.on.fill.past { background-color: #99cc99; border-color: #99cc99; }
-  body.playing .cell.on.fill.past.beat { border-color: #000; }
+  .cell.fill.beat:not(.on) { background-color: #f4d4d4; }
+  .cell.on.fill { background-color: #bb5500; }
+  body.playing .cell.on.fill { background: #8389ff; }
+  body.playing .cell.on.fill.past { background-color: #99cc99; }
   /* muted voice: enabled cells yellow regardless of state */
-  .voiceMuted .cell.on { background: #ffcc00 !important; border-color: #ccaa00 !important; }
-  .voiceMuted .cell.on.beat { border-color: #000 !important; }
-  .voiceMuted .cell.on.barStart { border-left-color: #000 !important; }
+  .voiceMuted .cell.on { background: #ffcc00 !important; }
   /* per-voice randomize button */
   button.voiceRandom { background: none; border: none; padding: 1px 3px; font-size: 24px; cursor: pointer; line-height: 1; }
   button.voiceRandom:hover { background: #f0f0f0; }
@@ -104,7 +100,7 @@
   }
   .cell.endCol.on::after, .cell.fillStart.on::after { background: #000; }
   /* ruler row */
-  .rulerCell { height: 4vh; display: inline-flex; align-items: center; justify-content: center; box-sizing: border-box; overflow: hidden; border: 1px solid transparent; }
+  .rulerCell { height: 3vh; display: inline-flex; align-items: center; justify-content: center; box-sizing: border-box; overflow: hidden; border: 1px solid transparent; }
   .rulerCell.beatNum { font-size: 1.4vh; color: #888; }
   .rulerCell.barNum { font-size: 1.8vh; font-weight: bold; color: #333; }
   .rulerCell.fillLabel { font-size: 1.8vh; font-weight: bold; color: #bb5500; }
@@ -154,16 +150,25 @@
 
   /* riff pane: one-voice rhythm riff (beats are boxes, subdivided into 1-6 slots). Centered on its own scale,
      unless it is as long as the drum pattern, in which case it lines up with the drum columns */
-  #riffPane { padding: 1vh 0; border-top: 1px solid #ccc; margin-top: 80px; }
-  #riffTop, #riffKnobs, #riffTextRow { padding: 0.5vh 1vw; display: flex; flex-wrap: wrap; gap: 0.6em 1em; align-items: center; font-size: 2vh; }
-  #riffTop button, #riffTop select { font-size: 2vh; padding: 0.5vh 1vw; }
-  #riffTop label, #riffKnobs label { display: inline-flex; align-items: center; gap: 0.4em; white-space: nowrap; }
+  #riffPane { padding: 0.5vh 0; border-top: 1px solid #ccc; margin-top: 80px; }
+  #riffTop, #riffTextRow { padding: 0.3vh 1vw; display: flex; flex-wrap: wrap; gap: 0.4em 0.7em; align-items: center; font-size: 2vh; }
+  #riffTop { position: relative; }                 /* anchors the generator-settings popup */
+  #riffTop button, #riffTop select { font-size: 2vh; padding: 0.3vh 0.8vw; }
+  #riffTop label { display: inline-flex; align-items: center; gap: 0.4em; white-space: nowrap; }
   #riffTop .title { font-weight: bold; font-size: 2.4vh; }
   #riffCount { font-weight: bold; min-width: 3ch; }
   #btnRiffMute.active { background: #ffcc00; border-color: #ffcc00; }
-  #riffKnobs input[type=range] { width: 9vw; }
-  #riffKnobs .val { display: inline-block; min-width: 2.5ch; text-align: right; color: #666; }
-  #riffLane { position: relative; height: 6vh; margin-bottom: 3.4vh; }
+  /* generator settings popup: the knobs as vertical sliders, value above, name below */
+  #selRiffHistory { max-width: 18vw; font-family: monospace; }
+  #btnRiffKnobs.active { background: #d0d4ff; border-color: #8389ff; }
+  #riffKnobs { display: none; position: absolute; top: 100%; left: 0; z-index: 20; margin-top: 0.4vh; padding: 0.8vh 1vw; gap: 0.8vw;
+               background: #fff; border: 1px solid #999; border-radius: 0.8vh; box-shadow: 0 0.5vh 2vh rgba(0, 0, 0, 0.25); font-size: 1.7vh; }
+  #riffKnobs.shown { display: flex; }
+  #riffKnobs label { display: flex; flex-direction: column; align-items: center; gap: 0.3vh; white-space: nowrap; }
+  #riffKnobs input[type=range] { writing-mode: vertical-lr; direction: rtl; appearance: slider-vertical; -webkit-appearance: slider-vertical; width: 2vh; height: 12vh; margin: 0; }
+  #riffKnobs .val { min-width: 2.5ch; text-align: center; color: #666; }
+  #riffKnobs .name { font-size: 1.5vh; }
+  #riffLane { position: relative; height: 6vh; margin-bottom: 3vh; }
   #riffLane.big { height: 10vh; }                  /* single-bar riffs are drawn large */
   #riffLane.big .riffSlot { font-size: 3.4vh; }
   .riffBeat { position: absolute; top: 0; height: 100%; display: flex; box-sizing: border-box; border: 2px solid #000; background: #fafafa; }
@@ -185,13 +190,20 @@
   .riffBeatNum { position: absolute; top: 2px; transform: translateX(-50%); padding: 0 0.35em; border-radius: 0.8vh; background: rgba(255, 255, 255, 0.85); color: #000; font-size: 1.6vh; font-weight: bold; line-height: 1.25; pointer-events: none; }
   #riffLane.big .riffBeatNum { font-size: 2.2vh; }
   .riffTail { position: absolute; top: 35%; height: 30%; background: #8389ff; opacity: 0.6; pointer-events: none; border-radius: 0 1vh 1vh 0; }
-  #patternTextRow { padding: 1vh 1vw; display: flex; gap: 0.5em; align-items: center; }
+  #patternTextRow { padding: 0.4vh 1vw; display: flex; gap: 0.5em; align-items: center; }
   #riffTextRow.hidden, #patternTextRow.hidden { display: none; }
   #btnRiffText.active, #btnPatternText.active { background: #d0d4ff; border-color: #8389ff; }
   #riffText { flex: 1; min-width: 0; font-family: monospace; font-size: 1.8vh; }
+  /* chord progression: one root per play of the riff */
+  #riffChords { width: 12ch; font-family: monospace; font-size: 1.8vh; }
+  #riffChords.bad { background: #ffe0e0; }
+  #riffChordBoxes { display: inline-flex; gap: 0.3em; }
+  .chordBox { min-width: 2.2em; padding: 0 0.4em; box-sizing: border-box; text-align: center; border: 2px solid #999; border-radius: 4px; background: #f0f0f0; font-weight: bold; line-height: 1.6; }
+  .chordBox.active { background: #d0d4ff; border-color: #8389ff; color: #8389ff; }
+  body.playing .chordBox.active { background: #d0ffd0; border-color: #007700; color: #007700; }
   #riffText.bad { background: #ffe0e0; }
 
-  #bottom { padding: 1vh 1vw; font-size: 2.2vh; display: flex; flex-wrap: wrap; gap: .6em; align-items: center; }
+  #bottom { padding: 0.5vh 1vw; font-size: 2.2vh; display: flex; flex-wrap: wrap; gap: .6em; align-items: center; }
   input, select { font-size: 2.2vh; }
 </style>
 </head>
@@ -242,6 +254,9 @@
     <div id="riffTop">
       <span class="title">Riff</span>
       <button id="btnRiffNew">🎲 New</button>
+      <select id="selRiffHistory" title="Recent riffs, newest first: any riff that has played through once unchanged"></select>
+      <button id="btnRiffKnobs" title="Generator settings for New / Vary">🎛️</button>
+      <div id="riffKnobs"></div>
       <button id="btnRiffVary">〰️ Vary</button>
       <button id="btnRiffBack" title="Rotate the riff back one beat (wraps; also [)">⏪ Beat</button>
       <button id="btnRiffFwd"  title="Rotate the riff forward one beat (wraps; also ])">⏩ Beat</button>
@@ -254,13 +269,14 @@
         <option value="1" selected>1 bar</option><option value="2">2 bars</option><option value="4">4 bars</option>
       </select>
       <select id="selRiffNote" title="Riff note"></select>
+      <input id="riffChords" type="text" spellcheck="false" placeholder="Chords" title="Chord progression, one root per play of the riff, e.g. E E A A (blank: play the selected note)">
+      <span id="riffChordBoxes"></span>
       <button id="btnRiffMute">🔊 Riff</button>
       <label>Vol <input id="rngRiffVol" type="range" min="0" max="100" value="60"></label>
       <button id="btnRiffText">📝 Text</button>
     </div>
     <div id="riffBallLane" class="ballLane"><div id="riffBall" class="ball"></div><div id="riffBall2" class="ball"></div><div id="riffPad" class="pad">↺</div></div>
     <div id="riffLane"></div>
-    <div id="riffKnobs"></div>
     <div id="riffTextRow" class="hidden">
       <span style="font-weight: bold;">Pattern:</span>
       <input id="riffText" type="text" spellcheck="false">
@@ -304,6 +320,12 @@ let riff = null;            // { beatDiv, barSize, beats: [...] } — beatDiv/ba
 let riffOnsets = [];        // flattened notes: { pos, gap, end? } in steps (end: where its ties run to), plus bi/k/c (beat, slot, char)
 let riffBars = 1;           // requested riff length in bars (clamped to the drum pattern length)
 let riffMidi = 48;          // C3
+let riffChords = [];        // chord progression: one root per play of the riff, e.g. ['E', 'E', 'A', 'A']; empty = always the Note select
+let riffChordShown = -1;    // index of the highlighted chord box
+const RIFF_HISTORY_MAX = 25;
+let riffHistory = [];       // recent riffs (bar-separated beat strings, no chords), oldest first; no duplicates
+let riffPending = false;    // the current riff is not yet in the history (it gets there by playing through once unchanged)
+let riffCleanLoops = 0;     // loop boundaries passed since the riff was installed or edited; 2 means one whole play-through
 let riffMuted = false;
 let riffAuto = false;       // auto mode: swap in a variation every riffEvery plays
 let riffEvery = 4;
@@ -316,7 +338,7 @@ const RIFF_KNOBS = [
   { id: 'density',    name: 'Density',     val: 45, tip: 'How many slots get a note' },
   { id: 'sync',       name: 'Syncopation', val: 35, tip: 'Low: notes sit on the beats. High: notes favor the off-beats' },
   { id: 'sixteenths', name: '16ths',       val: 30, tip: 'Chance that a beat is split into 16th notes' },
-  { id: 'triplets',   name: 'Triplets',    val: 10, tip: 'Chance that a beat is an eighth-note triplet (not in 6/8)' },
+  { id: 'triplets',   name: 'Triplets',    val: 10, tip: 'Chance that a beat is an eighth-note triplet (in 6/8: adds to the chance of six notes per beat)' },
   { id: 'repeat',     name: 'Repetition',  val: 60, tip: 'How much later beats and bars echo earlier ones' },
   { id: 'long',       name: 'Long notes',  val: 10, tip: 'Chance that a note with room after it is held instead of staccato' },
   { id: 'accent',     name: 'Accents',     val: 20, tip: 'Chance that a note is accented' },
@@ -475,8 +497,8 @@ function voiceClap(t) {
   s.start(t); s.stop(t + 0.08);
 }
 
-function voiceRiff(t, len, accent) { // plucky filtered saw+square; len = gate time in seconds
-  const f = 440 * Math.pow(2, (riffMidi - 69) / 12);
+function voiceRiff(t, len, accent, midi = riffMidi) { // plucky filtered saw+square; len = gate time in seconds
+  const f = 440 * Math.pow(2, (midi - 69) / 12);
   const o1 = ctx.createOscillator(); o1.type = 'sawtooth'; o1.frequency.value = f;
   const o2 = ctx.createOscillator(); o2.type = 'square';   o2.frequency.value = f * 1.004;
   const lp = ctx.createBiquadFilter(); lp.type = 'lowpass'; lp.Q.value = 3;
@@ -879,6 +901,7 @@ function updateRiffBall(elapsed) { // same, over the riff's own length and singl
   const pos = Math.max(0, elapsed - RIFF_ONSET_LAG) / stepDuration();
   const from = Math.floor(pos / bd) * bd, to = from + bd;
   const p = (pos - from) / bd;
+  showChord(Math.floor(pos / len));
   el.riffPad.style.setProperty('--glow', (from > 0 && from % len === 0) ? Math.max(0, 1 - p / 0.25) : 0);
   const wrap = to % len === 0;
   hopBalls(el.riffBall, el.riffBall2, g, p, g.ballX(from % len), wrap ? g.padX : g.ballX(to % len), wrap);
@@ -907,7 +930,7 @@ function slotStrengths(div) { // metrical weight of each slot within a beat
 }
 
 function pickBeatDiv() { // subdivision for a new beat, from the 16ths / Triplets knobs
-  if (timeSig === '6/8') return Math.random() < riffKnob.sixteenths ? 6 : 3;
+  if (timeSig === '6/8') return Math.random() < Math.min(1, riffKnob.sixteenths + riffKnob.triplets) ? 6 : 3; // both knobs push toward six per beat
   let pt = riffKnob.triplets, ps = riffKnob.sixteenths;
   if (pt + ps > 1) { const sum = pt + ps; pt /= sum; ps /= sum; }
   const r = Math.random();
@@ -1028,10 +1051,102 @@ function varyRiffBeats(beats) { // similar-but-different: a few small edits, sca
 // =========================
 // Riff: text, display, playback
 // =========================
-function serializeRiff() { // "riff=" then beats separated by ',', bars by ' | ' (the key matches the drum pattern's "drums=")
+function riffBody(beats) { // beats separated by ',', bars by ' | '
   const bpb = riffBeatsPerBar(), bars = [];
-  for (let i = 0; i < riff.beats.length; i += bpb) bars.push(riff.beats.slice(i, i + bpb).join(','));
-  return 'riff=' + bars.join(' | ');
+  for (let i = 0; i < beats.length; i += bpb) bars.push(beats.slice(i, i + bpb).join(','));
+  return bars.join(' | ');
+}
+
+function serializeRiff() { // "riff=" then the beats (the key matches the drum pattern's "drums="), then the chords if any
+  return 'riff=' + riffBody(riff.beats) + (riffChords.length ? '; chords=' + riffChords.join(' ') : '');
+}
+
+// --- Riff history ---
+function riffHistoryAdd(beats) { // remember a riff as the most recent; an already-listed riff just moves to the front
+  const body = riffBody(beats);
+  const i = riffHistory.indexOf(body);
+  if (i >= 0) riffHistory.splice(i, 1);
+  riffHistory.push(body);
+  if (riffHistory.length > RIFF_HISTORY_MAX) riffHistory.shift();
+  renderRiffHistory();
+}
+
+function renderRiffHistory() { // the dropdown: a heading with the count, then the riffs newest first (greyed if made for another meter)
+  const sel = el.selRiffHistory;
+  sel.innerHTML = '';
+  const head = document.createElement('option');
+  head.value = ''; head.textContent = `📜 ${riffHistory.length}`;
+  sel.appendChild(head);
+  for (let i = riffHistory.length - 1; i >= 0; i--) {
+    const opt = document.createElement('option');
+    opt.value = i; opt.textContent = `${riffHistory.length - i}. ${riffHistory[i]}`;
+    opt.disabled = !parseRiff(riffHistory[i]);
+    sel.appendChild(opt);
+  }
+  sel.value = '';
+}
+
+function actionPickRiffHistory(i) { // bring back a riff from the history
+  const beats = parseRiff(riffHistory[i]);
+  if (beats) setRiff(beats, false, true);
+  el.selRiffHistory.value = '';
+}
+
+function splitRiffText(text) { // "riff=…; chords=…" → { riffPart, chordPart }; chordPart is null when there is no chords key
+  const m = /;\s*chords\s*=([^;]*)/i.exec(text);
+  if (!m) return { riffPart: text, chordPart: null };
+  return { riffPart: text.slice(0, m.index) + text.slice(m.index + m[0].length), chordPart: m[1] };
+}
+
+// --- Chord progression ---
+const NOTE_PC = { C: 0, D: 2, E: 4, F: 5, G: 7, A: 9, B: 11 };
+
+function parseChords(text) { // "E E A A", "Am7, D | G" → root names, or null if a token isn't a chord
+  const out = [];
+  for (const t of text.split(/[\s,|]+/).filter(t => t.length)) {
+    const m = /^([A-Ga-g])([#b]?)/.exec(t);
+    if (!m) return null;
+    out.push(m[1].toUpperCase() + m[2]);
+  }
+  return out;
+}
+
+function chordMidi(name) { // the chord's root, in the octave that puts it nearest the selected Note
+  const pc = (NOTE_PC[name[0]] + (name[1] === '#' ? 1 : name[1] === 'b' ? -1 : 0) + 12) % 12;
+  let d = (pc - riffMidi % 12 + 12) % 12;
+  if (d > 6) d -= 12;                                  // -5..+6 semitones from the Note
+  return riffMidi + d;
+}
+
+function riffMidiAt(play) { // pitch for the riff's play-th time through (0-based)
+  return riffChords.length ? chordMidi(riffChords[play % riffChords.length]) : riffMidi;
+}
+
+function setChords(chords) { // install a progression; mirror it into whichever text fields aren't being typed in
+  riffChords = chords;
+  if (document.activeElement !== el.riffChords) { el.riffChords.value = chords.join(' '); el.riffChords.classList.remove('bad'); }
+  if (document.activeElement !== el.riffText && riff) { el.riffText.value = serializeRiff(); el.riffText.classList.remove('bad'); }
+  renderChordBoxes();
+}
+
+function renderChordBoxes() {
+  el.riffChordBoxes.innerHTML = '';
+  riffChords.forEach(c => {
+    const box = document.createElement('span');
+    box.className = 'chordBox';
+    box.textContent = c;
+    el.riffChordBoxes.appendChild(box);
+  });
+  riffChordShown = -1;
+  showChord(0);
+}
+
+function showChord(play) { // highlight the chord of the given play (visual clock)
+  if (!riffChords.length) return;
+  const idx = play % riffChords.length;
+  if (idx === riffChordShown) return;
+  riffChordShown = idx;
+  [...el.riffChordBoxes.children].forEach((b, i) => b.classList.toggle('active', i === idx));
 }
 
 function parseRiff(text) { // returns beats, or null if the text isn't a valid riff for the current meter
@@ -1043,8 +1158,11 @@ function parseRiff(text) { // returns beats, or null if the text isn't a valid r
   return beats;
 }
 
-function setRiff(beats, keepText) { // install a riff (keepText: don't overwrite what the user is typing)
+function setRiff(beats, keepText, fromHistory = false) { // install a riff (keepText: don't overwrite what the user is typing)
+  // New, Vary and hand edits alike: the riff joins the history once it has played through unchanged (fromHistory: it is already there)
   beats = dropOrphanTies(beats);
+  riffPending = !fromHistory;
+  riffCleanLoops = (playing && !paused) ? 0 : 1;      // stopped: the next play starts at a boundary
   riff = { beatDiv: getBeatDiv(), barSize: getBarSize(), beats };
   riffOnsets = riffNotes(beats, riff.beatDiv);
   riffPlays = 0;
@@ -1156,22 +1274,23 @@ function riffGate(o) { return Math.min(o.gap * 0.9, 4); } // held-note length in
 
 function scheduleRiffStep(totalSteps, when) { // schedule the riff notes that start within this drum step
   if (totalSteps < 0 || !riff) return;
-  const s = totalSteps % (riff.beats.length * riff.beatDiv);
+  const riffLen = riff.beats.length * riff.beatDiv, s = totalSteps % riffLen;
   if (s === 0 && totalSteps > 0) riffLoopDone();
   if (muted || riffMuted) return;
-  const dur = stepDuration();
+  const dur = stepDuration(), midi = riffMidiAt(Math.floor(totalSteps / riffLen));
   riffOnsets.forEach(o => {
     if (Math.floor(o.pos + 1e-6) !== s) return;
     const held = o.c === 'o' || o.c === 'O';
     const len = o.end !== undefined ? (o.end - o.pos) * dur * 0.95   // tied: sounds through its tie slots
               : held ? riffGate(o) * dur : Math.min(0.09, o.gap * dur * 0.6);
-    voiceRiff(when + (o.pos - s) * dur, len, o.c === 'X' || o.c === 'O');
+    voiceRiff(when + (o.pos - s) * dur, len, o.c === 'X' || o.c === 'O', midi);
   });
 }
 
 function riffLoopDone() { // the riff just finished a play; in auto mode, move on to a variation every riffEvery plays
   riffPlays++;
-  if (riffAuto && riffPlays >= riffEvery) setRiff(varyRiffBeats(riff.beats));
+  if (riffPending && ++riffCleanLoops >= 2) { riffHistoryAdd(riff.beats); riffPending = false; } // played through unchanged: remember it
+  if (riffAuto && riffPlays >= riffEvery) { setRiff(varyRiffBeats(riff.beats)); riffCleanLoops = 1; } // installed right at a boundary: this loop counts
   else updateRiffCount();
 }
 
@@ -1640,7 +1759,7 @@ function actionRiffMuteToggle() {
   el.btnRiffMute.textContent = riffMuted ? '🔇 Riff' : '🔊 Riff';
 }
 
-function typingText() { const a = document.activeElement; return a === el.patternText || a === el.riffText; }
+function typingText() { const a = document.activeElement; return a === el.patternText || a === el.riffText || a === el.riffChords; }
 
 function actionCollapseToggle() { // collapse/expand the editing pane
   collapsed = !collapsed;
@@ -1657,19 +1776,26 @@ function toggleTextRow(row, btn, input) { // show/hide a text form of the patter
 function actionPatternTextToggle() { toggleTextRow(el.patternTextRow, el.btnPatternText, el.patternText); }
 function actionRiffTextToggle()    { toggleTextRow(el.riffTextRow, el.btnRiffText, el.riffText); }
 
+function actionRiffKnobsToggle(show) { // the generator-settings popup, under its button; closes on Escape or a click elsewhere
+  const shown = el.riffKnobs.classList.toggle('shown', show);
+  el.btnRiffKnobs.classList.toggle('active', shown);
+  if (shown) el.riffKnobs.style.left = `${el.btnRiffKnobs.offsetLeft}px`;
+}
+
 function actionFullscreenToggle() { // enter or leave browser fullscreen
   if (document.fullscreenElement) document.exitFullscreen();
   else document.documentElement.requestFullscreen().catch(() => {});
 }
 
 function actionKeyDown(e) { // global keyboard shortcuts
-  if (e.code === 'Space') { e.preventDefault(); if (playing) actionStop(); else actionPlay(); return; }
+  if (e.code === 'Escape' && el.riffKnobs.classList.contains('shown')) { actionRiffKnobsToggle(false); return; }
+  if (e.code === 'Space' && !typingText()) { e.preventDefault(); if (playing) actionStop(); else actionPlay(); return; } // (text fields need spaces)
   if (e.code === 'KeyT' && !typingText()) { e.preventDefault(); actionTapSpace(); return; } // T triggers tap tempo
   if (e.code === 'KeyP' && !typingText()) { e.preventDefault(); actionPause(); return; } // P toggles pause
-  if (e.code === 'KeyM') { e.preventDefault(); actionMuteToggle(); return; } // M toggles mute
+  if (e.code === 'KeyM' && !typingText()) { e.preventDefault(); actionMuteToggle(); return; } // M toggles mute
   const plainKey = !e.metaKey && !e.ctrlKey && !e.altKey && !typingText();
   if (e.code === 'KeyF' && plainKey) { e.preventDefault(); actionFullscreenToggle(); return; } // F toggles fullscreen
-  if (e.code === 'KeyR' && plainKey) { e.preventDefault(); actionNewRiff(); return; }  // R: new riff
+  if ((e.code === 'KeyN' || e.code === 'KeyR') && plainKey) { e.preventDefault(); actionNewRiff(); return; }  // N (or R): next riff
   if (e.code === 'KeyV' && plainKey) { e.preventDefault(); actionVaryRiff(); return; } // V: vary the riff
   if (e.code === 'BracketLeft'  && plainKey) { e.preventDefault(); actionRotateRiff(-1); return; } // [ ]: rotate the riff a beat
   if (e.code === 'BracketRight' && plainKey) { e.preventDefault(); actionRotateRiff(1);  return; }
@@ -1717,7 +1843,9 @@ function initRiffControls() { // build knob sliders and wire the riff pane
     const val = document.createElement('span');
     val.className = 'val'; val.textContent = k.val;
     rng.addEventListener('input', () => { riffKnob[k.id] = rng.value / 100; val.textContent = rng.value; });
-    label.append(k.name, rng, val);
+    const name = document.createElement('span');
+    name.className = 'name'; name.textContent = k.name;
+    label.append(val, rng, name);
     el.riffKnobs.appendChild(label);
   });
   RIFF_NOTES.forEach(([name, midi]) => {
@@ -1737,9 +1865,16 @@ function initRiffControls() { // build knob sliders and wire the riff pane
   el.selRiffNote.addEventListener('change', e => { riffMidi = parseInt(e.target.value, 10); });
   el.rngRiffVol.addEventListener('input', e => { bus.riff.gain.value = e.target.value / 100; });
   el.riffText.addEventListener('input', e => {
-    const beats = parseRiff(e.target.value);
-    e.target.classList.toggle('bad', !beats);
-    if (beats) setRiff(beats, true);
+    const { riffPart, chordPart } = splitRiffText(e.target.value);
+    const beats = parseRiff(riffPart);
+    const chords = chordPart === null ? [] : parseChords(chordPart);
+    e.target.classList.toggle('bad', !beats || !chords);
+    if (beats && chords) { setChords(chords); setRiff(beats, true); }
+  });
+  el.riffChords.addEventListener('input', e => {
+    const chords = parseChords(e.target.value);
+    e.target.classList.toggle('bad', !chords);
+    if (chords) setChords(chords);
   });
 }
 
@@ -1790,8 +1925,8 @@ function init() {
   el.ball2       = document.getElementById('ball2');
   el.padMain     = document.getElementById('padMain');
   el.padFill     = document.getElementById('padFill');
-  ['riffBallLane', 'riffBall', 'riffBall2', 'riffPad', 'riffLane', 'riffKnobs', 'riffText', 'riffTextRow', 'btnRiffText', 'riffCount', 'btnRiffNew', 'btnRiffVary', 'btnRiffBack', 'btnRiffFwd', 'btnRiffMute',
-   'chkRiffAuto', 'selRiffEvery', 'selRiffBars', 'selRiffNote', 'rngRiffVol'].forEach(id => { el[id] = document.getElementById(id); });
+  ['riffBallLane', 'riffBall', 'riffBall2', 'riffPad', 'riffLane', 'riffKnobs', 'riffText', 'riffTextRow', 'btnRiffText', 'riffCount', 'btnRiffNew', 'selRiffHistory', 'btnRiffKnobs', 'btnRiffVary', 'btnRiffBack', 'btnRiffFwd', 'btnRiffMute',
+   'chkRiffAuto', 'selRiffEvery', 'selRiffBars', 'selRiffNote', 'rngRiffVol', 'riffChords', 'riffChordBoxes'].forEach(id => { el[id] = document.getElementById(id); });
   initRiffControls();
 
   // Initialize from state
@@ -1840,6 +1975,11 @@ function init() {
   el.patternText.addEventListener('input', e => deserializePattern(e.target.value));
   el.btnCollapse.addEventListener('click', actionCollapseToggle);
   el.btnRiffText.addEventListener('click', actionRiffTextToggle);
+  el.btnRiffKnobs.addEventListener('click', () => actionRiffKnobsToggle());
+  el.selRiffHistory.addEventListener('change', e => { if (e.target.value !== '') actionPickRiffHistory(parseInt(e.target.value, 10)); });
+  document.addEventListener('click', e => { // click elsewhere closes the settings popup
+    if (el.riffKnobs.classList.contains('shown') && !el.riffKnobs.contains(e.target) && !el.btnRiffKnobs.contains(e.target)) actionRiffKnobsToggle(false);
+  });
   el.btnPatternText.addEventListener('click', actionPatternTextToggle);
   window.addEventListener('resize', refreshLayout);
   document.body.addEventListener('keydown', actionKeyDown);
@@ -1872,7 +2012,7 @@ Key bindings:
   <li>T: tap to tempo</li>
   <li>M: mute</li>
   <li>F: toggle fullscreen (ESC also exits)</li>
-  <li>R: new riff</li>
+  <li>N (or R): next riff</li>
   <li>V: vary the riff</li>
   <li>[ and ]: rotate the riff back / forward one beat (wrapping around)</li>
   <li>-: decrease tempo</li>
@@ -1887,8 +2027,12 @@ click the number to cycle it. Click a slot to cycle rest → note → accent (&g
 switches a note between staccato and long. A tie (offered only when the slot before it is voiced) carries the previous note on
 through that slot, including across a beat boundary. The Riff text uses one character per slot (<code>.</code> rest, <code>x</code> staccato,
 <code>X</code> accent, <code>o</code> long, <code>O</code> accented long, <code>-</code> tie), beats separated by commas, bars by <code>|</code>.
-New rolls a fresh riff from the knobs; Vary makes a small change; Auto does a Vary every N plays, so it drifts toward
-wherever the knobs are set.
+The Chords field is a simple progression, one chord per play of the riff: <code>E E A A</code> plays the riff twice on E and
+twice on A, then repeats. Only the root matters (<code>Am7</code> is A), pitched in the octave nearest the selected note; the
+box for the chord being played lights up. It is carried in the riff text as <code>; chords=…</code>.
+New rolls a fresh riff from the generator settings (the 🎛️ button next to New opens them); Vary makes a small change;
+Auto does a Vary every N plays, so it drifts toward wherever the settings are. The 📜 dropdown next to New holds the last
+25 riffs, newest first: a riff goes in once it has played through unchanged, whether it came from New, Vary, Auto or your own edits.
 <br><br>
 TODO:
 <ul>
