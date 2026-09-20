@@ -6,7 +6,9 @@ or a phone on a music stand, or curl -- can list them, search them, and play
 them without touching the filesystem.  A track is a media file; the beatmap is
 the .txt of the same stem beside it, and is optional.
 
+    ./server.py                         the current folder, this machine only
     ./server.py ~/Music/practice ~/Music/setlist
+    ./server.py --host                  the current folder, for the whole room
     ./server.py --port 9000 --host 0.0.0.0 ~/Music
 
 The page is served from this same directory, so the client it hands out is
@@ -21,6 +23,13 @@ GET /api/tracks[?q=]         { tracks: [...] }, filtered by a subsequence match
 GET /api/resolve?path=ABS    the id of that file, as text/plain (404 if unknown)
 GET /media/<id>              the audio, with Range and ETag
 GET /chart/<id>              the beatmap .txt, with ETag
+GET /api/backgrounds         { backgrounds: [name, ...] } -- what is in backgrounds/
+GET /backgrounds/<name>      one of those, with ETag
+
+Backgrounds are animations the page can play behind the display: whatever
+.gif or .webp files sit in backgrounds/ beside the page.  They belong to the
+page rather than to the library, so they are not under any root and no root
+can shadow them.
 
 Folders that are not part of the library -- originals/, stems/, anything whose
 contents mirror what is already there -- are left out two ways: a .riffignore
@@ -64,6 +73,7 @@ MEDIA_EXT = (".mp3", ".m4a", ".ogg", ".webm", ".flac", ".wav",
              ".mp4", ".m4v", ".mov")
 RESCAN_AFTER = 5.0          # seconds; a listing this stale is re-walked
 PAGE = "v0.4.html"
+BACKGROUND_EXT = (".gif", ".webp")   # what an <img> will animate
 
 # A folder holding this file is not part of the library.  A library that keeps
 # its untouched copies in originals/ has every track twice -- once to play and
@@ -259,6 +269,16 @@ class Library:
             return None
 
 
+def backgrounds(folder):
+    """The animations in a folder, by file name.  No folder is no backgrounds."""
+    try:
+        return sorted((p.name for p in folder.iterdir()
+                       if p.is_file() and not p.name.startswith(".")
+                       and p.suffix.lower() in BACKGROUND_EXT), key=str.lower)
+    except OSError:
+        return []
+
+
 def lan_address():
     """The address of the interface that would carry traffic off this machine.
 
@@ -311,6 +331,7 @@ class Handler(BaseHTTPRequestHandler):
     # set on the class by main()
     library = None
     page = None
+    backgrounds = None      # the folder, beside the page
     quiet = False
     touch = staticmethod(lambda: None)
 
@@ -431,6 +452,18 @@ class Handler(BaseHTTPRequestHandler):
                 tid = lib.resolve(want) if want else None
                 return self.send_text(tid) if tid else self.fail(404, "not in any root")
 
+            if path == "/api/backgrounds":
+                return self.send_json({"backgrounds": backgrounds(self.backgrounds)})
+
+            if path.startswith("/backgrounds/"):
+                # Matched against the listing rather than joined onto the
+                # folder: a name that is not in the listing is not served,
+                # which leaves nothing for a "../" to mean.
+                name = path[len("/backgrounds/"):]
+                if name not in backgrounds(self.backgrounds):
+                    return self.fail(404, "no such background")
+                return self.send_file(self.backgrounds / name)
+
             for prefix, find in (("/media/", lib.media_path), ("/chart/", lib.chart_path)):
                 if path.startswith(prefix):
                     got = find(path[len(prefix):])
@@ -452,10 +485,13 @@ class Handler(BaseHTTPRequestHandler):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("roots", nargs="+", help="folders of tracks to serve")
-    ap.add_argument("--host", default="127.0.0.1",
-                    help="0.0.0.0 to let the rest of the room in (default: %(default)s)")
-    ap.add_argument("--port", type=int, default=8177,
+    ap.add_argument("roots", nargs="*", default=["."],
+                    help="folders of tracks to serve (default: the current folder)")
+    ap.add_argument("--host", nargs="?", const="auto", default="127.0.0.1", metavar="ADDR",
+                    help="address to listen on; --host alone finds this machine's "
+                         "address on the network so the rest of the room can get in "
+                         "(default: %(default)s, this machine only)")
+    ap.add_argument("--port", type=int, default=8086,
                     help="0 picks a free one (default: %(default)s)")
     ap.add_argument("--exclude", action="append", default=[], metavar="GLOB",
                     help="skip folders matching this, by name or by path under "
@@ -472,21 +508,26 @@ def main():
         if not Path(r).expanduser().is_dir():
             sys.exit("not a folder: %s" % r)
 
-    page = Path(args.page) if args.page else Path(__file__).resolve().parent / PAGE
-    if not page.is_file():
-        sys.exit("no page to serve at %s (pass --page)" % page)
+    here = Path(__file__).resolve().parent
+    candidates = [Path(args.page)] if args.page else [here / PAGE, here / "karaoke.html"]
+    page = next((c for c in candidates if c.is_file()), None)
+    if page is None:
+        sys.exit("no page to serve at %s (pass --page)" % " or ".join(str(c) for c in candidates))
 
     last = [time.time()]
     Handler.library = Library(args.roots, args.exclude)
     Handler.page = page
+    Handler.backgrounds = page.resolve().parent / "backgrounds"
     Handler.quiet = args.quiet
     Handler.touch = staticmethod(lambda: last.__setitem__(0, time.time()))
 
-    httpd = ThreadingHTTPServer((args.host, args.port), Handler)
+    host = lan_address() if args.host == "auto" else args.host
+    httpd = ThreadingHTTPServer((host, args.port), Handler)
     httpd.daemon_threads = True
     port = httpd.server_address[1]
-    loopback = args.host in ("127.0.0.1", "localhost", "::1")
-    url = "http://%s:%d" % ("127.0.0.1" if loopback else lan_address(), port)
+    loopback = host in ("127.0.0.1", "localhost", "::1")
+    url = "http://%s:%d" % ("127.0.0.1" if loopback else
+                            lan_address() if host == "0.0.0.0" else host, port)
 
     Handler.library.scan()
     print("%s  -- %d tracks in %s%s" %
@@ -498,7 +539,7 @@ def main():
     # not merely absent from this line -- it does not work, and nothing about
     # "127.0.0.1" says why.  So say it here, where the question gets asked.
     if loopback:
-        print("this machine only; --host 0.0.0.0 to let the rest of the room in "
+        print("this machine only; --host to let the rest of the room in "
               "(then http://%s:%d)" % (lan_address(), port), flush=True)
     if args.url_file:
         Path(args.url_file).write_text(url + "\n")

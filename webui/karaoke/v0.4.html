@@ -26,6 +26,11 @@
     --glow: color-mix(in srgb, var(--fg) 55%, transparent);
     --scan-pitch: 2px;   /* both overwritten by the settings sliders */
     --brightness: 100%;
+    --bg-level: 40%;
+    --chord-fill: 100%;  /* how solid the chord panels are, from the settings */
+    --chord-panel: color-mix(in srgb, var(--panel) var(--chord-fill), transparent);
+    --chord-hot: color-mix(in srgb, var(--hot) var(--chord-fill), transparent);
+    --chord-back: color-mix(in srgb, #050705 var(--chord-fill), transparent);
     --lyric-zoom: 100;                       /* per cent, from the settings */
     --cur-size: calc(clamp(18px, 2.9vw, 38px) * var(--lyric-zoom) / 100);
     --side-size: calc(clamp(15px, 1.9vw, 25px) * var(--lyric-zoom) / 100);
@@ -57,6 +62,9 @@
     --panel: color-mix(in srgb, var(--fg) 11%, #000);
     --hot: color-mix(in srgb, var(--fg) 34%, #000);
     --glow: color-mix(in srgb, var(--fg) 55%, transparent);
+    --chord-panel: color-mix(in srgb, var(--panel) var(--chord-fill), transparent);
+    --chord-hot: color-mix(in srgb, var(--hot) var(--chord-fill), transparent);
+    --chord-back: color-mix(in srgb, #050705 var(--chord-fill), transparent);
     color: var(--fg);
     text-shadow: 0 0 7px var(--glow);
   }
@@ -86,7 +94,7 @@
   .title-btn:hover:not(:disabled) { text-shadow: 0 0 12px var(--fg); }
   #titleTags { color: var(--dim); }
 
-  button, input { font: inherit; letter-spacing: inherit; color: inherit; }
+  button, input, select { font: inherit; letter-spacing: inherit; color: inherit; }
 
   .switch { display: inline-flex; }
 
@@ -211,6 +219,23 @@
   .setting .val { order: 3; }
   .setting .switch { flex: none; max-width: 262px; }
 
+  /* A choice whose options are not known until something has been asked --
+     and may be many -- so it is a list rather than a row of keys. */
+  .setting select {
+    flex: none;
+    width: 262px;
+    padding: 4px 6px;
+    border: 1px solid var(--dim);
+    border-radius: 0;
+    background: var(--panel);
+    text-shadow: inherit;
+    text-transform: uppercase;
+    outline: none;
+    cursor: pointer;
+  }
+
+  .setting select:focus, .setting select:hover { border-color: var(--fg); }
+
   /* Second level: common settings first, then one collapsible group per
      display. The group body is its own element so `details` keeps its
      disclosure behaviour whatever display the panel grid gives it. */
@@ -280,7 +305,7 @@
     min-width: 1.5em;
     min-height: 1.25em;
     border: 2px solid var(--dim);
-    background: #050705;
+    background: var(--chord-back);
   }
 
   :root[data-strumframe="boxes"] .sslot.hit { border-color: var(--fg); }
@@ -369,6 +394,62 @@
   }
 
   :root[data-scan="off"] .stage::after { display: none; }
+
+  /* The background animation: first in the stage and under everything in it,
+     so the vignette and the raster fall across it as they do across the rest
+     of the picture. Dimmed by opacity against the stage's black rather than by
+     a filter, which keeps a busy GIF from out-shouting the lyrics.
+
+     A box with the picture as its background rather than an <img>: the box is
+     the stage's size because its edges are pinned to the stage's, which no
+     browser gets wrong, and cover-and-centre then crops a picture of the wrong
+     shape evenly -- top and bottom, or left and right. An <img> has to be
+     talked into the stage's height first, and where that fails it falls back
+     to its own shape and loses only its bottom. */
+  .backdrop {
+    position: absolute;
+    inset: 0;
+    background: center / cover no-repeat;
+    opacity: var(--bg-level);
+    pointer-events: none;
+    user-select: none;
+  }
+
+  .backdrop[hidden] { display: none; }
+
+  /* Over a picture the phosphor has nothing dark to be bright against, so
+     what is drawn on the stage gets a black edge and a shadow under it -- as
+     well as its bloom, not instead of it, and only while a picture is actually
+     showing: on plain black the stage is the CRT it always was.
+
+     Two ways, because a filter shadows everything in its layer in proportion
+     to how solid it is. Where a layer is all marks and no surface -- the
+     lyrics, the playhead, the repeat counters -- that is what is wanted: the
+     ball, the pads and the dots are not text, and one rule covers them all.
+     But a faded chord panel is a surface, and three stacked shadows of a
+     one-third-solid fill add up to a nearly solid black one behind it, which
+     is the opposite of what fading it was for. So inside the panels the edge
+     goes on the glyphs alone, as a text-shadow ahead of the bloom, in every
+     rule that sets a bloom of its own. */
+  :root[data-backdrop="on"][data-ink="on"] :is(.lyrics, .playhead, .repeats) {
+    filter: drop-shadow(0 0 1.5px #000) drop-shadow(0 0 1.5px #000)
+            drop-shadow(0 2px 4px #000);
+  }
+
+  :root[data-backdrop="on"][data-ink="on"] {
+    --ink: 0 0 2px #000, 0 0 2px #000, 0 0 3px #000, 0 2px 4px #000;
+  }
+
+  :root[data-backdrop="on"][data-ink="on"] :is(.main-row, .preview, .beats, .spane, .next) {
+    text-shadow: var(--ink), 0 0 7px var(--glow);
+  }
+
+  :root[data-backdrop="on"][data-ink="on"] :is(.measure.current, .sslot.hit, .next.lit) {
+    text-shadow: var(--ink), 0 0 16px var(--fg);
+  }
+
+  :root[data-backdrop="on"][data-ink="on"] .beat.hit { text-shadow: var(--ink), 0 0 12px var(--fg); }
+  :root[data-backdrop="on"][data-ink="on"] .measure.ghost .name { text-shadow: var(--ink); }
 
   /* The chord surfaces switch off together; the strum pane is independent. */
   :root[data-chords="off"] .main-row,
@@ -530,7 +611,7 @@
     place-items: center;
     overflow: hidden;
     border: 2px solid var(--dim);
-    background: var(--panel);
+    background: var(--chord-panel);
     font-size: calc(var(--h) * .42);
   }
 
@@ -553,7 +634,7 @@
   .main-row .measure.current {
     color: var(--fg);
     border-color: var(--fg);
-    background: var(--hot);
+    background: var(--chord-hot);
     text-shadow: 0 0 16px var(--fg);
   }
 
@@ -606,7 +687,9 @@
     display: grid;
     place-items: center;
     border: 2px solid var(--dim);
-    background: #050705;   /* opaque: the chord row's edge runs behind it */
+    /* Opaque unless the panels have been faded: the chord row's edge runs
+       behind it, and shows through as soon as this does not cover it. */
+    background: var(--chord-back);
     color: var(--dim);
     font-size: calc(var(--bh) * .62);
     line-height: 1;
@@ -618,7 +701,7 @@
   .beat.hit {
     color: var(--fg);
     border-color: var(--fg);
-    background: var(--hot);
+    background: var(--chord-hot);
     text-shadow: 0 0 12px var(--fg);
   }
 
@@ -641,7 +724,7 @@
     left: var(--pad);
     width: var(--disp-w);
     border: 2px solid var(--dim);
-    background: var(--panel);
+    background: var(--chord-panel);
     z-index: 5;
   }
 
@@ -984,7 +1067,7 @@
     color: var(--fg);
     border-color: var(--fg);
     border-style: solid;
-    background: var(--hot);
+    background: var(--chord-hot);
     text-shadow: 0 0 16px var(--fg);
   }
 
@@ -1052,7 +1135,7 @@
     font-size: 12px;
   }
 
-  .result:hover, .result.on { border-color: var(--fg); background: var(--hot); color: var(--fg); }
+  .result:hover, .result.on, .result.pick { border-color: var(--fg); background: var(--hot); color: var(--fg); }
   .result b { font-weight: inherit; }
   .result b em {
     font-style: normal;
@@ -1253,6 +1336,8 @@
   <input type="file" id="pickFiles" multiple hidden>
 
   <div class="stage" id="stage">
+    <div class="backdrop" id="backdrop" hidden></div>
+
     <div class="lyrics tinted" id="lyrics">
       <div class="lyric side" id="lyricPrev"></div>
       <div class="lyric cur" id="lyricCur"><span class="cue" id="cue"></span></div>
@@ -1796,6 +1881,15 @@ const SETTINGS = [
     type: "toggle", def: true, flag: "scan" },
   { name: "scanPitch", scope: "display", group: "common", label: "Scanline pitch",
     type: "range", def: 2, min: 2, max: 16, step: 1, unit: "px", css: "--scan-pitch" },
+  /* A file name, not a URL: the server that has it may be somewhere else next
+     time, and the name is the part that stays true. */
+  { name: "background", scope: "display", group: "common", label: "Background",
+    type: "select", def: "", options: () => backgroundOptions(),
+    apply: () => applyBackground() },
+  { name: "backgroundLevel", scope: "display", group: "common", label: "Background level",
+    type: "range", def: 40, min: 5, max: 100, step: 5, unit: "%", css: "--bg-level" },
+  { name: "backgroundInk", scope: "display", group: "common", label: "Outline over background",
+    type: "toggle", def: true, flag: "ink" },
 
   { name: "lyricsPanel", scope: "display", group: "lyrics", label: "Lyrics panel",
     type: "toggle", def: true, after: "layout" },
@@ -1818,6 +1912,10 @@ const SETTINGS = [
     type: "toggle", def: true, flag: "chords", after: "layout" },
   { name: "chordColour", scope: "display", group: "chords", label: "Chord colour",
     type: "choice", def: "green", options: COLOURS, apply: v => tint("chords", v) },
+  /* The fills only: the borders, the names and the strokes stay as bright as
+     they were, so a faded panel is still a panel. */
+  { name: "chordFill", scope: "display", group: "chords", label: "Panel opacity",
+    type: "range", def: 100, min: 0, max: 100, step: 5, unit: "%", css: "--chord-fill" },
   { name: "chordCue", scope: "display", group: "chords", label: "Chord cue",
     type: "choice", def: "off", flag: "chordcue", after: "layout,strum",
     options: [{ v: "off", label: "Off", icon: ICO.off },
@@ -4561,9 +4659,15 @@ async function ask(url, path, opts = {}) {
 async function greet(url) {
   const hi = await ask(url, "/api/hello");
   if (!hi || hi.riffhound == null) throw new Error("not a RiffHound server");
-  const got = await ask(url, "/api/tracks", { ms: 8000 });
+  /* Asked for alongside, and allowed to fail: a server from before there were
+     backgrounds is still a server. */
+  const [got, bg] = await Promise.all([
+    ask(url, "/api/tracks", { ms: 8000 }),
+    ask(url, "/api/backgrounds").catch(() => ({}))]);
   return { url, name: hi.name || url, roots: hi.roots || [],
-           tracks: got.tracks || [], ok: true, why: "" };
+           tracks: got.tracks || [],
+           backgrounds: Array.isArray(bg.backgrounds) ? bg.backgrounds : [],
+           ok: true, why: "" };
 }
 
 /* Try every server we know, in parallel: they are independent and the slow one
@@ -4607,6 +4711,63 @@ function forgetServer(url) {
   store.servers = (store.servers || []).filter(s => s.url !== url);
   remote = remote.filter(r => r.url !== url);
   save();
+}
+
+/* ── backgrounds ────────────────────────────────────────────────────────
+   An animation behind the display, picked from backgrounds/ beside the page.
+   A page cannot list a folder, so the list is whatever the servers say they
+   have; the file itself is then just an image, which animates a GIF without
+   being asked and needs no fetch -- so a name that no server lists is still
+   tried beside the page, which is where it is when the page came from file://
+   and where it is before any server has answered. */
+const backdrop = $("backdrop");
+let backdropUrl = "", backdropProbe = null;
+
+/* The flag follows the picture, not the setting: a name that did not load is
+   a black stage, and should look like one. */
+function showBackdrop(url) {
+  backdrop.hidden = !url;
+  backdrop.style.backgroundImage = url ? `url("${url}")` : "";
+  root.dataset.backdrop = url ? "on" : "off";
+}
+
+const serverBackgrounds = () => remote.flatMap(r => r.ok ? r.backgrounds || [] : []);
+
+function backgroundOptions() {
+  const names = [...new Set(serverBackgrounds())]
+    .sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }));
+  return [{ v: "", label: "Off" },
+          ...names.map(n => ({ v: n, label: n.replace(/\.\w+$/, "").replace(/[_\-]+/g, " ") }))];
+}
+
+function applyBackground() {
+  const name = state.background;
+  if (!name) {
+    backdropUrl = "";
+    backdropProbe = null;
+    showBackdrop("");
+    return;
+  }
+  const from = remote.find(r => r.ok && (r.backgrounds || []).includes(name));
+  const url = new URL((from ? from.url + "/" : "") + "backgrounds/" + encodeURIComponent(name),
+                      location.href).href;
+  /* Only when it has changed: setting the same picture starts the loop again. */
+  if (url === backdropUrl) return;
+  backdropUrl = url;
+
+  /* A CSS background does not say whether it loaded, so an image that is never
+     shown finds out first; the picture already up stays up until it has. A
+     later choice overtakes this one by no longer being the probe. */
+  const probe = backdropProbe = new Image();
+  probe.onload = () => { if (probe === backdropProbe) showBackdrop(url); };
+  probe.onerror = () => { if (probe === backdropProbe) showBackdrop(""); };
+  probe.src = url;
+}
+
+/* The servers have answered, or one has been added or forgotten. */
+function refreshBackgrounds() {
+  sync("background");
+  applyBackground();
 }
 
 /* An id is a path, so it arrives with slashes in it and may arrive with spaces,
@@ -4958,6 +5119,8 @@ const AFTER = {
 function coerce(def, v) {
   if (def.type === "toggle") return !!v;
   if (def.type === "range") return clamp(Number(v), def.min, def.max);
+  /* Taken on trust: the options arrive after the saved value does. */
+  if (def.type === "select") return String(v ?? "");
   return def.options.some(o => o.v === v) ? v : def.def;
 }
 
@@ -4986,6 +5149,13 @@ function sync(name) {
 
   if (def.type === "choice") {
     [...el.children].forEach(b => b.classList.toggle("active", b.dataset.v === v));
+  } else if (def.type === "select") {
+    /* Rebuilt every time, since the list is whatever it is now. A value that
+       is no longer on it stays, and says so, rather than reading as Off. */
+    const opts = def.options();
+    if (v && !opts.some(o => o.v === v)) opts.push({ v, label: v + " (missing)" });
+    el.replaceChildren(...opts.map(o => new Option(o.label, o.v)));
+    el.value = v;
   } else if (def.type === "toggle") {
     el.checked = v;
   } else if (document.activeElement !== el) {
@@ -5014,6 +5184,11 @@ function rowFor(def) {
     });
     row.append(sw);
     controls[def.name] = sw;
+  } else if (def.type === "select") {
+    const sel = document.createElement("select");
+    sel.onchange = () => command({ cmd: "set", name: def.name, value: sel.value });
+    row.append(sel);
+    controls[def.name] = sel;
   } else if (def.type === "toggle") {
     const box = document.createElement("input");
     box.type = "checkbox";
@@ -5120,7 +5295,21 @@ function buildTrackPanel() {
   searchBox = document.createElement("input");
   Object.assign(searchBox, { id: "search", className: "search", type: "search",
                              placeholder: "search tracks…", autocomplete: "off" });
-  searchBox.oninput = () => renderResults(searchBox.value);
+  searchBox.oninput = () => { pickId = null; renderResults(searchBox.value); };
+  /* The keys stay with the box, so typing and choosing are one motion: narrow
+     it, arrow down, Enter. Enter with nothing chosen takes the top row, which
+     is what the typing was for. */
+  searchBox.onkeydown = e => {
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+    if (e.key === "ArrowDown") movePick(1);
+    else if (e.key === "ArrowUp") movePick(-1);
+    else if (e.key === "Enter") {
+      const e1 = shown.find(x => x.id === pickId) || shown[0];
+      if (e1) { openTrack(e1); openTrackPanel(false); }
+    }
+    else return;
+    e.preventDefault();
+  };
 
   results = document.createElement("div");
   results.className = "results";
@@ -5174,6 +5363,7 @@ function buildTrackPanel() {
     srvBtn.textContent = { ok: "Connected", "no answer": "No answer" }[r] || "Failed";
     if (r === "ok") srvBox.value = "";
     renderServers();
+    refreshBackgrounds();
     renderResults(searchBox.value);
     setTimeout(() => { srvBtn.textContent = "Connect"; srvBtn.disabled = false; }, 1400);
   };
@@ -5213,6 +5403,26 @@ const carried = e => {
   return on.length ? on.join(" · ") : "no chart";
 };
 
+/* The row the arrow keys are on, by track rather than by position: the list is
+   redrawn under you whenever a server answers or a scan lands, and the cursor
+   should still be on the track it was on. */
+let shown = [], pickId = null;
+
+function markPick() {
+  [...results.children].forEach((b, i) =>
+    b.classList.toggle("pick", !!shown[i] && shown[i].id === pickId));
+  results.querySelector(".pick")?.scrollIntoView({ block: "nearest" });
+}
+
+function movePick(by) {
+  if (!shown.length) return;
+  const i = shown.findIndex(e => e.id === pickId);
+  const j = i < 0 ? (by > 0 ? 0 : shown.length - 1)
+                  : clamp(i + by, 0, shown.length - 1);
+  pickId = shown[j].id;
+  markPick();
+}
+
 function renderResults(query) {
   const q = String(query || "").trim();
   if (reloadBtn) reloadBtn.disabled = !track.id || reloadBtn.dataset.busy === "1";
@@ -5223,18 +5433,18 @@ function renderResults(query) {
       ? all.length + " tracks"
       : kept.length + " of " + all.length;
 
-  const rows = kept
+  shown = kept
     .sort((a, b) => (store.stats[b.id]?.last || 0) - (store.stats[a.id]?.last || 0))
-    .slice(0, 200)
-    .map(e => {
-      const s = store.stats[e.id] || {};
-      const b = document.createElement("button");
-      b.className = "result" + (e.id === track.id ? " on" : "");
-      b.innerHTML = `<b>${e.title}<em>${where(e)}</em></b>` +
-                    `<i>${carried(e)} ${spent(s.secs)}</i><i>${ago(s.last)}</i>`;
-      b.onclick = () => { openTrack(e); openTrackPanel(false); };
-      return b;
-    });
+    .slice(0, 200);
+  const rows = shown.map(e => {
+    const s = store.stats[e.id] || {};
+    const b = document.createElement("button");
+    b.className = "result" + (e.id === track.id ? " on" : "");
+    b.innerHTML = `<b>${e.title}<em>${where(e)}</em></b>` +
+                  `<i>${carried(e)} ${spent(s.secs)}</i><i>${ago(s.last)}</i>`;
+    b.onclick = () => { openTrack(e); openTrackPanel(false); };
+    return b;
+  });
 
   results.replaceChildren(...(rows.length ? rows : [Object.assign(
     document.createElement("div"),
@@ -5242,6 +5452,7 @@ function renderResults(query) {
       textContent: remote.length || dirs.length || picked.length
         ? "nothing found"
         : "connect to a server, or open a folder of tracks, to begin" })]));
+  markPick();
 }
 
 function renderServers() {
@@ -5261,6 +5472,7 @@ function renderServers() {
     x.onclick = () => {
       forgetServer(r.url);
       renderServers();
+      refreshBackgrounds();
       renderResults(searchBox.value);
     };
     el.append(n, c, x);
@@ -5347,7 +5559,7 @@ function openMenu(open) {
 function openTrackPanel(open) {
   trackPanel.hidden = !open;
   titleBtn.setAttribute("aria-expanded", open);
-  if (open) { renderResults(searchBox.value); openMenu(false); searchBox.focus(); }
+  if (open) { pickId = null; renderResults(searchBox.value); openMenu(false); searchBox.focus(); }
 }
 
 function toggleFullscreen() {
@@ -5403,6 +5615,10 @@ addEventListener("keydown", e => {
   if (colour) ["controlColour", "lyricColour", "voiceColour", "chordColour"]
     .forEach(n => command({ cmd: "set", name: n, value: colour }));
   else if (e.key === " ") command({ cmd: player.playing ? "stop" : "play" });
+  /* With the load dialog up the vertical arrows belong to its list, wherever
+     in the dialog the focus has wandered to. */
+  else if (e.key === "ArrowDown" && !trackPanel.hidden) movePick(1);
+  else if (e.key === "ArrowUp" && !trackPanel.hidden) movePick(-1);
   else if (e.key === "ArrowLeft") command({ cmd: "nudge", by: -5 });
   else if (e.key === "ArrowRight") command({ cmd: "nudge", by: 5 });
   else if (e.key.toLowerCase() === "f") toggleFullscreen();
@@ -5500,6 +5716,7 @@ for (const [k, v] of boot)
   renderServers();
   renderDirs();
   renderResults("");
+  refreshBackgrounds();
 
   if (boot.has("track")) command({ cmd: "track", key: boot.get("track") });
   if (boot.has("t")) command({ cmd: "seek", time: boot.get("t") });
