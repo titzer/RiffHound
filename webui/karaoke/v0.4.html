@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Guitar / Voice Karaoke v0.2</title>
+<title>Guitar / Voice Karaoke v0.4</title>
 <style>
   * { box-sizing: border-box; }
 
@@ -76,6 +76,10 @@
     gap: 18px;
     padding: 5px var(--pad);
   }
+
+  /* Bare mode (M): nothing but the music. The header goes, and so does the
+     cursor, which is the other thing on screen that reads as a control. */
+  body.bare header, body.bare .cursor { display: none !important; }
 
   h1 { margin: 0; font-size: 21px; }
 
@@ -5562,6 +5566,11 @@ function openTrackPanel(open) {
   if (open) { pickId = null; renderResults(searchBox.value); openMenu(false); searchBox.focus(); }
 }
 
+function toggleBare() { /* hide or show the header; the stage takes the room */
+  document.body.classList.toggle("bare");
+  layout();
+}
+
 function toggleFullscreen() {
   if (document.fullscreenElement) document.exitFullscreen();
   else document.documentElement.requestFullscreen().catch(() => {});
@@ -5627,7 +5636,8 @@ addEventListener("keydown", e => {
   else if (e.key.toLowerCase() === "c")
     command({ cmd: "set", name: "chordPanel", value: !state.chordPanel });
   else if (e.key.toLowerCase() === "s") togglePane();
-  else if (e.key.toLowerCase() === "m") toggleVoice();
+  else if (e.key.toLowerCase() === "m") toggleBare();
+  else if (e.key.toLowerCase() === "v") toggleVoice();
   else if (e.key.toLowerCase() === "o") bufClear();
   else if (e.key.toLowerCase() === "t") cycleTrade();
   /* The shifted faces of the same two keys count too: reaching for "faster"
@@ -5636,7 +5646,10 @@ addEventListener("keydown", e => {
   else if (e.key === "-" || e.key === "_") nudgeSpeed(-1);
   else if (e.key === "=" || e.key === "+") nudgeSpeed(1);
   else if (e.key === "\\") command({ cmd: "set", name: "speed", value: DEF.speed.reset });
-  else if (e.key === "Escape") { openMenu(false); openTrackPanel(false); }
+  else if (e.key === "Escape") {
+    openMenu(false); openTrackPanel(false);
+    if (document.body.classList.contains("bare")) toggleBare();   /* the way back when the controls are gone */
+  }
   else return;
   e.preventDefault();
 });
