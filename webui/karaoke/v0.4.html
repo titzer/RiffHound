@@ -13,6 +13,8 @@
   :root[data-theme="green"] { --fg: #46ff7a; }
   :root[data-theme="amber"] { --fg: #ffb43c; }
   :root[data-theme="red"]   { --fg: #ff4436; }
+  :root[data-theme="blue"]  { --fg: #4fa8ff; }
+  :root[data-theme="purple"] { --fg: #c06cff; }
 
   :root {
     --fg: #46ff7a;  /* fallback; the [data-theme] rules above win */
@@ -79,7 +81,7 @@
 
   /* Bare mode (M): nothing but the music. The header goes, and so does the
      cursor, which is the other thing on screen that reads as a control. */
-  body.bare header, body.bare .cursor { display: none !important; }
+  body.bare :is(header, .loopbar, .loopbuf, .cursor) { display: none !important; }
 
   h1 { margin: 0; font-size: 21px; }
 
@@ -435,7 +437,7 @@
      is the opposite of what fading it was for. So inside the panels the edge
      goes on the glyphs alone, as a text-shadow ahead of the bloom, in every
      rule that sets a bloom of its own. */
-  :root[data-backdrop="on"][data-ink="on"] :is(.lyrics, .playhead, .repeats) {
+  :root[data-backdrop="on"][data-ink="on"] :is(.lyrics, .playhead, .spane .repeats) {
     filter: drop-shadow(0 0 1.5px #000) drop-shadow(0 0 1.5px #000)
             drop-shadow(0 2px 4px #000);
   }
@@ -444,7 +446,7 @@
     --ink: 0 0 2px #000, 0 0 2px #000, 0 0 3px #000, 0 2px 4px #000;
   }
 
-  :root[data-backdrop="on"][data-ink="on"] :is(.main-row, .preview, .beats, .spane, .next) {
+  :root[data-backdrop="on"][data-ink="on"] :is(.main-row, .preview, .beats, .spane, .next-row) {
     text-shadow: var(--ink), 0 0 7px var(--glow);
   }
 
@@ -488,6 +490,9 @@
   }
 
   .lyric { position: relative; white-space: nowrap; }
+  /* A line wider than the row is squeezed to the row (JS sets the scale) rather
+     than run off the side, so its last word, and the ball, stay on screen. */
+  .lyric .line { display: inline-block; transform-origin: left center; }
 
   .lyric.side {
     color: var(--dim);
@@ -662,9 +667,37 @@
 
   .repeats i.spent { background: none; }
 
-  /* On the chord row it sits top right, clear of the chords and over the tail
-     the row leaves empty when the phrase is shorter than the ruler. */
-  .main-row .repeats { top: 8px; bottom: auto; right: 10px; }
+  /* On the chord row it is the thing the ball lands on: a stack of repeat
+     signs at the end of the pass, one per time round, spent from the bottom
+     up. The spent ones stay, faint, so a glance back still shows the total. */
+  .main-row .repeats {
+    top: 50%; bottom: auto; right: auto;
+    transform: translate(-50%, -50%);
+    flex-direction: column-reverse;
+    gap: .3em;
+    padding: .35em .4em;
+    border: 2px solid var(--dim);
+    background: var(--chord-panel);   /* the same glass as the chord boxes */
+    color: var(--fg);
+    /* Small: a sign, not a chord. Smaller still when there are many, so the
+       stack never outgrows the row. */
+    font-size: min(calc(var(--h) * .09), calc(var(--h) / var(--reps, 1) * .4));
+    z-index: 5;
+  }
+  /* A repeat sign drawn in CSS -- two dots, a thin line, a thick line -- so it
+     is the same glyph on every device rather than whatever the font has. */
+  .main-row .repeats i {
+    --sign:
+      radial-gradient(circle, currentColor 0 .13em, #0000 .17em) 0 .22em / .34em .34em no-repeat,
+      radial-gradient(circle, currentColor 0 .13em, #0000 .17em) 0 .64em / .34em .34em no-repeat,
+      linear-gradient(currentColor, currentColor) .48em 0 / .12em 100% no-repeat,
+      linear-gradient(currentColor, currentColor) .72em 0 / .28em 100% no-repeat;
+    width: 1em; height: 1.2em;
+    border: 0; padding: 0;
+    background: var(--sign);
+    transition: opacity 150ms;
+  }
+  .main-row .repeats i.spent { background: var(--sign); opacity: .18; }
 
   /* Same counter in the pane, but counting loops of the pattern inside one
      chord row rather than passes over the row. */
@@ -1053,10 +1086,18 @@
 
   /* ---- next-chord margin ---------------------------------------------- */
 
-  /* JS sizes this to 70% of a main bar, in both directions. */
-  .next {
+  /* The coming group, from where the ball will land: the first box is where
+     the row hands over, and more of the group follows it while there is room.
+     JS places the row and sizes the boxes to the chord row's own scale. */
+  .next-row {
     position: absolute;
-    right: var(--pad);
+    display: flex;
+    gap: 6px;
+    z-index: 6;
+  }
+
+  .next {
+    flex: none;
     display: grid;
     place-content: center;
     gap: 4px;
@@ -1123,6 +1164,55 @@
     font-size: clamp(16px, 1.9vw, 28px);
     padding: .3em .45em;
   }
+
+  /* ---- background picker (B) ------------------------------------------ */
+
+  /* In the stage's top-left corner, so it sits under the header when there is
+     one and at the very top when there is not. A search box over a grid of
+     live previews; the pictures are the backgrounds themselves. */
+  #bgPanel {
+    top: 8px;
+    left: var(--pad);
+    width: min(760px, calc(100% - var(--pad) * 2));
+    max-height: calc(100% - 16px);
+    grid-template-rows: auto 1fr auto auto;
+    overflow: hidden;
+  }
+  #bgPanel[hidden] { display: none; }
+  #bgPanel > .setting { justify-content: flex-start; }
+  #bgPanel > .setting > label { flex: none; }
+  #bgPanel > .setting input[type=range] { flex: 1; }
+  #bgPanel > .search { font-size: clamp(15px, 1.6vw, 22px); padding: .3em .45em; }
+  #bgPanel > label { font-size: 13px; color: var(--dim); }
+  .bggrid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 8px;
+    min-height: 0;
+    overflow-y: auto;
+  }
+  .bgtile {
+    position: relative;
+    aspect-ratio: 16 / 9;
+    border: 2px solid var(--dim);
+    background: #000 center / cover no-repeat;
+    color: var(--dim);
+    cursor: pointer;
+    overflow: hidden;
+  }
+  .bgtile span {
+    position: absolute;
+    left: 0; right: 0; bottom: 0;
+    padding: 2px 6px;
+    font-size: 12px;
+    background: #050705b3;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .bgtile:hover, .bgtile.pick { border-color: var(--fg); color: var(--fg); }
+  .bgtile.on { border-color: var(--fg); box-shadow: 0 0 12px var(--glow); color: var(--fg); }
+  .bgtile.pick { box-shadow: inset 0 0 0 2px var(--fg); }
 
   .results { display: grid; gap: 2px; width: 100%; max-height: 190px; overflow-y: auto; align-content: start; }
 
@@ -1341,6 +1431,15 @@
 
   <div class="stage" id="stage">
     <div class="backdrop" id="backdrop" hidden></div>
+    <div class="panel tinted" id="bgPanel" hidden>
+      <input class="search" id="bgSearch" type="search" placeholder="background — type to narrow, arrows to pick, Enter to set"
+             autocomplete="off" spellcheck="false">
+      <div class="bggrid" id="bgGrid"></div>
+      <div class="setting"><label for="bgLevel">Level</label>
+        <input type="range" id="bgLevel" min="5" max="100" step="5">
+        <span class="val"><output id="bgLevelOut"></output></span></div>
+      <label id="bgHint"></label>
+    </div>
 
     <div class="lyrics tinted" id="lyrics">
       <div class="lyric side" id="lyricPrev"></div>
@@ -1357,7 +1456,7 @@
     <div id="spane" class="spane tinted" data-rows="split"></div>
     <div id="vpane" class="vpane tinted"></div>
 
-    <div class="next tinted" id="next"><small>next</small><b id="nextChord"></b></div>
+    <div class="next-row tinted" id="next"></div>
 
     <div class="playhead tinted" id="playhead">
       <div id="cursor" class="cursor"></div>
@@ -1833,10 +1932,13 @@ const chordHtml = name => String(name)
   .replace(/([A-G])([#b])/g, (_, note, a) => note + accSpan(a))
   .replace(/([#b])(\d)/g, (_, a, digit) => accSpan(a) + digit);
 
-const PHOSPHOR = { green: "#46ff7a", amber: "#ffb43c", red: "#ff4436" };
+const PHOSPHOR = { green: "#46ff7a", amber: "#ffb43c", red: "#ff4436",
+                   blue: "#4fa8ff", purple: "#c06cff" };
 const COLOURS = [{ v: "green", label: "Green" },
                  { v: "amber", label: "Amber" },
-                 { v: "red", label: "Red" }];
+                 { v: "red", label: "Red" },
+                 { v: "blue", label: "Blue" },
+                 { v: "purple", label: "Purple" }];
 
 /* ── icons ──────────────────────────────────────────────────────────────
    One grammar: the wave is the marker's path through a bar, the circle is the
@@ -1887,7 +1989,7 @@ const SETTINGS = [
     type: "range", def: 2, min: 2, max: 16, step: 1, unit: "px", css: "--scan-pitch" },
   /* A file name, not a URL: the server that has it may be somewhere else next
      time, and the name is the part that stays true. */
-  { name: "background", scope: "display", group: "common", label: "Background",
+  { name: "background", scope: "display", group: "common", label: "Background (B)",
     type: "select", def: "", options: () => backgroundOptions(),
     apply: () => applyBackground() },
   { name: "backgroundLevel", scope: "display", group: "common", label: "Background level",
@@ -2005,7 +2107,7 @@ const clockOut = $("clock"), bpmOut = $("bpmOut"), rateOut = $("rateOut");
 const header = document.querySelector("header");
 
 const parts = {
-  control: [header, loopBar, loopBuffer],
+  control: [header, loopBar, loopBuffer, $("bgPanel")],   /* the picker is a control, so it wears the menu's colour */
   lyrics: [lyrics],
   chords: [main, preview, next, beats, spane, playhead],
   voice: [vpane]
@@ -2248,12 +2350,10 @@ function placeChords(y, band) {
   playhead.style.setProperty("--ball-size", (geo.ball || BALL) + "px");
 
   const nextH = Math.round(band * .7);
-  const bar = main.clientWidth / 4;
-  const room = stage.clientWidth - main.offsetLeft * 2 - main.clientWidth - 12;
   next.style.top = Math.round(y + (band - nextH) / 2) + "px";
   next.style.height = nextH + "px";
-  next.style.width = Math.max(60, Math.min(Math.round(bar * .7), room)) + "px";
   next.style.setProperty("--h", nextH + "px");
+  placeNext();                 /* the boxes are laid out against the row's width */
 }
 
 function placePane(y, band) {
@@ -2403,6 +2503,22 @@ function fitLines() {
      it is above, so dropping it is what pulls the current line back in. */
   if (over(lyricCur)) show(lyricPrev, false);
   for (let k = ahead.length - 1; k >= 0 && over(ahead[k]); k--) show(ahead[k], false);
+
+  fitWidths();
+}
+
+/* A line wider than the row is squeezed horizontally until it fits. The text
+   gets narrower, not smaller, so the row keeps its height and the ball its
+   zone; and the squeeze is measured against the unsqueezed width every time,
+   so a resize never compounds it. */
+function fitWidths() {
+  const avail = lyrics.clientWidth - parseFloat(getComputedStyle(lyrics).paddingLeft) - 12;
+  if (!(avail > 0)) return;
+  for (const line of lyrics.querySelectorAll(".line")) {
+    line.style.transform = "";
+    const w = line.getBoundingClientRect().width;
+    if (w > avail) line.style.transform = `scaleX(${(avail / w).toFixed(4)})`;
+  }
 }
 
 /* Two points rather than a pad per syllable: where the line starts and where
@@ -2490,12 +2606,16 @@ function updateLyrics(t) {
   const ease = (from, t0, t1) =>
     lerp(from, at, clamp(t1 > t0 ? (t - t0) / (t1 - t0) : 1, 0, 1));
 
+  /* Past the last word the ball keeps going if there is room, and never comes
+     back: a line wider than the row used to send it to the wall and then
+     bouncing backwards to the catcher. Now the wall is where it sticks, and it
+     bounces in place there until the next line takes over. */
   const x = dt < 0        ? leadIn(dt, line.t_start - line.promote)
           : rest          ? ease(pads[0].x, line.rest, to)
           : t <= line.t_end ? sweepAt(dt, span)
-          :                 ease(pads[1].x, line.t_end, to);
+          :                 Math.max(pads[1].x, ease(pads[1].x, line.t_end, to));
 
-  lyricBall.style.left = x + "px";
+  lyricBall.style.left = Math.min(x, rowEnd()) + "px";
   lyricBall.style.top = (pads[0].y - bob() - ballSize()) + "px";
 
   const lit = dt >= 0 && t <= line.t_end;
@@ -2510,7 +2630,7 @@ function updateLyrics(t) {
    cursor can sweep the row linearly in time and still line up with the boxes.
    That is the proportional sizing an off-beat change needs; it comes free once
    the boxes stop being equal quarters of a bar. */
-const BARS_PER_ROW = 4;
+const ROW_BARS = 4;
 let chordGroups = [], groupAt = -1, barLen = 2;
 /* The start of the pass currently running. Everything drawn against the row --
    the cursor, the stroke boxes, the strum pane's own counter -- measures from
@@ -2539,7 +2659,7 @@ function clearChords() {
   preview.replaceChildren();
   main.style.gridTemplateColumns = "";
   preview.style.gridTemplateColumns = "";
-  $("nextChord").innerHTML = "";
+  next.replaceChildren();
 
   paneAt = "";
   renderPane(null, 0);
@@ -2558,13 +2678,13 @@ function clearChords() {
    time instead of shuffling along at every change. Groups never straddle a
    section, so what you memorise is "the four that open the chorus" rather than
    an arbitrary window that happened to line up that way. */
-/* Phrase lengths worth looking for, smallest first: a loop that comes round
-   every two bars is a two-bar loop, not a four-bar one played twice, and
-   ascending order is what tells those apart. Three is absent because a phrase
-   that matches nothing here still gets a row -- it is packed to fit, as before
-   -- so a miss costs the counter, not the chart. */
-const PHRASES = [2, 4, 5, 6, 8];
-const MAX_REPS = 8;          /* more rectangles than this is a wall, not a count */
+/* A row is four bars. A two-bar loop played four times is shown as four bars
+   played twice, and an eight-bar phrase is two rows: four is what the eye
+   takes in at once, so it is the unit whatever the phrase. The one exception
+   is a phrase of exactly five or six bars, which is kept whole rather than
+   split into four and a stub -- ten bars is 4, 4, 2, but six is six. */
+const WHOLE_ROWS = [5, 6];
+const MAX_REPS = 8;          /* more marks than this is a wall, not a count */
 
 function groupChords() {
   const beats = sections[0]?.beatsPerBar || 4;
@@ -2621,26 +2741,49 @@ function groupChords() {
   for (const seg of segs) {
     let i = 0;
     while (i < seg.length) {
-      let n = 0, reps = 1;
+      const repsOf = (m, cap = MAX_REPS) => {
+        let r = 1;
+        while (r < cap && alike(seg, i, i + r * m, m)) r++;
+        return r;
+      };
 
-      /* A phrase that comes round at least twice is the thing to show once and
-         count off. Anything else is just a row of chords. */
-      for (const want of PHRASES) {
+      /* A one- or two-bar phrase that keeps coming round is shown as itself
+         with a count rather than folded into fours -- a vamp is a vamp. Only
+         when the run is at least a row's worth, though, so a chord that merely
+         happens twice is not pulled out of its row; and the shorter phrase wins
+         a tie, since "E E" four times is E eight times. */
+      let n = 0, reps = 1, cover = 0;
+      for (const want of [1, 2]) {
         const m = chordsFor(seg, i, want);
         if (!m) continue;
-        let r = 1;
-        while (r < MAX_REPS && alike(seg, i, i + r * m, m)) r++;
-        if (r >= 2) { n = m; reps = r; break; }
+        /* Compared uncapped, so a long vamp on one chord is not outscored by
+           the same vamp read as pairs; the cap applies to what is drawn. */
+        const r = repsOf(m, Infinity);
+        if (r >= 2 && r * want >= ROW_BARS && r * want > cover) {
+          n = m; reps = Math.min(r, MAX_REPS); cover = r * want;
+        }
       }
 
       if (!n) {
-        /* Nothing repeats here: pack a row to fit, which is what every row used
-           to be. Runs are broken to fit rather than counted, because four
-           chords can be four bars or eight. */
-        let acc = 0;
-        while (i + n < seg.length && acc + bars(seg[i + n]) <= BARS_PER_ROW + .05)
-          acc += bars(seg[i + n++]);
-        if (!n) n = 1;             /* a chord longer than a whole row still goes */
+        /* A segment that is exactly five or six bars is one row. Otherwise rows
+           are four bars, and the last takes whatever is left -- so ten is
+           4, 4, 2, and never 4, 6. */
+        let remain = 0;
+        for (let j = i; j < seg.length; j++) remain += bars(seg[j]);
+        const whole = i === 0 && WHOLE_ROWS.find(w => Math.abs(remain - w) < .1);
+        n = chordsFor(seg, i, whole || Math.min(ROW_BARS, remain));
+
+        if (!n) {
+          /* The chords do not land on the row's boundary: pack a row to fit,
+             which is what every row used to be. */
+          let acc = 0;
+          while (i + n < seg.length && acc + bars(seg[i + n]) <= ROW_BARS + .05)
+            acc += bars(seg[i + n++]);
+          if (!n) n = 1;           /* a chord longer than a whole row still goes */
+        }
+
+        /* A row that comes round again is shown once and counted off. */
+        reps = repsOf(n);
       }
 
       const g = seg.slice(i, i + n);
@@ -2661,7 +2804,7 @@ function groupChords() {
      track -- a two-second chord is the same width wherever it appears -- and a
      shorter row simply stops early and leaves the tail empty. */
   spanMax = chordGroups.reduce((w, g) => Math.max(w, g.span), 0)
-            || BARS_PER_ROW * barLen;
+            || ROW_BARS * barLen;
 }
 
 /* A track with no chords still has bars. Where the map has beats and
@@ -2685,8 +2828,8 @@ function ghostChords() {
        bar has the same name here and on the loop programme's chart. */
     const base = Math.round(b0 / bpb);
     const bars = Math.round((beatPos(s.t_end) - b0) / bpb);
-    for (let row = 0; row * BARS_PER_ROW < bars; row++, gid++)
-      for (let k = row * BARS_PER_ROW; k < Math.min(bars, (row + 1) * BARS_PER_ROW); k++)
+    for (let row = 0; row * ROW_BARS < bars; row++, gid++)
+      for (let k = row * ROW_BARS; k < Math.min(bars, (row + 1) * ROW_BARS); k++)
         out.push({ t_start: beatTime(b0 + k * bpb), t_end: beatTime(b0 + (k + 1) * bpb),
                    name: String(base + k + 1), group: gid, ghost: true });
   }
@@ -2735,8 +2878,8 @@ function loopGhost() {
   }
 
   chordGroups = [];
-  for (let i = 0; i < ms.length; i += BARS_PER_ROW) {
-    const g = ms.slice(i, i + BARS_PER_ROW).map(m => ({
+  for (let i = 0; i < ms.length; i += ROW_BARS) {
+    const g = ms.slice(i, i + ROW_BARS).map(m => ({
       t_start: m.p0, t_end: m.p1, name: String(m.bar), wall: m.wall, ghost: true }));
     g.reps = 1;
     g.starts = [g[0].t_start];
@@ -2795,21 +2938,55 @@ function renderGroup(i) {
      thing you cannot read off the chords themselves. */
   repMarks = [];
   lastRep = -1;
+  repBox = null;
   if (g && g.reps > 1) {
-    const box = document.createElement("div");
-    box.className = "repeats";
+    repBox = document.createElement("div");
+    repBox.className = "repeats";
+    repBox.style.left = (g.span / spanMax * 100) + "%";   /* where every pass ends */
+    repBox.style.setProperty("--reps", g.reps);
     for (let k = 0; k < g.reps; k++)
-      repMarks.push(box.appendChild(document.createElement("i")));
-    main.append(box);          /* absolute, so it takes no cell of the grid */
+      repMarks.push(repBox.appendChild(document.createElement("i")));
+    main.append(repBox);       /* absolute, so it takes no cell of the grid */
   }
 
   preview.replaceChildren(...(ahead || []).map(chordBox));
   sizeRow(preview, ahead || []);
-  /* "Next: bar 5" is not a cue anyone plays to; the box sits this one out. */
+  /* "Next: bar 5" is not a cue anyone plays to; the boxes sit this one out. */
   const ghost = g && g[0].ghost;
-  $("nextChord").innerHTML = ahead && !ghost ? chordHtml(ahead[0].name) : "";
+  next.replaceChildren(...(ahead && !ghost ? ahead : []).map((c, k) => {
+    const el = document.createElement("div");
+    el.className = "next";
+    el.innerHTML = (k ? "" : "<small>next</small>") + `<b>${chordHtml(c.name)}</b>`;
+    return el;
+  }));
   next.style.display = ghost ? "none" : "";
+  placeNext();
   renderBeats(g);
+}
+
+/* The coming group starts where this one's pass ends -- the spot the ball
+   lands on -- just past the repeat stack if there is one. Its boxes are on the
+   row's own scale (a little narrower, so they read as coming rather than
+   here), and as many follow the first as the room to the right holds. */
+let repBox = null;
+
+function placeNext() {
+  const g = chordGroups[groupAt], ahead = chordGroups[groupAt + 1];
+  if (!g || !ahead || !next.childElementCount) return;
+  const scale = main.clientWidth / spanMax;
+  let x = main.offsetLeft + g.span * scale + 4;
+  if (repBox) x = main.offsetLeft + g.span * scale + repBox.offsetWidth / 2 + 6;
+  const edge = stage.clientWidth - main.offsetLeft;
+  next.style.left = Math.round(x) + "px";
+  let used = 0;
+  [...next.children].forEach((el, k) => {
+    const w = Math.max(60, Math.round((ahead[k].t_end - ahead[k].t_start) * scale * .7));
+    const fits = k === 0 || used + 6 + w <= edge - x;
+    el.style.display = fits ? "" : "none";
+    /* The first box always shows, squeezed to the room if it must. */
+    el.style.width = (k === 0 ? Math.max(60, Math.min(w, Math.round(edge - x))) : w) + "px";
+    if (fits) used += (used ? 6 : 0) + w;
+  });
 }
 
 function updateChords(t) {
@@ -4744,17 +4921,16 @@ function backgroundOptions() {
           ...names.map(n => ({ v: n, label: n.replace(/\.\w+$/, "").replace(/[_\-]+/g, " ") }))];
 }
 
-function applyBackground() {
-  const name = state.background;
+/* The setting's picture, or -- while the picker is walking its grid -- the one
+   under the cursor, which is a preview and not yet the setting. */
+function applyBackground(name = state.background) {
   if (!name) {
     backdropUrl = "";
     backdropProbe = null;
     showBackdrop("");
     return;
   }
-  const from = remote.find(r => r.ok && (r.backgrounds || []).includes(name));
-  const url = new URL((from ? from.url + "/" : "") + "backgrounds/" + encodeURIComponent(name),
-                      location.href).href;
+  const url = backgroundUrl(name);
   /* Only when it has changed: setting the same picture starts the loop again. */
   if (url === backdropUrl) return;
   backdropUrl = url;
@@ -4768,11 +4944,108 @@ function applyBackground() {
   probe.src = url;
 }
 
+/* Where a background lives: on the server that lists it, else beside the page. */
+function backgroundUrl(name) {
+  const from = remote.find(r => r.ok && (r.backgrounds || []).includes(name));
+  return new URL((from ? from.url + "/" : "") + "backgrounds/" + encodeURIComponent(name),
+                 location.href).href;
+}
+
 /* The servers have answered, or one has been added or forgotten. */
 function refreshBackgrounds() {
   sync("background");
   applyBackground();
+  if (!bgPanel.hidden) renderBackgrounds(bgSearch.value);
 }
+
+/* ── background picker ──────────────────────────────────────────────────
+   B opens a grid of live previews in the stage's top-left corner; the search
+   box narrows it with the same letters-in-order match the track list uses,
+   arrows walk the grid, Enter or a click sets the background. "Off" is the
+   first tile while nothing has been typed, so the way back is in the grid. */
+const bgPanel = $("bgPanel"), bgSearch = $("bgSearch"), bgGrid = $("bgGrid"), bgHint = $("bgHint");
+const bgLevel = $("bgLevel"), bgLevelOut = $("bgLevelOut");
+/* The same setting as the menu's "Background level", from a second control:
+   set() goes through sync(), which keeps the two sliders agreeing. */
+bgLevel.oninput = () => command({ cmd: "set", name: "backgroundLevel", value: bgLevel.value });
+const BG_TILES = 16;
+let bgShown = [], bgPick = -1;
+
+const bgLabel = n => n.replace(/\.\w+$/, "").replace(/[_\-]+/g, " ");
+
+function renderBackgrounds(query) {
+  const q = String(query || "").trim();
+  const names = backgroundOptions().map(o => o.v).filter(Boolean);
+  const hits = names.filter(n => fuzzy(q, bgLabel(n)) || fuzzy(q, n));
+  /* Sixteen tiles in all: the Off tile, when it is there, takes one of them. */
+  const room = q ? BG_TILES : BG_TILES - 1;
+  bgShown = (q ? [] : [""]).concat(hits.slice(0, room));
+  if (bgPick >= bgShown.length) bgPick = bgShown.length - 1;
+  bgGrid.replaceChildren(...bgShown.map((n, i) => {
+    const el = document.createElement("div");
+    el.className = "bgtile" + (n === state.background ? " on" : "") + (i === bgPick ? " pick" : "");
+    if (n) el.style.backgroundImage = `url("${backgroundUrl(n)}")`;
+    const tag = document.createElement("span");
+    tag.textContent = n ? bgLabel(n) : "Off";
+    el.append(tag);
+    el.onclick = () => { pickBackground(n); openBgPanel(false); };
+    return el;
+  }));
+  bgHint.textContent = !names.length ? "no backgrounds: none of the servers lists any"
+    : hits.length > room ? `${hits.length} match — showing ${room}, type more to narrow`
+    : hits.length ? `${hits.length} of ${names.length}` : "no match";
+}
+
+function pickBackground(name) {
+  bgKept = true;
+  command({ cmd: "set", name: "background", value: name });
+  [...bgGrid.children].forEach((el, i) => el.classList.toggle("on", bgShown[i] === name));
+}
+
+/* Walking the grid shows each picture behind the display as the cursor
+   reaches it, so the choice is made by looking rather than by name. It is a
+   preview: Enter or a click keeps it, and closing any other way puts the
+   setting's own picture back. */
+function moveBgPick(by) {
+  if (!bgShown.length) return;
+  bgPick = bgPick < 0 ? (by > 0 ? 0 : bgShown.length - 1)
+         : clamp(bgPick + by, 0, bgShown.length - 1);
+  [...bgGrid.children].forEach((el, i) => el.classList.toggle("pick", i === bgPick));
+  bgGrid.children[bgPick]?.scrollIntoView({ block: "nearest" });
+  applyBackground(bgShown[bgPick]);
+}
+
+let bgKept = false;          /* the picker closed on a choice, not a retreat */
+
+function openBgPanel(open) {
+  if (!open && !bgPanel.hidden && !bgKept) applyBackground();   /* undo the preview */
+  bgPanel.hidden = !open;
+  if (!open) return;
+  openMenu(false); openTrackPanel(false);
+  bgPick = -1;
+  bgKept = false;
+  sync("backgroundLevel");
+  renderBackgrounds(bgSearch.value);
+  bgSearch.focus();
+  bgSearch.select();
+}
+
+bgSearch.oninput = () => { bgPick = -1; renderBackgrounds(bgSearch.value); };
+bgSearch.onkeydown = e => {
+  const cols = 4;
+  if (e.key === "ArrowRight") moveBgPick(1);
+  else if (e.key === "ArrowLeft") moveBgPick(-1);
+  else if (e.key === "ArrowDown") moveBgPick(cols);
+  else if (e.key === "ArrowUp") moveBgPick(-cols);
+  else if (e.key === "Enter") {
+    /* Enter with nothing picked takes the first real match: type "rain",
+       press Enter, done. */
+    const i = bgPick >= 0 ? bgPick : bgShown.findIndex(n => n) >= 0 ? bgShown.findIndex(n => n) : -1;
+    if (i >= 0) { pickBackground(bgShown[i]); openBgPanel(false); }
+  }
+  else return;
+  e.preventDefault();
+};
 
 /* An id is a path, so it arrives with slashes in it and may arrive with spaces,
    plus signs or hashes. Encoding it a segment at a time keeps the slashes as
@@ -5149,6 +5422,10 @@ function set(name, value, opts = {}) {
 
 function sync(name) {
   const def = DEF[name], el = controls[name], v = state[name];
+  if (name === "backgroundLevel") {              /* the picker's copy of the slider */
+    if (document.activeElement !== bgLevel) bgLevel.value = v;
+    bgLevelOut.value = v + "%";
+  }
   if (!el) return;
 
   if (def.type === "choice") {
@@ -5557,17 +5834,31 @@ function openMenu(open) {
   panel.hidden = !open;
   menuBtn.setAttribute("aria-expanded", open);
   menuBtn.classList.toggle("active", open);
-  if (open) openTrackPanel(false);
+  if (open) { openTrackPanel(false); openBgPanel(false); }
+  peekBare(open);
 }
 
 function openTrackPanel(open) {
   trackPanel.hidden = !open;
   titleBtn.setAttribute("aria-expanded", open);
-  if (open) { pickId = null; renderResults(searchBox.value); openMenu(false); searchBox.focus(); }
+  if (open) { pickId = null; renderResults(searchBox.value); openMenu(false); openBgPanel(false); searchBox.focus(); }
+  peekBare(open);
+}
+
+/* The dialogs live in the header, so with the header hidden they would open
+   into nothing. Opening one brings the header back for as long as it is up;
+   closing it hides the header again, if that is where it was. */
+let bareResume = false;
+
+function peekBare(open) {
+  const bare = document.body.classList.contains("bare");
+  if (open && bare) { toggleBare(); bareResume = true; }
+  else if (!open && bareResume && panel.hidden && trackPanel.hidden) toggleBare();
 }
 
 function toggleBare() { /* hide or show the header; the stage takes the room */
   document.body.classList.toggle("bare");
+  bareResume = false;        /* asked for by hand: nothing to resume */
   layout();
 }
 
@@ -5603,6 +5894,7 @@ $("fsBtn").onclick = toggleFullscreen;
 addEventListener("pointerdown", e => {
   if (!panel.hidden && !e.target.closest(".menu")) openMenu(false);
   if (!trackPanel.hidden && !e.target.closest(".track")) openTrackPanel(false);
+  if (!bgPanel.hidden && !e.target.closest("#bgPanel")) openBgPanel(false);
 });
 addEventListener("resize", layout);
 addEventListener("fullscreenchange", () => {
@@ -5617,7 +5909,7 @@ addEventListener("keydown", e => {
   if (e.metaKey || e.ctrlKey || e.altKey) return;
   /* Escape is the exception: the load dialog opens with the search box
      focused, so swallowing it here would leave the panel with no way out. */
-  if (e.target.tagName === "INPUT" && /^(text|search)$/.test(e.target.type)
+  if (e.target.tagName === "INPUT" && /^(text|search|range)$/.test(e.target.type)
       && e.key !== "Escape") return;
 
   const colour = { g: "green", a: "amber", r: "red" }[e.key.toLowerCase()];
@@ -5633,6 +5925,7 @@ addEventListener("keydown", e => {
   else if (e.key.toLowerCase() === "f") toggleFullscreen();
   else if (e.key.toLowerCase() === "z") cycleZoom();
   else if (e.key.toLowerCase() === "l") openTrackPanel(trackPanel.hidden);
+  else if (e.key.toLowerCase() === "b") openBgPanel(bgPanel.hidden);
   else if (e.key.toLowerCase() === "c")
     command({ cmd: "set", name: "chordPanel", value: !state.chordPanel });
   else if (e.key.toLowerCase() === "s") togglePane();
@@ -5647,8 +5940,10 @@ addEventListener("keydown", e => {
   else if (e.key === "=" || e.key === "+") nudgeSpeed(1);
   else if (e.key === "\\") command({ cmd: "set", name: "speed", value: DEF.speed.reset });
   else if (e.key === "Escape") {
-    openMenu(false); openTrackPanel(false);
-    if (document.body.classList.contains("bare")) toggleBare();   /* the way back when the controls are gone */
+    const dialog = !panel.hidden || !trackPanel.hidden || !bgPanel.hidden;
+    openMenu(false); openTrackPanel(false); openBgPanel(false);
+    /* With no dialog to close, Escape is the way back when the controls are gone. */
+    if (!dialog && document.body.classList.contains("bare")) toggleBare();
   }
   else return;
   e.preventDefault();
