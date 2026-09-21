@@ -242,20 +242,44 @@
 
   .setting select:focus, .setting select:hover { border-color: var(--fg); }
 
-  /* Second level: common settings first, then one collapsible group per
-     display. The group body is its own element so `details` keeps its
-     disclosure behaviour whatever display the panel grid gives it. */
-  .panel details { border-top: 1px solid var(--dim); padding-top: 8px; }
-
-  .panel summary {
-    cursor: pointer;
+  /* Five items, closed: a name, a show/hide switch for the displays that
+     have one, and a button that opens the rest. One open at a time, so the
+     menu stays the height of its five lines plus whatever you are adjusting. */
+  .panel .item { border-top: 1px solid var(--dim); padding-top: 6px; }
+  .item-head { display: flex; align-items: center; gap: 12px; }
+  .item-name {
+    flex: 1;
+    padding: 4px 0;
+    border: 0;
+    background: none;
+    text-align: left;
     font-size: 12px;
     letter-spacing: .14em;
+    text-transform: uppercase;
     color: var(--dim);
+    cursor: pointer;
   }
-
-  .panel details[open] summary { color: var(--fg); }
+  .item.open .item-name, .item-name:hover { color: var(--fg); background: none; }
+  /* The switch leads the line; an item without one keeps the space so the
+     names line up. */
+  .item-head input[type=checkbox], .item-head .nobox { flex: none; width: 16px; height: 16px; }
+  .item-head .expand { flex: none; width: 30px; padding: 2px 0; font-size: 12px; }
+  /* The colour choice: five rings the size of the switch. Only the chosen one
+     is filled, in its own colour, so the line stays monochrome apart from the
+     colours actually in use. */
+  .rings { display: flex; gap: 6px; }
+  .ring {
+    width: 16px; height: 16px;
+    padding: 0;
+    border: 2px solid var(--dim);
+    border-radius: 50%;
+    background: none;
+    cursor: pointer;
+  }
+  .ring:hover { border-color: var(--fg); background: none; }
+  .ring.on { border-color: var(--c); background: var(--c); box-shadow: 0 0 8px var(--c); }
   .group { display: grid; gap: 9px; padding-top: 9px; }
+  .group[hidden] { display: none; }
 
   /* A readout paired with its reset button, in the row's right-hand cell. */
   .val { display: flex; align-items: center; gap: 8px; }
@@ -5422,6 +5446,10 @@ function set(name, value, opts = {}) {
 
 function sync(name) {
   const def = DEF[name], el = controls[name], v = state[name];
+  const head = headToggles[name];                /* the menu item's own switch */
+  if (head) head.box.checked = head.on(v);
+  const dots = headDots[name];                   /* and its row of colour rings */
+  if (dots) [...dots.children].forEach(b => b.classList.toggle("on", b.dataset.v === v));
   if (name === "backgroundLevel") {              /* the picker's copy of the slider */
     if (document.activeElement !== bgLevel) bgLevel.value = v;
     bgLevelOut.value = v + "%";
@@ -5497,28 +5525,95 @@ function rowFor(def) {
   return row;
 }
 
-function group(title, id, defs) {
-  const box = document.createElement("details");
-  box.open = true;
-  box.className = "tinted";
+/* One menu item: its name, the display's on/off switch if it has one, and a
+   button that opens the item's settings underneath. Opening one closes the
+   others. The switch is a second control on an existing setting -- the same
+   one the item's own rows carry -- so sync() keeps it honest. */
+const headToggles = {};      /* setting name -> { box, on } */
+const headDots = {};         /* colour setting name -> its row of rings */
+
+function group(title, id, defs, toggle, colour) {
+  const box = document.createElement("div");
+  box.className = "item tinted";
   if (id) box.id = id;
-  const sum = document.createElement("summary");
-  sum.textContent = title;
+
+  const head = document.createElement("div");
+  head.className = "item-head";
+  const name = document.createElement("button");
+  name.type = "button";
+  name.className = "item-name";
+  name.textContent = title;
+  const expand = document.createElement("button");
+  expand.type = "button";
+  expand.className = "expand";
+  expand.title = "More settings";
+
   const body = document.createElement("div");
   body.className = "group";
-  body.append(...defs.map(rowFor));
-  box.append(sum, body);
+  body.hidden = true;
+  body.append(...defs.filter(d => d.name !== colour).map(rowFor));   /* the colour lives in the line */
+
+  box.show = open => {
+    body.hidden = !open;
+    box.classList.toggle("open", open);
+    expand.textContent = open ? "▾" : "▸";
+    expand.setAttribute("aria-expanded", open);
+  };
+  const flip = () => {
+    const open = body.hidden;
+    [...panel.children].forEach(it => it !== box && it.show && it.show(false));
+    box.show(open);
+  };
+  name.onclick = expand.onclick = flip;
+  box.show(false);
+
+  if (toggle) {
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.title = "Show " + title.toLowerCase();
+    cb.onchange = () => toggle.set(cb.checked);
+    headToggles[toggle.name] = { box: cb, on: toggle.on };
+    head.append(cb);
+  } else {
+    const gap = document.createElement("span");
+    gap.className = "nobox";
+    head.append(gap);
+  }
+  head.append(name);
+  if (colour) {
+    const dots = document.createElement("span");
+    dots.className = "rings";
+    dots.append(...COLOURS.map(c => {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "ring";
+      b.dataset.v = c.v;
+      b.title = c.label;
+      b.style.setProperty("--c", PHOSPHOR[c.v]);
+      b.onclick = () => command({ cmd: "set", name: colour, value: c.v });
+      return b;
+    }));
+    headDots[colour] = dots;
+    head.append(dots);
+  }
+  head.append(expand);
+  box.append(head, body);
   return box;
 }
 
 function buildPanel() {
   const of = g => SETTINGS.filter(d => d.group === g);
+  const on = name => ({ name, on: v => !!v, set: v => command({ cmd: "set", name, value: v }) });
   panel.replaceChildren(
     group("Playback", null, of("playback")),
-    group("Display", null, of("common")),
-    group("Lyrics", "lyricsGroup", of("lyrics")),
-    group("Melody", "voiceGroup", of("voice")),
-    group("Chords", "chordsGroup", of("chords")));
+    group("Display", null, of("common"), null, "controlColour"),
+    group("Lyrics", "lyricsGroup", of("lyrics"), on("lyricsPanel"), "lyricColour"),
+    /* The melody pane is a choice, not a toggle: off, or the roll. */
+    group("Melody", "voiceGroup", of("voice"), { name: "voicePane", on: v => v !== "off",
+      set: v => command({ cmd: "set", name: "voicePane", value: v ? "roll" : "off" }) }, "voiceColour"),
+    group("Chords", "chordsGroup", of("chords"), on("chordPanel"), "chordColour"));
+  Object.keys(headToggles).forEach(sync);
+  Object.keys(headDots).forEach(sync);
 
   /* Each part's settings wear that part's colour, so the panel says which
      display a control belongs to before you read the label. */
