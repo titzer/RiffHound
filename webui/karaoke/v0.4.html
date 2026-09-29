@@ -1288,6 +1288,44 @@
   .filters label:has(input:checked) { color: var(--fg); }
   .filters .count { margin-left: auto; opacity: .75; }
 
+  /* The panel's title line, with the two views of the library at its right:
+     every track, or the lists someone wrote.  Tabs rather than a filter box,
+     because a list is not a property a track has but a different way in. */
+  .loadhead { display: flex; align-items: baseline; justify-content: space-between; width: 100%; }
+  .tabs { display: inline-flex; gap: 2px; }
+  .tabs button {
+    padding: 2px 10px;
+    border: 1px solid transparent;
+    background: none;
+    font-size: 13px;
+    letter-spacing: .12em;
+    text-transform: uppercase;
+  }
+  .tabs button.active { border-color: var(--dim); background: var(--panel); text-shadow: none; }
+
+  /* A list's heading among its tracks: the name, where the file is, and how
+     many it names.  A row in the same grid as the results, so the tracks under
+     it read as its tracks, but not a button -- clicking it narrows the search
+     to this list rather than playing anything. */
+  .listhead {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 10px;
+    align-items: baseline;
+    margin-top: 10px;
+    padding: 2px 6px;
+    border-bottom: 1px solid var(--dim);
+    color: var(--fg);
+    font-size: clamp(13px, 1.4vw, 20px);
+    letter-spacing: .12em;
+    cursor: pointer;
+  }
+  .listhead:first-child { margin-top: 0; }
+  .listhead em { font-style: normal; font-size: .6em; margin-left: 1.1em; color: var(--dim); }
+  .listhead .badge { font-size: .6em; }
+  .listhead:hover { text-shadow: 0 0 10px var(--fg); }
+  .results > .missing { padding: 0 6px 4px; font-size: 11px; color: var(--dim); opacity: .75; }
+
   /* ---- transport bar --------------------------------------------------- */
 
   .timeline {
@@ -2094,7 +2132,8 @@ const num = name => state[name] / (DEF[name].scale || 1);
 
 /* ── stores ───────────────────────────────────────────────────────────── */
 const STORE = "riffhound.karaoke.v1";
-const store = { display: {}, tracks: {}, stats: {}, servers: [], filters: {} };
+const store = { display: {}, tracks: {}, stats: {}, servers: [], filters: {},
+                tab: "tracks" };      /* which view of the library the load panel shows */
 
 function load() {
   try {
@@ -2103,6 +2142,7 @@ function load() {
       if (saved[k]) Object.assign(store[k], saved[k]);
     if (Array.isArray(saved.servers)) store.servers = saved.servers;
     if (saved.filters) Object.assign(store.filters, saved.filters);
+    if (saved.tab === "lists") store.tab = "lists";
   } catch (e) {}
 }
 
@@ -4871,6 +4911,7 @@ async function greet(url) {
     ask(url, "/api/backgrounds").catch(() => ({}))]);
   return { url, name: hi.name || url, roots: hi.roots || [],
            tracks: got.tracks || [],
+           lists: Array.isArray(got.lists) ? got.lists : [],
            backgrounds: Array.isArray(bg.backgrounds) ? bg.backgrounds : [],
            ok: true, why: "" };
 }
@@ -4884,7 +4925,7 @@ async function refreshServers() {
     try {
       return { ...await greet(s.url), at: s.at };
     } catch (e) {
-      return { url: s.url, name: s.name || s.url, roots: [], tracks: [],
+      return { url: s.url, name: s.name || s.url, roots: [], tracks: [], lists: [],
                ok: false, why: e.name === "AbortError" ? "no answer" : e.message };
     }
   }));
@@ -5088,6 +5129,31 @@ const serverTracks = r => r.tracks.map(t => ({
   media: { url: r.url + "/media/" + idPath(t.id), name: t.media },
   txt: t.chart ? { url: r.url + "/chart/" + idPath(t.id), name: t.title + ".txt" } : null
 }));
+
+/* A server's lists, with their track ids rewritten to the ids the library
+   gives those same tracks, so a list is a sequence of things library() has. */
+const serverLists = r => (r.lists || []).map(l => ({
+  id: "@" + r.name + "/" + l.id,
+  name: l.name,
+  source: r.name,
+  folder: l.folder || "",
+  ids: (l.tracks || []).map(t => "@" + r.name + "/" + t),
+  missing: l.missing || []
+}));
+
+/* ── lists ──────────────────────────────────────────────────────────────
+   A list is a file named list-<Name>.txt beside the tracks, one track name
+   per line, in order: a setlist, the hymns for Sunday, the twelve you are
+   working up.  The server reads it and says which tracks the lines name; the
+   client only has to show them, in the order the file gives, which is the
+   one order a setlist cares about.  Deduped by id for the same reason
+   library() is: one server on two addresses is one server. */
+function lists() {
+  const out = [];
+  for (const r of remote) if (r.ok) out.push(...serverLists(r));
+  const seen = new Set();
+  return out.filter(l => !seen.has(l.id) && seen.add(l.id));
+}
 
 /* ── what a track carries ───────────────────────────────────────────────
    Beats, chords, lyrics, loops: enough to answer "show me only the ones I
@@ -5626,6 +5692,7 @@ function buildPanel() {
 /* ── the load dialog ────────────────────────────────────────────────────── */
 let searchBox = null, results = null, dirList = null, reloadBtn = null, problemBox = null;
 let srvBox = null, srvList = null, filterRow = null, filterCount = null;
+let showTab = () => {};    /* set by buildTrackPanel: paints the tab row for store.tab */
 
 /* The things a chart can carry, as checkboxes. Off is "everything", so the
    default library is the whole library and a box only ever narrows it. */
@@ -5648,6 +5715,32 @@ function buildTrackPanel() {
   const label = document.createElement("label");
   label.htmlFor = "search";
   label.textContent = "Load track";
+
+  /* Two ways into the library: every track, or the lists someone wrote. The
+     search box is the same box either way; what it searches changes. */
+  const tabs = document.createElement("div");
+  tabs.className = "tabs";
+  tabs.setAttribute("role", "tablist");
+  for (const [key, text] of [["tracks", "Tracks"], ["lists", "Lists"]]) {
+    const b = document.createElement("button");
+    b.textContent = text;
+    b.dataset.tab = key;
+    b.setAttribute("role", "tab");
+    b.onclick = () => { store.tab = key; save(); pickId = null; showTab(); renderResults(searchBox.value); searchBox.focus(); };
+    tabs.append(b);
+  }
+  const head = document.createElement("div");
+  head.className = "loadhead";
+  head.append(label, tabs);
+
+  showTab = () => {
+    const on = store.tab === "lists";
+    [...tabs.children].forEach(b => {
+      b.classList.toggle("active", b.dataset.tab === store.tab);
+      b.setAttribute("aria-selected", b.dataset.tab === store.tab);
+    });
+    if (searchBox) searchBox.placeholder = on ? "search lists…" : "search tracks…";
+  };
 
   filterRow = document.createElement("div");
   filterRow.className = "filters";
@@ -5672,6 +5765,7 @@ function buildTrackPanel() {
   Object.assign(searchBox, { id: "search", className: "search", type: "search",
                              placeholder: "search tracks…", autocomplete: "off" });
   searchBox.oninput = () => { pickId = null; renderResults(searchBox.value); };
+  showTab();
   /* The keys stay with the box, so typing and choosing are one motion: narrow
      it, arrow down, Enter. Enter with nothing chosen takes the top row, which
      is what the typing was for. */
@@ -5753,7 +5847,7 @@ function buildTrackPanel() {
   dirList = document.createElement("div");
   dirList.className = "dirs";
 
-  trackPanel.replaceChildren(problemBox, label, searchBox, filterRow, results,
+  trackPanel.replaceChildren(problemBox, head, searchBox, filterRow, results,
                              sources, srvRow, srvList, dirList);
   renderResults("");
   renderServers();
@@ -5782,26 +5876,51 @@ const carried = e => {
 /* The row the arrow keys are on, by track rather than by position: the list is
    redrawn under you whenever a server answers or a scan lands, and the cursor
    should still be on the track it was on. */
-let shown = [], pickId = null;
+let shown = [], pickId = null, pickAt = -1;
+
+/* Where the cursor is: the row it was on if that row still holds its track,
+   else the first row with that track. A setlist may name a song twice -- the
+   opener and the encore -- and the cursor should be on one of them, not both. */
+const pickIndex = () =>
+  shown[pickAt]?.id === pickId ? pickAt : shown.findIndex(e => e.id === pickId);
 
 function markPick() {
-  [...results.children].forEach((b, i) =>
-    b.classList.toggle("pick", !!shown[i] && shown[i].id === pickId));
+  /* By .result rather than by child: in the lists view a heading and a note
+     sit between the rows, and they are not tracks. */
+  const at = pickIndex();
+  [...results.querySelectorAll(".result")].forEach((b, i) => b.classList.toggle("pick", i === at));
   results.querySelector(".pick")?.scrollIntoView({ block: "nearest" });
 }
 
 function movePick(by) {
   if (!shown.length) return;
-  const i = shown.findIndex(e => e.id === pickId);
+  const i = pickIndex();
   const j = i < 0 ? (by > 0 ? 0 : shown.length - 1)
                   : clamp(i + by, 0, shown.length - 1);
   pickId = shown[j].id;
+  pickAt = j;
   markPick();
 }
+
+/* One track as a row in the results: the same row in either view. */
+function resultRow(e) {
+  const s = store.stats[e.id] || {};
+  const b = document.createElement("button");
+  b.className = "result" + (e.id === track.id ? " on" : "");
+  b.innerHTML = `<b>${e.title}<em>${where(e)}</em></b>` +
+                `<i>${carried(e)} ${spent(s.secs)}</i><i>${ago(s.last)}</i>`;
+  b.onclick = () => { openTrack(e); openTrackPanel(false); };
+  return b;
+}
+
+const emptyNote = text => Object.assign(document.createElement("div"),
+                                        { className: "note", textContent: text });
 
 function renderResults(query) {
   const q = String(query || "").trim();
   if (reloadBtn) reloadBtn.disabled = !track.id || reloadBtn.dataset.busy === "1";
+  if (store.tab === "lists") return renderLists(q);
+
   const all = library();
   const kept = all.filter(e => (fuzzy(q, e.title) || fuzzy(q, e.source)) && passes(e));
   if (filterCount)
@@ -5812,22 +5931,61 @@ function renderResults(query) {
   shown = kept
     .sort((a, b) => (store.stats[b.id]?.last || 0) - (store.stats[a.id]?.last || 0))
     .slice(0, 200);
-  const rows = shown.map(e => {
-    const s = store.stats[e.id] || {};
-    const b = document.createElement("button");
-    b.className = "result" + (e.id === track.id ? " on" : "");
-    b.innerHTML = `<b>${e.title}<em>${where(e)}</em></b>` +
-                  `<i>${carried(e)} ${spent(s.secs)}</i><i>${ago(s.last)}</i>`;
-    b.onclick = () => { openTrack(e); openTrackPanel(false); };
-    return b;
-  });
+  const rows = shown.map(resultRow);
 
-  results.replaceChildren(...(rows.length ? rows : [Object.assign(
-    document.createElement("div"),
-    { className: "note",
-      textContent: remote.length || dirs.length || picked.length
+  results.replaceChildren(...(rows.length ? rows : [emptyNote(
+    remote.length || dirs.length || picked.length
+      ? "nothing found"
+      : "connect to a server, or open a folder of tracks, to begin")]));
+  markPick();
+}
+
+/* The lists view: the query is matched against list names, and what is shown
+   is every list that matches, as a heading over its tracks in the order the
+   file gives them. The chart filters still apply to the tracks, so "Lists +
+   Lyrics" is the setlist minus the ones you would have to hum. A line the
+   server could not match is shown under the list rather than dropped: a typo
+   in a setlist should be found here, not on stage. */
+function renderLists(q) {
+  const all = lists();
+  const hit = all.filter(l => fuzzy(q, l.name));
+  const byId = new Map(library().map(e => [e.id, e]));
+  const nodes = [];
+  shown = [];
+  for (const l of hit) {
+    const tracks = l.ids.map(id => byId.get(id)).filter(e => e && passes(e));
+    const head = document.createElement("div");
+    head.className = "listhead";
+    head.innerHTML = `<span>${l.name}<em>${[l.source, l.folder].filter(Boolean).join("/")}</em></span>` +
+                     `<span class="badge">${tracks.length} track${tracks.length === 1 ? "" : "s"}</span>`;
+    head.title = "search for just this list";
+    head.onclick = () => { searchBox.value = l.name; pickId = null; renderResults(l.name); searchBox.focus(); };
+    nodes.push(head);
+    /* Capped as the track view is, and by the same count, so a wall of lists
+       cannot make the panel unusable. The cursor list is what is on screen. */
+    for (const e of tracks) {
+      if (shown.length >= 200) break;
+      shown.push(e);
+      nodes.push(resultRow(e));
+    }
+    if (l.missing.length) {
+      const m = document.createElement("div");
+      m.className = "missing";
+      m.textContent = "not in the library: " + l.missing.join(" · ");
+      nodes.push(m);
+    }
+  }
+  if (filterCount)
+    filterCount.textContent = (hit.length === all.length
+      ? all.length + " list" + (all.length === 1 ? "" : "s")
+      : hit.length + " of " + all.length + " lists") + " · " + shown.length + " tracks";
+
+  results.replaceChildren(...(nodes.length ? nodes : [emptyNote(
+    !remote.some(r => r.ok)
+      ? "lists come from a server: connect to one to see its lists"
+      : all.length
         ? "nothing found"
-        : "connect to a server, or open a folder of tracks, to begin" })]));
+        : "no lists yet — a file list-Name.txt beside the tracks, one track name per line, is a list")]));
   markPick();
 }
 

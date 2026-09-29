@@ -19,12 +19,24 @@ Endpoints
 ---------
 GET /                        the karaoke page
 GET /api/hello               { riffhound, name, roots, tracks } -- the handshake
-GET /api/tracks[?q=]         { tracks: [...] }, filtered by a subsequence match
+GET /api/tracks[?q=][&list=] { tracks: [...], lists: [...] }, filtered by a
+                             subsequence match on q, or to the tracks of a list
+GET /api/lists               { lists: [...] } -- the lists alone
 GET /api/resolve?path=ABS    the id of that file, as text/plain (404 if unknown)
 GET /media/<id>              the audio, with Range and ETag
 GET /chart/<id>              the beatmap .txt, with ETag
 GET /api/backgrounds         { backgrounds: [name, ...] } -- what is in backgrounds/
 GET /backgrounds/<name>      one of those, with ETag
+
+A list is a file named list-<Name>.txt anywhere under a root: one track per
+line, by name, and the lines are the order.  A setlist for Friday, the hymns
+for a service, the twelve you are working up -- anything you would write on a
+piece of paper and tape to the stand.  A line names a track by its title, its
+file name with or without the extension, or its path under the root; case,
+and the difference between spaces, dashes and underscores, do not count.  A
+line that names nothing in the library is reported back as missing rather than
+dropped, because a setlist with a typo in it should say so before the gig.
+Blank lines and lines starting with # are ignored.
 
 Backgrounds are animations the page can play behind the display: whatever
 .gif or .webp files sit in backgrounds/ beside the page.  They belong to the
@@ -73,6 +85,7 @@ MEDIA_EXT = (".mp3", ".m4a", ".ogg", ".webm", ".flac", ".wav",
              ".mp4", ".m4v", ".mov")
 RESCAN_AFTER = 5.0          # seconds; a listing this stale is re-walked
 PAGE = "v0.4.html"
+LIST_RE = re.compile(r"^list-(.+)\.txt$", re.I)   # list-Friday.txt names "Friday"
 BACKGROUND_EXT = (".gif", ".webp")   # what an <img> will animate
 
 # A folder holding this file is not part of the library.  A library that keeps
@@ -162,6 +175,7 @@ class Library:
         self.exclude = list(exclude)
         self.lock = threading.Lock()
         self.tracks = {}        # id -> dict
+        self.lists = []         # dicts, in walk order
         self.by_path = {}       # resolved media path -> id
         self.scanned = 0.0
 
@@ -179,7 +193,7 @@ class Library:
         with self.lock:
             if not force and time.time() - self.scanned < RESCAN_AFTER:
                 return
-            tracks, by_path = {}, {}
+            tracks, by_path, found = {}, {}, []
             for i, root in enumerate(self.roots):
                 for dirpath, dirnames, filenames in os.walk(root):
                     here = Path(dirpath)
@@ -192,6 +206,11 @@ class Library:
                         if name.startswith("."):
                             continue
                         path = here / name
+                        if LIST_RE.match(name):
+                            # Resolved once the walk is done, because a list may
+                            # name a track the walk has not reached yet.
+                            found.append((i, root, path))
+                            continue
                         if path.suffix.lower() not in MEDIA_EXT:
                             continue
 
@@ -226,15 +245,31 @@ class Library:
                             "mtime": int(st.st_mtime),
                         }
                         by_path[str(path)] = tid
-            self.tracks, self.by_path, self.scanned = tracks, by_path, time.time()
+            lists = [read_list(i, root, path, tracks) for i, root, path in found]
+            self.tracks, self.lists, self.by_path = tracks, lists, by_path
+            self.scanned = time.time()
 
-    def list(self, q=None):
+    def list(self, q=None, lst=None):
+        """The tracks, filtered by q; or the tracks of the lists named lst, in
+        the order the list gives them -- a setlist has an order, and sorting it
+        by title would throw that away."""
         self.scan()
-        rows = list(self.tracks.values())
+        if lst is not None:
+            want = lst.strip().lower()
+            rows, seen = [], set()
+            for l in self.lists:
+                if l["name"].lower() != want:
+                    continue
+                for tid in l["tracks"]:
+                    if tid not in seen:
+                        seen.add(tid)
+                        rows.append(self.tracks[tid])
+        else:
+            rows = sorted(self.tracks.values(), key=lambda t: (t["source"], t["title"]))
         if q:
             rows = [t for t in rows
                     if fuzzy(q, t["title"]) or fuzzy(q, t["source"])]
-        return sorted(rows, key=lambda t: (t["source"], t["title"]))
+        return rows
 
     def media_path(self, tid):
         """The media file for an id, or None -- never a path outside a root."""
@@ -277,6 +312,58 @@ def backgrounds(folder):
                        and p.suffix.lower() in BACKGROUND_EXT), key=str.lower)
     except OSError:
         return []
+
+
+def list_key(s):
+    """The form a list line and a track name are compared in: lower case, with
+    runs of spaces, dashes and underscores as one space.  "Battle_Hymn" and
+    "battle hymn" are the same song to anyone who would write either."""
+    return re.sub(r"[\s_\-]+", " ", s).strip().lower()
+
+
+def read_list(i, root, path, tracks):
+    """One list file, resolved against the tracks of the scan it was found in.
+
+    Every way a track might be written down is a key for it: the title as the
+    listing shows it, the file name with and without its extension, the path
+    under the root with and without.  A line then matches every track with that
+    key -- the same hymn in two folders is two entries, which is what the line
+    said -- and a line that matches nothing is kept as missing.
+    """
+    keys = {}
+    for tid, t in tracks.items():
+        _, _, rel = tid.partition("/")
+        stem = rel.rsplit("/", 1)[-1]
+        ext = Path(t["media"]).suffix
+        # A set, because the title and the stem usually collapse to the same
+        # key, and a line should match a track once.
+        for k in {list_key(k) for k in (t["title"], stem, stem + ext, rel, rel + ext)}:
+            keys.setdefault(k, []).append(tid)
+
+    rel = path.relative_to(root)
+    folder = rel.parent.as_posix()
+    out = {
+        "id": f"{i}/{rel.with_suffix('').as_posix()}",
+        "name": LIST_RE.match(path.name).group(1),
+        "source": root.name,
+        "folder": "" if folder == "." else folder,
+        "tracks": [],
+        "missing": [],
+    }
+    try:
+        with path.open("r", errors="replace") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                hit = keys.get(list_key(line))
+                if hit:
+                    out["tracks"].extend(hit)
+                else:
+                    out["missing"].append(line)
+    except OSError:
+        pass
+    return out
 
 
 def lan_address():
@@ -441,11 +528,18 @@ class Handler(BaseHTTPRequestHandler):
                     "name": socket.gethostname(),
                     "roots": [r.name for r in lib.roots],
                     "tracks": len(lib.tracks),
+                    "lists": len(lib.lists),
                 })
 
             if path == "/api/tracks":
                 q = (query.get("q") or [""])[0].strip()
-                return self.send_json({"tracks": lib.list(q or None)})
+                lst = (query.get("list") or [None])[0]
+                return self.send_json({"tracks": lib.list(q or None, lst),
+                                       "lists": lib.lists})
+
+            if path == "/api/lists":
+                lib.scan()
+                return self.send_json({"lists": lib.lists})
 
             if path == "/api/resolve":
                 want = (query.get("path") or [""])[0]
@@ -530,8 +624,10 @@ def main():
                             lan_address() if host == "0.0.0.0" else host, port)
 
     Handler.library.scan()
-    print("%s  -- %d tracks in %s%s" %
+    n = len(Handler.library.lists)
+    print("%s  -- %d tracks%s in %s%s" %
           (url, len(Handler.library.tracks),
+           " and %d list%s" % (n, "" if n == 1 else "s") if n else "",
            ", ".join(str(r) for r in Handler.library.roots),
            "  (skipping %s)" % ", ".join(args.exclude) if args.exclude else ""),
           flush=True)
