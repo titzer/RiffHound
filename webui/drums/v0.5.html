@@ -67,7 +67,7 @@
     text-transform: uppercase;
   }
 
-  /* Bare mode (H): nothing but the music */
+  /* Bare mode (M): nothing but the music */
   body.bare header { display: none !important; }
 
   h1 { margin: 0; font-size: 21px; white-space: nowrap; }
@@ -587,7 +587,7 @@
     <span class="spacer"></span>
 
     <div class="switch">
-      <button id="btnMute" title="Sound on / off (M)">Sound</button>
+      <button id="btnMute" title="Sound on / off (S)">Sound</button>
       <button id="btnTap" title="Tap tempo (T)">Tap</button>
     </div>
     <input id="bpmDisplay" class="bpm-num" type="text" inputmode="numeric" value="110" maxlength="3"
@@ -1808,7 +1808,11 @@ function actionTapSpace() { // accumulate taps → BPM
     const diffs = taps.slice(1).map((t,i) => t - taps[i]);
     const avg = diffs.reduce((a,b) => a + b, 0) / diffs.length;
     set('tempo', Math.round(60000 / avg));
-    if (playing) { startTime = ctx.currentTime; }
+    if (playing) { // the tap is the new downbeat: the pattern starts over from here, and so does the scheduler
+      startTime = ctx.currentTime;
+      nextSchedStep = 0;
+      if (paused) pausedElapsed = 0;
+    }
 
     // Flash the tap button
     el.btnTap.classList.add('flash');
@@ -2089,11 +2093,11 @@ function actionKeyDown(e) { // global keyboard shortcuts
       break;
     case 'KeyP': actionPause(); break;
     case 'KeyT': actionTapSpace(); break;
-    case 'KeyM': actionMuteToggle(); break;
+    case 'KeyS': actionMuteToggle(); break;
     case 'KeyF': actionFullscreenToggle(); break;
     case 'KeyE': set('editor', collapsed); break;
     case 'KeyB': openBgPanel(el.bgPanel.hidden); break;
-    case 'KeyH': toggleBare(); break;
+    case 'KeyM': toggleBare(); break;
     case 'KeyN': case 'KeyR': actionNewRiff(); break;                 // N (or R): next riff
     case 'KeyV': actionVaryRiff(); break;
     case 'BracketLeft':  actionRotateRiff(-1); break;                 // [ ]: rotate the riff a beat
@@ -2550,13 +2554,13 @@ const KEYS = [
   ['P', 'Pause'],
   ['T', 'Tap tempo'],
   ['- / =', 'Tempo down / up'],
-  ['M', 'Sound on / off'],
+  ['S', 'Sound on / off'],
   ['N or R', 'New riff'],
   ['V', 'Vary the riff'],
   ['[ / ]', 'Rotate the riff back / forward one beat'],
   ['E', 'Drum editor'],
   ['B', 'Background picker'],
-  ['H', 'Hide the controls'],
+  ['M', 'Hide the controls'],
   ['F', 'Fullscreen'],
   ['Esc', 'Close the menu; bring the controls back'],
 ];
