@@ -351,7 +351,7 @@ bool shape_analysis_ensure(ShapeAnalysis* sa, const AudioPcm& a, const BeatMap* 
     for (int i = 0; i < bm->count; i++) checksum += bm->beats[i].time * (i + 1);
     if (sa->key_valid && sa->key_beats == bm->count && sa->key_checksum == checksum &&
         params_equal(sa->key_params, p) && sa->key_algo == beat_algo_idx &&
-        sa->key_frames == a.frame_count)
+        sa->key_frames == a.frame_count && sa->key_pcm == a.pcm)
         return sa->vocab.valid;
 
     shape_analysis_clear(sa);
@@ -413,6 +413,7 @@ bool shape_analysis_ensure(ShapeAnalysis* sa, const AudioPcm& a, const BeatMap* 
     sa->key_params = p;
     sa->key_algo = beat_algo_idx;
     sa->key_frames = a.frame_count;
+    sa->key_pcm      = a.pcm;
     return sa->vocab.valid;
 }
 

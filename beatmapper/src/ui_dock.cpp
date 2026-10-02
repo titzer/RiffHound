@@ -4,6 +4,7 @@
 #include "ui_smoothing.h"
 #include "ui_complete.h"
 #include "ui_rhythm.h"
+#include "ui_stems.h"
 #include "ui_timeline.h"
 #include "imgui.h"
 #include <float.h>
@@ -70,6 +71,7 @@ static const ToolDesc TOOLS[DOCK_TOOL_COUNT] = {
     { "Lyric Index",     nullptr,              lyrics_body,      nullptr,             0, false },
     { "Complete Track",  ui_complete_settings, ui_complete_body, ui_complete_actions, 4, false },
     { "Rhythm Map",      ui_rhythm_settings,   ui_rhythm_body,   ui_rhythm_actions,   1, true  },
+    { "Stems",           ui_stems_settings,    ui_stems_body,    ui_stems_actions,    1, true  },
 };
 
 // --- public queries --------------------------------------------------------
@@ -127,6 +129,13 @@ static void draw_tool_icon(ImDrawList* dl, DockTool t, float cx, float cy, ImU32
             dl->AddRectFilled(ImVec2(cx + 1 + i * 3, cy - 3), ImVec2(cx + 3 + i * 3, cy + 3), col);
         dl->AddLine(ImVec2(cx - 8, cy + 6), ImVec2(cx + 8, cy + 6), col, 1.0f);
         break;
+    case DOCK_STEMS: {  // three planes stacked in depth
+        for (int i = 0; i < 3; i++) {
+            float ox = (float)(i - 1) * 3.0f, oy = (float)(1 - i) * 3.0f;
+            dl->AddRect(ImVec2(cx - 6 + ox, cy - 3 + oy), ImVec2(cx + 6 + ox, cy + 3 + oy), col, 0.0f, 0, 1.3f);
+        }
+        break;
+    }
     case DOCK_RHYTHM:   // hits of three sizes on a grid
         dl->AddLine(ImVec2(cx - 8, cy + 7), ImVec2(cx + 8, cy + 7), col, 1.0f);
         dl->AddRectFilled(ImVec2(cx - 7, cy - 6), ImVec2(cx - 4, cy + 6), col);
@@ -325,8 +334,9 @@ static void tool_frame(DockTool t, ToolCtx& c, float x, float y, float w, float 
 static void render_floating(DockTool t, ToolCtx& c) {
     ToolState& ts = s_tools[t];
     ImGui::SetNextWindowSizeConstraints(ImVec2(280, 260), ImVec2(900, 1200));
-    ImGui::SetNextWindowSize(ImVec2(t == DOCK_COMPLETE ? 460.0f : 340.0f,
-                                    t == DOCK_CHROMA ? 260.0f : 560.0f), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(t == DOCK_COMPLETE ? 460.0f : t == DOCK_STEMS ? 760.0f : 340.0f,
+                                    t == DOCK_CHROMA ? 260.0f : t == DOCK_STEMS ? 520.0f : 560.0f),
+                             ImGuiCond_FirstUseEver);
     if (ts.focus_req) { ImGui::SetNextWindowFocus(); ts.focus_req = false; }
 
     bool open = true;

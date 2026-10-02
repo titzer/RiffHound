@@ -24,6 +24,16 @@ struct WsolaSource {
     uint32_t sample_rate;
     bool     owns_pcm;      // if true, wsola_uninit frees pcm
 
+    // Playback override: another buffer of exactly frame_count frames (same
+    // layout) that plays in place of pcm -- a mix of selected stems.  The
+    // main thread posts it in override_pending; the audio thread adopts it
+    // at the start of a read callback and hands the previous one back in
+    // override_retired for the main thread to free (wsola_collect_retired).
+    // So pcm itself, which the analysis tools read, never changes.
+    std::atomic<float*> override_pending;
+    float*              override_active;    // audio thread only
+    std::atomic<float*> override_retired;
+
     // Playback state
     // input_pos written by audio thread; cursor_frames readable from any thread
     double                input_pos;       // fractional input frame index
@@ -51,6 +61,13 @@ bool  wsola_init(WsolaSource* ws, float* pcm, uint64_t frames,
                  uint32_t channels, uint32_t sample_rate, bool owns_pcm);
 
 void  wsola_uninit(WsolaSource* ws);
+
+// Post a playback override (frame_count frames, interleaved, takes
+// ownership) or nullptr to go back to pcm.  Main thread.
+void  wsola_set_override(WsolaSource* ws, float* pcm);
+// Free whatever the audio thread retired.  Call regularly from the main
+// thread (audio_update does).
+void  wsola_collect_retired(WsolaSource* ws);
 
 // Thread-safe speed accessors (atomic).
 void  wsola_set_speed(WsolaSource* ws, float speed);

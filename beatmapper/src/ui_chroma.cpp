@@ -1,4 +1,6 @@
 #include "ui_chroma.h"
+#include "ui_stems.h"
+#include "stems.h"
 #include "chroma_algo.h"
 #include "imgui.h"
 #include <math.h>
@@ -54,6 +56,8 @@ static float s_chroma[12]      = {};
 static double s_last_t_start   = -99.0;
 static double s_last_t_end     = -99.0;
 static int    s_last_algo      = -1;
+static StemSource s_source;              // which stems the chroma comes from
+static uint32_t   s_last_src = 0;
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -85,6 +89,8 @@ void ui_chroma_settings(ToolCtx& c)
         s_last_t_start = s_last_t_end = -99.0;
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Window behind the playhead when no region is selected");
+    if (ui_stems_source_row("Source", &s_source, STEM_SRC_HARMONIC))
+        s_last_t_start = s_last_t_end = -99.0;
     (void)c;
 }
 
@@ -92,11 +98,14 @@ void ui_chroma_body(ToolCtx& c)
 {
     EditorState* editor = c.editor;
     AudioState*  audio  = c.audio;
-    // Fetch PCM
+    // Fetch PCM: the harmonic stems when the track has them
     uint64_t frame_count = 0;
     uint32_t channels    = 0;
     uint32_t sample_rate = 0;
-    const float* pcm = audio_pcm_data(audio, &frame_count, &channels, &sample_rate);
+    uint32_t src_mask = stems_source_mask(&s_source, STEM_SRC_HARMONIC);
+    const float* pcm = stems_source_audio(src_mask, &frame_count, &channels, &sample_rate);
+    if (src_mask != s_last_src) { s_last_t_start = s_last_t_end = -99.0; s_last_src = src_mask; }
+    ui_stems_source_note(&s_source, STEM_SRC_HARMONIC, "From");
 
     // Determine analysis window
     double t_start = 0.0, t_end = 0.0;

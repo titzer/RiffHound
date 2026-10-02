@@ -1,4 +1,4 @@
-.PHONY: all clean run bench chord-models icon app
+.PHONY: all clean run bench chord-models stems-model icon app
 
 UNAME    := $(shell uname)
 TARGET   := beatmapper
@@ -46,6 +46,8 @@ SOURCES := \
     $(SRC_DIR)/chroma_resonate.cpp \
     $(SRC_DIR)/chroma_whitened.cpp \
     $(SRC_DIR)/icon_data.cpp \
+    $(SRC_DIR)/stems.cpp \
+    $(SRC_DIR)/ui_stems.cpp \
     $(IMGUI_DIR)/imgui.cpp \
     $(IMGUI_DIR)/imgui_demo.cpp \
     $(IMGUI_DIR)/imgui_draw.cpp \
@@ -168,3 +170,7 @@ run: all
 # --check).
 chord-models:
 	scripts/setup-chord-models.sh
+
+# Demucs stem separation (Stem Layers tool): venv under external/venv-stems.
+stems-model:
+	scripts/setup-stems.sh

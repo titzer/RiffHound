@@ -1,4 +1,6 @@
 #include "ui_complete.h"
+#include "ui_stems.h"
+#include "stems.h"
 #include "beat_algo.h"
 #include "chroma_algo.h"
 #include "onset_shape.h"
@@ -42,6 +44,8 @@ static std::atomic<bool> s_done{false};
 static CompleteProposal  s_wprop;          // worker-owned until swapped in
 static CompleteInputs    s_win;            // inputs the worker reads
 static CompleteParams    s_wp;             // params copy the worker reads
+static StemSource        s_src_harm;       // chords / chroma from these stems
+static StemSource        s_src_rhythm;     // beats / timbre from these
 static BeatMap           s_snap_bm;        // deep map snapshots for s_win
 static SectionMap        s_snap_sm;
 static MiscMap           s_snap_cm;
@@ -165,6 +169,22 @@ static void run_analysis(EditorState* editor, AudioState* audio, BeatMap* beatma
     s_win.chordmap   = &s_snap_cm;
     s_win.audio.pcm  = audio_pcm_data(audio, &s_win.audio.frame_count,
                                       &s_win.audio.channels, &s_win.audio.sample_rate);
+    s_win.audio_harmonic.pcm = stems_source_audio(stems_source_mask(&s_src_harm, STEM_SRC_HARMONIC),
+                                                  &s_win.audio_harmonic.frame_count,
+                                                  &s_win.audio_harmonic.channels,
+                                                  &s_win.audio_harmonic.sample_rate);
+    s_win.audio_rhythm.pcm   = stems_source_audio(stems_source_mask(&s_src_rhythm, STEM_SRC_RHYTHM),
+                                                  &s_win.audio_rhythm.frame_count,
+                                                  &s_win.audio_rhythm.channels,
+                                                  &s_win.audio_rhythm.sample_rate);
+    if (!s_win.audio_harmonic.pcm) s_win.audio_harmonic = s_win.audio;
+    if (!s_win.audio_rhythm.pcm)   s_win.audio_rhythm   = s_win.audio;
+    {
+        char lb[128], lh[128];
+        stems_source_label(stems_source_mask(&s_src_rhythm, STEM_SRC_RHYTHM), lb, sizeof(lb));
+        stems_source_label(stems_source_mask(&s_src_harm, STEM_SRC_HARMONIC), lh, sizeof(lh));
+        printf("[complete] analyzing: beats from %s, chords from %s\n", lb, lh);
+    }
     s_win.duration   = audio->duration;
     static char s_path[512];
     strncpy(s_path, audio->filename, sizeof(s_path) - 1); s_path[sizeof(s_path) - 1] = 0;
@@ -289,6 +309,7 @@ void ui_complete_settings(ToolCtx& c)
     if (settings_header("Beat settings##cp")) {
         ImGui::Indent(6.0f);
         float w = ImGui::GetContentRegionAvail().x;
+        ui_stems_source_row("Beats from", &s_src_rhythm, STEM_SRC_RHYTHM);
         ImGui::TextDisabled("Gap-fill strategy:");
         struct FillGetter {
             static bool get(void*, int idx, const char** out) {
@@ -447,6 +468,7 @@ void ui_complete_settings(ToolCtx& c)
     if (settings_header("Chord settings##cp")) {
         ImGui::Indent(6.0f);
         float w = ImGui::GetContentRegionAvail().x;
+        ui_stems_source_row("Chords from", &s_src_harm, STEM_SRC_HARMONIC);
         ImGui::Checkbox("Progression repeats", &s_p.chord_runs);
         tip("Slide each run of mapped chords across the chord-free grid and propose it where\n"
             "every chord sounds (chroma + rhythm) like it does in the map");
@@ -522,6 +544,8 @@ void ui_complete_body(ToolCtx& c)
     s_hover   = -1;
     worker_poll(editor);
 
+    ui_stems_source_note(&s_src_rhythm, STEM_SRC_RHYTHM,   "Beats from");
+    ui_stems_source_note(&s_src_harm,   STEM_SRC_HARMONIC, "Chords from");
     ImGui::Checkbox("Beats", &s_p.do_beats);
     tip("Fill unmapped stretches: transfer a matching mapped stretch, or continue the tempo");
     ImGui::SameLine();

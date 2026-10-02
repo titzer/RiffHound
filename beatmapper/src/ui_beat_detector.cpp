@@ -1,4 +1,6 @@
 #include "ui_beat_detector.h"
+#include "ui_stems.h"
+#include "stems.h"
 #include "ui_complete.h"
 #include "imgui.h"
 #include <stdio.h>
@@ -23,6 +25,8 @@ static bool  s_needs_run      = false;  // force re-detection on next frame
 static double s_last_t_start  = -99.0;
 static double s_last_t_end    = -99.0;
 static int    s_last_algo     = -1;
+static StemSource s_source;              // which stems are detected on
+static uint32_t   s_last_src  = 0;
 static float  s_last_min_bpm  = -1.0f;
 static float  s_last_max_bpm  = -1.0f;
 static float  s_last_thresh   = -1.0f;
@@ -42,6 +46,7 @@ static bool params_changed(double t_start, double t_end) {
     return (t_start     != s_last_t_start  ||
             t_end       != s_last_t_end    ||
             s_algo_idx  != s_last_algo     ||
+            stems_source_mask(&s_source, STEM_SRC_RHYTHM) != s_last_src ||
             s_min_bpm   != s_last_min_bpm  ||
             s_max_bpm   != s_last_max_bpm  ||
             s_threshold != s_last_thresh   ||
@@ -54,6 +59,7 @@ static void save_last(double t_start, double t_end) {
     s_last_t_start  = t_start;
     s_last_t_end    = t_end;
     s_last_algo     = s_algo_idx;
+    s_last_src      = stems_source_mask(&s_source, STEM_SRC_RHYTHM);
     s_last_min_bpm  = s_min_bpm;
     s_last_max_bpm  = s_max_bpm;
     s_last_thresh   = s_threshold;
@@ -72,7 +78,9 @@ static void run_detection(EditorState* editor, AudioState* audio,
     uint64_t frame_count = 0;
     uint32_t channels    = 0;
     uint32_t sample_rate = 0;
-    const float* pcm = audio_pcm_data(audio, &frame_count, &channels, &sample_rate);
+    (void)audio;
+    const float* pcm = stems_source_audio(stems_source_mask(&s_source, STEM_SRC_RHYTHM),
+                                          &frame_count, &channels, &sample_rate);
     if (!pcm) return;
 
     // Collect accepted beats within the window as seeds
@@ -177,6 +185,7 @@ void ui_beat_detector_settings(ToolCtx& c)
         s_needs_run = true;
     if (ImGui::IsItemHovered() && s_algo_idx >= 0 && s_algo_idx < BEAT_ALGO_COUNT)
         ImGui::SetTooltip("%s", BEAT_ALGOS[s_algo_idx].tip);
+    if (ui_stems_source_row("Source", &s_source, STEM_SRC_RHYTHM)) s_needs_run = true;
 
     float half_w = (avail_w - ImGui::GetStyle().ItemSpacing.x) * 0.5f;
     ImGui::SetNextItemWidth(half_w);
@@ -233,6 +242,7 @@ void ui_beat_detector_body(ToolCtx& c)
         ui_beat_detector_reset(autobeat);
 
     ImGui::TextDisabled("Detection");
+    ui_stems_source_note(&s_source, STEM_SRC_RHYTHM, "From");
     if (!s_have_window) {
         ImGui::TextDisabled("(select a region to detect beats)");
     } else if (autobeat->beat_count > 0) {

@@ -37,7 +37,8 @@ void beat_chroma_ensure(BeatChromaCache* c, const AudioPcm& a,
     c->recomputed_last = 0;
     if (n < 2 || !a.pcm) { c->entries.clear(); c->params = p; c->params_valid = true; return; }
 
-    bool all = !c->params_valid || !params_equal(c->params, p);
+    bool all = !c->params_valid || !params_equal(c->params, p) || c->pcm != a.pcm;
+    c->pcm = a.pcm;
     int  n_int = n - 1;
 
     // Preserve matching entries by interval bounds: a moved beat changes the

@@ -311,7 +311,48 @@ void audio_set_loop(AudioState* a, bool enabled, double loop_start, double loop_
     }
 }
 
+void audio_set_playback_override(AudioState* a, float* pcm, uint64_t frames) {
+    if (!s_wsola_ok || !a->loaded) { free(pcm); return; }
+    if (pcm && frames != s_wsola.frame_count) {
+        uint64_t want = s_wsola.frame_count;
+        float* fit = (float*)calloc((size_t)want * 2, sizeof(float));
+        if (!fit) { free(pcm); return; }
+        uint64_t n = frames < want ? frames : want;
+        memcpy(fit, pcm, (size_t)n * 2 * sizeof(float));
+        free(pcm);
+        pcm = fit;
+    }
+    wsola_set_override(&s_wsola, pcm);
+}
+
+bool audio_decode_stereo_at(const char* path, uint32_t sample_rate,
+                            float** out_pcm, uint64_t* out_frames)
+{
+    ma_decoder_config cfg = ma_decoder_config_init(ma_format_f32, 2, sample_rate);
+    ma_decoder decoder;
+    if (ma_decoder_init_file(path, &cfg, &decoder) != MA_SUCCESS) return false;
+    const ma_uint64 CHUNK = 65536;
+    float* buf = NULL; size_t total = 0, capacity = 0;
+    for (;;) {
+        if (total + CHUNK > capacity) {
+            size_t new_cap = (capacity == 0) ? CHUNK * 16 : capacity * 2;
+            float* tmp = (float*)realloc(buf, new_cap * 2 * sizeof(float));
+            if (!tmp) { free(buf); ma_decoder_uninit(&decoder); return false; }
+            buf = tmp; capacity = new_cap;
+        }
+        ma_uint64 read = 0;
+        ma_result res = ma_decoder_read_pcm_frames(&decoder, buf + total * 2, CHUNK, &read);
+        total += (size_t)read;
+        if (res == MA_AT_END || read == 0) break;
+    }
+    ma_decoder_uninit(&decoder);
+    if (total == 0) { free(buf); return false; }
+    *out_pcm = buf; *out_frames = (uint64_t)total;
+    return true;
+}
+
 void audio_update(AudioState* a) {
+    if (s_wsola_ok) wsola_collect_retired(&s_wsola);
     if (!s_sound_ok || !a->loaded) return;
 
     // Sync the playing flag from the audio thread, but only allow it to go

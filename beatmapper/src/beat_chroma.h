@@ -31,6 +31,7 @@ struct BeatChromaCache {
     std::vector<BeatChromaEntry> entries;   // entries[i] = interval beats[i]..beats[i+1]
     BeatChromaParams params;                // params the entries were computed with
     bool params_valid = false;
+    const float* pcm = nullptr;             // audio the entries were computed from
     int  recomputed_last = 0;               // stats: intervals recomputed by the last ensure()
 };
 

@@ -20,6 +20,10 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
                         UndoStack* undo, SectionMap* sectionmap,
                         LyricMap* lyricmap, AutoBeatList* autobeat);
 
+// The spectrogram view controls (max frequency in kHz, log axis), so other
+// views of the same audio (Stem Layers) can match them.
+void ui_timeline_spectro_view(int* max_khz, bool* log_freq);
+
 // Drop per-track transient state (recorded taps, their smoothing preview,
 // strip selections, a lyric hold in progress).  Call when a new track loads.
 void ui_timeline_reset();

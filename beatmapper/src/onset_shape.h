@@ -83,6 +83,7 @@ struct ShapeAnalysis {
     ShapeParams key_params;
     int    key_algo = -1;
     uint64_t key_frames = 0;
+    const float* key_pcm = nullptr;
 };
 
 // Make `sa` current for this audio + map.  beat_algo_idx selects the onset

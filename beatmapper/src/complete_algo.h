@@ -85,6 +85,10 @@ struct CompleteParams {
     float extra_penalty;     // rhythm-shape: cost of a loud onset where none is expected (0.15)
     ShapeParams shape;       // onset timbre shapes (vocabulary size, window, ...)
     float det_min_bpm, det_max_bpm, det_threshold, det_tightness;
+    // > 0: when the beat audio is a stem sum, take the tempo from the mix
+    // first and confine the stem detector to that tempo +/- this fraction
+    // (stems alone like to lock onto half tempo).  0 = off.
+    float det_tempo_from_mix;
     float onset_weight;      // 0 = keep grid, 1 = land on the onset (0.5)
     bool  refit;             // refit each segment's stretch/offset to its onsets by least squares
     bool  grid_follow;       // tempo fills step along the seeded detector's beat grid
@@ -144,7 +148,9 @@ struct CompleteInputs {
     const BeatMap*    beatmap;
     const SectionMap* sectionmap;
     const MiscMap*    chordmap;
-    AudioPcm          audio;
+    AudioPcm          audio;           // the mix: section timbre
+    AudioPcm          audio_harmonic;  // chroma / chords (stems, or the mix again)
+    AudioPcm          audio_rhythm;    // onsets, beats, timbre shapes
     const char*       audio_path;   // for external model calls (may be null)
     double            duration;
     bool              has_region;

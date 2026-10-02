@@ -38,6 +38,8 @@
 #include <vector>
 #include <string>
 #include <algorithm>
+#include <map>
+#include <unistd.h>
 
 // ---------------------------------------------------------------------------
 // Parameter table
@@ -70,6 +72,7 @@ static const PDesc PARAMS[] = {
     PF(det_max_bpm,          "detector max BPM"),
     PF(det_threshold,        "detector onset threshold"),
     PF(det_tightness,        "detector DP tightness"),
+    PF(det_tempo_from_mix,   "stems beats: tempo from the mix +/- this fraction (0 off)"),
     PF(onset_weight,         "pull toward onsets 0..1"),
     PB(refit,                "least-squares refit of each segment to its onsets"),
     PB(grid_follow,          "tempo fills follow the detector's beat grid"),
@@ -198,7 +201,94 @@ struct TrackData {
     uint32_t sr  = 0;
     double   duration = 0;
     Truth    tr;
+    // Stem sums (mono, at sr) for the chord / chroma and the beat / timbre
+    // stages; null = the mix.  See --stems-chords / --stems-beats.
+    float*   pcm_harm = nullptr;   uint64_t nf_harm = 0;
+    float*   pcm_rhythm = nullptr; uint64_t nf_rhythm = 0;
 };
+
+// Which stems each stage analyzes ("" = the mix); names comma-separated,
+// as the separator emits them: vocals drums bass guitar piano other.
+static std::string g_stems_chords, g_stems_beats;
+
+// Run the separator (cached per track by the script) and return stem -> path.
+static std::map<std::string, std::string> separate_track(const char* audio, const char* argv0) {
+    std::map<std::string, std::string> out;
+    const char* env = getenv("BM_STEMS_CMD");
+    char cmd[2400];
+    if (env && env[0]) {
+        snprintf(cmd, sizeof(cmd), "%s \"%s\" 2>/dev/null", env, audio);
+    } else {
+        // CWD first, then next to the binary (the repo when run as ./bmbench)
+        std::string base;
+        if (access("external/venv-stems/bin/python", X_OK) != 0 && argv0 && strchr(argv0, '/')) {
+            base = argv0; base.resize(base.rfind('/') + 1);
+        }
+        snprintf(cmd, sizeof(cmd), "\"%sexternal/venv-stems/bin/python\" \"%sscripts/stems_demucs.py\" \"%s\" 2>/dev/null",
+                 base.c_str(), base.c_str(), audio);
+    }
+    FILE* f = popen(cmd, "r");
+    if (!f) return out;
+    char line[1200];
+    while (fgets(line, sizeof(line), f)) {
+        char kind[32], name[64], path[1024];
+        if (sscanf(line, "%31s\t%63s\t%1023[^\n]", kind, name, path) == 3 && !strcmp(kind, "stem"))
+            out[name] = path;
+    }
+    pclose(f);
+    return out;
+}
+
+// Sum the named stems to mono at `sr`; false (and a message) on any miss.
+static bool stem_sum(const std::map<std::string, std::string>& stems, const std::string& names,
+                     uint32_t sr, uint64_t nf, float** out) {
+    float* sum = (float*)calloc((size_t)nf, sizeof(float));
+    if (!sum) return false;
+    size_t p = 0;
+    while (p < names.size()) {
+        size_t q = names.find(',', p);
+        if (q == std::string::npos) q = names.size();
+        std::string n = names.substr(p, q - p);
+        p = q + 1;
+        if (n.empty()) continue;
+        auto it = stems.find(n);
+        if (it == stems.end()) { fprintf(stderr, "no stem '%s' (have:", n.c_str());
+            for (auto& kv : stems) fprintf(stderr, " %s", kv.first.c_str());
+            fprintf(stderr, ")\n"); free(sum); return false; }
+        float* pcm = nullptr; uint64_t fr = 0;
+        if (!audio_decode_stereo_at(it->second.c_str(), sr, &pcm, &fr)) {
+            fprintf(stderr, "cannot decode stem %s\n", it->second.c_str()); free(sum); return false; }
+        uint64_t m = fr < nf ? fr : nf;
+        for (uint64_t k = 0; k < m; k++) sum[k] += 0.5f * (pcm[k * 2] + pcm[k * 2 + 1]);
+        free(pcm);
+    }
+    *out = sum;
+    return true;
+}
+
+static bool track_load_stems(TrackData* td, const char* argv0) {
+    if (g_stems_chords.empty() && g_stems_beats.empty()) return true;
+    std::map<std::string, std::string> stems = separate_track(td->audio.c_str(), argv0);
+    if (stems.empty()) { fprintf(stderr, "stem separation failed for %s (make stems-model?)\n", td->audio.c_str()); return false; }
+    if (!g_stems_chords.empty() && g_stems_chords != "mix") {
+        if (!stem_sum(stems, g_stems_chords, td->sr, td->nf, &td->pcm_harm)) return false;
+        td->nf_harm = td->nf;
+    }
+    if (!g_stems_beats.empty() && g_stems_beats != "mix") {
+        if (!stem_sum(stems, g_stems_beats, td->sr, td->nf, &td->pcm_rhythm)) return false;
+        td->nf_rhythm = td->nf;
+    }
+    return true;
+}
+
+static AudioPcm harm_audio(const TrackData& td) {
+    AudioPcm a = { td.pcm_harm ? td.pcm_harm : td.pcm, td.pcm_harm ? td.nf_harm : td.nf, 1, td.sr };
+    return a;
+}
+static AudioPcm rhythm_audio(const TrackData& td) {
+    AudioPcm a = { td.pcm_rhythm ? td.pcm_rhythm : td.pcm, td.pcm_rhythm ? td.nf_rhythm : td.nf, 1, td.sr };
+    return a;
+}
 
 static bool track_load(const char* audio_path, const char* map_path, TrackData* td) {
     td->audio = audio_path;
@@ -239,6 +329,8 @@ static bool track_load(const char* audio_path, const char* map_path, TrackData* 
 static void track_free(TrackData* td) {
     audio_free_pcm(td->pcm);
     td->pcm = nullptr;
+    free(td->pcm_harm);   td->pcm_harm = nullptr;
+    free(td->pcm_rhythm); td->pcm_rhythm = nullptr;
 }
 
 // The mutable map a scenario works on, plus which truth beats it hid.
@@ -400,6 +492,8 @@ static void run_scenario(const TrackData& td, MapSet* ms, CompleteParams p,
     in.audio_path = td.audio.c_str();
     in.audio.pcm = td.pcm; in.audio.frame_count = td.nf; in.audio.channels = 1;
     in.audio.sample_rate = td.sr;
+    in.audio_harmonic = harm_audio(td);
+    in.audio_rhythm   = rhythm_audio(td);
     in.duration = td.duration;
     in.has_region = opts.has_region; in.region_start = opts.r0; in.region_end = opts.r1;
 
@@ -757,7 +851,10 @@ static void usage() {
         "            --tsv [--header]  --list  --dump  --debug\n"
         "  detect:   --region T0-T1 [--set det_*=...]\n"
         "  shapes:   [--set shape.*=...]\n"
-        "  chroma:   per-beat chroma + truth chord, one TSV line per beat (for training)\n");
+        "  chroma:   per-beat chroma + truth chord, one TSV line per beat (for training)\n"
+        "  any:      --stems-chords NAMES  --stems-beats NAMES  --stems NAMES   analyze a sum of\n"
+        "            separated stems (vocals,drums,bass,guitar,piano,other; or mix) for the chord /\n"
+        "            chroma stages, the beat / timbre stages, or both (needs make stems-model)\n");
 }
 
 static bool is_dir(const char* p) {
@@ -811,6 +908,9 @@ int main(int argc, char** argv) {
         else if (!strcmp(a, "--region") && v) { if (!parse_range(v, &reg0, &reg1)) return 2; have_reg = true; ai++; }
         else if (!strcmp(a, "--order") && v)  { order = v; ai++; }
         else if (!strcmp(a, "--only") && v)   { only = v; ai++; }
+        else if (!strcmp(a, "--stems-chords") && v) { g_stems_chords = v; ai++; }
+        else if (!strcmp(a, "--stems-beats") && v)  { g_stems_beats = v; ai++; }
+        else if (!strcmp(a, "--stems") && v)        { g_stems_chords = g_stems_beats = v; ai++; }
         else if (!strcmp(a, "--algo") && v) {
             bool ok = false;
             for (int i = 0; i < complete_fill_algo_count(); i++)
@@ -863,12 +963,13 @@ int main(int argc, char** argv) {
     for (const std::string& t : targets) {
         TrackData td;
         if (!track_load(t.c_str(), map_path.c_str(), &td)) return 1;
+        if (!track_load_stems(&td, argv[0])) return 1;
 
         if (cmd == "chroma") {
             // Per-beat chroma with the truth chord, for training chord
             // profiles on the mapped corpus: one line per truth beat interval.
             BeatChromaCache cache;
-            AudioPcm au = { td.pcm, td.nf, 1, td.sr };
+            AudioPcm au = harm_audio(td);
             beat_chroma_ensure(&cache, au, td.tr.beats.data(), (int)td.tr.beats.size(), p.chroma);
             for (size_t i = 0; i + 1 < td.tr.beats.size() && i < cache.entries.size(); i++) {
                 double t0 = td.tr.beats[i], t1 = td.tr.beats[i + 1], mid = 0.5 * (t0 + t1);
@@ -884,7 +985,7 @@ int main(int argc, char** argv) {
         if (cmd == "shapes") {
             ShapeAnalysis* sa = shape_track();
             MapSet ms; ms.init(td.tr);
-            AudioPcm au = { td.pcm, td.nf, 1, td.sr };
+            AudioPcm au = rhythm_audio(td);
             shape_analysis_ensure(sa, au, &ms.bm, td.duration, p.shape, p.beat_algo_idx);
             printf("%d onsets, window %.0f ms, vocabulary %s\n", (int)sa->onset_t.size(), sa->win * 1000.0,
                    sa->vocab.valid ? "ok" : "none");
@@ -911,7 +1012,8 @@ int main(int argc, char** argv) {
             BeatAlgoParams bp = {};
             bp.min_bpm = p.det_min_bpm; bp.max_bpm = p.det_max_bpm;
             bp.onset_threshold = p.det_threshold; bp.dp_tightness = p.det_tightness;
-            BEAT_ALGOS[p.beat_algo_idx].fn(td.pcm, td.nf, 1, td.sr, reg0, reg1, &bp, &ab);
+            AudioPcm ra = rhythm_audio(td);
+            BEAT_ALGOS[p.beat_algo_idx].fn(ra.pcm, ra.frame_count, 1, ra.sample_rate, reg0, reg1, &bp, &ab);
             std::vector<double> prop(ab.beat_times, ab.beat_times + ab.beat_count);
             std::sort(prop.begin(), prop.end());
             std::vector<char> hidden(td.tr.beats.size(), 0);

@@ -1,4 +1,6 @@
 #include "ui_rhythm.h"
+#include "ui_stems.h"
+#include "stems.h"
 #include "ui_complete.h"
 #include "onset_shape.h"
 #include "beat_algo.h"
@@ -12,6 +14,7 @@ static const ImU32 SHAPE_COLS[SHAPE_MAX_K] = {
     IM_COL32(240, 140,  60, 255), IM_COL32(180, 180, 180, 255),
 };
 static int s_beat_algo_idx = 0;
+static StemSource s_source;      // which stems the shapes are harvested from
 
 unsigned int ui_rhythm_shape_color(int shape) {
     return (shape >= 0 && shape < SHAPE_MAX_K) ? SHAPE_COLS[shape] : IM_COL32(120, 120, 130, 255);
@@ -58,6 +61,7 @@ void ui_rhythm_settings(ToolCtx& c)
     ImGui::SetNextItemWidth(w);
     ImGui::Combo("##balgo", &s_beat_algo_idx, AlgoGetter::get, nullptr, BEAT_ALGO_COUNT);
     tip("Onset detector used to harvest hits");
+    ui_stems_source_row("Source", &s_source, STEM_SRC_DRUMS);
 }
 
 void ui_rhythm_body(ToolCtx& c)
@@ -68,6 +72,7 @@ void ui_rhythm_body(ToolCtx& c)
         return;
     }
     const ShapeAnalysis* sa = shape_track();
+    ui_stems_source_note(&s_source, STEM_SRC_DRUMS, "From");
     ImGui::Checkbox("Timbre strip", &c.editor->show_timbre_strip);
     tip("Show the classified windows on the timeline");
     if (!sa->vocab.valid) {
@@ -132,7 +137,9 @@ void ui_rhythm_actions(ToolCtx& c)
     ImGui::PushStyleColor(ImGuiCol_ButtonActive,  ImVec4(0.30f, 0.55f, 0.85f, 1.0f));
     if (ImGui::Button("Analyze", ImVec2(w, 0))) {
         AudioPcm a;
-        a.pcm = audio_pcm_data(c.audio, &a.frame_count, &a.channels, &a.sample_rate);
+        a.pcm = stems_source_audio(stems_source_mask(&s_source, STEM_SRC_DRUMS),
+                                   &a.frame_count, &a.channels, &a.sample_rate);
+        if (!a.pcm) a.pcm = audio_pcm_data(c.audio, &a.frame_count, &a.channels, &a.sample_rate);
         ShapeAnalysis* sa = shape_track();
         shape_analysis_ensure(sa, a, c.beatmap, c.audio->duration, *shape_params(), s_beat_algo_idx);
         std::vector<ShapeMark> marks;

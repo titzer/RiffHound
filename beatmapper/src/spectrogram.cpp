@@ -97,31 +97,40 @@ void spectrogram_init(SpectrogramState* s) {
     s->computed     = false;
     s->duration     = 0.0;
     s->texture      = 0;
+    s->intensity    = 0;
     s->tex_w        = 0;
     s->tex_h        = 0;
     s->sample_rate  = 0;
 }
 
+static void delete_textures(SpectrogramState* s) {
+    if (s->texture)   { GLuint t = (GLuint)s->texture;   glDeleteTextures(1, &t); s->texture   = 0; }
+    if (s->intensity) { GLuint t = (GLuint)s->intensity; glDeleteTextures(1, &t); s->intensity = 0; }
+}
+
 void spectrogram_shutdown(SpectrogramState* s) {
-    if (s->texture) {
-        GLuint t = (GLuint)s->texture;
-        glDeleteTextures(1, &t);
-        s->texture = 0;
-    }
+    delete_textures(s);
     s->computed = false;
     s->duration = 0.0;
 }
 
-void spectrogram_compute(SpectrogramState* s,
-                         const float* mono_samples,
-                         uint64_t     num_samples,
-                         uint32_t     sample_rate)
+void spectrogram_pixels_free(SpectrogramPixels* px) {
+    free(px->rgba);      px->rgba      = nullptr;
+    free(px->intensity); px->intensity = nullptr;
+    px->tex_w = px->tex_h = 0;
+}
+
+bool spectrogram_compute_pixels(SpectrogramPixels* px,
+                                const float* mono_samples,
+                                uint64_t     num_samples,
+                                uint32_t     sample_rate)
 {
+    px->rgba = nullptr; px->intensity = nullptr; px->tex_w = px->tex_h = 0;
     if (!mono_samples || num_samples < (uint64_t)FFT_N || sample_rate == 0)
-        return;
+        return false;
 
     int64_t num_frames = (int64_t)(num_samples - FFT_N) / HOP + 1;
-    if (num_frames <= 0) return;
+    if (num_frames <= 0) return false;
 
     int tex_w = (int)(num_frames < MAX_TEXW ? num_frames : MAX_TEXW);
     int tex_h = BINS;  // 1024
@@ -132,11 +141,12 @@ void spectrogram_compute(SpectrogramState* s,
         window[i] = 0.5f * (1.0f - cosf(2.0f * 3.14159265358979f * i / (FFT_N - 1)));
 
     uint8_t* pixels = (uint8_t*)malloc((size_t)tex_w * tex_h * 4);
+    uint8_t* inten  = (uint8_t*)malloc((size_t)tex_w * tex_h);
     float*   re     = (float*)  malloc(FFT_N * sizeof(float));
     float*   im     = (float*)  malloc(FFT_N * sizeof(float));
-    if (!pixels || !re || !im) {
-        free(pixels); free(re); free(im);
-        return;
+    if (!pixels || !inten || !re || !im) {
+        free(pixels); free(inten); free(re); free(im);
+        return false;
     }
 
     float inv_norm = 1.0f / (FFT_N * 0.5f);  // normalize so 0 dBFS sine ≈ 1.0
@@ -173,20 +183,27 @@ void spectrogram_compute(SpectrogramState* s,
             pixels[pidx + 1] = g;
             pixels[pidx + 2] = b;
             pixels[pidx + 3] = 255;
+            inten[row * tex_w + col] = (uint8_t)(v * 255.0f + 0.5f);
         }
     }
 
     free(re);
     free(im);
 
-    // Delete old texture
-    if (s->texture) {
-        GLuint t = (GLuint)s->texture;
-        glDeleteTextures(1, &t);
-        s->texture = 0;
-    }
+    px->rgba        = pixels;
+    px->intensity   = inten;
+    px->tex_w       = tex_w;
+    px->tex_h       = tex_h;
+    px->duration    = (double)num_samples / (double)sample_rate;
+    px->sample_rate = sample_rate;
+    return true;
+}
 
-    // Upload to GPU
+void spectrogram_upload(SpectrogramState* s, SpectrogramPixels* px)
+{
+    delete_textures(s);
+    if (!px->rgba || px->tex_w <= 0) { spectrogram_pixels_free(px); return; }
+
     GLuint tex = 0;
     glGenTextures(1, &tex);
     glBindTexture(GL_TEXTURE_2D, tex);
@@ -195,21 +212,45 @@ void spectrogram_compute(SpectrogramState* s,
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8,
-                 tex_w, tex_h, 0,
-                 GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+                 px->tex_w, px->tex_h, 0,
+                 GL_RGBA, GL_UNSIGNED_BYTE, px->rgba);
+
+    GLuint itex = 0;
+    if (px->intensity) {   // optional: a composite image carries no magnitude
+        glGenTextures(1, &itex);
+        glBindTexture(GL_TEXTURE_2D, itex);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_R8,
+                     px->tex_w, px->tex_h, 0,
+                     GL_RED, GL_UNSIGNED_BYTE, px->intensity);
+        glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+    }
     glBindTexture(GL_TEXTURE_2D, 0);
 
-    free(pixels);
-
     s->texture      = (unsigned int)tex;
-    s->tex_w        = tex_w;
-    s->tex_h        = tex_h;
-    s->duration     = (double)num_samples / (double)sample_rate;
-    s->sample_rate  = sample_rate;
+    s->intensity    = (unsigned int)itex;
+    s->tex_w        = px->tex_w;
+    s->tex_h        = px->tex_h;
+    s->duration     = px->duration;
+    s->sample_rate  = px->sample_rate;
     s->computed     = true;
 
-    printf("[spectrogram] %d×%d  duration=%.1fs  frames=%lld\n",
-           tex_w, tex_h, s->duration, (long long)num_frames);
+    printf("[spectrogram] %d×%d  duration=%.1fs\n", s->tex_w, s->tex_h, s->duration);
+    spectrogram_pixels_free(px);
+}
+
+void spectrogram_compute(SpectrogramState* s,
+                         const float* mono_samples,
+                         uint64_t     num_samples,
+                         uint32_t     sample_rate)
+{
+    SpectrogramPixels px;
+    if (!spectrogram_compute_pixels(&px, mono_samples, num_samples, sample_rate)) return;
+    spectrogram_upload(s, &px);
 }
 
 void spectrogram_render(SpectrogramState* s, ImDrawList* dl,

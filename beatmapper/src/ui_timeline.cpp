@@ -1,4 +1,5 @@
 #include "ui_timeline.h"
+#include "stems.h"
 #include "ui_dock.h"
 #include "sectionmap.h"
 #include "lyricmap.h"
@@ -701,6 +702,7 @@ static void draw_timbre_strip(ImDrawList* dl, const EditorState* editor,
 }
 
 static const float RULER_H       = 24.0f;
+static const float STEM_TAB_H    = 22.0f;  // stem tab row above the spectrogram
 static const float MINIMAP_H     = 40.0f;
 static const float CTX_PANEL_H   = 36.0f;  // contextual interpolate panel
 static const float PLACE_STRIP_H = 18.0f;  // beat placement strip
@@ -826,6 +828,16 @@ static void tap_preview_update(const AutoBeatList* autobeat) {
     s_tap_smooth_n = n;
 }
 
+// --- spectrogram view settings (shared with the Stem Layers tool) ---------
+
+static int  s_spectro_max_khz  = 22;     // max displayed frequency [2, 22] kHz
+static bool s_spectro_log      = false;  // logarithmic frequency axis
+
+void ui_timeline_spectro_view(int* max_khz, bool* log_freq) {
+    if (max_khz)  *max_khz  = s_spectro_max_khz;
+    if (log_freq) *log_freq = s_spectro_log;
+}
+
 // --- main widget -------------------------------------------------------
 
 void ui_timeline_render(EditorState* editor, AudioState* audio,
@@ -834,9 +846,6 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
                         LyricMap* lyricmap, AutoBeatList* autobeat)
 {
     ImGuiIO& io = ImGui::GetIO();
-
-    static int  s_spectro_max_khz  = 22;     // max displayed frequency [2, 22] kHz
-    static bool s_spectro_log      = false;  // logarithmic frequency axis
 
     // Strips are always present; the per-strip panel flags now mean
     // "expanded".  Collapsed strips shrink to a slim display-only band.
@@ -914,7 +923,11 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
     float strips_h = (place_h + tap_h + ab_h + tb_h + ba_h + sa_h + la_h + chrd_h + misc_h)
                    + n_div * STRIP_DIV_H + ctx_h;
 
-    float fixed_h = MINIMAP_H + 2.0f + RULER_H + 2.0f + strips_h;
+    // Stem tabs sit between the ruler and the spectrogram, only once there
+    // are stems to switch between (or a separation to watch).
+    const StemsStatus stems_st = stems_status();
+    const float tab_h = (stems_count() > 0 || stems_st == STEMS_RUNNING) ? STEM_TAB_H : 0.0f;
+    float fixed_h = MINIMAP_H + 2.0f + RULER_H + 2.0f + tab_h + strips_h;
     float spectro_h = avail.y - fixed_h;
     if (spectro_h < 50.0f) spectro_h = 50.0f;
     float total_h = fixed_h + spectro_h;
@@ -941,7 +954,8 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
 
     float mm_x = cx, mm_y = ry,                       mm_w = cw, mm_h = MINIMAP_H;
     float ruler_y = mm_y + mm_h + 2.0f;
-    float tx = cx,   ty = ruler_y + RULER_H + 2.0f,   tw = cw,   th = spectro_h;
+    float tabs_y = ruler_y + RULER_H + 2.0f;
+    float tx = cx,   ty = tabs_y + tab_h,   tw = cw,   th = spectro_h;
 
     // Running-y: every strip is always present (collapsed or expanded), with a
     // single divider line above each.
@@ -1141,7 +1155,7 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
         }
 
         s_drag_in_spectro = (click_x >= cx && click_y >= ty && click_y < ty + th);
-        s_drag_in_ruler   = (!sidebar_click && click_y >= ruler_y && click_y < ty);
+        s_drag_in_ruler   = (!sidebar_click && click_y >= ruler_y && click_y < tabs_y);
         s_mm_seeking      = (!sidebar_click && click_y >= mm_y    && click_y < ruler_y);
         // Strip interactions only happen on expanded strips, in the content
         // area.  Collapsed strips are display-only.
@@ -2281,9 +2295,13 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
                                   ImVec2(gcx + 4.0f, gcy), gcol);
     }
 
+    // The spectrogram on show: the mix, or the selected stems summed in
+    // their colours (the mix until that composite is built).
+    SpectrogramState* shown = stems_composite() ? stems_composite() : spectro;
+
     // Frequency axis labels aligned to the spectrogram row
-    if (spectro->computed && spectro->sample_rate > 0 && th > 0.0f) {
-        float nyquist = (float)(spectro->sample_rate / 2);
+    if (shown->computed && shown->sample_rate > 0 && th > 0.0f) {
+        float nyquist = (float)(shown->sample_rate / 2);
         float max_freq_hz = (float)(s_spectro_max_khz * 1000);
         if (max_freq_hz > nyquist) max_freq_hz = nyquist;
         static const int   sb_freqs[] = {
@@ -2325,9 +2343,68 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
     draw_ruler(dl, cx, ruler_y, cw, RULER_H,
                editor->view_start, editor->view_end);
 
-    spectrogram_render(spectro, dl, tx, ty, tw, th,
+    spectrogram_render(shown, dl, tx, ty, tw, th,
                        editor->view_start, editor->view_end,
                        (float)(s_spectro_max_khz * 1000), s_spectro_log);
+
+    // Stem tab row: Mix plus one toggle per stem (any subset plays and
+    // shows, each stem in its own colour); a progress readout while the
+    // separator runs.  Buttons overlay the timeline input (AllowOverlap).
+    if (tab_h > 0.0f) {
+        dl->AddRectFilled(ImVec2(cx, tabs_y), ImVec2(cx + cw, tabs_y + tab_h),
+                          IM_COL32(14, 14, 22, 255));
+        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(8.0f, 2.0f));
+        ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 0.0f);
+        float bx = cx + 2.0f, by = tabs_y + 1.0f;
+        for (int i = -1; i < stems_count(); i++) {
+            const char* name = (i < 0) ? "Mix" : stems_name(i);
+            bool sel = (i < 0) ? stems_mix_selected() : stems_is_selected(i);
+            float tint[3] = { 1, 1, 1 };
+            if (i >= 0) stems_tint(name, tint);
+            ImU32 text_col = sel
+                ? IM_COL32((int)(tint[0] * 255), (int)(tint[1] * 255), (int)(tint[2] * 255), 255)
+                : IM_COL32((int)(tint[0] * 150), (int)(tint[1] * 150), (int)(tint[2] * 150), 255);
+            ImGui::PushID(i + 1000);
+            ImGui::PushStyleColor(ImGuiCol_Button,        sel ? IM_COL32(55, 70, 110, 255)  : IM_COL32(28, 28, 44, 255));
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, sel ? IM_COL32(70, 90, 135, 255)  : IM_COL32(45, 45, 68, 255));
+            ImGui::PushStyleColor(ImGuiCol_Text, text_col);
+            ImGui::SetCursorScreenPos(ImVec2(bx, by));
+            if (ImGui::Button(name, ImVec2(0, tab_h - 2.0f))) {
+                if (i < 0)                      stems_select_mix();
+                else if (ImGui::GetIO().KeyShift) stems_select_only(i);
+                else                            stems_toggle(i);
+            }
+            ImGui::PopStyleColor(3);
+            ImGui::PopID();
+            if (ImGui::IsItemHovered()) {
+                if (i < 0) ImGui::SetTooltip("The full mix: plays and shows the original audio");
+                else       ImGui::SetTooltip("Toggle the %s stem: the selected stems are what plays\n"
+                                             "and what the spectrogram shows (shift-click: only this one)", name);
+            }
+            bx += ImGui::GetItemRectSize().x + 2.0f;
+        }
+        if (stems_rebuilding()) {
+            ImGui::SetCursorScreenPos(ImVec2(bx + 6.0f, by + 3.0f));
+            ImGui::TextDisabled("mixing\xe2\x80\xa6");
+        }
+        if (stems_st == STEMS_RUNNING) {
+            char txt[300];
+            if (stems_progress() > 0.0f)
+                snprintf(txt, sizeof(txt), "%s  %.0f%%", stems_message(), stems_progress() * 100.0f);
+            else
+                snprintf(txt, sizeof(txt), "%s", stems_message());
+            float pw = cx + cw - bx - 6.0f;
+            if (pw > 80.0f) {
+                float frac = stems_progress();
+                dl->AddRectFilled(ImVec2(bx + 4.0f, by + 3.0f), ImVec2(bx + 4.0f + pw * frac, by + tab_h - 5.0f),
+                                  IM_COL32(50, 90, 140, 200));
+                dl->AddRect(ImVec2(bx + 4.0f, by + 3.0f), ImVec2(bx + 4.0f + pw, by + tab_h - 5.0f),
+                            IM_COL32(70, 80, 120, 200));
+                dl->AddText(ImVec2(bx + 10.0f, by + 3.0f), IM_COL32(210, 215, 235, 255), txt);
+            }
+        }
+        ImGui::PopStyleVar(2);
+    }
 
     // Spectrogram view controls, overlaid in the upper-left corner of the view:
     // Log toggle and +/- max-frequency buttons.  Semi-transparent so the
@@ -2373,8 +2450,8 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
     }
 
     // Chroma hover overlay: faint green band for each octave of the hovered note
-    if (editor->chroma_hover_note >= 0 && spectro->computed && spectro->sample_rate > 0) {
-        float nyquist     = (float)(spectro->sample_rate / 2);
+    if (editor->chroma_hover_note >= 0 && shown->computed && shown->sample_rate > 0) {
+        float nyquist     = (float)(shown->sample_rate / 2);
         float max_freq_hz = (float)(s_spectro_max_khz * 1000);
         if (max_freq_hz > nyquist) max_freq_hz = nyquist;
 

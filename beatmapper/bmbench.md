@@ -131,6 +131,29 @@ section and print one summed row: `sect/loo` hides one section instance
 more times, and `all/loso` hides *everything* over each section of at least 8
 beats -- the section must be recovered on re-inferred beats.
 
+### Stem sources
+
+With the stem separator installed (`make stems-model`; see the Stems tool),
+any command can analyze a sum of separated stems instead of the mix:
+
+| Option | Effect |
+|---|---|
+| `--stems-chords NAMES` | the chord / chroma stages (and the `chroma` dump) read this sum |
+| `--stems-beats NAMES` | the beat / onset / timbre stages (and `detect`, `shapes`) read this sum |
+| `--stems NAMES` | both |
+
+`NAMES` is comma-separated stem names as the separator emits them
+(`vocals,drums,bass,guitar,piano,other`), or `mix`.  The sum is mono at the
+track's rate; the section-timbre stage always reads the mix.  Stems are
+cached per track by `scripts/stems_demucs.py` (`~/.cache/beatmapper/stems/`),
+so separate a directory once sequentially before a parallel sweep
+(`for t in dir/*.mp3; do external/venv-stems/bin/python scripts/stems_demucs.py "$t"; done`).
+
+```sh
+scripts/bench-par.py ./bmbench bench/tracks-anno all/loso --stems-beats drums,bass
+scripts/bench-par.py ./bmbench bench/tracks-anno chords/decoder --stems-chords guitar,piano,other,bass
+```
+
 ### External chord models
 
 `--set chord_external=1` adds an out-of-process chord recogniser to the chord

@@ -1,4 +1,5 @@
 #include "wsola.h"
+#include <stdio.h>
 #include <math.h>
 #include <string.h>
 #include <stdlib.h>
@@ -33,6 +34,9 @@ static ma_data_source_vtable s_vtable = {
     0,      // flags
 };
 
+// Sentinel posted in override_pending to mean "back to the original pcm".
+static float s_override_none;
+
 // ---- core WSOLA step --------------------------------------------------------
 
 // Generate one synthesis hop (WSOLA_HOP frames) into ws->output_buf.
@@ -44,6 +48,7 @@ static void wsola_step(WsolaSource* ws)
     const int    SEARCH = WSOLA_SEARCH;
     const uint32_t ch   = ws->channels;
 
+    const float* pcm = ws->override_active ? ws->override_active : ws->pcm;
     double input_pos = ws->input_pos;
     float  speed     = ws->speed.load(std::memory_order_relaxed);
     float  pitch     = ws->pitch.load(std::memory_order_relaxed);
@@ -58,7 +63,7 @@ static void wsola_step(WsolaSource* ws)
             int64_t cand = (int64_t)input_pos + d;
             if (cand < 0 || (uint64_t)(cand + HOP) > ws->frame_count) continue;
             float corr = 0.0f;
-            const float* src = ws->pcm + cand * ch;
+            const float* src = pcm + cand * ch;
             const float* ref = ws->synth_buf;   // current overlap tail
             for (int i = 0; i < HOP; i++) {
                 for (uint32_t c = 0; c < ch; c++)
@@ -83,7 +88,7 @@ static void wsola_step(WsolaSource* ws)
         int64_t fi = read_pos + i;
         if (fi >= 0 && (uint64_t)fi < ws->frame_count) {
             float w = hann(i, FRAME);
-            const float* src = ws->pcm + fi * ch;
+            const float* src = pcm + fi * ch;
             for (uint32_t c = 0; c < ch; c++)
                 ws->synth_buf[i * ch + c] += src[c] * w;
         }
@@ -117,6 +122,15 @@ static ma_result wsola_on_read(ma_data_source* pDS, void* pFramesOut,
     float*       out = (float*)pFramesOut;
     uint32_t     ch  = ws->channels;
     ma_uint64    written = 0;
+
+    // Adopt a posted override, once the previous one has been collected.
+    if (ws->override_retired.load(std::memory_order_relaxed) == nullptr) {
+        float* p = ws->override_pending.exchange(nullptr, std::memory_order_acquire);
+        if (p) {
+            ws->override_retired.store(ws->override_active, std::memory_order_release);
+            ws->override_active = (p == &s_override_none) ? nullptr : p;
+        }
+    }
 
     while (written < frameCount) {
         // Refill staging buffer when exhausted.
@@ -211,6 +225,9 @@ bool wsola_init(WsolaSource* ws, float* pcm, uint64_t frames,
     ws->channels       = 0;
     ws->sample_rate    = 0;
     ws->owns_pcm       = false;
+    ws->override_pending.store(nullptr, std::memory_order_relaxed);
+    ws->override_active = nullptr;
+    ws->override_retired.store(nullptr, std::memory_order_relaxed);
     ws->input_pos      = 0.0;
     ws->output_pending = 0;
     ws->output_offset  = 0;
@@ -241,6 +258,27 @@ void wsola_uninit(WsolaSource* ws)
     if (ws->owns_pcm && ws->pcm) {
         free(ws->pcm);
         ws->pcm = nullptr;
+    }
+    // The sound is gone by now: no audio-thread reader remains.
+    float* p = ws->override_pending.exchange(nullptr);
+    if (p && p != &s_override_none) free(p);
+    free(ws->override_active); ws->override_active = nullptr;
+    free(ws->override_retired.exchange(nullptr));
+}
+
+void wsola_set_override(WsolaSource* ws, float* pcm)
+{
+    float* post = pcm ? pcm : &s_override_none;
+    float* prev = ws->override_pending.exchange(post, std::memory_order_acq_rel);
+    if (prev && prev != &s_override_none) free(prev);   // never reached the audio thread
+}
+
+void wsola_collect_retired(WsolaSource* ws)
+{
+    float* r = ws->override_retired.exchange(nullptr, std::memory_order_acq_rel);
+    if (r) {
+        if (getenv("BM_AUDIO_DEBUG")) fprintf(stderr, "[audio] override adopted; previous freed\n");
+        free(r);
     }
 }
 

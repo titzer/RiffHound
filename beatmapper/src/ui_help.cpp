@@ -46,6 +46,7 @@ static const HelpRow s_rows[] = {
     { "Horizontal wheel", "Pan the timeline" },
     { "Drag ruler",       "Pan; a click on the ruler seeks" },
     { "Click spectrogram","Seek; drag to select a region for analysis" },
+    { "Stem tabs",        "Toggle which separated stems play and show; shift-click for one; Mix restores" },
     { "Click minimap",    "Seek anywhere in the track" },
     { "Ctrl+= / Ctrl+-",  "Lyric font larger / smaller" },
     { "Sidebar triangles","Collapse / expand each timeline strip" },

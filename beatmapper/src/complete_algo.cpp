@@ -41,6 +41,7 @@ void complete_params_defaults(CompleteParams* p) {
     p->det_max_bpm        = 200.0f;
     p->det_threshold      = 1.5f;
     p->det_tightness      = 50.0f;
+    p->det_tempo_from_mix = 0.0f;
     p->onset_weight       = 0.5f;
     p->refit              = true;
     p->grid_follow        = true;
@@ -680,7 +681,7 @@ static void detect_onsets(const CompleteInputs& in, const CompleteParams& p,
 {
     onsets->clear();
     det_beats->clear();
-    if (!in.audio.pcm || p.beat_algo_idx < 0 || p.beat_algo_idx >= BEAT_ALGO_COUNT) return;
+    if (!in.audio_rhythm.pcm || p.beat_algo_idx < 0 || p.beat_algo_idx >= BEAT_ALGO_COUNT) return;
     if (t0 < 0) t0 = 0;
     if (t1 > in.duration) t1 = in.duration;
     if (t1 - t0 < 0.2) return;
@@ -704,9 +705,23 @@ static void detect_onsets(const CompleteInputs& in, const CompleteParams& p,
     bp.seed_count = ns >= 2 ? ns : 0;
 
     static AutoBeatList ab;   // large; keep off the stack
+    if (p.det_tempo_from_mix > 0.0f && in.audio.pcm && in.audio.pcm != in.audio_rhythm.pcm) {
+        // Tempo from the mix, beats from the stems: the mix's periodicity
+        // estimate bounds the stem detector's tempo search.
+        autobeat_init(&ab);
+        BEAT_ALGOS[p.beat_algo_idx].fn(in.audio.pcm, in.audio.frame_count, in.audio.channels,
+                                       in.audio.sample_rate, t0, t1, &bp, &ab);
+        float bpm = ab.estimated_bpm;
+        if (bpm > 0.0f) {
+            float tol = 1.0f + p.det_tempo_from_mix;
+            bp.min_bpm = std::max(p.det_min_bpm, bpm / tol);
+            bp.max_bpm = std::min(p.det_max_bpm, bpm * tol);
+        }
+    }
     autobeat_init(&ab);
-    BEAT_ALGOS[p.beat_algo_idx].fn(in.audio.pcm, in.audio.frame_count, in.audio.channels,
-                                   in.audio.sample_rate, t0, t1, &bp, &ab);
+    BEAT_ALGOS[p.beat_algo_idx].fn(in.audio_rhythm.pcm, in.audio_rhythm.frame_count,
+                                   in.audio_rhythm.channels, in.audio_rhythm.sample_rate,
+                                   t0, t1, &bp, &ab);
     onsets->assign(ab.onset_times, ab.onset_times + ab.onset_count);
     std::sort(onsets->begin(), onsets->end());
     det_beats->assign(ab.beat_times, ab.beat_times + ab.beat_count);
@@ -1247,7 +1262,7 @@ static void fill_gap(const CompleteInputs& in, const CompleteParams& p,
         }
     }
 
-    build_frames(in.audio, p.chroma, std::max(0.0, g.t0 - period),
+    build_frames(in.audio_harmonic, p.chroma, std::max(0.0, g.t0 - period),
                  std::min(in.duration, g.t1 + 2.0 * period), period, &ctx.fg);
     algo.prepare(&ctx);
 
@@ -3353,13 +3368,13 @@ void complete_run(const CompleteInputs& in, const CompleteParams& p,
         std::vector<double> times;
         times.reserve(bm->count);
         for (int i = 0; i < bm->count; i++) times.push_back(bm->beats[i].time);
-        beat_chroma_ensure(cache, in.audio, times.data(), (int)times.size(), p.chroma);
+        beat_chroma_ensure(cache, in.audio_harmonic, times.data(), (int)times.size(), p.chroma);
     }
 
     // Onset timbre shapes for the whole track (vocabulary from the mapped
     // parts), whichever strategy is in use: the timbre strip shows them.
     ShapeAnalysis* shapes = shape_track();
-    shape_analysis_ensure(shapes, in.audio, bm, in.duration, p.shape, p.beat_algo_idx);
+    shape_analysis_ensure(shapes, in.audio_rhythm, bm, in.duration, p.shape, p.beat_algo_idx);
     {
         std::vector<ShapeMark> marks;
         marks.reserve(shapes->onset_t.size());
@@ -3374,7 +3389,7 @@ void complete_run(const CompleteInputs& in, const CompleteParams& p,
         shape_marks_set(SHAPE_SRC_ONSET, marks);
         std::vector<double> bt;
         for (int i = 0; i < bm->count; i++) bt.push_back(bm->beats[i].time);
-        shape_marks_classify(SHAPE_SRC_BEAT, in.audio, bt.data(), (int)bt.size(), shapes->win);
+        shape_marks_classify(SHAPE_SRC_BEAT, in.audio_rhythm, bt.data(), (int)bt.size(), shapes->win);
     }
 
     int n_beats = 0, n_sec = 0, n_ch = 0;
@@ -3387,7 +3402,7 @@ void complete_run(const CompleteInputs& in, const CompleteParams& p,
         out->gap_count = (int)gaps.size();
         for (const Gap& g : gaps) fill_gap(in, p, tm, shapes, g, out);
         n_beats = (int)out->beat_times.size();
-        shape_marks_classify(SHAPE_SRC_PROPOSED, in.audio, out->beat_times.data(),
+        shape_marks_classify(SHAPE_SRC_PROPOSED, in.audio_rhythm, out->beat_times.data(),
                              (int)out->beat_times.size(), shapes->win);
     } else {
         shape_marks_clear(SHAPE_SRC_PROPOSED);

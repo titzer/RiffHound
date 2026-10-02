@@ -6,6 +6,8 @@
 
 #include "audio.h"
 #include "spectrogram.h"
+#include "stems.h"
+#include "ui_stems.h"
 #include "editor.h"
 #include "beatmap.h"
 #include "sectionmap.h"
@@ -129,6 +131,7 @@ static void window_size_save(int w, int h) {
 }
 
 int main(int argc, char** argv) {
+    setvbuf(stdout, nullptr, _IOLBF, 0);   // diagnostics stay readable when redirected
     config_paths_init();
 
     glfwSetErrorCallback(glfw_error_callback);
@@ -208,6 +211,8 @@ int main(int argc, char** argv) {
 
     audio_init(&audio);
     spectrogram_init(&spectro);
+    stems_init(&audio);
+    ui_stems_set_mix(&spectro);
     editor_init(&editor);
     beatmap_init(&beatmap);
     sectionmap_init(&sectionmap);
@@ -243,12 +248,30 @@ int main(int argc, char** argv) {
     // (a .txt or bare stem finds its companion .m4a/.mp3/.wav), add all that
     // resolve to the recent list, and open the last one.
     double start_at = -1.0;   // "--at SECONDS": where to put the playhead
+    int    open_tool = -1;    // "--tool NAME": open that dock tool at launch
+    bool   autoplay  = false; // "--play": start playback at launch
+    double region_a  = -1.0, region_b = -1.0;   // "--region A B": select that span
     if (argc >= 2) {
         char last_file[512] = "";
         for (int i = 1; i < argc; i++) {
             char resolved[512];
             if (strcmp(argv[i], "--at") == 0 && i + 1 < argc) {
                 start_at = atof(argv[++i]);
+            } else if (strcmp(argv[i], "--region") == 0 && i + 2 < argc) {
+                region_a = atof(argv[++i]);
+                region_b = atof(argv[++i]);
+            } else if (strcmp(argv[i], "--play") == 0) {
+                autoplay = true;
+            } else if (strcmp(argv[i], "--stems") == 0 && i + 1 < argc) {
+                stems_select_names(argv[++i]);   // e.g. vocals,drums
+            } else if (strcmp(argv[i], "--tool") == 0 && i + 1 < argc) {
+                // Match a tool by the first word of its name, case-insensitive
+                const char* want = argv[++i];
+                for (int t = 0; t < DOCK_TOOL_COUNT; t++)
+                    if (strncasecmp(ui_dock_tool_name((DockTool)t), want, strlen(want)) == 0)
+                        open_tool = t;
+                if (open_tool < 0)
+                    fprintf(stderr, "beatmapper: no tool named '%s'\n", want);
             } else if (resolve_audio_arg(argv[i], resolved, sizeof(resolved))) {
                 recent_add(&recent, resolved);
                 strncpy(last_file, resolved, sizeof(last_file) - 1);
@@ -266,6 +289,12 @@ int main(int argc, char** argv) {
             strncpy(beatmap.save_path, bm_path, sizeof(beatmap.save_path) - 1);
             beatmap.dirty = false;
             if (start_at > 0.0) audio_seek(&audio, start_at);
+            if (autoplay) audio_play(&audio);
+            if (region_b > region_a && region_a >= 0.0) {
+                editor.has_region   = true;
+                editor.region_start = region_a;
+                editor.region_end   = region_b;
+            }
             {
                 char dir[512];
                 strncpy(dir, last_file, sizeof(dir) - 1); dir[sizeof(dir) - 1] = 0;
@@ -317,6 +346,17 @@ int main(int argc, char** argv) {
         // Sync position and playing state from the audio thread.
         audio_update(&audio);
 
+        // Land a finished stem separation (uploads its spectrograms).
+        stems_update();
+
+        // "--tool": open it once the stem cache has answered, so a tool that
+        // analyzes on opening sees the stems.
+        if (open_tool >= 0 && audio.loaded && spectro.duration == audio.duration &&
+            stems_status() != STEMS_CHECKING) {
+            ui_dock_icon_click((DockTool)open_tool);
+            open_tool = -1;
+        }
+
         // Keep WSOLA loop parameters in sync every frame (cheap atomic writes).
         // Uses the current region if one exists, otherwise the full track.
         {
@@ -345,6 +385,11 @@ int main(int argc, char** argv) {
                 spectrogram_compute(&spectro, pcm, nframes, sr);
                 audio_free_pcm(pcm);
             }
+            // New track: drop the old stems (after any Complete Track worker
+            // that may still read their audio) and ask the cache for this one's.
+            ui_complete_reset();
+            stems_reset();
+            stems_request(audio.filename, true);
             // Always update these so we don't retry endlessly on decode failure.
             spectro.duration  = audio.duration;
             editor.duration   = audio.duration;
@@ -666,6 +711,7 @@ int main(int argc, char** argv) {
     sectionmap_shutdown(&sectionmap);
     beatmap_shutdown(&beatmap);
     audio_shutdown(&audio);
+    stems_shutdown();
     spectrogram_shutdown(&spectro);
 
     ImGui_ImplOpenGL3_Shutdown();

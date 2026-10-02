@@ -37,6 +37,18 @@ void   audio_set_loop(AudioState* a, bool enabled, double loop_start, double loo
 // Call once per frame to sync position/playing state from the audio thread.
 void   audio_update(AudioState* a);
 
+// Play `pcm` (stereo interleaved f32 at the track's sample rate, `frames`
+// long; takes ownership) in place of the file's audio -- a mix of selected
+// stems.  Shorter buffers are padded with silence, longer ones truncated.
+// nullptr restores the file's audio.  The buffer audio_pcm_data() returns
+// is unaffected, so the analysis tools keep seeing the mix.
+void   audio_set_playback_override(AudioState* a, float* pcm, uint64_t frames);
+
+// Decode any file to stereo interleaved f32 at `sample_rate` (resampled as
+// needed).  Thread-safe; caller frees *out_pcm with free().
+bool   audio_decode_stereo_at(const char* path, uint32_t sample_rate,
+                              float** out_pcm, uint64_t* out_frames);
+
 void   audio_shutdown(AudioState* a);
 
 // Decode the file to mono f32 PCM for offline processing (e.g. spectrogram).
