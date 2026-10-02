@@ -1201,6 +1201,7 @@
     max-height: calc(100% - 16px);
     grid-template-rows: auto 1fr auto auto;
     overflow: hidden;
+    container-type: inline-size;   /* so the grid can size itself in tile rows */
   }
   #bgPanel[hidden] { display: none; }
   #bgPanel > .setting { justify-content: flex-start; }
@@ -1211,9 +1212,17 @@
   .bggrid {
     display: grid;
     grid-template-columns: repeat(4, 1fr);
+    /* A tile's height comes from its aspect ratio, which an overflow-hidden
+       item does not insist on: without this a capped grid squeezes the rows
+       and the tiles overlap instead of scrolling. */
+    grid-auto-rows: max-content;
     gap: 8px;
     min-height: 0;
+    /* Every background is in the grid; it scrolls past four and a half rows
+       of 16:9 tiles, the half row saying there is more below. */
+    max-height: calc((100cqw - 24px) / 4 * 9 / 16 * 4.5 + 32px);
     overflow-y: auto;
+    scrollbar-color: var(--dim) transparent;
   }
   .bgtile {
     position: relative;
@@ -5033,8 +5042,23 @@ const bgLevel = $("bgLevel"), bgLevelOut = $("bgLevelOut");
 /* The same setting as the menu's "Background level", from a second control:
    set() goes through sync(), which keeps the two sliders agreeing. */
 bgLevel.oninput = () => command({ cmd: "set", name: "backgroundLevel", value: bgLevel.value });
-const BG_TILES = 16;
 let bgShown = [], bgPick = -1;
+
+/* Every match gets a tile, but a tile only fetches its picture when it scrolls
+   near the grid's view: a folder of animations is a lot of GIFs to decode for
+   a grid that shows sixteen at a time. Once loaded, a tile keeps its picture. */
+let bgLazy = null;
+function bgObserver() {
+  if (bgLazy || !("IntersectionObserver" in window)) return bgLazy;
+  bgLazy = new IntersectionObserver(entries => {
+    for (const e of entries) {
+      if (!e.isIntersecting) continue;
+      e.target.style.backgroundImage = `url("${e.target.dataset.src}")`;
+      bgLazy.unobserve(e.target);
+    }
+  }, { root: bgGrid, rootMargin: "50% 0px" });
+  return bgLazy;
+}
 
 const bgLabel = n => n.replace(/\.\w+$/, "").replace(/[_\-]+/g, " ");
 
@@ -5042,14 +5066,15 @@ function renderBackgrounds(query) {
   const q = String(query || "").trim();
   const names = backgroundOptions().map(o => o.v).filter(Boolean);
   const hits = names.filter(n => fuzzy(q, bgLabel(n)) || fuzzy(q, n));
-  /* Sixteen tiles in all: the Off tile, when it is there, takes one of them. */
-  const room = q ? BG_TILES : BG_TILES - 1;
-  bgShown = (q ? [] : [""]).concat(hits.slice(0, room));
+  bgShown = (q ? [] : [""]).concat(hits);
   if (bgPick >= bgShown.length) bgPick = bgShown.length - 1;
+  const lazy = bgObserver();
+  lazy?.disconnect();
   bgGrid.replaceChildren(...bgShown.map((n, i) => {
     const el = document.createElement("div");
     el.className = "bgtile" + (n === state.background ? " on" : "") + (i === bgPick ? " pick" : "");
-    if (n) el.style.backgroundImage = `url("${backgroundUrl(n)}")`;
+    if (n && lazy) { el.dataset.src = backgroundUrl(n); lazy.observe(el); }
+    else if (n) el.style.backgroundImage = `url("${backgroundUrl(n)}")`;
     const tag = document.createElement("span");
     tag.textContent = n ? bgLabel(n) : "Off";
     el.append(tag);
@@ -5057,7 +5082,6 @@ function renderBackgrounds(query) {
     return el;
   }));
   bgHint.textContent = !names.length ? "no backgrounds: none of the servers lists any"
-    : hits.length > room ? `${hits.length} match — showing ${room}, type more to narrow`
     : hits.length ? `${hits.length} of ${names.length}` : "no match";
 }
 
@@ -5091,6 +5115,8 @@ function openBgPanel(open) {
   bgKept = false;
   sync("backgroundLevel");
   renderBackgrounds(bgSearch.value);
+  /* Open on the current background rather than at the top of a long list. */
+  bgGrid.querySelector(".bgtile.on")?.scrollIntoView({ block: "nearest" });
   bgSearch.focus();
   bgSearch.select();
 }

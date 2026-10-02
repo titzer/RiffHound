@@ -80,8 +80,8 @@ bool              stems_rebuilding();  // selection work in flight
 // stays valid for a worker that holds it (see stems_reset).
 enum StemPreset {
     STEM_SRC_MIX = 0,
-    STEM_SRC_HARMONIC,   // guitar + piano + other + bass: chords, chroma
-    STEM_SRC_RHYTHM,     // drums + bass: beats
+    STEM_SRC_HARMONIC,   // everything but drums: chords, chroma
+    STEM_SRC_RHYTHM,     // drums + bass: the Beat Detector
     STEM_SRC_DRUMS,      // drums: onset timbre
 };
 struct StemSource {

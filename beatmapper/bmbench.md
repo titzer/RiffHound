@@ -154,6 +154,35 @@ scripts/bench-par.py ./bmbench bench/tracks-anno all/loso --stems-beats drums,ba
 scripts/bench-par.py ./bmbench bench/tracks-anno chords/decoder --stems-chords guitar,piano,other,bass
 ```
 
+`det_tempo_from_mix` (default 0.2) makes the beat stage take the tempo from
+the mix and confine the stem detector to that tempo +/- 20 %; it only acts
+when `--stems-beats` is given.
+
+Findings (2026-10-01, 18 tracks, htdemucs_6s):
+
+| Source | chords/decoder | all/cold beats | all/cold chords | all/loso beats |
+|---|---|---|---|---|
+| mix | 83.4 % | 87.9 % | 65.0 % | 95.0 % |
+| chords: guitar,piano | 78.9 % | | | |
+| chords: guitar,piano,other,bass | 83.4 % | | 63.8 % | |
+| chords: all but drums | **84.1 %** | | 64.4 % | |
+| beats: bass | | 46.7 % | | 76.1 % |
+| beats: drums | | | | 91.5 % |
+| beats: drums,bass | | 83.8 % | 62.1 % | 94.5 % |
+| beats: drums,bass + tempo from mix | | **91.7 %** | 62.7 % | 94.5 % |
+
+- Chords: everything but drums is best; vocals and `other` carry harmony,
+  guitar+piano alone loses five points.  Stem chroma flips
+  Country-E-188 to E/A/B major (0 %), agreeing with madmom and BTC against
+  the annotation; without that track cold chords go 65.5 % -> 67.8 %.
+- Beats, cold: drums+bass fixes the two bluegrass tracks (Cripple Creek
+  108 -> 261 and 139 -> 269 of ~270, half-beat errors to zero) but locks two
+  tracks at half tempo; tempo from the mix repairs those.
+- Beats with mapped context (loso): no gain, and the slightly different
+  beats cost sections (137 -> 128) and chords downstream.  The app keeps
+  Complete Track's beats on the mix and uses drums+bass for the Beat
+  Detector.
+
 ### External chord models
 
 `--set chord_external=1` adds an out-of-process chord recogniser to the chord

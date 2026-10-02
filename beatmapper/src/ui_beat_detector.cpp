@@ -78,7 +78,6 @@ static void run_detection(EditorState* editor, AudioState* audio,
     uint64_t frame_count = 0;
     uint32_t channels    = 0;
     uint32_t sample_rate = 0;
-    (void)audio;
     const float* pcm = stems_source_audio(stems_source_mask(&s_source, STEM_SRC_RHYTHM),
                                           &frame_count, &channels, &sample_rate);
     if (!pcm) return;
@@ -102,6 +101,19 @@ static void run_detection(EditorState* editor, AudioState* audio,
     p.seed_times      = (s_seed_count >= 2) ? s_seed_buf : nullptr;
     p.seed_count      = (s_seed_count >= 2) ? s_seed_count : 0;
 
+    // Stems alone tend to lock onto half tempo (two of 18 bench tracks):
+    // take the tempo from the mix and confine the stem detector to +/-20 %.
+    const float* mix = audio_pcm_data(audio, nullptr, nullptr, nullptr);
+    if (mix && mix != pcm) {
+        uint64_t mf = 0; uint32_t mc = 0, ms = 0;
+        audio_pcm_data(audio, &mf, &mc, &ms);
+        BEAT_ALGOS[s_algo_idx].fn(mix, mf, mc, ms, t_start, t_end, &p, autobeat);
+        float bpm = autobeat->estimated_bpm;
+        if (bpm > 0.0f) {
+            if (p.min_bpm < bpm / 1.2f) p.min_bpm = bpm / 1.2f;
+            if (p.max_bpm > bpm * 1.2f) p.max_bpm = bpm * 1.2f;
+        }
+    }
     BEAT_ALGOS[s_algo_idx].fn(pcm, frame_count, channels, sample_rate,
                                t_start, t_end, &p, autobeat);
     save_last(t_start, t_end);

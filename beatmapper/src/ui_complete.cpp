@@ -46,6 +46,10 @@ static CompleteInputs    s_win;            // inputs the worker reads
 static CompleteParams    s_wp;             // params copy the worker reads
 static StemSource        s_src_harm;       // chords / chroma from these stems
 static StemSource        s_src_rhythm;     // beats / timbre from these
+// Complete Track fills beats around mapped context, where stems did not help
+// on the bench (all/loso 94.5 % vs 95.0 % on the mix, with sections and
+// chords downstream worse), so its beats default to the mix.
+static const StemPreset  CP_BEATS_PRESET = STEM_SRC_MIX;
 static BeatMap           s_snap_bm;        // deep map snapshots for s_win
 static SectionMap        s_snap_sm;
 static MiscMap           s_snap_cm;
@@ -173,7 +177,7 @@ static void run_analysis(EditorState* editor, AudioState* audio, BeatMap* beatma
                                                   &s_win.audio_harmonic.frame_count,
                                                   &s_win.audio_harmonic.channels,
                                                   &s_win.audio_harmonic.sample_rate);
-    s_win.audio_rhythm.pcm   = stems_source_audio(stems_source_mask(&s_src_rhythm, STEM_SRC_RHYTHM),
+    s_win.audio_rhythm.pcm   = stems_source_audio(stems_source_mask(&s_src_rhythm, CP_BEATS_PRESET),
                                                   &s_win.audio_rhythm.frame_count,
                                                   &s_win.audio_rhythm.channels,
                                                   &s_win.audio_rhythm.sample_rate);
@@ -181,7 +185,7 @@ static void run_analysis(EditorState* editor, AudioState* audio, BeatMap* beatma
     if (!s_win.audio_rhythm.pcm)   s_win.audio_rhythm   = s_win.audio;
     {
         char lb[128], lh[128];
-        stems_source_label(stems_source_mask(&s_src_rhythm, STEM_SRC_RHYTHM), lb, sizeof(lb));
+        stems_source_label(stems_source_mask(&s_src_rhythm, CP_BEATS_PRESET), lb, sizeof(lb));
         stems_source_label(stems_source_mask(&s_src_harm, STEM_SRC_HARMONIC), lh, sizeof(lh));
         printf("[complete] analyzing: beats from %s, chords from %s\n", lb, lh);
     }
@@ -309,7 +313,7 @@ void ui_complete_settings(ToolCtx& c)
     if (settings_header("Beat settings##cp")) {
         ImGui::Indent(6.0f);
         float w = ImGui::GetContentRegionAvail().x;
-        ui_stems_source_row("Beats from", &s_src_rhythm, STEM_SRC_RHYTHM);
+        ui_stems_source_row("Beats from", &s_src_rhythm, CP_BEATS_PRESET);
         ImGui::TextDisabled("Gap-fill strategy:");
         struct FillGetter {
             static bool get(void*, int idx, const char** out) {
@@ -544,7 +548,7 @@ void ui_complete_body(ToolCtx& c)
     s_hover   = -1;
     worker_poll(editor);
 
-    ui_stems_source_note(&s_src_rhythm, STEM_SRC_RHYTHM,   "Beats from");
+    ui_stems_source_note(&s_src_rhythm, CP_BEATS_PRESET,   "Beats from");
     ui_stems_source_note(&s_src_harm,   STEM_SRC_HARMONIC, "Chords from");
     ImGui::Checkbox("Beats", &s_p.do_beats);
     tip("Fill unmapped stretches: transfer a matching mapped stretch, or continue the tempo");

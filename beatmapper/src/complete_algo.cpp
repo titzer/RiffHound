@@ -41,7 +41,7 @@ void complete_params_defaults(CompleteParams* p) {
     p->det_max_bpm        = 200.0f;
     p->det_threshold      = 1.5f;
     p->det_tightness      = 50.0f;
-    p->det_tempo_from_mix = 0.0f;
+    p->det_tempo_from_mix = 0.2f;
     p->onset_weight       = 0.5f;
     p->refit              = true;
     p->grid_follow        = true;
