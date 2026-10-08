@@ -59,6 +59,17 @@
     /* updateUI clears the inline display to show it, so the layout lives here. */
     #seqLenWrap { display: flex; gap: 10px; align-items: center; }
     .ladder { width: 100%; height: 52px; display: block; }
+    /* Interval trainer: answer slots, then one button per home-row key. */
+    #ivSlots { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; min-height: 40px; }
+    .iv-slot { min-width: 40px; height: 36px; box-sizing: border-box; border-radius: 6px;
+               border: 1px solid #ddd; background: #fafafa; display: flex; align-items: center;
+               justify-content: center; font: 600 16px/1 ui-monospace, Menlo, monospace; color: #bbb; }
+    .iv-slot.filled { color: #444; }
+    .iv-slot.next { border: 2px solid #4a90d9; }
+    .iv-slot.right { color: #0a7a2f; border-color: #0a7a2f; background: #e6f4ec; }
+    .iv-slot.wrong { color: #b32020; border-color: #b32020; background: #fde8e8; }
+    #ivKeys { display: flex; gap: 6px; flex-wrap: wrap; }
+    #ivKeys .choice-btn { min-width: 56px; flex: 1; font-size: 18px; font-weight: 600; }
     .ladder .step { stroke: #4a90d9; stroke-width: 2; fill: none; }
   </style>
 </head>
@@ -79,6 +90,7 @@
   <button class="quiz-btn" data-quiz="key-sheet">Key · Sheet</button>
   <button class="quiz-btn" data-quiz="key-ear">Key · Ear</button>
   <button class="quiz-btn" data-quiz="rhythm">Rhythm</button>
+  <button class="quiz-btn" data-quiz="interval">Interval</button>
   <!-- Note-quiz sequence length; carries its own separator so both hide together -->
   <span id="seqLenWrap" class="hint">
     <span style="color:#bbb;">|</span>
@@ -179,6 +191,31 @@
   <label><input type="checkbox" id="rhythmSoundFb" checked> Ding/buzz</label>
 </div>
 
+<!-- Interval trainer options (interval mode only) -->
+<div id="intervalOpts" style="display:none; margin-bottom:8px; gap:10px; align-items:center; flex-wrap:wrap;" class="hint">
+  <label>Root: <select id="ivRoot" style="padding:2px 4px;font-size:13px;border-radius:4px;border:1px solid #ccc">
+    <option>C</option><option>Db</option><option>D</option><option>Eb</option>
+    <option>E</option><option>F</option><option>F#</option><option>G</option>
+    <option>Ab</option><option>A</option><option>Bb</option><option>B</option>
+  </select> major</label>
+  <label>Oct: <select id="ivOctave" style="padding:2px 4px;font-size:13px;border-radius:4px;border:1px solid #ccc">
+    <option value="2">2</option><option value="3">3</option>
+    <option value="4" selected>4</option><option value="5">5</option>
+  </select></label>
+  <span style="color:#bbb; margin:0 2px;">|</span>
+  <div id="ivDegs" style="display:flex; gap:5px; align-items:flex-end;">
+    <strong style="line-height:1.8;">Tones:</strong>
+    <!-- filled in by renderIntervalDegreeOpts() -->
+  </div>
+  <span style="color:#bbb; margin:0 2px;">|</span>
+  <label>Length: <select id="ivLen" style="padding:2px 4px;font-size:13px;border-radius:4px;border:1px solid #ccc">
+    <option>1</option><option>2</option><option selected>3</option><option>4</option>
+    <option>5</option><option>6</option><option>7</option><option>8</option>
+  </select></label>
+  <label>BPM: <input id="ivBpm" type="range" min="60" max="240" step="10" value="100"
+    style="width:110px; vertical-align:middle;"> <span id="ivBpmVal">100</span></label>
+</div>
+
 <div class="row">
   <!-- ===== MAIN QUIZ CARD ===== -->
   <div class="card" id="mainArea" style="flex:2; min-width:280px;">
@@ -209,6 +246,11 @@
         <div id="rhythmHintText" class="hint" style="font-size:15px;"></div>
       </div>
       <div id="choicesArea" style="display:flex; gap:8px; flex-wrap:wrap;"></div>
+      <!-- Interval trainer: what's been played back so far, and the home-row keys -->
+      <div id="intervalArea" style="display:none;">
+        <div id="ivSlots"></div>
+        <div id="ivKeys"></div>
+      </div>
     </div>
 
     <!-- Note letter buttons A-G (sheet mode only) -->
@@ -275,9 +317,10 @@ const QUIZ_TYPES = {
   "key-sheet":  {mode:"key",    modality:"sheet", play:false, prompt:"Which key is this signature?"},
   "key-ear":    {mode:"key",    modality:"ear",   play:true,  prompt:"Which key did you hear?"},
   "rhythm":     {mode:"rhythm", modality:"ear",   play:true,  prompt:"How many notes did you hear?"},
+  "interval":   {mode:"interval", modality:"ear", play:true,  prompt:"Play back the notes you heard"},
 };
 let quizType  = "note-sheet";
-let quizMode  = "note";  // derived from quizType — "note" | "key" | "rhythm"
+let quizMode  = "note";  // derived from quizType — "note" | "key" | "rhythm" | "interval"
 let modality  = "sheet"; // derived from quizType — "sheet" | "ear" | "tab"
 
 // Append-only log of settled questions: {state: "pass"|"fail"|"skip", hint}.
@@ -309,6 +352,13 @@ let rhythmEnabledCounts = new Set([2, 3, 4, 5, 6]);                             
 let rhythmEnabledNotes  = new Set(["C","D","E","F","G","A","B","C'"]);           // which pitches are active
 
 const RHYTHM_DUR_BEATS = { "16th": 0.25, "8th": 0.5, "4th": 1.0, "triplet": 1/3 };
+
+// Interval trainer: degrees 0–7 of the major scale (7 = the octave), answered
+// on the home row, one key per degree.
+let intervalCurrent = null;
+let ivEnabledDegs = new Set([0,1,2,3,4,5,6,7]);
+const IV_KEYS = ["a","s","d","f","g","h","j","k"];
+const IV_SCALE_ST = [0,2,4,5,7,9,11,12];
 
 // =====================================================================
 // GUITAR TAB STATE
@@ -1401,6 +1451,150 @@ function handleRhythmAnswer(count) {
 }
 
 // =====================================================================
+// INTERVAL TRAINER QUIZ
+// =====================================================================
+function intervalScale() {
+  const root = document.getElementById("ivRoot").value;
+  const oct  = Number(document.getElementById("ivOctave").value) || 4;
+  const rootSemi = (SEMI[root[0]] + (root[1] === "#" ? 1 : root[1] === "b" ? -1 : 0) + 12) % 12;
+  const rootMidi = 12 * (oct + 1) + rootSemi;
+  return { root, midi: IV_SCALE_ST.map(st => rootMidi + st) };
+}
+
+function ivLiveBpm() {
+  return Math.max(40, Math.min(300, Number(document.getElementById("ivBpm").value) || 100));
+}
+
+// Tones are picked by scale degree, numbered like the answer buttons.
+function renderIntervalDegreeOpts() {
+  const wrap = document.getElementById("ivDegs");
+  IV_SCALE_ST.forEach((_, d) => {
+    const lab = document.createElement("label");
+    lab.style.cssText = "display:flex;flex-direction:column;align-items:center;gap:1px;font-size:12px;" +
+      (d === 7 ? "border-left:1px solid #ccc;padding-left:5px;" : "");
+    const cb = document.createElement("input");
+    cb.type = "checkbox"; cb.checked = ivEnabledDegs.has(d);
+    cb.addEventListener("change", () => {
+      if (cb.checked) ivEnabledDegs.add(d); else ivEnabledDegs.delete(d);
+      if (ivEnabledDegs.size === 0) { cb.checked = true; ivEnabledDegs.add(d); }  // keep at least one
+      if (quizMode === "interval") newIntervalQuestion();
+    });
+    lab.appendChild(cb);
+    lab.appendChild(document.createTextNode(String(d + 1)));
+    wrap.appendChild(lab);
+  });
+}
+
+function playIntervalSequence() {
+  const c = intervalCurrent;
+  if (!c) return;
+  synth.ensure();
+  const sg = synth.newSeqGain();
+  const eighth = 30 / ivLiveBpm();
+  let t = synth.ctx.currentTime + 0.05;
+  c.degrees.forEach(d => {
+    synth.playNote(midiToFreq(c.scale.midi[d]), t, eighth * 0.85, 0.5, sg);
+    t += eighth;
+  });
+}
+
+// Entered notes show as neutral dots until the last one is in; only then is
+// each slot marked right or wrong, so a run can be played back blind.
+function renderIntervalSlots(graded) {
+  const c = intervalCurrent;
+  const wrap = document.getElementById("ivSlots");
+  wrap.innerHTML = "";
+  c.degrees.forEach((d, i) => {
+    const s = document.createElement("div");
+    const entered = i < c.entered.length;
+    s.className = "iv-slot" +
+      (graded ? (c.entered[i] === d ? " right" : " wrong") :
+       entered ? " filled" : i === c.entered.length ? " next" : "");
+    s.textContent = graded ? String(c.entered[i] + 1) : entered ? "•" : "";
+    wrap.appendChild(s);
+  });
+}
+
+function renderIntervalKeys() {
+  const wrap = document.getElementById("ivKeys");
+  wrap.innerHTML = "";
+  IV_KEYS.forEach((k, d) => {
+    const btn = document.createElement("button");
+    btn.className = "choice-btn";
+    const numDiv = document.createElement("div");   // the scale degree it answers
+    numDiv.className = "choice-num";
+    numDiv.textContent = String(d + 1);
+    btn.appendChild(numDiv);
+    const keyDiv = document.createElement("div");
+    keyDiv.textContent = k.toUpperCase();
+    btn.appendChild(keyDiv);
+    if (!ivEnabledDegs.has(d)) { btn.disabled = true; btn.style.opacity = "0.25"; }
+    btn.addEventListener("click", () => handleIntervalGuess(d));
+    wrap.appendChild(btn);
+  });
+}
+
+function newIntervalQuestion() {
+  const scale = intervalScale();
+  const len  = Number(document.getElementById("ivLen").value) || 3;
+  const pool = [...ivEnabledDegs];
+  const degrees = [];
+  while (degrees.length < len) degrees.push(pool[randomInt(0, pool.length - 1)]);
+  intervalCurrent = { scale, degrees, entered: [], tries: 0, answered: false };
+  waitingForNext = false; beginQuestion();
+  document.getElementById("earLabel").textContent = `Key: ${scale.root} major`;
+  renderIntervalSlots(false);
+  renderIntervalKeys();
+  clearFeedback();
+  playIntervalSequence();
+}
+
+// Throw away what's been entered so far and hear the run again — for when you
+// already know a note went wrong. Ungraded, so it doesn't count as a try.
+function restartIntervalEntry() {
+  const c = intervalCurrent;
+  if (!c || c.answered || waitingForNext) return;
+  c.entered = [];
+  renderIntervalSlots(false);
+  clearFeedback();
+  playIntervalSequence();
+}
+
+// Collects N notes, then grades the whole run: a pass dings and moves on, a
+// miss buzzes, shows which slots were wrong, and replays for another go.
+function handleIntervalGuess(d) {
+  const c = intervalCurrent;
+  if (!c || c.answered || waitingForNext || !ivEnabledDegs.has(d)) return;
+  synth.ensure();
+  synth.newSeqGain();  // answering cuts off any playback still running
+  synth.playNote(midiToFreq(c.scale.midi[d]), synth.now + 0.02, 0.35, 0.6);
+  c.entered.push(d);
+  if (c.entered.length < c.degrees.length) { renderIntervalSlots(false); return; }
+  c.tries++;
+  renderIntervalSlots(true);
+  const ok = c.entered.every((x, i) => x === c.degrees[i]);
+  waitingForNext = true;
+  if (ok) {
+    c.answered = true;
+    setTimeout(playFeedbackDing, 350);  // after the last note has rung
+    setFeedback("✓", "good");
+    recordResult(c.tries === 1, c.tries);
+    setTimeout(newIntervalQuestion, 1500);
+  } else {
+    setTimeout(playFeedbackBuzz, 350);
+    setFeedback("✗", "bad"); markWrong();
+    setTimeout(() => {
+      if (intervalCurrent !== c) return;  // skipped or switched meanwhile
+      waitingForNext = false;
+      c.entered = [];
+      renderIntervalSlots(false);
+      clearFeedback();
+      playIntervalSequence();
+    }, 1600);
+  }
+}
+
+// =====================================================================
 // GUITAR TAB QUIZ
 // =====================================================================
 function noteToMidi(letter, octave) { return 12 + octave * 12 + SEMI[letter]; }
@@ -1686,6 +1880,7 @@ function updateUI() {
   const isNote   = quizMode  === "note";
   const isKey    = quizMode  === "key";
   const isRhythm = quizMode  === "rhythm";
+  const isIv     = quizMode  === "interval";
 
   document.querySelectorAll(".quiz-btn").forEach(b =>
     b.classList.toggle("active-mode", b.dataset.quiz === quizType));
@@ -1696,6 +1891,7 @@ function updateUI() {
 
   document.getElementById("keyOpts").style.display     = isKey ? "flex" : "none";
   document.getElementById("earOpts").style.display     = (isEar && isNote) ? "flex" : "none";
+  document.getElementById("intervalOpts").style.display = isIv ? "flex" : "none";
   document.getElementById("tabOpts").style.display     = isTab ? "flex" : "none";
   document.getElementById("rhythmOpts").style.display  = isRhythm ? "flex" : "none";
 
@@ -1704,6 +1900,8 @@ function updateUI() {
   document.getElementById("earArea").style.display    = (isEar || isRhythm) ? "block" : "none";
   // Only the rhythm trainer draws a beat ruler, so only it reserves the space.
   document.getElementById("rhythmHintArea").style.display = isRhythm ? "block" : "none";
+  document.getElementById("choicesArea").style.display  = isIv ? "none" : "flex";
+  document.getElementById("intervalArea").style.display = isIv ? "block" : "none";
   document.getElementById("noteBtns").style.display   = showBoard ? "flex" : "none";
   document.getElementById("keyBtns").style.display    = (isSheet && isKey && !isRhythm) ? "block" : "none";
   // Only the key quiz needs a typed-answer readout — it builds up letter/accidental/
@@ -1717,6 +1915,7 @@ function startNewQuestion() {
   clearFeedback();
   document.querySelectorAll(".note-btn,.acc-btn,.qual-btn").forEach(b => b.classList.remove("selected-btn"));
   if      (quizMode === "rhythm")                    newRhythmQuestion();
+  else if (quizMode === "interval")                  newIntervalQuestion();
   else if (modality==="sheet" && quizMode==="note") newSheetNoteQuestion();
   else if (modality==="sheet" && quizMode==="key")  newSheetKeyQuestion();
   else if (modality==="tab")                         newTabNoteQuestion();
@@ -1734,6 +1933,7 @@ document.getElementById("hintBtn").addEventListener("click", handleHint);
 
 document.getElementById("playBtn").addEventListener("click", () => {
   if (quizMode === "rhythm") { playRhythmSequence(); return; }
+  if (quizMode === "interval") { playIntervalSequence(); return; }
   if (!earCurrent) return;
   if (earCurrent.kind === "note" && earCurrent.midi) synth.playMidi(earCurrent.midi, 90, 0.6);
   else if (earCurrent.kind === "key" && earCurrent.key) playEarKeySequence(earCurrent.key);
@@ -1828,6 +2028,14 @@ function handleHint() {
     case "rhythm":
       handleRhythmHint();
       break;
+    case "interval": {
+      const c = intervalCurrent;
+      if (!c || c.answered) return;
+      markHint();
+      const d = c.degrees[c.entered.length];
+      setHintText(`Hint: the next note is degree ${d + 1} (key ${IV_KEYS[d].toUpperCase()})`);
+      break;
+    }
   }
 }
 
@@ -1904,6 +2112,16 @@ document.getElementById("rhythmRestCb").addEventListener("change", e => {
   rhythmRestEnabled = e.target.checked;
 });
 
+document.getElementById("ivRoot").addEventListener("change", () => {
+  if (quizMode === "interval") newIntervalQuestion();
+});
+["ivOctave","ivLen"].forEach(id => document.getElementById(id).addEventListener("change", () => {
+  if (quizMode === "interval") newIntervalQuestion();
+}));
+// Tempo applies from the next playback, like the rhythm trainer's.
+const ivBpmEl = document.getElementById("ivBpm");
+ivBpmEl.addEventListener("input", () => { document.getElementById("ivBpmVal").textContent = ivBpmEl.value; });
+
 function onKeyFilterChange() {
   if (modality === "ear" && quizMode === "key") newEarKeyQuestion();
 }
@@ -1921,6 +2139,14 @@ document.querySelectorAll(".letter-cb").forEach(cb => {
 window.addEventListener("keydown", e => {
   if (e.target.tagName === "INPUT" || e.target.tagName === "SELECT") return;
   if (waitingForNext) return;
+  // The interval trainer answers on the home row, which includes S and H, so it
+  // goes first: Escape restarts the entry there and ? still gives a hint.
+  if (quizMode === "interval" && !e.metaKey && !e.ctrlKey && !e.altKey) {
+    const d = IV_KEYS.indexOf(e.key.toLowerCase());
+    if (d >= 0)              { e.preventDefault(); handleIntervalGuess(d); return; }
+    if (e.key === "Escape")  { e.preventDefault(); restartIntervalEntry(); return; }
+    if (e.code === "Space")  { e.preventDefault(); playIntervalSequence(); return; }
+  }
   // S/H/R work in every quiz; none of them is an answer key anywhere. The
   // modifier guard keeps Cmd+S, Cmd+R and friends with the browser.
   if (!e.metaKey && !e.ctrlKey) {
@@ -1999,6 +2225,18 @@ function handleMidiMessage(event) {
   // Accept note-on (0x90) with velocity > 0; treat note-on with vel=0 as note-off
   if ((status & 0xf0) !== 0x90 || velocity === 0) return;
   if (waitingForNext) return;
+  // Interval trainer: match by pitch class, so any octave on the keyboard works
+  // (the root answers for both 1 and 8, whichever is expected).
+  if (quizMode === "interval") {
+    const c = intervalCurrent;
+    if (!c || c.answered) return;
+    const pc = m => ((m % 12) + 12) % 12;
+    const want = c.degrees[c.entered.length];
+    if (pc(c.scale.midi[want]) === pc(note)) { handleIntervalGuess(want); return; }
+    const d = c.scale.midi.findIndex((m, i) => i < 7 && pc(m) === pc(note));
+    if (d >= 0) handleIntervalGuess(d);
+    return;
+  }
   // Only active for note quiz (sheet or tab)
   if (!((modality === "sheet" && quizMode === "note") || modality === "tab")) return;
   const letter = SEMI_INV.get(note % 12);
@@ -2036,6 +2274,7 @@ document.getElementById("midiRetryBtn").addEventListener("click", initMidi);
 // INIT
 // =====================================================================
 updateStats();
+renderIntervalDegreeOpts();
 updateUI();
 startNewQuestion();
 initMidi();
@@ -2083,7 +2322,13 @@ initMidi();
   <li><b>Space</b> replay sequence<br>
   </ul>
 
-  <strong>MIDI:</strong> play any natural note on your keyboard (Note · Sheet and Note · Tab)
+  Interval:
+  <ul>
+  <li><b>A S D F G H J K</b> scale degrees 1–8; enter all the notes you heard, then it's graded<br>
+  <li><b>Esc</b> start your answer over and replay · <b>Space</b> replay · <b>?</b> hint<br>
+  </ul>
+
+  <strong>MIDI:</strong> play any natural note on your keyboard (Note · Sheet, Note · Tab and Interval)
 </div>
 </body>
 </html>
