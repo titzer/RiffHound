@@ -68,8 +68,12 @@
     .iv-slot.next { border: 2px solid #4a90d9; }
     .iv-slot.right { color: #0a7a2f; border-color: #0a7a2f; background: #e6f4ec; }
     .iv-slot.wrong { color: #b32020; border-color: #b32020; background: #fde8e8; }
+    .iv-slot.ghost { color: #8fb4dc; }  /* Show answer: the note still to enter */
+    #ivKeys .choice-btn.iv-answer { border: 2px solid #4a90d9; background: #e8f0ff; }
+    #ivPractice { flex-basis: 100%; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
     #ivKeys { display: flex; gap: 6px; flex-wrap: wrap; }
     #ivKeys .choice-btn { min-width: 56px; flex: 1; font-size: 18px; font-weight: 600; }
+    #ivKeys.chromatic .choice-btn { min-width: 40px; padding-left: 2px; padding-right: 2px; }
     .ladder .step { stroke: #4a90d9; stroke-width: 2; fill: none; }
   </style>
 </head>
@@ -138,7 +142,7 @@
   </select> major</label>
   <label style="margin-left:4px;">Octave: <input id="earOctave" type="number" min="3" max="5" value="4"
     style="width:46px;padding:2px 4px;font-size:13px;border-radius:4px;border:1px solid #ccc"></label>
-  <label style="margin-left:4px;">Length: <input id="earLen" type="number" min="2" max="5" value="3"
+  <label style="margin-left:4px;">Length: <input id="earLen" type="number" min="1" max="5" value="3"
     style="width:46px;padding:2px 4px;font-size:13px;border-radius:4px;border:1px solid #ccc"></label>
   <label style="margin-left:4px;">Choices: <input id="earChoices" type="number" min="2" max="6" value="4"
     style="width:46px;padding:2px 4px;font-size:13px;border-radius:4px;border:1px solid #ccc"></label>
@@ -197,7 +201,11 @@
     <option>C</option><option>Db</option><option>D</option><option>Eb</option>
     <option>E</option><option>F</option><option>F#</option><option>G</option>
     <option>Ab</option><option>A</option><option>Bb</option><option>B</option>
-  </select> major</label>
+  </select></label>
+  <label>Mode: <select id="ivMode" style="padding:2px 4px;font-size:13px;border-radius:4px;border:1px solid #ccc">
+    <option value="major" selected>major</option><option value="minor">minor</option>
+    <option value="chromatic">chromatic</option>
+  </select></label>
   <label>Oct: <select id="ivOctave" style="padding:2px 4px;font-size:13px;border-radius:4px;border:1px solid #ccc">
     <option value="2">2</option><option value="3">3</option>
     <option value="4" selected>4</option><option value="5">5</option>
@@ -214,6 +222,22 @@
   </select></label>
   <label>BPM: <input id="ivBpm" type="range" min="60" max="240" step="10" value="100"
     style="width:110px; vertical-align:middle;"> <span id="ivBpmVal">100</span></label>
+  <!-- Practice levers: each one makes the trainer easier -->
+  <div id="ivPractice">
+    <strong>Practice:</strong>
+    <label title="After a run you missed, ask the same run again until it's right on the first try">
+      <input type="checkbox" id="ivRepeat" checked> Repeat misses</label>
+    <label title="How many notes of the last run are redrawn for the next one">Change:
+      <select id="ivChange" style="padding:2px 4px;font-size:13px;border-radius:4px;border:1px solid #ccc">
+        <option value="all" selected>all</option><option>1</option><option>2</option><option>3</option>
+        <option>4</option><option>5</option><option>6</option><option>7</option>
+      </select> notes</label>
+    <label title="How often a note steps on from the one before it, continuing an up or down run">Runs:
+      <select id="ivRuns" style="padding:2px 4px;font-size:13px;border-radius:4px;border:1px solid #ccc">
+        <option value="0" selected>off</option><option value="0.35">some</option><option value="0.65">lots</option>
+      </select></label>
+    <label title="Show each note of the run and light up its key"><input type="checkbox" id="ivShowAns"> Show answer</label>
+  </div>
 </div>
 
 <div class="row">
@@ -353,12 +377,28 @@ let rhythmEnabledNotes  = new Set(["C","D","E","F","G","A","B","C'"]);          
 
 const RHYTHM_DUR_BEATS = { "16th": 0.25, "8th": 0.5, "4th": 1.0, "triplet": 1/3 };
 
-// Interval trainer: degrees 0–7 of the major scale (7 = the octave), answered
-// on the home row, one key per degree.
+// Interval trainer: each mode is a list of tones above the root (the last is
+// the octave). Major and minor answer on the home row, one key per degree;
+// chromatic runs the 13 semitones along the QWERTY row, Q through \.
+const IV_MODES = {
+  major:     { st:   [0,2,4,5,7,9,11,12],
+               labels: ["1","2","3","4","5","6","7","8"],
+               keys: ["a","s","d","f","g","h","j","k"] },
+  minor:     { st:   [0,2,3,5,7,8,10,12],
+               labels: ["1","2","3","4","5","6","7","8"],
+               keys: ["a","s","d","f","g","h","j","k"] },
+  chromatic: { st:   [0,1,2,3,4,5,6,7,8,9,10,11,12],
+               labels: ["1","♭2","2","♭3","3","4","♭5","5","♭6","6","♭7","7","8"],
+               keys: ["q","w","e","r","t","y","u","i","o","p","[","]","\\"] },
+};
 let intervalCurrent = null;
-let ivEnabledDegs = new Set([0,1,2,3,4,5,6,7]);
-const IV_KEYS = ["a","s","d","f","g","h","j","k"];
-const IV_SCALE_ST = [0,2,4,5,7,9,11,12];
+let ivLastDegrees = null;  // the previous run, which "Change: N notes" edits
+let ivMode = "major";
+// Tone selections are kept per mode, so switching back restores them.
+const ivEnabledByMode = Object.fromEntries(
+  Object.entries(IV_MODES).map(([m, t]) => [m, new Set(t.st.map((_, i) => i))]));
+const ivTable = () => IV_MODES[ivMode];
+const ivEnabledDegs = () => ivEnabledByMode[ivMode];
 
 // =====================================================================
 // GUITAR TAB STATE
@@ -1458,7 +1498,7 @@ function intervalScale() {
   const oct  = Number(document.getElementById("ivOctave").value) || 4;
   const rootSemi = (SEMI[root[0]] + (root[1] === "#" ? 1 : root[1] === "b" ? -1 : 0) + 12) % 12;
   const rootMidi = 12 * (oct + 1) + rootSemi;
-  return { root, midi: IV_SCALE_ST.map(st => rootMidi + st) };
+  return { root, mode: ivMode, midi: ivTable().st.map(st => rootMidi + st) };
 }
 
 function ivLiveBpm() {
@@ -1468,19 +1508,21 @@ function ivLiveBpm() {
 // Tones are picked by scale degree, numbered like the answer buttons.
 function renderIntervalDegreeOpts() {
   const wrap = document.getElementById("ivDegs");
-  IV_SCALE_ST.forEach((_, d) => {
+  wrap.querySelectorAll("label").forEach(l => l.remove());
+  const t = ivTable(), enabled = ivEnabledDegs();
+  t.labels.forEach((name, d) => {
     const lab = document.createElement("label");
     lab.style.cssText = "display:flex;flex-direction:column;align-items:center;gap:1px;font-size:12px;" +
-      (d === 7 ? "border-left:1px solid #ccc;padding-left:5px;" : "");
+      (d === t.st.length - 1 ? "border-left:1px solid #ccc;padding-left:5px;" : "");
     const cb = document.createElement("input");
-    cb.type = "checkbox"; cb.checked = ivEnabledDegs.has(d);
+    cb.type = "checkbox"; cb.checked = enabled.has(d);
     cb.addEventListener("change", () => {
-      if (cb.checked) ivEnabledDegs.add(d); else ivEnabledDegs.delete(d);
-      if (ivEnabledDegs.size === 0) { cb.checked = true; ivEnabledDegs.add(d); }  // keep at least one
+      if (cb.checked) enabled.add(d); else enabled.delete(d);
+      if (enabled.size === 0) { cb.checked = true; enabled.add(d); }  // keep at least one
       if (quizMode === "interval") newIntervalQuestion();
     });
     lab.appendChild(cb);
-    lab.appendChild(document.createTextNode(String(d + 1)));
+    lab.appendChild(document.createTextNode(name));
     wrap.appendChild(lab);
   });
 }
@@ -1507,42 +1549,92 @@ function renderIntervalSlots(graded) {
   c.degrees.forEach((d, i) => {
     const s = document.createElement("div");
     const entered = i < c.entered.length;
+    const ghost = !graded && !entered && ivShowAnswer();
     s.className = "iv-slot" +
       (graded ? (c.entered[i] === d ? " right" : " wrong") :
-       entered ? " filled" : i === c.entered.length ? " next" : "");
-    s.textContent = graded ? String(c.entered[i] + 1) : entered ? "•" : "";
+       entered ? " filled" : i === c.entered.length ? " next" : "") + (ghost ? " ghost" : "");
+    const labels = IV_MODES[c.scale.mode].labels;
+    s.textContent = graded ? labels[c.entered[i]] : entered ? "•" : ghost ? labels[d] : "";
     wrap.appendChild(s);
   });
+  // Show answer: light up the key for the next note to enter.
+  const next = !graded && ivShowAnswer() ? c.degrees[c.entered.length] : -1;
+  document.querySelectorAll("#ivKeys .choice-btn").forEach((btn, d) =>
+    btn.classList.toggle("iv-answer", d === next));
+}
+
+function ivShowAnswer() { return document.getElementById("ivShowAns").checked; }
+
+// Draws the tone at position i of a run. With the Runs bias, it often steps to
+// the neighboring enabled tone instead, carrying on in the direction the run is
+// already going (or either way, from a lone note). `avoid` is the tone being
+// replaced, so a changed note really changes when there's anything else to pick.
+function ivDrawDegree(pool, degs, i, avoid) {
+  const bias = Number(document.getElementById("ivRuns").value) || 0;
+  const prev = degs[i - 1], prev2 = degs[i - 2];
+  if (prev != null && Math.random() < bias) {
+    const sorted = [...pool].sort((a, b) => a - b);
+    const j = sorted.indexOf(prev);
+    const dir = prev2 != null && prev2 !== prev ? Math.sign(prev - prev2) : (Math.random() < 0.5 ? 1 : -1);
+    for (const step of [dir, -dir]) {
+      const n = sorted[j + step];
+      if (j >= 0 && n != null && n !== avoid) return n;
+    }
+  }
+  const choices = avoid != null && pool.length > 1 ? pool.filter(d => d !== avoid) : pool;
+  return choices[randomInt(0, choices.length - 1)];
+}
+
+// A fresh run, or — with "Change: N notes" — the previous run with N of its
+// positions redrawn, as long as it still fits the current length and tones.
+function ivGenerateDegrees(len, pool) {
+  const change = Number(document.getElementById("ivChange").value);  // NaN for "all"
+  const prev = ivLastDegrees;
+  if (change < len && prev && prev.length === len && prev.every(d => pool.includes(d))) {
+    const degs = prev.slice();
+    const positions = [...degs.keys()].sort(() => Math.random() - 0.5).slice(0, change);
+    positions.forEach(i => { degs[i] = ivDrawDegree(pool, degs, i, degs[i]); });
+    return degs;
+  }
+  const degs = [];
+  while (degs.length < len) degs.push(ivDrawDegree(pool, degs, degs.length));
+  return degs;
 }
 
 function renderIntervalKeys() {
   const wrap = document.getElementById("ivKeys");
   wrap.innerHTML = "";
-  IV_KEYS.forEach((k, d) => {
+  const t = ivTable();
+  wrap.classList.toggle("chromatic", ivMode === "chromatic");
+  t.keys.forEach((k, d) => {
     const btn = document.createElement("button");
     btn.className = "choice-btn";
     const numDiv = document.createElement("div");   // the scale degree it answers
     numDiv.className = "choice-num";
-    numDiv.textContent = String(d + 1);
+    numDiv.textContent = t.labels[d];
     btn.appendChild(numDiv);
     const keyDiv = document.createElement("div");
     keyDiv.textContent = k.toUpperCase();
     btn.appendChild(keyDiv);
-    if (!ivEnabledDegs.has(d)) { btn.disabled = true; btn.style.opacity = "0.25"; }
+    if (!ivEnabledDegs().has(d)) { btn.disabled = true; btn.style.opacity = "0.25"; }
     btn.addEventListener("click", () => handleIntervalGuess(d));
     wrap.appendChild(btn);
   });
 }
 
-function newIntervalQuestion() {
+// `repeat` is a run to ask again as-is (Repeat misses); otherwise a new one.
+function newIntervalQuestion(repeat) {
   const scale = intervalScale();
   const len  = Number(document.getElementById("ivLen").value) || 3;
-  const pool = [...ivEnabledDegs];
-  const degrees = [];
-  while (degrees.length < len) degrees.push(pool[randomInt(0, pool.length - 1)]);
+  const pool = [...ivEnabledDegs()];
+  const again = Array.isArray(repeat);
+  const degrees = again ? repeat.slice() : ivGenerateDegrees(len, pool);
+  ivLastDegrees = degrees;
   intervalCurrent = { scale, degrees, entered: [], tries: 0, answered: false };
   waitingForNext = false; beginQuestion();
-  document.getElementById("earLabel").textContent = `Key: ${scale.root} major`;
+  if (ivShowAnswer()) markHint();
+  document.getElementById("earLabel").textContent =
+    `Key: ${scale.root} ${scale.mode}` + (again ? " · again" : "");
   renderIntervalSlots(false);
   renderIntervalKeys();
   clearFeedback();
@@ -1564,7 +1656,7 @@ function restartIntervalEntry() {
 // miss buzzes, shows which slots were wrong, and replays for another go.
 function handleIntervalGuess(d) {
   const c = intervalCurrent;
-  if (!c || c.answered || waitingForNext || !ivEnabledDegs.has(d)) return;
+  if (!c || c.answered || waitingForNext || !ivEnabledDegs().has(d)) return;
   synth.ensure();
   synth.newSeqGain();  // answering cuts off any playback still running
   synth.playNote(midiToFreq(c.scale.midi[d]), synth.now + 0.02, 0.35, 0.6);
@@ -1579,7 +1671,11 @@ function handleIntervalGuess(d) {
     setTimeout(playFeedbackDing, 350);  // after the last note has rung
     setFeedback("✓", "good");
     recordResult(c.tries === 1, c.tries);
-    setTimeout(newIntervalQuestion, 1500);
+    // Repeat misses: a run that took more than one try comes straight back.
+    const again = c.tries > 1 && document.getElementById("ivRepeat").checked;
+    setTimeout(() => {
+      if (intervalCurrent === c) newIntervalQuestion(again ? c.degrees : undefined);
+    }, 1500);
   } else {
     setTimeout(playFeedbackBuzz, 350);
     setFeedback("✗", "bad"); markWrong();
@@ -2033,7 +2129,8 @@ function handleHint() {
       if (!c || c.answered) return;
       markHint();
       const d = c.degrees[c.entered.length];
-      setHintText(`Hint: the next note is degree ${d + 1} (key ${IV_KEYS[d].toUpperCase()})`);
+      const t = IV_MODES[c.scale.mode];
+      setHintText(`Hint: the next note is degree ${t.labels[d]} (key ${t.keys[d].toUpperCase()})`);
       break;
     }
   }
@@ -2115,6 +2212,19 @@ document.getElementById("rhythmRestCb").addEventListener("change", e => {
 document.getElementById("ivRoot").addEventListener("change", () => {
   if (quizMode === "interval") newIntervalQuestion();
 });
+document.getElementById("ivMode").addEventListener("change", e => {
+  ivMode = e.target.value;
+  renderIntervalDegreeOpts();
+  if (quizMode === "interval") newIntervalQuestion();
+});
+// Hand focus back after a change, so the answer keys keep working.
+document.querySelectorAll("#ivPractice input, #ivPractice select").forEach(el =>
+  el.addEventListener("change", () => el.blur()));
+document.getElementById("ivShowAns").addEventListener("change", e => {
+  if (quizMode !== "interval" || !intervalCurrent || intervalCurrent.answered) return;
+  if (e.target.checked) markHint();
+  renderIntervalSlots(false);
+});
 ["ivOctave","ivLen"].forEach(id => document.getElementById(id).addEventListener("change", () => {
   if (quizMode === "interval") newIntervalQuestion();
 }));
@@ -2142,7 +2252,7 @@ window.addEventListener("keydown", e => {
   // The interval trainer answers on the home row, which includes S and H, so it
   // goes first: Escape restarts the entry there and ? still gives a hint.
   if (quizMode === "interval" && !e.metaKey && !e.ctrlKey && !e.altKey) {
-    const d = IV_KEYS.indexOf(e.key.toLowerCase());
+    const d = ivTable().keys.indexOf(e.key.toLowerCase());
     if (d >= 0)              { e.preventDefault(); handleIntervalGuess(d); return; }
     if (e.key === "Escape")  { e.preventDefault(); restartIntervalEntry(); return; }
     if (e.code === "Space")  { e.preventDefault(); playIntervalSequence(); return; }
@@ -2233,7 +2343,7 @@ function handleMidiMessage(event) {
     const pc = m => ((m % 12) + 12) % 12;
     const want = c.degrees[c.entered.length];
     if (pc(c.scale.midi[want]) === pc(note)) { handleIntervalGuess(want); return; }
-    const d = c.scale.midi.findIndex((m, i) => i < 7 && pc(m) === pc(note));
+    const d = c.scale.midi.findIndex((m, i) => i < c.scale.midi.length - 1 && pc(m) === pc(note));
     if (d >= 0) handleIntervalGuess(d);
     return;
   }
@@ -2325,7 +2435,10 @@ initMidi();
   Interval:
   <ul>
   <li><b>A S D F G H J K</b> scale degrees 1–8; enter all the notes you heard, then it's graded<br>
+  <li>Chromatic mode answers on <b>Q W E R T Y U I O P [ ] \</b>, one key per semitone from 1 to 8<br>
   <li><b>Esc</b> start your answer over and replay · <b>Space</b> replay · <b>?</b> hint<br>
+  <li><b>Practice</b> levers: Repeat misses asks a missed run again until it's clean; Change redraws only N notes of the last run;
+      Runs favors stepwise up/down motion; Show answer displays the run and lights up each key (marked H)<br>
   </ul>
 
   <strong>MIDI:</strong> play any natural note on your keyboard (Note · Sheet, Note · Tab and Interval)
