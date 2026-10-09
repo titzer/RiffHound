@@ -6130,7 +6130,7 @@ function sync(name) {
   if (head) head.box.checked = head.on(v);
   const dots = headDots[name];                   /* and its row of colour rings */
   if (dots) [...dots.children].forEach(b => b.classList.toggle("on", b.dataset.v === v));
-  if (name === "transpose" || name === "fineTune" || name === "a4") syncTune();
+  if (name === "speed" || name === "transpose" || name === "fineTune" || name === "a4") syncTune();
   if (name === "backgroundLevel") {              /* the picker's copy of the slider */
     if (document.activeElement !== bgLevel) bgLevel.value = v;
     bgLevelOut.value = v + "%";
@@ -6298,7 +6298,9 @@ function buildPanel() {
   const of = g => SETTINGS.filter(d => d.group === g);
   const on = name => ({ name, on: v => !!v, set: v => command({ cmd: "set", name, value: v }) });
   panel.replaceChildren(
-    group("Playback", null, of("playback")),
+    /* No Playback item: speed, pitch and the record's A4 belong to the track
+       in hand, not to the display, and live in the tuning window (K). Their
+       settings keep group "playback" so nothing else has to know. */
     group("Display", null, of("common"), null, "controlColour"),
     group("Lyrics", "lyricsGroup", of("lyrics"), on("lyricsPanel"), "lyricColour"),
     /* The melody pane is a choice, not a toggle: off, or the roll. */
@@ -6769,16 +6771,20 @@ $("pickDir").onchange = e => takeFiles(e.target.files);
 $("pickFiles").onchange = e => takeFiles(e.target.files);
 
 /* ── the tuning window ──────────────────────────────────────────────────── */
-/* The beatmapper's tuning popup, in this app's dress: the same three settings
-   the playback menu carries (transpose, fine tune, the record's A4), as
-   steppers rather than sliders, with the retune and a reset beside them. A
-   second view of the same settings -- sync() keeps it honest, as it does the
-   background picker's copy of its slider. */
+/* The beatmapper's tuning popup, in this app's dress, and the one place the
+   track's playback settings are shown: speed, transpose, fine tune and the
+   record's A4, as steppers, with the retune and a way back to the record.
+   They are settings like any other, so sync() keeps this view honest when the
+   keys change them. */
 const signed = (v, unit) => (v > 0 ? "+" : v < 0 ? "−" : "±") + Math.abs(v) + unit;
 
 function buildTunePanel() {
   tunePanel.innerHTML = `
-    <div class="tune-head">Pitch</div>
+    <div class="tune-head">Playback</div>
+    <div class="tune-row"><label>Speed</label>
+      <button class="step" data-n="speed" data-d="-1" title="Slower (-)">−</button>
+      <output id="tuneSp"></output>
+      <button class="step" data-n="speed" data-d="1" title="Faster (=)">+</button></div>
     <div class="tune-row"><label>Transpose</label>
       <button class="step" data-n="transpose" data-d="-1" title="Down a semitone ([)">−</button>
       <output id="tuneSt"></output>
@@ -6787,7 +6793,7 @@ function buildTunePanel() {
       <button class="step" data-n="fineTune" data-d="-1" title="Down a cent (;)">−</button>
       <output id="tuneCt"></output>
       <button class="step" data-n="fineTune" data-d="1" title="Up a cent (')">+</button></div>
-    <button class="tune-act" id="tuneReset" title="Back to the record's pitch (P)">Reset pitch</button>
+    <button class="tune-act" id="tuneReset" title="Back to the record's speed (\\) and pitch (P)">Back to the record</button>
     <div class="tune-head">Record tuned to</div>
     <div class="tune-row"><label>A4</label>
       <button class="step" data-n="a4" data-d="-1" title="Down 1 Hz (,)">−</button>
@@ -6802,11 +6808,11 @@ function buildTunePanel() {
   tunePanel.querySelectorAll(".step").forEach(b => b.onclick = () => {
     const name = b.dataset.n, d = +b.dataset.d;
     const v = name === "a4" ? (d < 0 ? Math.ceil(state.a4) - 1 : Math.floor(state.a4) + 1)
-                            : state[name] + d;
+                            : state[name] + d * DEF[name].step;
     command({ cmd: "set", name, value: v });
   });
   $("tuneReset").onclick = () =>
-    ["transpose", "fineTune"].forEach(name => command({ cmd: "set", name, value: DEF[name].reset }));
+    ["speed", "transpose", "fineTune"].forEach(name => command({ cmd: "set", name, value: DEF[name].reset }));
   $("tuneFix").onclick = () => retune();
 
   /* Typed in the map's own spelling or as a bare number; something it cannot
@@ -6831,9 +6837,10 @@ function syncTune() {
   const st = state.transpose, ct = state.fineTune, hz = state.a4;
   /* The settings arrive one at a time at start-up; wait for all three. */
   if (!$("tuneSt") || st === undefined || ct === undefined || hz === undefined) return;
+  $("tuneSp").value = DEF.speed.format(state.speed);
   $("tuneSt").value = signed(st, " st");
   $("tuneCt").value = signed(ct, "¢");
-  $("tuneReset").disabled = !st && !ct;
+  $("tuneReset").disabled = !st && !ct && state.speed === DEF.speed.reset;
   const a4 = $("tuneA4");
   if (document.activeElement !== a4) a4.value = +hz.toFixed(1) + " Hz";
 
