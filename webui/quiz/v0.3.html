@@ -568,13 +568,32 @@ function buildKeyPool() {
 // =====================================================================
 // AUDIO
 // =====================================================================
+// Plucked-string voice, from the "Two Plucked Strings" interval simulation.
+// A string plucked at fraction p of its length has harmonic n with amplitude
+// sin(n·π·p)/n; a lowpass that closes as the note rings lets the highs die first.
+const PLUCK_POS = 0.50, PLUCK_HARMONICS = 28;   // plucked dead centre: odd harmonics only
+const PLUCK_RELEASE = 1.5;                      // fade once the note ends, like lifting the finger
+// The sim's overall damping, rising linearly with log f so high notes die much
+// faster: 0.10 at low E2 (~10.6 s ring), +0.15 per octave (E4 ~3 s, E6 ~1.1 s).
+const PLUCK_DAMP_REF_HZ = 82.41, PLUCK_DAMP_AT_REF = 0.10, PLUCK_DAMP_PER_OCTAVE = 0.15;
+function pluckDecay(freq) {
+  const damp = Math.max(0, PLUCK_DAMP_AT_REF + PLUCK_DAMP_PER_OCTAVE * Math.log2(freq / PLUCK_DAMP_REF_HZ));
+  return 0.4 + 16 * Math.exp(-4.5 * damp);
+}
+function pluckedStringWave(ctx, p, nH) {
+  const real = new Float32Array(nH + 1), imag = new Float32Array(nH + 1);
+  for (let n = 1; n <= nH; n++) real[n] = Math.sin(n * Math.PI * p) / n;
+  return ctx.createPeriodicWave(real, imag, { disableNormalization: false });
+}
+
 class Synth {
-  constructor() { this.ctx = null; this.master = null; this.seqGain = null; this.wave = "sine"; this.vol = 0.25; }
+  constructor() { this.ctx = null; this.master = null; this.seqGain = null; this.wave = "sine"; this.pluckWave = null; this.vol = 0.25; }
   ensure() {
     if (!this.ctx) {
       const ctx = new (window.AudioContext || window.webkitAudioContext)();
       const m = ctx.createGain(); m.gain.value = this.vol; m.connect(ctx.destination);
       this.ctx = ctx; this.master = m;
+      this.pluckWave = pluckedStringWave(ctx, PLUCK_POS, PLUCK_HARMONICS);
     }
   }
   get now() { this.ensure(); return this.ctx.currentTime; }
@@ -586,19 +605,33 @@ class Synth {
     this.seqGain.connect(this.master);
     return this.seqGain;
   }
+  // A pluck rings down on its own over pluckDecay(freq) seconds; after `dur` it
+  // fades out over PLUCK_RELEASE, unless it would have died sooner anyway. A
+  // pluck has no sustain stage, so `sustain` is unused.
   playNote(freq, start, dur, sustain = 0.6, sink) {
     this.ensure();
     const ctx = this.ctx;
-    const osc = ctx.createOscillator(), gain = ctx.createGain();
-    osc.type = this.wave; osc.frequency.value = freq;
-    osc.connect(gain); gain.connect(sink || this.master);
-    const a = 0.01, d = 0.05, r = 0.1;
+    const osc = ctx.createOscillator(), lp = ctx.createBiquadFilter(), gain = ctx.createGain();
+    osc.setPeriodicWave(this.pluckWave); osc.frequency.value = freq;
+    const decay = pluckDecay(freq);
+    lp.type = "lowpass";
+    lp.frequency.setValueAtTime(Math.min(14000, freq * 26), start);
+    lp.frequency.exponentialRampToValueAtTime(Math.max(freq * 3, 500), start + Math.min(1.2, decay * 0.5));
+    osc.connect(lp); lp.connect(gain); gain.connect(sink || this.master);
+    const a = 0.006, r = PLUCK_RELEASE, floor = 0.0006;
+    const tPeak = start + a, tEnd = start + decay, tRel = Math.max(tPeak, start + dur);
     gain.gain.setValueAtTime(0.0001, start);
-    gain.gain.exponentialRampToValueAtTime(1.0, start + a);
-    gain.gain.exponentialRampToValueAtTime(sustain, start + a + d);
-    gain.gain.setValueAtTime(sustain, start + dur);
-    gain.gain.exponentialRampToValueAtTime(0.0001, start + dur + r);
-    osc.start(start); osc.stop(start + dur + r + 0.05);
+    gain.gain.exponentialRampToValueAtTime(1.0, tPeak);
+    let tStop = tEnd;
+    if (tRel + r < tEnd) {
+      // Follow the decay curve to the release point, then fade out.
+      gain.gain.exponentialRampToValueAtTime(Math.pow(floor, (tRel - tPeak) / (tEnd - tPeak)), tRel);
+      gain.gain.exponentialRampToValueAtTime(0.0001, tRel + r);
+      tStop = tRel + r;
+    } else {
+      gain.gain.exponentialRampToValueAtTime(floor, tEnd);
+    }
+    osc.start(start); osc.stop(tStop + 0.05);
   }
   playMidi(midiNotes, bpm = 90, sustainRatio = 0.6) {
     this.ensure();
