@@ -57,6 +57,20 @@
       font-weight: 700;
       font-size: 1.1rem;
     }
+
+    .app a {
+      display: block;
+      text-decoration: none;
+      color: inherit;
+    }
+
+    .deeplink {
+      margin-top: 0.6rem;
+      padding: 2px 4px;
+      font-size: 0.85rem;
+      border-radius: 4px;
+      border: 1px solid #ccc;
+    }
   </style>
 </head>
 <body>
@@ -69,10 +83,24 @@
         <span>Chord Buddy</span>
       </a>
 
-      <a class="app" href="quiz/v0.3.html">
-        <img src="quiz/logo-medium.png" alt="Eye/Ear Quiz logo">
-        <span>Eye/Ear Quiz</span>
-      </a>
+      <!-- The quiz card is a div, not a link, so it can hold a deep-link menu -->
+      <div class="app">
+        <a href="quiz/v0.3.html">
+          <img src="quiz/logo-medium.png" alt="Eye/Ear Quiz logo">
+          <span>Eye/Ear Quiz</span>
+        </a>
+        <select class="deeplink" aria-label="Jump to a quiz">
+          <option value="" selected>Jump to…</option>
+          <option value="quiz/v0.3.html#note-sheet">Note · Sheet</option>
+          <option value="quiz/v0.3.html#note-ear">Note · Ear</option>
+          <option value="quiz/v0.3.html#note-tab">Note · Tab</option>
+          <option value="quiz/v0.3.html#key-sheet">Key · Sheet</option>
+          <option value="quiz/v0.3.html#key-ear">Key · Ear</option>
+          <option value="quiz/v0.3.html#rhythm">Rhythm</option>
+          <option value="quiz/v0.3.html#interval">Interval</option>
+          <option value="quiz/v0.3.html#tap">Tap</option>
+        </select>
+      </div>
 
       <a class="app" href="voice/v0.3.html">
         <img src="voice/logo-medium.png" alt="Pitch Trainer logo">
@@ -92,5 +120,10 @@
       <!-- Add up to three more apps by copying one of the blocks above. -->
     </div>
   </main>
+  <script>
+    // Deep-link menus: picking an entry navigates straight to that sub-app.
+    document.querySelectorAll(".deeplink").forEach(sel =>
+      sel.addEventListener("change", () => { if (sel.value) location.href = sel.value; }));
+  </script>
 </body>
 </html>

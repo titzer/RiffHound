@@ -1333,6 +1333,7 @@
   .listhead em { font-style: normal; font-size: .6em; margin-left: 1.1em; color: var(--dim); }
   .listhead .badge { font-size: .6em; }
   .listhead:hover { text-shadow: 0 0 10px var(--fg); }
+  .listhead .x { font-weight: normal; margin-left: .8em; }
   .results > .missing { padding: 0 6px 4px; font-size: 11px; color: var(--dim); opacity: .75; }
 
   /* ---- transport bar --------------------------------------------------- */
@@ -5719,6 +5720,9 @@ function buildPanel() {
 let searchBox = null, results = null, dirList = null, reloadBtn = null, problemBox = null;
 let srvBox = null, srvList = null, filterRow = null, filterCount = null;
 let showTab = () => {};    /* set by buildTrackPanel: paints the tab row for store.tab */
+/* The list opened from the lists view, by id, or null for all of them. While
+   one is open the search box searches its tracks rather than list names. */
+let openList = null;
 
 /* The things a chart can carry, as checkboxes. Off is "everything", so the
    default library is the whole library and a box only ever narrows it. */
@@ -5752,7 +5756,12 @@ function buildTrackPanel() {
     b.textContent = text;
     b.dataset.tab = key;
     b.setAttribute("role", "tab");
-    b.onclick = () => { store.tab = key; save(); pickId = null; showTab(); renderResults(searchBox.value); searchBox.focus(); };
+    /* A query for one view is never what you want in the other -- a list name
+       searched as a track title finds nothing -- so a switch starts clean. */
+    b.onclick = () => {
+      store.tab = key; save(); pickId = null; openList = null; searchBox.value = "";
+      showTab(); renderResults(""); searchBox.focus();
+    };
     tabs.append(b);
   }
   const head = document.createElement("div");
@@ -5765,7 +5774,8 @@ function buildTrackPanel() {
       b.classList.toggle("active", b.dataset.tab === store.tab);
       b.setAttribute("aria-selected", b.dataset.tab === store.tab);
     });
-    if (searchBox) searchBox.placeholder = on ? "search lists…" : "search tracks…";
+    if (searchBox) searchBox.placeholder =
+      !on ? "search tracks…" : openList ? "search this list…" : "search lists…";
   };
 
   filterRow = document.createElement("div");
@@ -5797,7 +5807,13 @@ function buildTrackPanel() {
      is what the typing was for. */
   searchBox.onkeydown = e => {
     if (e.metaKey || e.ctrlKey || e.altKey) return;
-    if (e.key === "ArrowDown") movePick(1);
+    /* Escape backs out of an open list first, and only then out of the dialog;
+       stopped here so the window's Escape does not close the panel too. */
+    if (e.key === "Escape" && store.tab === "lists" && openList) {
+      closeList();
+      e.stopPropagation();
+    }
+    else if (e.key === "ArrowDown") movePick(1);
     else if (e.key === "ArrowUp") movePick(-1);
     else if (e.key === "Enter") {
       const e1 = shown.find(x => x.id === pickId) || shown[0];
@@ -5899,6 +5915,14 @@ const carried = e => {
   return on.length ? on.join(" · ") : "no chart";
 };
 
+/* A query finds a track by its title or by where it lives. For a server track
+   that is the folder under the root, never the server's name: the name is the
+   machine's hostname, and on a network that hands out names like
+   sindel-7.wifi.local.cmu.edu nearly any short query is a subsequence of it,
+   which used to let every track through. */
+const matches = (q, e) =>
+  fuzzy(q, e.title) || fuzzy(q, e.remote ? e.folder : e.source);
+
 /* The row the arrow keys are on, by track rather than by position: the list is
    redrawn under you whenever a server answers or a scan lands, and the cursor
    should still be on the track it was on. */
@@ -5948,7 +5972,7 @@ function renderResults(query) {
   if (store.tab === "lists") return renderLists(q);
 
   const all = library();
-  const kept = all.filter(e => (fuzzy(q, e.title) || fuzzy(q, e.source)) && passes(e));
+  const kept = all.filter(e => matches(q, e) && passes(e));
   if (filterCount)
     filterCount.textContent = kept.length === all.length
       ? all.length + " tracks"
@@ -5966,26 +5990,40 @@ function renderResults(query) {
   markPick();
 }
 
-/* The lists view: the query is matched against list names, and what is shown
-   is every list that matches, as a heading over its tracks in the order the
-   file gives them. The chart filters still apply to the tracks, so "Lists +
+/* The lists view: every list the query finds, as a heading over its tracks in
+   the order the file gives them; click a heading to open just that list and
+   search inside it. The chart filters still apply to the tracks, so "Lists +
    Lyrics" is the setlist minus the ones you would have to hum. A line the
    server could not match is shown under the list rather than dropped: a typo
    in a setlist should be found here, not on stage. */
 function renderLists(q) {
   const all = lists();
-  const hit = all.filter(l => fuzzy(q, l.name));
+  if (openList && !all.some(l => l.id === openList)) openList = null;   /* its server went away */
   const byId = new Map(library().map(e => [e.id, e]));
+  const inList = l => l.ids.map(id => byId.get(id)).filter(e => e && passes(e));
+  /* With a list open, the query narrows its tracks. Otherwise a list is found
+     by its name -- and then shown whole -- or by the tracks in it, and then
+     shown with just those, so "free" finds the setlist Free Fallin' is in. */
+  const hit = [];
+  for (const l of all) {
+    if (openList && l.id !== openList) continue;
+    const tracks = inList(l);
+    if (!openList && fuzzy(q, l.name)) hit.push([l, tracks]);
+    else {
+      const some = tracks.filter(e => matches(q, e));
+      if (some.length) hit.push([l, some]);
+    }
+  }
   const nodes = [];
   shown = [];
-  for (const l of hit) {
-    const tracks = l.ids.map(id => byId.get(id)).filter(e => e && passes(e));
+  for (const [l, tracks] of hit) {
     const head = document.createElement("div");
-    head.className = "listhead";
+    head.className = "listhead" + (openList ? " open" : "");
     head.innerHTML = `<span>${l.name}<em>${[l.source, l.folder].filter(Boolean).join("/")}</em></span>` +
-                     `<span class="badge">${tracks.length} track${tracks.length === 1 ? "" : "s"}</span>`;
-    head.title = "search for just this list";
-    head.onclick = () => { searchBox.value = l.name; pickId = null; renderResults(l.name); searchBox.focus(); };
+                     `<span class="badge">${tracks.length} track${tracks.length === 1 ? "" : "s"}` +
+                     `${openList ? ' <b class="x">×</b>' : ""}</span>`;
+    head.title = openList ? "back to all lists (Esc)" : "open just this list";
+    head.onclick = () => openList ? closeList() : chooseList(l.id);
     nodes.push(head);
     /* Capped as the track view is, and by the same count, so a wall of lists
        cannot make the panel unusable. The cursor list is what is on screen. */
@@ -6001,10 +6039,22 @@ function renderLists(q) {
       nodes.push(m);
     }
   }
+  /* An open list with nothing matching the query still keeps its heading, so
+     the way back out stays on screen. */
+  if (openList && !hit.length) {
+    const l = all.find(l => l.id === openList);
+    const head = document.createElement("div");
+    head.className = "listhead open";
+    head.innerHTML = `<span>${l.name}</span><span class="badge">0 tracks <b class="x">×</b></span>`;
+    head.title = "back to all lists (Esc)";
+    head.onclick = closeList;
+    nodes.push(head, emptyNote("nothing in this list matches"));
+  }
   if (filterCount)
-    filterCount.textContent = (hit.length === all.length
-      ? all.length + " list" + (all.length === 1 ? "" : "s")
-      : hit.length + " of " + all.length + " lists") + " · " + shown.length + " tracks";
+    filterCount.textContent = (openList ? ""
+      : (hit.length === all.length
+          ? all.length + " list" + (all.length === 1 ? "" : "s")
+          : hit.length + " of " + all.length + " lists") + " · ") + shown.length + " tracks";
 
   results.replaceChildren(...(nodes.length ? nodes : [emptyNote(
     !remote.some(r => r.ok)
@@ -6013,6 +6063,16 @@ function renderLists(q) {
         ? "nothing found"
         : "no lists yet — a file list-Name.txt beside the tracks, one track name per line, is a list")]));
   markPick();
+}
+
+function chooseList(id) {
+  openList = id; pickId = null; searchBox.value = "";
+  showTab(); renderResults(""); searchBox.focus();
+}
+
+function closeList() {
+  openList = null; pickId = null; searchBox.value = "";
+  showTab(); renderResults(""); searchBox.focus();
 }
 
 function renderServers() {
@@ -6120,7 +6180,8 @@ function openMenu(open) {
 function openTrackPanel(open) {
   trackPanel.hidden = !open;
   titleBtn.setAttribute("aria-expanded", open);
-  if (open) { pickId = null; renderResults(searchBox.value); openMenu(false); openBgPanel(false); searchBox.focus(); }
+  /* Selected, so typing replaces the last query rather than appending to it. */
+  if (open) { pickId = null; renderResults(searchBox.value); openMenu(false); openBgPanel(false); searchBox.focus(); searchBox.select(); }
   peekBare(open);
 }
 

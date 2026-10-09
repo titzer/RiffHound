@@ -43,6 +43,7 @@
     .choice-num { align-self: flex-start; font-size: 12px; font-weight: 700; color: #888; line-height: 1; }
     .choice-btn.correct { border-color: #0a7a2f; background: #e6f4ec; }
     .choice-btn.wrong   { border-color: #b32020; background: #fde8e8; }
+    .tap-pad.hit { background: #d0e8ff; border-color: #4a90d9; }
     /* Transient answer flash, applied to whatever control took the answer.
        !important because it has to beat :hover (the pointer is still on the
        button you just clicked) and .selected-btn on the key-quiz buttons. */
@@ -94,6 +95,7 @@
   <button class="quiz-btn" data-quiz="key-sheet">Key · Sheet</button>
   <button class="quiz-btn" data-quiz="key-ear">Key · Ear</button>
   <button class="quiz-btn" data-quiz="rhythm">Rhythm</button>
+  <button class="quiz-btn" data-quiz="tap">Tap</button>
   <button class="quiz-btn" data-quiz="interval">Interval</button>
   <!-- Note-quiz sequence length; carries its own separator so both hide together -->
   <span id="seqLenWrap" class="hint">
@@ -148,7 +150,7 @@
     style="width:46px;padding:2px 4px;font-size:13px;border-radius:4px;border:1px solid #ccc"></label>
 </div>
 
-<!-- Rhythm trainer options (rhythm mode only) -->
+<!-- Rhythm trainer options (rhythm and tap modes; tap hides the tones) -->
 <div id="rhythmOpts" style="display:none; margin-bottom:8px; gap:10px; align-items:center; flex-wrap:wrap;" class="hint">
   <div style="display:flex; gap:6px; align-items:flex-end;">
     <strong style="line-height:1.8;">Notes:</strong>
@@ -163,8 +165,8 @@
   </div>
   <label>BPM: <input id="rhythmBpm" type="range" min="100" max="1000" step="50" value="150"
     style="width:130px; vertical-align:middle;"> <span id="rhythmBpmVal">150</span></label>
-  <span style="color:#bbb; margin:0 2px;">|</span>
-  <div style="display:flex; gap:5px; align-items:flex-end;">
+  <div id="rhythmTonesWrap" style="display:flex; gap:5px; align-items:flex-end;">
+    <span style="color:#bbb; margin:0 2px; line-height:1.8;">|</span>
     <strong style="line-height:1.8;">Tones:</strong>
     <label style="display:flex;flex-direction:column;align-items:center;gap:1px;font-size:12px;"><input type="checkbox" class="rhythmnote-cb" data-note="C" checked>C</label>
     <label style="display:flex;flex-direction:column;align-items:center;gap:1px;font-size:12px;"><input type="checkbox" class="rhythmnote-cb" data-note="D" checked>D</label>
@@ -184,15 +186,20 @@
   </div>
   <span style="color:#bbb; margin:0 2px;">|</span>
   <strong>Rhythm:</strong>
-  <button id="rhythmConstantBtn" class="selected-btn">Constant</button>
+  <button id="rhythmConstantBtn">Constant</button>
   <label><input type="checkbox" class="rhythmdur-cb" data-dur="16th"> 16th</label>
-  <label><input type="checkbox" class="rhythmdur-cb" data-dur="8th"> 8th</label>
-  <label><input type="checkbox" class="rhythmdur-cb" data-dur="4th"> 4th</label>
+  <label><input type="checkbox" class="rhythmdur-cb" data-dur="8th" checked> 8th</label>
+  <label><input type="checkbox" class="rhythmdur-cb" data-dur="4th" checked> 4th</label>
   <label><input type="checkbox" class="rhythmdur-cb" data-dur="triplet"> Triplet</label>
-  <label><input type="checkbox" id="rhythmRestCb"> 8th rest</label>
+  <label><input type="checkbox" id="rhythmRestCb" checked> 8th rest</label>
   <span style="color:#bbb; margin:0 2px;">|</span>
   <label><input type="checkbox" id="rhythmHintAlways"> Always hint</label>
   <label><input type="checkbox" id="rhythmSoundFb" checked> Ding/buzz</label>
+  <label id="tapTolWrap" title="How closely your taps must match the pattern's relative timing (strict also checks the tempo)">Tolerance:
+    <select id="tapTol" style="padding:2px 4px;font-size:13px;border-radius:4px;border:1px solid #ccc">
+      <option value="strict">strict</option><option value="normal" selected>normal</option>
+      <option value="loose">loose</option>
+    </select></label>
 </div>
 
 <!-- Interval trainer options (interval mode only) -->
@@ -341,10 +348,11 @@ const QUIZ_TYPES = {
   "key-sheet":  {mode:"key",    modality:"sheet", play:false, prompt:"Which key is this signature?"},
   "key-ear":    {mode:"key",    modality:"ear",   play:true,  prompt:"Which key did you hear?"},
   "rhythm":     {mode:"rhythm", modality:"ear",   play:true,  prompt:"How many notes did you hear?"},
+  "tap":        {mode:"tap",    modality:"ear",   play:true,  prompt:"Tap back the rhythm on B"},
   "interval":   {mode:"interval", modality:"ear", play:true,  prompt:"Play back the notes you heard"},
 };
 let quizType  = "note-sheet";
-let quizMode  = "note";  // derived from quizType — "note" | "key" | "rhythm" | "interval"
+let quizMode  = "note";  // derived from quizType — "note" | "key" | "rhythm" | "tap" | "interval"
 let modality  = "sheet"; // derived from quizType — "sheet" | "ear" | "tab"
 
 // Append-only log of settled questions: {state: "pass"|"fail"|"skip", hint}.
@@ -370,8 +378,8 @@ let earCurrent = null;
 
 // Rhythm trainer
 let rhythmCurrent = null;
-let rhythmDurSet       = new Set();                                               // checked note values → complex; empty → constant
-let rhythmRestEnabled  = false;
+let rhythmDurSet       = new Set(["8th", "4th"]);                                // checked note values → complex; empty → constant
+let rhythmRestEnabled  = true;
 let rhythmEnabledCounts = new Set([2, 3, 4, 5, 6]);                              // which note counts are active
 let rhythmEnabledNotes  = new Set(["C","D","E","F","G","A","B","C'"]);           // which pitches are active
 
@@ -1130,14 +1138,24 @@ function buildRhythmNotePool() {
   return pool.length > 0 ? pool : [12 + oct * 12 + SEMI["C"]];
 }
 
-function scheduleRhythmHighlights() {
-  const { events } = rhythmCurrent;
+// Draws the beat ruler for `events` and animates it along with playback. With
+// `taps` (see drawTapMarks) it instead draws a still picture: the pattern, plus
+// a mark under the ruler where each tap landed, and returns {ruler, xFor, tapEnd}
+// so the tap trainer can keep drawing on it. opts.live sizes the ruler for taps
+// still to come; opts.hideNotes leaves the pattern off (taps before a hint).
+function scheduleRhythmHighlights(events, taps, opts = {}) {
   const bpm = rhythmLiveBpm();
   const beatMs = (60 / bpm) * 1000;
   const beatsEl = document.getElementById("rhythmBeats");
   beatsEl.innerHTML = "";
 
-  const totalBeats = events.reduce((s, ev) => s + ev.dur, 0);
+  // Stray taps far past the end are pinned just after it rather than widening the ruler.
+  const patternBeats = events.reduce((s, ev) => s + ev.dur, 0);
+  const tapEnd = patternBeats + 1;
+  const totalBeats = opts.live ? tapEnd
+    : taps && taps.length
+    ? Math.max(patternBeats, Math.min(tapEnd, Math.ceil(taps[taps.length - 1].beat * 4) / 4))
+    : patternBeats;
 
   const PAD = 10;
   const avail = Math.max(160, beatsEl.offsetWidth - 4);
@@ -1172,6 +1190,8 @@ function scheduleRhythmHighlights() {
     }));
     t = Math.round((t + 0.25) * 16384) / 16384;
   }
+
+  const firstNoteEl = ruler.childNodes.length; // everything from here on is the pattern
 
   // ── Note/rest symbol helpers ──────────────────────────────────────────
   // Note geometry: head is a small rotated ellipse; stem goes straight up.
@@ -1347,6 +1367,16 @@ function scheduleRhythmHighlights() {
     }
   }
 
+  if (taps) {
+    for (const k of animItems) if (!k.isRest) k.head.setAttribute("fill", "#4a90d9");
+    if (opts.hideNotes) while (ruler.childNodes.length > firstNoteEl) ruler.lastChild.remove();
+    const g = el("g", {});
+    ruler.appendChild(g);
+    drawTapMarks(g, xFor, tapEnd, taps);
+    beatsEl.appendChild(ruler);
+    return { ruler, xFor, tapEnd, g };
+  }
+
   beatsEl.appendChild(ruler);
 
   // ── Animate: inactive (#bbb/#ccc) → blue (onset) → green (done) ──────
@@ -1369,6 +1399,29 @@ function scheduleRhythmHighlights() {
   });
 }
 
+// Tap marks under the ruler: [{beat, end, ok}] in beats from the first tap. A dot
+// where each tap landed and a bar out to its release (`end`, if known). ok: true
+// green, false red, null grey (count was off), undefined blue (not scored yet).
+// `playhead`, if given, draws the live time line.
+function drawTapMarks(g, xFor, tapEnd, marks, playhead) {
+  g.replaceChildren();
+  const clampX = b => xFor(Math.min(tapEnd, Math.max(0, b)));
+  for (const m of marks) {
+    const fill = m.ok === undefined ? "#4a90d9" : m.ok == null ? "#888" : m.ok ? "#0a7a2f" : "#b32020";
+    const x = clampX(m.beat);
+    if (m.end != null && m.end > m.beat) {
+      g.appendChild(el("rect", { x, y: 61, width: Math.max(0, clampX(m.end) - x), height: 4,
+                                  rx: 2, fill, "fill-opacity": 0.45 }));
+    }
+    g.appendChild(el("circle", { cx: x, cy: 63, r: 4.5, fill }));
+  }
+  if (playhead != null) {
+    const x = clampX(playhead);
+    g.appendChild(el("line", { x1: x, y1: 4, x2: x, y2: 68, stroke: "#4a90d9",
+                                "stroke-width": 1.5, "stroke-opacity": 0.6 }));
+  }
+}
+
 function playRhythmSequence() {
   if (!rhythmCurrent) return;
   const { events } = rhythmCurrent;
@@ -1382,7 +1435,7 @@ function playRhythmSequence() {
     if (!ev.rest) synth.playNote(midiToFreq(ev.midi), t, dur * 0.8, 0.5, sg);
     t += dur;
   });
-  if (rhythmCurrent.hintUsed) scheduleRhythmHighlights();
+  if (rhythmCurrent.hintUsed) scheduleRhythmHighlights(events);
 }
 
 function renderRhythmChoices() {
@@ -1414,15 +1467,17 @@ function handleRhythmHint() {
   activateRhythmHint();
 }
 
-function newRhythmQuestion() {
+function pickRhythmCount() {
   const pool = rhythmEnabledCounts.size > 0 ? [...rhythmEnabledCounts] : [2, 3, 4];
-  const count = pool[randomInt(0, pool.length - 1)];
-  const notePool = buildRhythmNotePool();
+  return pool[randomInt(0, pool.length - 1)];
+}
+
+// A random pattern from the rhythm options: `count` notes drawn from `notePool`
+// with the chosen durations, and optional 8th rests between notes.
+function buildRhythmEvents(count, notePool) {
   const durPool = rhythmDurSet.size > 0
     ? [...rhythmDurSet].map(k => RHYTHM_DUR_BEATS[k])
     : null; // null = constant (1 beat each)
-
-  // Build events: notes with chosen durations, optional 8th rests between notes
   const events = [];
   for (let i = 0; i < count; i++) {
     const midi = notePool[randomInt(0, notePool.length - 1)];
@@ -1432,6 +1487,12 @@ function newRhythmQuestion() {
       events.push({ rest: true, dur: 0.5 });
     }
   }
+  return events;
+}
+
+function newRhythmQuestion() {
+  const count = pickRhythmCount();
+  const events = buildRhythmEvents(count, buildRhythmNotePool());
   rhythmCurrent = { count, events, hintUsed: false, answered: false, tries: 0 };
   waitingForNext = false; beginQuestion();
   document.getElementById("rhythmHintText").textContent = "";
@@ -1487,6 +1548,232 @@ function handleRhythmAnswer(count) {
       renderRhythmChoices();
       playRhythmSequence();
     }, 800);
+  }
+}
+
+// =====================================================================
+// TAP TRAINER QUIZ
+// =====================================================================
+// One tone plays a rhythm; you tap it back on B (or the pad). Only onsets are
+// compared — a tap can't say how long a note was held — so rests show up as
+// longer gaps and the last note's length never matters. Gaps are compared rather
+// than absolute times, so reaction time before the first tap doesn't count.
+const TAP_KEY  = "KeyB";
+const TAP_MIDI = 72; // C5: one fixed tone, pitch carries nothing here
+// Your taps are rescaled to the pattern's length before the gaps are compared,
+// so only the relative timing has to be right. gap: how far each gap may stray,
+// as a fraction of its expected length, with a floor in ms so fast 16ths stay
+// hittable. tempo: how far the overall tempo may drift (strict only).
+const TAP_TOL = {
+  strict: {gap: 0.15, floorMs: 40, tempo: 0.15},
+  normal: {gap: 0.25, floorMs: 60, tempo: Infinity},
+  loose:  {gap: 0.35, floorMs: 80, tempo: Infinity},
+};
+// phase: "listen" while the pattern plays (taps ignored), "tap" while taking
+// taps, "done" once scored. `gen` lets a replay orphan the previous playback's timer.
+let tapCurrent = null;
+let tapHeld = null; // {osc, gain} of the tone sounding while B (or the pad) is held
+
+// The tap tone sustains for as long as the key is down, with the same attack
+// and sustain level as the pattern's notes. Hold length isn't scored.
+function startTapTone() {
+  stopTapTone();
+  synth.ensure();
+  const ctx = synth.ctx, t = ctx.currentTime;
+  const osc = ctx.createOscillator(), gain = ctx.createGain();
+  osc.type = synth.wave; osc.frequency.value = midiToFreq(TAP_MIDI);
+  osc.connect(gain); gain.connect(synth.master);
+  gain.gain.setValueAtTime(0.0001, t);
+  gain.gain.exponentialRampToValueAtTime(1.0, t + 0.01);
+  gain.gain.exponentialRampToValueAtTime(0.5, t + 0.06);
+  osc.start(t);
+  tapHeld = {osc, gain};
+}
+
+function stopTapTone() {
+  if (!tapHeld) return;
+  const {osc, gain} = tapHeld;
+  tapHeld = null;
+  const t = synth.ctx.currentTime;
+  gain.gain.cancelScheduledValues(t);
+  gain.gain.setValueAtTime(Math.max(gain.gain.value, 0.0001), t);
+  gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.1);
+  osc.stop(t + 0.15);
+}
+
+function tapOnsets(events) {
+  const out = [];
+  let b = 0;
+  for (const ev of events) { if (!ev.rest) out.push(b); b += ev.dur; }
+  return out;
+}
+
+function cancelTapQuestion() {
+  stopTapTone();
+  if (tapCurrent) clearTimeout(tapCurrent.timer);
+  tapCurrent = null;
+}
+
+function renderTapPad() {
+  const area = document.getElementById("choicesArea");
+  area.innerHTML = "";
+  const pad = document.createElement("button");
+  pad.className = "choice-btn tap-pad";
+  pad.style.cssText = "font-size:22px;font-weight:700;min-height:72px;";
+  pad.textContent = "Tap (B)";
+  pad.addEventListener("pointerdown", e => { e.preventDefault(); handleTap(e.timeStamp); });
+  for (const ev of ["pointerup", "pointerleave", "pointercancel"]) pad.addEventListener(ev, e => releaseTap(e.timeStamp));
+  area.appendChild(pad);
+}
+
+function setTapStatus(text) {
+  document.getElementById("earLabel").textContent = text;
+}
+
+function newTapQuestion() {
+  cancelTapQuestion();
+  const events = buildRhythmEvents(pickRhythmCount(), [TAP_MIDI]);
+  tapCurrent = { events, onsets: tapOnsets(events), taps: [], releases: [], live: null, phase: "listen",
+                 tries: 0, hintUsed: false, answered: false, gen: 0, timer: null };
+  waitingForNext = false; beginQuestion();
+  document.getElementById("rhythmHintText").textContent = "";
+  document.getElementById("rhythmBeats").innerHTML = "";
+  renderTapPad();
+  clearFeedback();
+  if (rhythmHintAlways()) { tapCurrent.hintUsed = true; markHint(); }
+  playTapSequence();
+}
+
+// Plays the pattern, then opens the floor for taps once it has finished.
+function playTapSequence() {
+  const c = tapCurrent;
+  if (!c || c.answered || waitingForNext) return;
+  clearTimeout(c.timer);
+  c.taps = []; c.releases = []; c.live = null; c.phase = "listen";
+  const gen = ++c.gen;
+  const beatSec = 60 / rhythmLiveBpm();
+  synth.ensure();
+  const sg = synth.newSeqGain();
+  const t0 = synth.ctx.currentTime + 0.05;
+  let t = t0;
+  c.events.forEach(ev => {
+    const dur = ev.dur * beatSec;
+    if (!ev.rest) synth.playNote(midiToFreq(ev.midi), t, dur * 0.8, 0.5, sg);
+    t += dur;
+  });
+  if (c.hintUsed) scheduleRhythmHighlights(c.events);
+  setTapStatus("Listen…");
+  c.timer = setTimeout(() => {
+    if (tapCurrent !== c || c.gen !== gen) return;
+    c.phase = "tap";
+    setTapStatus("Your turn: tap it back on B");
+    // Empty ruler for the taps to land on; the pattern shows only if hinted.
+    c.live = scheduleRhythmHighlights(c.events, [], { live: true, hideNotes: !c.hintUsed });
+  }, (t - synth.ctx.currentTime) * 1000);
+}
+
+function handleTap(ms) {
+  const c = tapCurrent;
+  if (!c || c.answered || c.phase !== "tap" || waitingForNext) return;
+  startTapTone();
+  c.taps.push(ms);
+  drawTapLive(c);
+  if (c.taps.length === 1) requestAnimationFrame(function frame() { if (drawTapLive(c)) requestAnimationFrame(frame); });
+  const pad = document.querySelector(".tap-pad");
+  if (pad) { pad.classList.add("hit"); setTimeout(() => pad.classList.remove("hit"), 90); }
+  setTapStatus("•".repeat(c.taps.length));
+  // Score after a silence: short once the count is reached (still catching a
+  // stray extra tap), otherwise long enough to outlast the pattern's longest gap.
+  clearTimeout(c.timer);
+  const beatMs = 60000 / rhythmLiveBpm();
+  let maxGap = 0;
+  for (let i = 1; i < c.onsets.length; i++) maxGap = Math.max(maxGap, c.onsets[i] - c.onsets[i - 1]);
+  const wait = c.taps.length >= c.onsets.length
+    ? Math.max(400, beatMs)
+    : Math.max(1000, 2 * beatMs, 1.5 * maxGap * beatMs);
+  c.timer = setTimeout(() => scoreTaps(c), wait);
+}
+
+// Redraws the taps so far, at the nominal tempo, with each held tap's bar
+// growing and a playhead running from the first tap. False once scoring is over.
+function drawTapLive(c) {
+  if (tapCurrent !== c || c.phase !== "tap" || !c.live) return false;
+  const beatMs = 60000 / rhythmLiveBpm();
+  const t0 = c.taps[0], now = performance.now();
+  const marks = c.taps.map((t, i) => ({
+    beat: (t - t0) / beatMs,
+    end: ((c.releases[i] ?? (i === c.taps.length - 1 && tapHeld ? now : t)) - t0) / beatMs,
+  }));
+  drawTapMarks(c.live.g, c.live.xFor, c.live.tapEnd, marks, (now - t0) / beatMs);
+  return true;
+}
+
+// The key or pad went up: that ends the latest tap's hold.
+function releaseTap(ms) {
+  stopTapTone();
+  const c = tapCurrent;
+  if (c && c.releases.length < c.taps.length) { c.releases[c.taps.length - 1] = ms; drawTapLive(c); }
+}
+
+// Fuzzy match: same number of taps; the overall tempo (total tapped span over
+// expected span) within tol.tempo, if limited; and, with that tempo factored out, every gap
+// within tol.gap of its expected length (or tol.floorMs, whichever is larger).
+function judgeTaps(onsets, taps, beatMs, tol) {
+  const n = onsets.length;
+  if (taps.length !== n) {
+    return {ok: false, reason: `${taps.length} tap${taps.length === 1 ? "" : "s"}, the pattern has ${n}`};
+  }
+  if (n === 1) return {ok: true, gapOk: [], scale: 1};
+  const want = [], got = [];
+  for (let i = 1; i < n; i++) {
+    want.push((onsets[i] - onsets[i - 1]) * beatMs);
+    got.push(taps[i] - taps[i - 1]);
+  }
+  const scale = got.reduce((a, b) => a + b, 0) / want.reduce((a, b) => a + b, 0);
+  const gapOk = want.map((w, i) => Math.abs(got[i] / scale - w) <= Math.max(tol.floorMs, tol.gap * w));
+  if (Math.abs(scale - 1) > tol.tempo) {
+    const pct = Math.round(Math.abs(1 - scale) * 100);
+    return {ok: false, gapOk, scale, reason: `${pct}% too ${scale < 1 ? "fast" : "slow"}`};
+  }
+  const bad = gapOk.filter(ok => !ok).length;
+  if (bad) return {ok: false, gapOk, scale, reason: `${bad} gap${bad === 1 ? "" : "s"} off`};
+  return {ok: true, gapOk, scale};
+}
+
+function scoreTaps(c) {
+  if (tapCurrent !== c || c.answered || c.phase !== "tap") return;
+  c.phase = "done";
+  c.tries++;
+  const beatMs = 60000 / rhythmLiveBpm();
+  const tol = TAP_TOL[document.getElementById("tapTol").value] || TAP_TOL.normal;
+  const r = judgeTaps(c.onsets, c.taps, beatMs, tol);
+  // Drawn at your own tempo stretched to the pattern's, so the dots line up
+  // with the notes when the relative timing is right.
+  const t0 = c.taps[0], unit = beatMs * (r.scale || 1);
+  scheduleRhythmHighlights(c.events, c.taps.map((t, i) => ({
+    beat: (t - t0) / unit,
+    end: c.releases[i] != null ? (c.releases[i] - t0) / unit : undefined,
+    ok: r.gapOk ? (i === 0 || r.gapOk[i - 1]) : null,
+  })));
+  setTapStatus("");
+  if (document.getElementById("rhythmSoundFb").checked) {
+    if (r.ok) playFeedbackDing(); else playFeedbackBuzz();
+  }
+  if (r.ok) {
+    c.answered = true;
+    setFeedback("✓", "good");
+    recordResult(c.tries === 1, c.tries);
+    setTimeout(() => { if (tapCurrent === c) newTapQuestion(); }, 2000);
+  } else {
+    // Wrong: leave the tap picture up, then replay for another attempt
+    setFeedback("✗  " + r.reason, "bad"); markWrong();
+    waitingForNext = true;
+    setTimeout(() => {
+      if (tapCurrent !== c) return;
+      waitingForNext = false;
+      clearFeedback();
+      playTapSequence();
+    }, 1500);
   }
 }
 
@@ -1960,13 +2247,31 @@ function flashNoteBtn(letter, ok) {
 // Switch quiz type: the mode/modality pair the rest of the code reads is derived
 // here, so there is only ever one place that decides what "note-tab" means.
 function setQuizType(t) {
-  if (!QUIZ_TYPES[t]) return;
-  quizType = t;
-  quizMode = QUIZ_TYPES[t].mode;
-  modality = QUIZ_TYPES[t].modality;
+  if (!applyQuizType(t)) return;
   updateUI();
   startNewQuestion();
 }
+
+function applyQuizType(t) {
+  if (!QUIZ_TYPES[t]) return false;
+  quizType = t;
+  quizMode = QUIZ_TYPES[t].mode;
+  modality = QUIZ_TYPES[t].modality;
+  // Mirror the quiz in the URL (#interval etc.) so it can be bookmarked or
+  // deep-linked; replaceState keeps quiz switching out of the back history.
+  if (quizTypeFromHash() !== t) history.replaceState(null, "", "#" + t);
+  return true;
+}
+
+// Deep link: the first hash segment names the quiz type. Later segments are
+// reserved (e.g. a difficulty level), so "#interval/2" still opens the trainer.
+function quizTypeFromHash() {
+  return decodeURIComponent(location.hash.slice(1).split("/")[0]);
+}
+window.addEventListener("hashchange", () => {
+  const t = quizTypeFromHash();
+  if (t !== quizType) setQuizType(t);
+});
 
 function updateUI() {
   const spec     = QUIZ_TYPES[quizType];
@@ -1976,6 +2281,7 @@ function updateUI() {
   const isNote   = quizMode  === "note";
   const isKey    = quizMode  === "key";
   const isRhythm = quizMode  === "rhythm";
+  const isTap    = quizMode  === "tap";
   const isIv     = quizMode  === "interval";
 
   document.querySelectorAll(".quiz-btn").forEach(b =>
@@ -1989,13 +2295,15 @@ function updateUI() {
   document.getElementById("earOpts").style.display     = (isEar && isNote) ? "flex" : "none";
   document.getElementById("intervalOpts").style.display = isIv ? "flex" : "none";
   document.getElementById("tabOpts").style.display     = isTab ? "flex" : "none";
-  document.getElementById("rhythmOpts").style.display  = isRhythm ? "flex" : "none";
+  document.getElementById("rhythmOpts").style.display  = (isRhythm || isTap) ? "flex" : "none";
+  document.getElementById("rhythmTonesWrap").style.display = isTap ? "none" : "flex";
+  document.getElementById("tapTolWrap").style.display  = isTap ? "" : "none";
 
   const showBoard = (isSheet || isTab) && !isRhythm;
   document.getElementById("boardWrap").style.display  = showBoard ? "block" : "none";
   document.getElementById("earArea").style.display    = (isEar || isRhythm) ? "block" : "none";
-  // Only the rhythm trainer draws a beat ruler, so only it reserves the space.
-  document.getElementById("rhythmHintArea").style.display = isRhythm ? "block" : "none";
+  // Only the rhythm and tap trainers draw a beat ruler, so only they reserve the space.
+  document.getElementById("rhythmHintArea").style.display = (isRhythm || isTap) ? "block" : "none";
   document.getElementById("choicesArea").style.display  = isIv ? "none" : "flex";
   document.getElementById("intervalArea").style.display = isIv ? "block" : "none";
   document.getElementById("noteBtns").style.display   = showBoard ? "flex" : "none";
@@ -2010,7 +2318,9 @@ function startNewQuestion() {
   waitingForNext = false;
   clearFeedback();
   document.querySelectorAll(".note-btn,.acc-btn,.qual-btn").forEach(b => b.classList.remove("selected-btn"));
+  cancelTapQuestion();
   if      (quizMode === "rhythm")                    newRhythmQuestion();
+  else if (quizMode === "tap")                       newTapQuestion();
   else if (quizMode === "interval")                  newIntervalQuestion();
   else if (modality==="sheet" && quizMode==="note") newSheetNoteQuestion();
   else if (modality==="sheet" && quizMode==="key")  newSheetKeyQuestion();
@@ -2029,7 +2339,12 @@ document.getElementById("hintBtn").addEventListener("click", handleHint);
 
 document.getElementById("playBtn").addEventListener("click", () => {
   if (quizMode === "rhythm") { playRhythmSequence(); return; }
-  if (quizMode === "interval") { playIntervalSequence(); return; }
+  if (quizMode === "tap")    { playTapSequence();    return; }
+  if (quizMode === "interval") {
+    const c = intervalCurrent;
+    if (c && !c.answered && !waitingForNext) restartIntervalEntry(); else playIntervalSequence();
+    return;
+  }
   if (!earCurrent) return;
   if (earCurrent.kind === "note" && earCurrent.midi) synth.playMidi(earCurrent.midi, 90, 0.6);
   else if (earCurrent.kind === "key" && earCurrent.key) playEarKeySequence(earCurrent.key);
@@ -2123,6 +2438,11 @@ function handleHint() {
     }
     case "rhythm":
       handleRhythmHint();
+      break;
+    case "tap":
+      if (!tapCurrent || tapCurrent.answered) return;
+      tapCurrent.hintUsed = true; markHint();
+      playTapSequence(); // replays with the ruler animating along
       break;
     case "interval": {
       const c = intervalCurrent;
@@ -2246,16 +2566,20 @@ document.querySelectorAll(".letter-cb").forEach(cb => {
   });
 });
 
+// Releasing B ends the tap tone, whatever state the quiz is in by then.
+window.addEventListener("keyup", e => { if (e.code === TAP_KEY) releaseTap(e.timeStamp); });
+window.addEventListener("blur", stopTapTone);
+
 window.addEventListener("keydown", e => {
   if (e.target.tagName === "INPUT" || e.target.tagName === "SELECT") return;
   if (waitingForNext) return;
   // The interval trainer answers on the home row, which includes S and H, so it
-  // goes first: Escape restarts the entry there and ? still gives a hint.
+  // goes first: Escape and Space both restart the entry (clearing it and
+  // replaying) and ? still gives a hint.
   if (quizMode === "interval" && !e.metaKey && !e.ctrlKey && !e.altKey) {
     const d = ivTable().keys.indexOf(e.key.toLowerCase());
     if (d >= 0)              { e.preventDefault(); handleIntervalGuess(d); return; }
-    if (e.key === "Escape")  { e.preventDefault(); restartIntervalEntry(); return; }
-    if (e.code === "Space")  { e.preventDefault(); playIntervalSequence(); return; }
+    if (e.key === "Escape" || e.code === "Space") { e.preventDefault(); restartIntervalEntry(); return; }
   }
   // S/H/R work in every quiz; none of them is an answer key anywhere. The
   // modifier guard keeps Cmd+S, Cmd+R and friends with the browser.
@@ -2264,6 +2588,14 @@ window.addEventListener("keydown", e => {
     if (k === "s")               { e.preventDefault(); skipQuestion(); return; }
     if (k === "h" || k === "?")  { e.preventDefault(); handleHint();   return; }
     if (k === "r")               { e.preventDefault(); resetAll();     return; }
+  }
+  if (quizMode === "tap") {
+    if (e.code === TAP_KEY && !e.metaKey && !e.ctrlKey && !e.altKey) {
+      e.preventDefault(); if (!e.repeat) handleTap(e.timeStamp);
+    } else if (e.code === "Space" && !e.metaKey && !e.ctrlKey) {
+      e.preventDefault(); playTapSequence();
+    }
+    return;
   }
   if (quizMode === "rhythm") {
     if (e.code === "Space" && !e.metaKey && !e.ctrlKey) {
@@ -2385,6 +2717,7 @@ document.getElementById("midiRetryBtn").addEventListener("click", initMidi);
 // =====================================================================
 updateStats();
 renderIntervalDegreeOpts();
+applyQuizType(quizTypeFromHash());
 updateUI();
 startNewQuestion();
 initMidi();
@@ -2436,7 +2769,7 @@ initMidi();
   <ul>
   <li><b>A S D F G H J K</b> scale degrees 1–8; enter all the notes you heard, then it's graded<br>
   <li>Chromatic mode answers on <b>Q W E R T Y U I O P [ ] \</b>, one key per semitone from 1 to 8<br>
-  <li><b>Esc</b> start your answer over and replay · <b>Space</b> replay · <b>?</b> hint<br>
+  <li><b>Esc</b> / <b>Space</b> start your answer over and replay · <b>?</b> hint<br>
   <li><b>Practice</b> levers: Repeat misses asks a missed run again until it's clean; Change redraws only N notes of the last run;
       Runs favors stepwise up/down motion; Show answer displays the run and lights up each key (marked H)<br>
   </ul>
