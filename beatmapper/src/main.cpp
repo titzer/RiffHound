@@ -357,7 +357,7 @@ int main(int argc, char** argv) {
             open_tool = -1;
         }
 
-        // Keep WSOLA loop parameters in sync every frame (cheap atomic writes).
+        // Keep the stretch source's loop parameters in sync every frame (cheap atomic writes).
         // Uses the current region if one exists, otherwise the full track.
         {
             double ls = editor.has_region ? editor.region_start : 0.0;
@@ -366,7 +366,7 @@ int main(int argc, char** argv) {
         }
 
         // Auto-stop when playhead reaches the end of the region selection.
-        // Skipped when loop mode is on — WSOLA handles the wrap internally.
+        // Skipped when loop mode is on — the stretch source handles the wrap internally.
         // Just pause; leave the playhead at region_end so the user can see where
         // they are. Play / Space will seek back to region_start automatically.
         if (audio.playing && editor.has_region && !audio.loop &&

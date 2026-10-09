@@ -3,7 +3,8 @@
 #include <stdint.h>
 #include "editor.h"
 
-// Audio module: miniaudio + WSOLA pitch-preserving time stretching
+// Audio module: miniaudio + phase-vocoder time stretching and pitch shifting
+// (stretch.h)
 
 struct AudioState {
     bool   loaded;

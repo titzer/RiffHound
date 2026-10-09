@@ -1,8 +1,7 @@
 #define MINIAUDIO_IMPLEMENTATION
 #include "miniaudio.h"
 #include "audio.h"
-#include "wsola.h"
-#include "pitch_node.h"
+#include "stretch.h"
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -14,14 +13,12 @@
 #include <strings.h>  // strcasecmp
 #endif
 
-static ma_engine   s_engine;
-static ma_sound    s_sound;
-static WsolaSource s_wsola;
-static PitchNode   s_pitch;
-static bool        s_engine_ok = false;
-static bool        s_sound_ok  = false;
-static bool        s_wsola_ok  = false;
-static bool        s_pitch_ok  = false;
+static ma_engine     s_engine;
+static ma_sound      s_sound;
+static StretchSource s_stretch;
+static bool          s_engine_ok  = false;
+static bool          s_sound_ok   = false;
+static bool          s_stretch_ok = false;
 
 #ifdef __APPLE__
 static bool path_is_m4a(const char* p) {
@@ -189,8 +186,7 @@ bool audio_load(AudioState* a, EditorState* e, const char* path) {
 
     // Tear down the previous sound if one was loaded.
     if (s_sound_ok) { ma_sound_uninit(&s_sound);   s_sound_ok = false; }
-    if (s_pitch_ok) { pitch_node_uninit(&s_pitch); s_pitch_ok = false; }
-    if (s_wsola_ok) { wsola_uninit(&s_wsola);      s_wsola_ok = false; }
+    if (s_stretch_ok) { stretch_uninit(&s_stretch); s_stretch_ok = false; }
 
     a->loaded   = false;
     a->playing  = false;
@@ -205,36 +201,27 @@ bool audio_load(AudioState* a, EditorState* e, const char* path) {
         return false;
     }
 
-    // Initialise WSOLA source (takes ownership of pcm).
-    if (!wsola_init(&s_wsola, pcm, frames, 2, sr, /*owns_pcm=*/true)) {
+    // Initialise the stretch source (takes ownership of pcm).
+    if (!stretch_init(&s_stretch, pcm, frames, 2, sr, /*owns_pcm=*/true)) {
         free(pcm);
-        fprintf(stderr, "[audio] wsola_init failed for '%s'\n", path);
+        fprintf(stderr, "[audio] stretch_init failed for '%s'\n", path);
         return false;
     }
     // Reset speed and pitch to defaults on every new file load.
     e->speed     = 1.0f;
     e->semitones = 0;
     e->cents     = 0;
-    wsola_set_speed(&s_wsola, 1.0f);
-    wsola_set_pitch(&s_wsola, 1.0f);
-    s_wsola_ok = true;
+    stretch_set_speed(&s_stretch, 1.0f);
+    stretch_set_pitch(&s_stretch, 1.0f);
+    s_stretch_ok = true;
 
-    // Wrap WSOLA in a PitchNode (resampler stage for pitch shifting).
-    if (!pitch_node_init(&s_pitch, &s_wsola, sr, 2)) {
-        wsola_uninit(&s_wsola); s_wsola_ok = false;
-        fprintf(stderr, "[audio] pitch_node_init failed for '%s'\n", path);
-        return false;
-    }
-    s_pitch_ok = true;
-
-    // Initialise miniaudio sound backed by the PitchNode.
+    // Initialise miniaudio sound backed by the stretch source.
     ma_result result = ma_sound_init_from_data_source(
-        &s_engine, &s_pitch,
+        &s_engine, &s_stretch,
         MA_SOUND_FLAG_NO_PITCH | MA_SOUND_FLAG_NO_SPATIALIZATION,
         NULL, &s_sound);
     if (result != MA_SUCCESS) {
-        pitch_node_uninit(&s_pitch); s_pitch_ok = false;
-        wsola_uninit(&s_wsola); s_wsola_ok = false;
+        stretch_uninit(&s_stretch); s_stretch_ok = false;
         fprintf(stderr, "[audio] ma_sound_init_from_data_source failed: %d\n", result);
         return false;
     }
@@ -271,7 +258,7 @@ void audio_seek(AudioState* a, double time_sec) {
     if (time_sec > a->duration) time_sec = a->duration;
 
     // Seek in terms of the data source's (file's) sample rate.
-    ma_uint64 frame = (ma_uint64)(time_sec * s_wsola.sample_rate + 0.5);
+    ma_uint64 frame = (ma_uint64)(time_sec * s_stretch.sample_rate + 0.5);
     ma_sound_seek_to_pcm_frame(&s_sound, frame);
     a->position = time_sec;
 }
@@ -286,7 +273,7 @@ void audio_set_speed(EditorState* e, float speed) {
     // Round to nearest 0.05
     speed = roundf(speed * 20.0f) / 20.0f;
     e->speed = speed;
-    if (s_wsola_ok) wsola_set_speed(&s_wsola, speed);
+    if (s_stretch_ok) stretch_set_speed(&s_stretch, speed);
 }
 
 void audio_set_pitch(EditorState* e, int semitones, int cents) {
@@ -297,24 +284,24 @@ void audio_set_pitch(EditorState* e, int semitones, int cents) {
     e->semitones = semitones;
     e->cents     = cents;
     float ratio = powf(2.0f, (float)(semitones * 100 + cents) / 1200.0f);
-    if (s_wsola_ok) wsola_set_pitch(&s_wsola, ratio);
+    if (s_stretch_ok) stretch_set_pitch(&s_stretch, ratio);
 }
 
 void audio_set_loop(AudioState* a, bool enabled, double loop_start, double loop_end) {
     a->loop = enabled;
-    if (s_wsola_ok) {
-        uint64_t sf = (uint64_t)(loop_start * s_wsola.sample_rate + 0.5);
-        uint64_t ef = (uint64_t)(loop_end   * s_wsola.sample_rate + 0.5);
-        if (ef > s_wsola.frame_count) ef = s_wsola.frame_count;
+    if (s_stretch_ok) {
+        uint64_t sf = (uint64_t)(loop_start * s_stretch.sample_rate + 0.5);
+        uint64_t ef = (uint64_t)(loop_end   * s_stretch.sample_rate + 0.5);
+        if (ef > s_stretch.frame_count) ef = s_stretch.frame_count;
         if (sf >= ef) sf = 0;
-        wsola_set_loop(&s_wsola, enabled, sf, ef);
+        stretch_set_loop(&s_stretch, enabled, sf, ef);
     }
 }
 
 void audio_set_playback_override(AudioState* a, float* pcm, uint64_t frames) {
-    if (!s_wsola_ok || !a->loaded) { free(pcm); return; }
-    if (pcm && frames != s_wsola.frame_count) {
-        uint64_t want = s_wsola.frame_count;
+    if (!s_stretch_ok || !a->loaded) { free(pcm); return; }
+    if (pcm && frames != s_stretch.frame_count) {
+        uint64_t want = s_stretch.frame_count;
         float* fit = (float*)calloc((size_t)want * 2, sizeof(float));
         if (!fit) { free(pcm); return; }
         uint64_t n = frames < want ? frames : want;
@@ -322,7 +309,7 @@ void audio_set_playback_override(AudioState* a, float* pcm, uint64_t frames) {
         free(pcm);
         pcm = fit;
     }
-    wsola_set_override(&s_wsola, pcm);
+    stretch_set_override(&s_stretch, pcm);
 }
 
 bool audio_decode_stereo_at(const char* path, uint32_t sample_rate,
@@ -352,7 +339,7 @@ bool audio_decode_stereo_at(const char* path, uint32_t sample_rate,
 }
 
 void audio_update(AudioState* a) {
-    if (s_wsola_ok) wsola_collect_retired(&s_wsola);
+    if (s_stretch_ok) stretch_collect_retired(&s_stretch);
     if (!s_sound_ok || !a->loaded) return;
 
     // Sync the playing flag from the audio thread, but only allow it to go
@@ -364,12 +351,12 @@ void audio_update(AudioState* a) {
 
     // Read cursor from the atomic updated by the audio thread after each hop.
     // Only while playing: ma_sound_seek_to_pcm_frame is deferred (applied on
-    // the audio thread's next read), so while stopped the WSOLA cursor still
+    // the audio thread's next read), so while stopped the stretch cursor still
     // holds the pre-seek position and syncing from it would snap the playhead
     // back after every click-seek -- the "Space needs several presses" bug.
-    if (s_wsola_ok && a->playing) {
-        uint64_t cur = s_wsola.cursor_frames.load(std::memory_order_relaxed);
-        a->position = (double)cur / s_wsola.sample_rate;
+    if (s_stretch_ok && a->playing) {
+        uint64_t cur = s_stretch.cursor_frames.load(std::memory_order_relaxed);
+        a->position = (double)cur / s_stretch.sample_rate;
     }
 }
 
@@ -442,21 +429,20 @@ const float* audio_pcm_data(const AudioState* a,
                               uint64_t* frame_count,
                               uint32_t* channels,
                               uint32_t* sample_rate) {
-    if (!s_wsola_ok || !s_wsola.pcm) return nullptr;
-    if (frame_count)  *frame_count  = s_wsola.frame_count;
-    if (channels)     *channels     = s_wsola.channels;
-    if (sample_rate)  *sample_rate  = s_wsola.sample_rate;
-    return s_wsola.pcm;
+    if (!s_stretch_ok || !s_stretch.pcm) return nullptr;
+    if (frame_count)  *frame_count  = s_stretch.frame_count;
+    if (channels)     *channels     = s_stretch.channels;
+    if (sample_rate)  *sample_rate  = s_stretch.sample_rate;
+    return s_stretch.pcm;
 }
 
 void audio_shutdown(AudioState* a) {
     // Stop the sound (removes it from the node graph) first.
     if (s_sound_ok)  { ma_sound_uninit(&s_sound);   s_sound_ok = false; }
-    // Stop the engine's audio thread BEFORE freeing WSOLA/PitchNode memory.
-    if (s_engine_ok) { ma_engine_uninit(&s_engine);  s_engine_ok = false; }
-    if (s_pitch_ok)  { pitch_node_uninit(&s_pitch);  s_pitch_ok = false; }
-    // wsola_uninit frees ws->pcm; the audio thread must not be reading it.
-    if (s_wsola_ok)  { wsola_uninit(&s_wsola);       s_wsola_ok = false; }
+    // Stop the engine's audio thread BEFORE freeing the stretch source;
+    // stretch_uninit frees its pcm, which the audio thread must not be reading.
+    if (s_engine_ok)  { ma_engine_uninit(&s_engine);  s_engine_ok = false; }
+    if (s_stretch_ok) { stretch_uninit(&s_stretch);   s_stretch_ok = false; }
     a->loaded  = false;
     a->playing = false;
 }
