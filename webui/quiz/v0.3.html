@@ -85,6 +85,13 @@
   <h2 style="margin:0;">Music Quiz</h2>
   <span id="midiStatus" class="hint">MIDI: —</span>
   <button id="midiRetryBtn" style="font-size:12px;padding:3px 7px;">↺</button>
+  <!-- Global difficulty: picking a level (or a quiz) loads that quiz's preset -->
+  <label class="hint" title="Sets each quiz's options for this difficulty. Changing an option yourself switches to Custom.">Level:
+    <select id="level" style="padding:2px 4px;font-size:13px;border-radius:4px;border:1px solid #ccc">
+      <option value="custom">Custom</option>
+      <option>1</option><option>2</option><option selected>3</option><option>4</option><option>5</option>
+      <option>6</option><option>7</option><option>8</option><option>9</option>
+    </select></label>
 </div>
 
 <!-- One button per quiz type: the note and key quizzes are split by modality -->
@@ -124,6 +131,11 @@
   <label><input type="checkbox" id="cbKeySharps" checked> Sharps</label>
   <label><input type="checkbox" id="cbKeyFlats"  checked> Flats</label>
   <label><input type="checkbox" id="cbKeyMinor"  checked> Minor</label>
+  <label title="Only keys with at most this many sharps or flats">Max ♯/♭:
+    <select id="keyMaxAcc" style="padding:2px 4px;font-size:13px;border-radius:4px;border:1px solid #ccc">
+      <option>0</option><option>1</option><option>2</option><option>3</option>
+      <option>4</option><option>5</option><option selected>6</option>
+    </select></label>
 </div>
 
 <!-- Tab position selector (tab mode only) -->
@@ -371,6 +383,7 @@ let trebleEnabled = true, bassEnabled = true;
 let sheetKeyCurrent = null;
 let keyBuf = "";
 let keySharpsEnabled = true, keyFlatsEnabled = true, keyMinorEnabled = true;
+let keyMaxAcc = 6;  // most sharps or flats a key may carry
 let keyLettersEnabled = new Set(["A","B","C","D","E","F","G"]);
 
 // Ear (shared between ear+note and ear+key, different shapes)
@@ -546,6 +559,7 @@ function buildKeyPool() {
     if (!keySharpsEnabled && k.sharps > 0)            return false;
     if (!keyFlatsEnabled  && k.flats  > 0)           return false;
     if (!keyMinorEnabled  && k.quality === "minor") return false;
+    if (Math.max(k.sharps, k.flats) > keyMaxAcc)     return false;
     return true;
   });
   return pool.length > 0 ? pool : KEY_SIGNATURES;
@@ -2248,6 +2262,7 @@ function flashNoteBtn(letter, ok) {
 // here, so there is only ever one place that decides what "note-tab" means.
 function setQuizType(t) {
   if (!applyQuizType(t)) return;
+  applyLevel();
   updateUI();
   startNewQuestion();
 }
@@ -2257,20 +2272,31 @@ function applyQuizType(t) {
   quizType = t;
   quizMode = QUIZ_TYPES[t].mode;
   modality = QUIZ_TYPES[t].modality;
-  // Mirror the quiz in the URL (#interval etc.) so it can be bookmarked or
-  // deep-linked; replaceState keeps quiz switching out of the back history.
-  if (quizTypeFromHash() !== t) history.replaceState(null, "", "#" + t);
+  syncHash();
   return true;
 }
 
-// Deep link: the first hash segment names the quiz type. Later segments are
-// reserved (e.g. a difficulty level), so "#interval/2" still opens the trainer.
+// Mirror the quiz and level in the URL (#interval/4 etc.) so it can be bookmarked
+// or deep-linked; replaceState keeps quiz switching out of the back history.
+function syncHash() {
+  const h = "#" + quizType + (currentLevel() ? "/" + currentLevel() : "");
+  if (location.hash !== h) history.replaceState(null, "", h);
+}
+
+// Deep link: the first hash segment names the quiz type, the second the level.
 function quizTypeFromHash() {
   return decodeURIComponent(location.hash.slice(1).split("/")[0]);
 }
+function levelFromHash() {
+  const n = Number(location.hash.slice(1).split("/")[1]);
+  return n >= 1 && n <= 9 ? n : null;
+}
 window.addEventListener("hashchange", () => {
+  const lv = levelFromHash();
+  if (lv && lv !== currentLevel()) document.getElementById("level").value = String(lv);
   const t = quizTypeFromHash();
   if (t !== quizType) setQuizType(t);
+  else if (lv) { applyLevel(); updateUI(); startNewQuestion(); }
 });
 
 function updateUI() {
@@ -2558,6 +2584,7 @@ function onKeyFilterChange() {
 document.getElementById("cbKeySharps").addEventListener("change", e => { keySharpsEnabled = e.target.checked; onKeyFilterChange(); });
 document.getElementById("cbKeyFlats").addEventListener("change",  e => { keyFlatsEnabled  = e.target.checked; onKeyFilterChange(); });
 document.getElementById("cbKeyMinor").addEventListener("change",  e => { keyMinorEnabled  = e.target.checked; onKeyFilterChange(); });
+document.getElementById("keyMaxAcc").addEventListener("change",   e => { keyMaxAcc = Number(e.target.value); onKeyFilterChange(); });
 document.querySelectorAll(".letter-cb").forEach(cb => {
   cb.addEventListener("change", e => {
     if (e.target.checked) keyLettersEnabled.add(cb.dataset.letter);
@@ -2713,11 +2740,162 @@ function initMidi() {
 document.getElementById("midiRetryBtn").addEventListener("click", initMidi);
 
 // =====================================================================
+// DIFFICULTY LEVELS
+// =====================================================================
+// One global level, 1–9. Picking a level or switching quizzes loads that quiz's
+// preset into its options; "Custom" leaves the options alone. Changing an option
+// a preset controls switches to Custom, so hand-tuned settings survive quiz
+// switches. Options presets don't touch (root, octave, key, tones, practice
+// levers, hint and sound toggles) stay the user's in every level.
+function currentLevel() {
+  const v = document.getElementById("level").value;
+  return v === "custom" ? null : Number(v);
+}
+
+function setControl(id, v) {
+  const e = document.getElementById(id);
+  e.value = String(v);
+  const label = document.getElementById(id + "Val");  // range sliders show their value
+  if (label) label.textContent = e.value;
+}
+
+function setNoteSheetOpts({clefs, seq}) {
+  trebleEnabled = clefs.includes("T");
+  bassEnabled   = clefs.includes("B");
+  setControl("seqLen", seq);
+}
+
+function setTabOpts({pos, seq}) {
+  tabPositionIdx = pos;
+  document.querySelectorAll(".tabpos-btn").forEach((b, i) => b.classList.toggle("selected-btn", i === pos));
+  setControl("seqLen", seq);
+}
+
+function setKeyOpts({maxAcc, minor}) {
+  keyLettersEnabled = new Set(["A","B","C","D","E","F","G"]);
+  document.querySelectorAll(".letter-cb").forEach(cb => { cb.checked = true; });
+  keySharpsEnabled = keyFlatsEnabled = true;
+  document.getElementById("cbKeySharps").checked = document.getElementById("cbKeyFlats").checked = true;
+  keyMinorEnabled = minor;
+  document.getElementById("cbKeyMinor").checked = minor;
+  keyMaxAcc = maxAcc;
+  setControl("keyMaxAcc", maxAcc);
+}
+
+function setRhythmOpts({counts, bpm, durs, rest, tol}) {
+  rhythmEnabledCounts = new Set(counts);
+  document.querySelectorAll(".rhythmcount-cb").forEach(cb => { cb.checked = rhythmEnabledCounts.has(Number(cb.dataset.count)); });
+  setControl("rhythmBpm", bpm);
+  rhythmDurSet = new Set(durs);
+  document.querySelectorAll(".rhythmdur-cb").forEach(cb => { cb.checked = rhythmDurSet.has(cb.dataset.dur); });
+  document.getElementById("rhythmConstantBtn").classList.toggle("selected-btn", rhythmDurSet.size === 0);
+  rhythmRestEnabled = rest;
+  document.getElementById("rhythmRestCb").checked = rest;
+  if (tol) setControl("tapTol", tol);
+}
+
+function setIntervalOpts({mode, degs, len, bpm}) {
+  ivMode = mode;
+  setControl("ivMode", mode);
+  ivEnabledByMode[mode] = new Set(degs || IV_MODES[mode].st.map((_, i) => i));
+  renderIntervalDegreeOpts();
+  setControl("ivLen", len);
+  setControl("ivBpm", bpm);
+}
+
+const range = (a, b) => Array.from({length: b - a + 1}, (_, i) => a + i);
+// Index = level - 1.
+const KEY_LEVELS = [
+  {maxAcc: 1, minor: false}, {maxAcc: 2, minor: false}, {maxAcc: 3, minor: false},
+  {maxAcc: 4, minor: false}, {maxAcc: 1, minor: true},  {maxAcc: 3, minor: true},
+  {maxAcc: 4, minor: true},  {maxAcc: 5, minor: true},  {maxAcc: 6, minor: true},
+];
+const LEVEL_PRESETS = {
+  "note-sheet": lv => setNoteSheetOpts([
+    {clefs: "T",  seq: 1}, {clefs: "B",  seq: 1}, {clefs: "TB", seq: 1},
+    {clefs: "T",  seq: 2}, {clefs: "B",  seq: 2}, {clefs: "TB", seq: 2},
+    {clefs: "TB", seq: 3}, {clefs: "TB", seq: 4}, {clefs: "TB", seq: 4},
+  ][lv - 1]),
+  "note-tab": lv => setTabOpts([
+    {pos: 0, seq: 1}, {pos: 0, seq: 2}, {pos: 1, seq: 1},
+    {pos: 1, seq: 2}, {pos: 2, seq: 2}, {pos: 3, seq: 2},
+    {pos: 4, seq: 2}, {pos: 4, seq: 3}, {pos: 4, seq: 4},
+  ][lv - 1]),
+  "note-ear": lv => {
+    const [len, choices] = [[1,2],[1,3],[2,3],[2,4],[3,4],[3,5],[4,5],[4,6],[5,6]][lv - 1];
+    setControl("earLen", len);
+    setControl("earChoices", choices);
+  },
+  "key-sheet": lv => setKeyOpts(KEY_LEVELS[lv - 1]),
+  "key-ear":   lv => setKeyOpts(KEY_LEVELS[lv - 1]),
+  // Counting notes: faster and busier patterns are harder to count.
+  "rhythm": lv => setRhythmOpts([
+    {counts: range(2, 3), bpm: 100, durs: [],                             rest: false},
+    {counts: range(2, 4), bpm: 150, durs: [],                             rest: false},
+    {counts: range(2, 4), bpm: 150, durs: ["8th", "4th"],                 rest: false},
+    {counts: range(3, 5), bpm: 200, durs: ["8th", "4th"],                 rest: true},
+    {counts: range(3, 6), bpm: 250, durs: ["16th", "8th", "4th"],         rest: true},
+    {counts: range(4, 6), bpm: 300, durs: ["16th", "8th", "4th"],         rest: true},
+    {counts: range(4, 7), bpm: 350, durs: ["16th", "8th", "4th", "triplet"], rest: true},
+    {counts: range(5, 8), bpm: 400, durs: ["16th", "8th", "4th", "triplet"], rest: true},
+    {counts: range(6, 8), bpm: 500, durs: ["16th", "8th", "4th", "triplet"], rest: true},
+  ][lv - 1]),
+  // Tapping back: tempo matters less than the variety of note values and the tolerance.
+  "tap": lv => setRhythmOpts([
+    {counts: range(2, 3), bpm: 100, durs: [],                             rest: false, tol: "loose"},
+    {counts: range(3, 4), bpm: 100, durs: ["8th", "4th"],                 rest: false, tol: "loose"},
+    {counts: range(3, 4), bpm: 100, durs: ["8th", "4th"],                 rest: true,  tol: "normal"},
+    {counts: range(4, 5), bpm: 100, durs: ["8th", "4th"],                 rest: true,  tol: "normal"},
+    {counts: range(4, 6), bpm: 100, durs: ["16th", "8th", "4th"],         rest: false, tol: "normal"},
+    {counts: range(4, 6), bpm: 100, durs: ["16th", "8th", "4th"],         rest: true,  tol: "normal"},
+    {counts: range(5, 7), bpm: 100, durs: ["16th", "8th", "4th", "triplet"], rest: true, tol: "normal"},
+    {counts: range(5, 8), bpm: 100, durs: ["16th", "8th", "4th", "triplet"], rest: true, tol: "strict"},
+    {counts: range(6, 8), bpm: 150, durs: ["16th", "8th", "4th", "triplet"], rest: true, tol: "strict"},
+  ][lv - 1]),
+  "interval": lv => setIntervalOpts([
+    {mode: "major",     degs: [0, 2, 4, 7], len: 2, bpm: 80},
+    {mode: "major",     degs: [0, 1, 2, 3, 4], len: 3, bpm: 90},
+    {mode: "major",     len: 3, bpm: 100},
+    {mode: "major",     len: 4, bpm: 110},
+    {mode: "major",     len: 5, bpm: 120},
+    {mode: "minor",     len: 5, bpm: 120},
+    {mode: "chromatic", len: 3, bpm: 100},
+    {mode: "chromatic", len: 5, bpm: 120},
+    {mode: "chromatic", len: 7, bpm: 140},
+  ][lv - 1]),
+};
+
+function applyLevel() {
+  const lv = currentLevel();
+  if (lv && LEVEL_PRESETS[quizType]) LEVEL_PRESETS[quizType](lv);
+  syncHash();
+}
+
+document.getElementById("level").addEventListener("change", e => {
+  e.target.blur();  // hand focus back so the answer keys keep working
+  applyLevel(); updateUI(); startNewQuestion();
+});
+
+// The user changed something a preset controls: they're on Custom now.
+const PRESET_CONTROLS = "#seqLen, #cbTreble, #cbBass, #earLen, #earChoices, .letter-cb, #cbKeySharps, " +
+  "#cbKeyFlats, #cbKeyMinor, #keyMaxAcc, .rhythmcount-cb, #rhythmBpm, .rhythmdur-cb, #rhythmRestCb, " +
+  "#tapTol, #ivMode, #ivDegs input, #ivLen, #ivBpm";
+function toCustom() {
+  if (!currentLevel()) return;
+  document.getElementById("level").value = "custom";
+  syncHash();
+}
+document.addEventListener("change", e => { if (e.target.matches(PRESET_CONTROLS)) toCustom(); });
+document.addEventListener("click",  e => { if (e.target.closest(".tabpos-btn, #rhythmConstantBtn")) toCustom(); });
+
+// =====================================================================
 // INIT
 // =====================================================================
 updateStats();
 renderIntervalDegreeOpts();
-applyQuizType(quizTypeFromHash());
+if (levelFromHash()) document.getElementById("level").value = String(levelFromHash());
+applyQuizType(QUIZ_TYPES[quizTypeFromHash()] ? quizTypeFromHash() : quizType);
+applyLevel();
 updateUI();
 startNewQuestion();
 initMidi();
