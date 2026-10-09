@@ -48,6 +48,21 @@ int  miscmap_selected_count (const MiscMap* mm);
 // back as that annotation's new index.  Returns the number moved.
 int miscmap_move_selection(MiscMap* mm, double dt, int* focus_idx);
 
+// --- track tuning ---------------------------------------------------------
+// A "tuning: A432" misc entry says the recording's A4 sits at 432 Hz; with
+// none the track is at concert pitch, A440.  The entry belongs to the whole
+// track, so it is written at time 0.
+
+#define TUNING_A4_DEFAULT 440.0f
+#define TUNING_A4_MIN     415.0f   // a semitone either side of A440
+#define TUNING_A4_MAX     466.0f
+
+// The track's A4 in Hz, from its first "tuning:" entry (A440 when absent or
+// unreadable).
+float miscmap_tuning_a4(const MiscMap* mm);
+// Set the track's A4: rewrites the "tuning:" entry, or removes it for A440.
+void  miscmap_set_tuning_a4(MiscMap* mm, float hz);
+
 // --- clipboard -----------------------------------------------------------
 // One process-wide clipboard, so a group of annotations can be lifted from one
 // verse and dropped on the next.  Offsets are stored relative to the group's

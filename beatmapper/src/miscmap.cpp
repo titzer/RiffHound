@@ -1,6 +1,7 @@
 #include "miscmap.h"
 #include "beatmap.h"
 #include <math.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -112,6 +113,51 @@ int miscmap_move_selection(MiscMap* mm, double dt, int* focus_idx) {
     free(moved);
     mm->dirty = true;
     return n;
+}
+
+// --- track tuning ---------------------------------------------------------
+
+// The text of a "tuning:" entry after the keyword, or nullptr.
+static const char* tuning_value(const char* text) {
+    if (strncmp(text, "tuning:", 7) != 0) return nullptr;
+    return text + 7;
+}
+
+// Accepts "A432", "A 432", "A=432", "A4=432", "432", "A431.5".
+static bool parse_tuning(const char* v, float* hz) {
+    while (*v == ' ' || *v == '\t') v++;
+    if (*v == 'A' || *v == 'a') {
+        v++;
+        if (v[0] == '4' && (v[1] == '=' || v[1] == ' ')) v++;   // "A4=432", not "A432"
+        while (*v == ' ' || *v == '=') v++;
+    }
+    char* end = nullptr;
+    double f = strtod(v, &end);
+    if (end == v || f < TUNING_A4_MIN || f > TUNING_A4_MAX) return false;
+    *hz = (float)f;
+    return true;
+}
+
+float miscmap_tuning_a4(const MiscMap* mm) {
+    for (int i = 0; i < mm->count; i++) {
+        const char* v = tuning_value(mm->entries[i].text);
+        float hz;
+        if (v && parse_tuning(v, &hz)) return hz;
+    }
+    return TUNING_A4_DEFAULT;
+}
+
+void miscmap_set_tuning_a4(MiscMap* mm, float hz) {
+    if (hz < TUNING_A4_MIN) hz = TUNING_A4_MIN;
+    if (hz > TUNING_A4_MAX) hz = TUNING_A4_MAX;
+    hz = roundf(hz * 10.0f) / 10.0f;
+    for (int i = mm->count - 1; i >= 0; i--)
+        if (tuning_value(mm->entries[i].text)) miscmap_remove(mm, i);
+    if (hz == TUNING_A4_DEFAULT) return;
+    char text[32];
+    if (hz == roundf(hz)) snprintf(text, sizeof(text), "tuning: A%d", (int)hz);
+    else                  snprintf(text, sizeof(text), "tuning: A%.1f", hz);
+    miscmap_add(mm, 0.0, 0.0, text);
 }
 
 // --- clipboard -----------------------------------------------------------

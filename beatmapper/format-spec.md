@@ -105,6 +105,19 @@ beat grid from the entry's start time, one beat per quarter note, so the
 sum of the durations should match the entry's span in beats; a reader
 reports a line where they disagree.
 
+### Tuning Format
+A "tuning:" entry gives the frequency of the A above middle C (A4) that the
+recording is tuned to, as "A" followed by Hz, with up to one decimal. It
+applies to the whole track and is written at time 0. A track without one is
+at concert pitch, A440. Readers accept values from 415 to 466 Hz, a semitone
+either side.
+---tuning.txt-----------
+# Misc
+0.000000	0.000000	tuning: A432
+------------------------
+A432 is 31.8 cents flat of concert pitch, so playing it 32 cents sharp puts
+its A back at 440 Hz.
+
 ### Trading Format
 A track for trading licks is the same passage recorded twice: once with a
 lead player on it and once bare. Two "Misc" entries mark the halves, and

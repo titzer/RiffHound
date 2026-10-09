@@ -9,6 +9,7 @@
 #include "ui_timeline.h"
 #include <string.h>
 #include <stdio.h>
+#include <math.h>
 
 static char s_file_buf[512] = "";
 static bool s_show_open_dialog    = false;
@@ -113,9 +114,15 @@ void ui_toolbar_render(EditorState* editor, AudioState* audio, BeatMap* beatmap,
             ImGui::OpenPopup("##tuning");
         if (pitch_active)
             ImGui::PopStyleColor(3);
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Pitch shift: %+d semitones, %+d cents",
-                              editor->semitones, editor->cents);
+        float a4 = miscmap_tuning_a4(miscmap);
+        if (ImGui::IsItemHovered()) {
+            if (a4 != TUNING_A4_DEFAULT)
+                ImGui::SetTooltip("Pitch shift: %+d semitones, %+d cents\nRecording tuned to A%g",
+                                  editor->semitones, editor->cents, a4);
+            else
+                ImGui::SetTooltip("Pitch shift: %+d semitones, %+d cents",
+                                  editor->semitones, editor->cents);
+        }
 
         if (ImGui::BeginPopup("##tuning")) {
             const float btn_w = 26.0f;
@@ -169,6 +176,63 @@ void ui_toolbar_render(EditorState* editor, AudioState* audio, BeatMap* beatmap,
             if (ImGui::Button("Reset", ImVec2(btn_w * 2 + val_w + ImGui::GetStyle().ItemSpacing.x * 2, 0)))
                 audio_set_pitch(editor, 0, 0);
             if (at_default) ImGui::EndDisabled();
+
+            // Recording tuning: the frequency the track's A sits at, stored in
+            // the map as a "tuning:" misc entry.
+            ImGui::Spacing();
+            ImGui::TextDisabled("Recording tuned to");
+            ImGui::Separator();
+            const float row_w = btn_w * 2 + val_w + ImGui::GetStyle().ItemSpacing.x * 2;
+            auto set_a4 = [&](float hz) {
+                undo_push(undo, nullptr, nullptr, nullptr, miscmap);
+                miscmap_set_tuning_a4(miscmap, hz);
+            };
+            if (!audio->loaded) ImGui::BeginDisabled();
+            if (ImGui::Button("-##a4", ImVec2(btn_w, 0)))
+                set_a4(fmaxf(TUNING_A4_MIN, ceilf(a4) - 1.0f));
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("A: -1 Hz");
+            ImGui::SameLine();
+            {
+                // Drag or Ctrl+click to type; the map changes (one undo step)
+                // when the edit ends.
+                static float s_a4_edit = TUNING_A4_DEFAULT;
+                static bool  s_a4_active = false;
+                if (!s_a4_active) s_a4_edit = a4;
+                ImGui::SetNextItemWidth(val_w);
+                bool off = (a4 != TUNING_A4_DEFAULT);
+                if (off) ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.45f, 0.70f, 1.0f, 1.0f));
+                ImGui::DragFloat("##a4val", &s_a4_edit, 0.1f, TUNING_A4_MIN, TUNING_A4_MAX,
+                                 "A = %.1f Hz", ImGuiSliderFlags_AlwaysClamp);
+                if (off) ImGui::PopStyleColor();
+                s_a4_active = ImGui::IsItemActive();
+                if (ImGui::IsItemDeactivatedAfterEdit()) set_a4(s_a4_edit);
+                if (ImGui::IsItemHovered() && !s_a4_active)
+                    ImGui::SetTooltip("The pitch this recording's A sits at\n"
+                                      "(saved as \"tuning: A%g\"); drag or Ctrl+click to type", a4);
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("+##a4", ImVec2(btn_w, 0)))
+                set_a4(fminf(TUNING_A4_MAX, floorf(a4) + 1.0f));
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("A: +1 Hz");
+            if (!audio->loaded) ImGui::EndDisabled();
+
+            // Shift the playback by the cents that bring the recording's A to
+            // 440 Hz, keeping any semitone transposition.
+            int fix = (int)lroundf(1200.0f * log2f(TUNING_A4_DEFAULT / a4));
+            if (fix < -100) fix = -100;
+            if (fix >  100) fix =  100;
+            bool can_fix = audio->loaded && fix != 0 && editor->cents != fix;
+            char lbl[48];
+            if (fix == 0)
+                snprintf(lbl, sizeof(lbl), "At concert pitch##a4fix");
+            else if (editor->cents == fix)
+                snprintf(lbl, sizeof(lbl), "Playing at A440 (%+d cents)##a4fix", fix);
+            else
+                snprintf(lbl, sizeof(lbl), "Retune to A440 (%+d cents)##a4fix", fix);
+            if (!can_fix) ImGui::BeginDisabled();
+            if (ImGui::Button(lbl, ImVec2(row_w, 0)))
+                audio_set_pitch(editor, editor->semitones, fix);
+            if (!can_fix) ImGui::EndDisabled();
 
             ImGui::EndPopup();
         }

@@ -1189,6 +1189,41 @@
     padding: .3em .45em;
   }
 
+  /* ---- tuning window (K) ---------------------------------------------- */
+
+  /* Hangs off its button beside the title, like the settings menu off its
+     own. Narrow: three lines of steppers and two actions, nothing to browse. */
+  .tune { position: relative; }
+  #tunePanel { width: 340px; gap: 8px; }
+  .tune-head {
+    font-size: 12px;
+    letter-spacing: .14em;
+    color: var(--dim);
+  }
+  .tune-head + .tune-row { border-top: 1px solid var(--dim); padding-top: 8px; }
+  .tune-row { display: flex; align-items: center; gap: 6px; font-size: 12px; }
+  .tune-row > label { flex: 1; }
+  .tune-row .step { flex: none; width: 30px; padding: 3px 0; }
+  .tune-row output, .tune-row input {
+    flex: none;
+    width: 9.5em;
+    padding: 3px 0;
+    text-align: center;
+    color: var(--fg);
+    font-variant-numeric: tabular-nums;
+  }
+  /* The A4 readout is also where you type one: the box only shows as a box
+     once you are in it. */
+  .tune-row input {
+    border: 1px solid transparent;
+    background: none;
+    text-transform: uppercase;
+    outline: none;
+  }
+  .tune-row input:hover, .tune-row input:focus { border-color: var(--fg); background: var(--panel); }
+  .tune-act { width: 100%; padding: 5px 6px; font-size: 11px; }
+  #tunePanel .note { margin-top: -4px; }
+
   /* ---- background picker (B) ------------------------------------------ */
 
   /* In the stage's top-left corner, so it sits under the header when there is
@@ -1480,6 +1515,12 @@
       <div class="panel" id="trackPanel" hidden></div>
     </div>
 
+    <div class="tune">
+      <button class="seek" id="tuneBtn" aria-expanded="false" aria-haspopup="true"
+              title="Tuning (K)">Tuning</button>
+      <div class="panel" id="tunePanel" hidden></div>
+    </div>
+
     <button class="seek" id="back5" title="Back 5 seconds">−5</button>
     <div class="timeline" id="timeline">
       <div class="tl-fill" id="tlFill"></div>
@@ -1487,7 +1528,7 @@
     </div>
     <button class="seek" id="fwd5" title="Forward 5 seconds">+5</button>
     <span class="clock" id="clock">0:00 / 0:00</span>
-    <div class="bpm" title="Tempo — - and = change speed, \ back to the record">
+    <div class="bpm" title="Tempo and pitch — - and = change speed, \ back to the record's; [ and ] transpose, ; and ' fine-tune, P back to the record's pitch, U retune to A440, K the tuning window">
       <span class="bpm-num" id="bpmOut"></span>
       <span class="bpm-rate" id="rateOut"></span>
     </div>
@@ -1835,11 +1876,31 @@ function parseVoice(src, tonicDefault) {
   return { tonic, notes, problems };
 }
 
+/* ── tuning ─────────────────────────────────────────────────────────────
+   A "tuning: A432" line is the A above middle C the recording is tuned to,
+   for the whole track; a track without one is at concert pitch. Read the way
+   the beatmapper reads it (src/miscmap.cpp): "A432", "A 432", "A=432",
+   "A4=432" and a bare "432" all mean the same, decimals are fine, and a
+   value more than a semitone either side of A440 is not a tuning at all —
+   it is far more likely a typo than a record. NaN for anything unreadable. */
+const A4_DEF = 440, A4_MIN = 415, A4_MAX = 466;
+
+function parseTuning(v) {
+  let s = v.replace(/^[ \t]+/, "");
+  if (/^[Aa]/.test(s)) {
+    s = s.slice(1);
+    if (s[0] === "4" && (s[1] === "=" || s[1] === " ")) s = s.slice(1);   /* "A4=432", not "A432" */
+    s = s.replace(/^[ =]+/, "");
+  }
+  const hz = parseFloat(s);
+  return hz >= A4_MIN && hz <= A4_MAX ? hz : NaN;
+}
+
 function parseTimeseries(text) {
   const lyrics = [], sections = [], beats = [], chords = [], strums = [], loops = [];
   const voices = [], keys = [], parts = [], licks = [];
   const notes = [];   /* things worth telling the user about the file itself */
-  let gid = 0;
+  let gid = 0, tuning = null;
 
   for (const rawLine of text.split("\n")) {
     /* A '#' only starts a comment at the start of a line or after whitespace.
@@ -1914,6 +1975,13 @@ function parseTimeseries(text) {
     if (event.startsWith("voice:")) {
       const src = event.slice(6).trim();
       if (src) voices.push({ t_start, t_end, src });
+      continue;
+    }
+    /* The first readable tuning wins, as it does in the beatmapper. */
+    if (event.startsWith("tuning:")) {
+      const hz = parseTuning(event.slice(7));
+      if (isNaN(hz)) notes.push(`"${event}" is not a tuning: expected A4 in Hz, such as A432, from ${A4_MIN} to ${A4_MAX}`);
+      else if (tuning == null) tuning = hz;
       continue;
     }
     if (event.startsWith("key:")) {
@@ -1995,7 +2063,8 @@ function parseTimeseries(text) {
     l.rest = next - l.t_end >= REST_MIN ? l.t_end : null;
   });
 
-  return { lyrics, sections, beats, chords, strums, loops, voices, keys, parts, licks, notes };
+  return { lyrics, sections, beats, chords, strums, loops, voices, keys, parts, licks, notes,
+           tuning: tuning ?? A4_DEF };
 }
 
 /* Real accidental glyphs, kerned back against the letter they belong to. */
@@ -2127,13 +2196,34 @@ const SETTINGS = [
   { name: "guideTone", scope: "display", group: "voice", label: "Guide tone",
     type: "range", def: 0, min: 0, max: 100, step: 5, suffix: "%" },
 
-  /* Pitch still waits on the maps — transposing needs a key to be relative to,
-     and the beatmaps do not carry one. Speed needs nothing: three quarters of
-     the record's speed is meaningful without knowing what the record's speed
-     was, so it can land now. */
-  { name: "speed", scope: "display", group: "playback", label: "Speed",
+  /* Speed needs nothing from the map: three quarters of the record's speed is
+     meaningful without knowing what the record's speed was. Transposing is
+     the same — up a tone is up a tone in any key — so it needs no key either.
+     What the map can add is where the record's A sits: a band that tuned to
+     A432 is a third of a semitone flat of every tuner in the room, and the
+     retune puts it back on 440 with the cents, leaving the semitones alone. */
+  { name: "speed", scope: "display", group: "playback", label: "Speed (- =)",
     type: "range", def: 100, min: 50, max: 150, step: 5, scale: 100, reset: 100,
-    format: v => (v / 100).toFixed(2) + "×", apply: () => applyRate() }
+    format: v => (v / 100).toFixed(2) + "×", apply: () => applyRate() },
+  { name: "transpose", scope: "display", group: "playback", label: "Transpose ([ ])",
+    type: "range", def: 0, min: -12, max: 12, step: 1, reset: 0,
+    format: v => (v > 0 ? "+" : v < 0 ? "−" : "") + Math.abs(v) + " st",
+    apply: () => applyPitch() },
+  { name: "fineTune", scope: "display", group: "playback", label: "Fine tune (; ')",
+    type: "range", def: 0, min: -100, max: 100, step: 1, reset: 0,
+    format: v => (v > 0 ? "+" : v < 0 ? "−" : "") + Math.abs(v) + "¢",
+    apply: () => applyPitch() },
+  /* The track's, not the display's: it comes from the map's "tuning:" line on
+     every track load, so it is never remembered, and a change made here is
+     an override for this session that the map file never hears about — the
+     page has no way to write a map back. Reset goes back to what the map
+     said. It only informs the retune; it does not move the sound by itself. */
+  { name: "a4", scope: "display", group: "playback", label: "Record's A4 (, .)",
+    type: "range", def: A4_DEF, min: A4_MIN, max: A4_MAX, step: 1, volatile: true,
+    get reset() { return track.mapA4 ?? A4_DEF; },
+    format: v => +v.toFixed(1) + " Hz",
+    action: { label: "to A440", title: "Retune to A440 with the cents (U)",
+              run: () => retune(), enabled: v => v !== A4_DEF } }
 ];
 
 const DEF = Object.fromEntries(SETTINGS.map(d => [d.name, d]));
@@ -2174,6 +2264,7 @@ const stage = $("stage"), next = $("next"), vpane = $("vpane");
 const play = $("play"), stop = $("stop");
 const menuBtn = $("menuBtn"), panel = $("panel");
 const titleBtn = $("titleBtn"), trackPanel = $("trackPanel");
+const tuneBtn = $("tuneBtn"), tunePanel = $("tunePanel");
 const titleText = $("titleText"), titleTags = $("titleTags");
 const timeline = $("timeline"), tlFill = $("tlFill"), tlHead = $("tlHead");
 const loopBar = $("loopBar"), loopBuffer = $("loopBuffer");
@@ -3898,7 +3989,9 @@ function toggleVoice() {
 }
 
 /* ── audio ──────────────────────────────────────────────────────────────
-   The element is the clock. Everything else reads it. */
+   The element says what the track is and how long, and plays it only when
+   the engine below cannot be had; otherwise the sound and the clock are the
+   engine's, and everything else reads that. */
 function attachAudio(url) {
   /* Tearing the old element down must not look like a failure. Assigning
      src = "" makes the browser resolve the empty string against the page and
@@ -3935,36 +4028,63 @@ function attachAudio(url) {
   }));
 }
 
-/* Speed without pitch.
+/* Speed and pitch, separately.
    Web Audio's playbackRate is a resampler: it plays the same samples on a
    different clock, so 0.75× also drops the track five semitones and you end up
-   practising against an instrument that is out of tune with your own. The
-   media element's own stretcher is the one that does what practising slowly
-   means — preservesPitch keeps the key and stretches time — so the element
-   stays the clock and this is a property on it rather than a graph.
-   It is the default in every current browser; set it anyway, because a browser
-   that has quietly turned it off would be silently transposing the track. */
+   practising against an instrument that is out of tune with your own. What
+   practising slowly means is time stretched with the key held, and what
+   singing in your own key means is the key moved with the time held — two
+   knobs, not one. The media element's preservesPitch gives the first and has
+   no way to give the second, so the sound now comes from the engine below
+   (the beatmapper's phase vocoder, ported), which takes both: the track
+   decoded to PCM, stretched by speed / pitch and resampled by pitch.
+   The element stays as the fallback for a browser without AudioWorklet, where
+   it plays at the speed with preservesPitch set — the default in every current
+   browser, set anyway, because one that has quietly turned it off would be
+   silently transposing the track. It cannot transpose, so there the pitch
+   controls do nothing. */
 const rate = () => num("speed");
+
+/* The pitch as a frequency ratio: semitones and cents, summed. The recording's
+   A4 is not in it — it only says where concert pitch is, for the retune. */
+const pitchCents = () => state.transpose * 100 + state.fineTune;
+const pitchRatio = () => Math.pow(2, pitchCents() / 1200);
 
 function applyRate() {
   /* Before the early return: the readout answers for the speed whether or not
      there is a track loaded to apply it to. */
   drawTransport();
+  if (looper.node) looper.node.port.postMessage({ cmd: "speed", v: rate() });
   if (!audio) return;
   audio.preservesPitch = true;
   if ("mozPreservesPitch" in audio) audio.mozPreservesPitch = true;
   if ("webkitPreservesPitch" in audio) audio.webkitPreservesPitch = true;
   audio.playbackRate = rate();
-  /* The engine stretches too — WSOLA, so the key holds at any rate. */
-  if (looper.node) looper.node.port.postMessage({ cmd: "speed", v: rate() });
 }
+
+function applyPitch() {
+  drawTransport();
+  if (looper.node) looper.node.port.postMessage({ cmd: "pitch", v: pitchRatio() });
+}
+
+/* The retune: enough cents to put the recording's A on 440, rounded to the
+   cent, with the semitones left where they are — a song taken down a tone and
+   retuned is still down a tone. */
+const retuneCents = () => Math.round(1200 * Math.log2(440 / state.a4));
+const retune = () => command({ cmd: "set", name: "fineTune", value: retuneCents() });
 
 function seek(to) {
   const t = clamp(to, 0, player.duration || 0);
-  if (looper.on && looper.mode === "engine" && looper.node) {
-    /* The engine owns the clock: a seek lands inside the programme. */
+  if (looper.mode === "engine" && looper.node) {
+    /* The engine owns the clock: a seek lands inside the programme, if one
+       is going round, and anywhere in the record otherwise. */
     engineSeek(t);
     player.time = looperTime();
+  } else if (looper.mode === "engine") {
+    /* Still decoding: the position is all there is, and the engine starts
+       from it when it lands. */
+    player.time = t;
+    looper.ended = false;
   } else {
     player.time = t;
     if (audio) audio.currentTime = t;
@@ -4000,7 +4120,14 @@ function drawTransport() {
   const r = rate();
   const bpm = bpmAt(player.time);
   bpmOut.textContent = bpm ? Math.round(bpm * r) : "";
-  rateOut.textContent = r === 1 ? "" : "×" + String(+r.toFixed(2));
+  /* The pitch rides along with the speed: both are ways the sound has been
+     moved off the record, and a transposition you forgot about is worse than
+     a slow-down you forgot about, because it does not announce itself. */
+  const st = state.transpose, ct = state.fineTune;
+  const pitch = (st ? (st > 0 ? "+" : "−") + Math.abs(st) : "")
+              + (ct ? (st ? " " : "") + (ct > 0 ? "+" : "−") + Math.abs(ct) + "¢" : "");
+  rateOut.textContent = [r === 1 ? "" : "×" + String(+r.toFixed(2)), pitch]
+    .filter(Boolean).join(" ");
 }
 
 /* ── loops ──────────────────────────────────────────────────────────────
@@ -4011,23 +4138,28 @@ function drawTransport() {
    goes round: add A three times and then B, and it plays A A A B A A A B…
    until the buffer is cleared.
 
-   The going round itself is the beatmapper's trick (src/wsola.cpp), ported:
-   the whole track is decoded to PCM and played through a WSOLA
-   time-stretcher in an AudioWorklet, and a wrap just moves the read head —
-   the overlap-add tail crossfades the seam, so there is no seek, no decoder
-   gap, no click. It also keeps the speed control honest inside a loop:
-   WSOLA is a stretcher, not a resampler, so any rate keeps the key.
-   Where the worklet cannot be had, the old seek-back loop still runs —
-   audibly worse, and it says so. */
+   The going round itself is the beatmapper's trick, ported: the whole track
+   is decoded to PCM and played through its phase vocoder (src/stretch.cpp)
+   in an AudioWorklet, and a wrap just moves the analysis head and restarts
+   the phases — the frames still overlapping crossfade the seam, so there is
+   no seek, no decoder gap, no click. The engine plays the record too, not
+   only the loops, since it is where speed and pitch come from; a loop is
+   just a programme handed to it, and clearing the buffer takes the
+   programme away without a hitch in the sound.
+   Where the worklet cannot be had, the element plays instead and the old
+   seek-back loop still runs — audibly worse, and it says so. */
 const looper = {
   buf: [],           /* the programme: { name, from, to } in track seconds */
   trade: 0,          /* bars (or licks) per turn while trading, 0 when the buffer is hand-built */
   tradeUnit: "bar",  /* what a turn is counted in: "bar" or "lick" */
   seg: 0,            /* which entry is sounding */
-  on: false,         /* buffer engaged: the engine (or fallback) owns playback */
+  on: false,         /* buffer engaged: the programme goes round */
   mode: "engine",    /* "engine" until proven otherwise, then "fallback" */
   playing: false,    /* engine transport, distinct from the element's */
+  want: false,       /* play was asked for: honoured when a decode lands */
+  ended: false,      /* the record ran out with no programme to go round */
   ctx: null, node: null, pending: null, forTrack: null, moduleReady: false,
+  gen: 0,            /* which build is current: a slower, older decode must not win */
   sampleRate: 0,
   srcBytes: null, srcUrl: null,  /* where the PCM can be had, set per track */
   lastF: 0, lastAt: 0,           /* last cursor report + arrival stamp */
@@ -4036,141 +4168,515 @@ const looper = {
   decoding: false,
 };
 
-/* The worklet, as source: the page must work from file://, so the module is
-   handed over as a Blob URL rather than fetched. Frames are planar rather
-   than interleaved because that is what the worklet hands out, and the
-   single loop range became a segment list: crossing one segment's end
-   carries the overshoot into the next, and the last wraps to the first. */
-const WSOLA_SRC = `
-const FRAME = 2048, HOP = 512, SEARCH = 128;
-const HANN = new Float32Array(FRAME);
-for (let i = 0; i < FRAME; i++)
-  HANN[i] = 0.25 * (1 - Math.cos(2 * Math.PI * i / FRAME));
+/* The engine, as source: the page must work from file://, so the module is
+   handed over as a Blob URL rather than fetched. It is src/stretch.cpp step
+   for step — the same window, overlap, phase integration and resampler —
+   with two changes: frames are planar rather than interleaved, because that
+   is what the worklet hands out, and the single loop range became a segment
+   list, where crossing one segment's end carries the overshoot into the next
+   and the last wraps to the first. Everything is allocated up front; the
+   audio thread's render path allocates nothing. Kept apart from the
+   registration so it can be run outside a browser and measured. */
+const STRETCH_SRC = `
+const OVERLAP = 4, KW = 16, KRES = 512, KBETA = 9, RING = 64, QUIET = 1e-10;
+const TAU = 2 * Math.PI;
+const princarg = a => a - TAU * Math.floor(a / TAU + 0.5);
 
-registerProcessor("wsola", class extends AudioWorkletProcessor {
+function besselI0(x) {
+  let sum = 1, term = 1;
+  for (let k = 1; k < 50; k++) {
+    term *= (x / (2 * k)) * (x / (2 * k));
+    sum += term;
+    if (term < sum * 1e-12) break;
+  }
+  return sum;
+}
+
+class Stretch {
+  constructor(sampleRate) {
+    const N = this.N = sampleRate > 64000 ? 8192 : 4096;
+    const W = this.W = N * 3 / 4;
+    const H = this.H = W / OVERLAP;
+    const NB = this.NB = N / 2 + 1;
+    this.L = 2 * H * Math.ceil(W / (2 * H));
+
+    /* The FFT's twiddles and bit reversal. */
+    this.cs = new Float32Array(N / 2);
+    this.sn = new Float32Array(N / 2);
+    for (let j = 0; j < N / 2; j++) {
+      this.cs[j] = Math.cos(TAU * j / N);
+      this.sn[j] = -Math.sin(TAU * j / N);
+    }
+    this.rev = new Int32Array(N);
+    let bits = 0;
+    while ((1 << bits) < N) bits++;
+    for (let i = 0; i < N; i++) {
+      let r = 0;
+      for (let b = 0; b < bits; b++) if (i & (1 << b)) r |= 1 << (bits - 1 - b);
+      this.rev[i] = r;
+    }
+
+    /* Hann of length W centred in N, for analysis and synthesis both. Every
+       output sample sees the same sum of squared windows; it is measured half
+       a hop off a window edge. */
+    this.win = new Float32Array(N);
+    for (let i = 0; i < N; i++) {
+      const j = i - (N - W) / 2;
+      this.win[i] = j >= 0 && j < W ? 0.5 - 0.5 * Math.cos(TAU * j / W) : 0;
+    }
+    let wsum = 0;
+    for (let i = (N / 2 + H / 2) % H; i < N; i += H) wsum += this.win[i] * this.win[i];
+    this.olaGain = 1 / wsum;
+
+    this.wr = new Float32Array(N); this.wi = new Float32Array(N);
+    this.vr = new Float32Array(N); this.vi = new Float32Array(N);
+    this.lr = new Float32Array(NB); this.li = new Float32Array(NB);
+    this.rr = new Float32Array(NB); this.ri = new Float32Array(NB);
+    this.phaseIn = new Float32Array(NB); this.phasePrev = new Float32Array(NB);
+    this.pw = new Float32Array(NB); this.pwPrev = new Float32Array(NB);
+    this.phaseOut = new Float64Array(NB);
+    this.rot = new Float32Array(NB);
+    this.hkey = new Float32Array(2 * NB); this.hid = new Int32Array(2 * NB); this.hn = 0;
+    this.done = new Uint8Array(NB);
+    this.ola = new Float32Array(this.L * 2);
+    this.sbCap = 4 * N;
+    this.sb = new Float32Array(this.sbCap * 2);
+
+    /* The resampler's windowed sinc, KRES entries per zero crossing. */
+    this.ktab = new Float32Array(KW * KRES + 2);
+    const i0b = besselI0(KBETA);
+    for (let i = 0; i <= KW * KRES + 1; i++) {
+      const t = i / KRES;
+      const s = i === 0 ? 1 : Math.sin(Math.PI * t) / (Math.PI * t);
+      const u = t / KW;
+      const w = u < 1 ? besselI0(KBETA * Math.sqrt(1 - u * u)) / i0b : 0;
+      this.ktab[i] = s * w;
+    }
+
+    /* Per-hop history: where each analysis frame was centred, at what rate
+       and pitch it was made, and which programme entry it belonged to — so a
+       change of speed or pitch applies from the hop it lands on and the
+       cursor never re-times what is already in flight. */
+    this.ringCentre = new Float64Array(RING);
+    this.ringRate = new Float32Array(RING);
+    this.ringPitch = new Float32Array(RING);
+    this.ringSeg = new Int32Array(RING);
+
+    this.left = this.right = null;
+    this.frames = 0;
+    this.speed = 1; this.pitch = 1;
+    this.segs = []; this.seg = 0;
+    this.reset(0);
+  }
+
+  setPcm(left, right) {
+    this.left = left;
+    this.right = right || left;      /* mono plays on both sides */
+    this.frames = left.length;
+    this.reset(0);
+  }
+
+  /* ---- FFT: iterative radix-2, forward, unnormalized, in place ---- */
+  fft(re, im) {
+    const n = this.N, rev = this.rev, cs = this.cs, sn = this.sn;
+    for (let i = 0; i < n; i++) {
+      const j = rev[i];
+      if (i < j) {
+        let t = re[i]; re[i] = re[j]; re[j] = t;
+        t = im[i]; im[i] = im[j]; im[j] = t;
+      }
+    }
+    for (let len = 2, step = n >> 1; len <= n; len <<= 1, step >>= 1) {
+      const half = len >> 1;
+      for (let i = 0; i < n; i += len) {
+        for (let j = 0, w = 0; j < half; j++, w += step) {
+          const wr = cs[w], wi = sn[w];
+          const a = i + j, b = a + half;
+          const vr = re[b] * wr - im[b] * wi;
+          const vi = re[b] * wi + im[b] * wr;
+          re[b] = re[a] - vr; im[b] = im[a] - vi;
+          re[a] += vr; im[a] += vi;
+        }
+      }
+    }
+  }
+
+  /* Window the N frames centred on c into dst, rotated by N/2 so the window
+     centre lands on index 0 (zero-phase framing: a steady partial's main-lobe
+     bins share one phase, and a bin's phase refers to the frame centre).
+     which: 0 left, 1 right, 2 the mono sum. Out-of-range frames read 0. */
+  loadFrame(c, which, dst) {
+    const n = this.N, half = n >> 1, win = this.win, L = this.left, R = this.right;
+    const frames = this.frames;
+    for (let i = 0; i < n; i++) {
+      const t = c - half + i;
+      let v = 0;
+      if (win[i] !== 0 && t >= 0 && t < frames)
+        v = which === 0 ? L[t] : which === 1 ? R[t] : L[t] + R[t];
+      dst[(i + half) & (n - 1)] = v * win[i];
+    }
+  }
+
+  /* ---- a max-heap of (power, id); id = bin, + NB for a bin of the last hop ---- */
+  push(k, id) {
+    const key = this.hkey, ids = this.hid;
+    let i = this.hn++;
+    while (i > 0) {
+      const p = (i - 1) >> 1;
+      if (key[p] >= k) break;
+      key[i] = key[p]; ids[i] = ids[p]; i = p;
+    }
+    key[i] = k; ids[i] = id;
+  }
+
+  pop() {
+    const key = this.hkey, ids = this.hid;
+    const top = ids[0];
+    const n = --this.hn;
+    const k = key[n], id = ids[n];
+    let i = 0;
+    for (;;) {
+      let c = 2 * i + 1;
+      if (c >= n) break;
+      if (c + 1 < n && key[c + 1] > key[c]) c++;
+      if (key[c] <= k) break;
+      key[i] = key[c]; ids[i] = ids[c]; i = c;
+    }
+    if (n > 0) { key[i] = k; ids[i] = id; }
+    return top;
+  }
+
+  /* Phase-gradient heap integration (after Prusa & Holighaus, "Phase Vocoder
+     Done Right", 2017), in its identity-preserving form. Bins are visited
+     loudest first. A bin reached from the previous hop advances its output
+     phase by its instantaneous frequency times the synthesis hop; a bin
+     reached from a louder neighbour in this hop takes that neighbour's
+     rotation, so it keeps the input's phase difference to it. Steady partials
+     stay continuous in time, main lobes and attacks stay vertically coherent,
+     and transients need no detector: in an attack frame the new bins outweigh
+     the old ones. lagR/lagI is the mono spectrum one synthesis hop before
+     this frame, or null when that is the previous hop's (phasePrev serves).
+     Writes the per-bin rotation, output minus input phase, into rot. */
+  integrate(lagR, lagI) {
+    const N = this.N, H = this.H, NB = this.NB;
+    const pw = this.pw, pwPrev = this.pwPrev, rot = this.rot, done = this.done;
+    const phaseIn = this.phaseIn, phasePrev = this.phasePrev, phaseOut = this.phaseOut;
+    const first = this.first;
+    let pmax = 0;
+    for (let k = 0; k < NB; k++) if (pw[k] > pmax) pmax = pw[k];
+    /* Bins in float rounding noise keep their input phase; integrating them
+       would hand random phases to partials that arrive there later. */
+    const tol = Math.max(pmax * QUIET, 1e-12);
+
+    this.hn = 0;
+    let open = 0;
+    for (let k = 0; k < NB; k++) {
+      rot[k] = 0;
+      const quiet = first || pw[k] <= tol;
+      done[k] = quiet ? 1 : 0;
+      if (!quiet) open++;
+      if (!first && pwPrev[k] > tol) this.push(pwPrev[k], k + NB);
+    }
+    while (open > 0) {
+      if (this.hn === 0) {
+        /* Nothing to inherit from: the loudest open bin keeps its input phase. */
+        let best = -1;
+        for (let k = 0; k < NB; k++)
+          if (!done[k] && (best < 0 || pw[k] > pw[best])) best = k;
+        done[best] = 1; open--;
+        this.push(pw[best], best);
+        continue;
+      }
+      const id = this.pop();
+      if (id >= NB) {
+        const k = id - NB;
+        if (done[k]) continue;
+        const omegaK = TAU * k / N;
+        const phaseA = lagR ? Math.atan2(lagI[k], lagR[k]) : phasePrev[k];
+        const omega = omegaK + princarg(phaseIn[k] - phaseA - omegaK * H) / H;
+        rot[k] = princarg(phaseOut[k] + omega * H - phaseIn[k]);
+        done[k] = 1; open--;
+        this.push(pw[k], k);
+      } else {
+        for (let j = id - 1; j <= id + 1; j += 2) {
+          if (j < 0 || j >= NB || done[j]) continue;
+          rot[j] = rot[id];
+          done[j] = 1; open--;
+          this.push(pw[j], j);
+        }
+      }
+    }
+  }
+
+  /* Where the analysis head goes when it crosses the end of its programme
+     entry: into the next one, overshoot and all, so the groove keeps its
+     phase across the seam. The phases restart there, and the frames still
+     overlapping crossfade the old entry's end into the new one's start. */
+  wrap() {
+    const segs = this.segs;
+    if (!segs.length) return;
+    if (this.seg >= segs.length) this.seg = 0;
+    let g = segs[this.seg], guard = 0;
+    while (this.apos >= g.e && guard++ < 64) {
+      const over = this.apos - g.e;
+      this.seg = (this.seg + 1) % segs.length;
+      g = segs[this.seg];
+      this.apos = g.s + over;
+      this.first = true;
+    }
+  }
+
+  /* One synthesis hop: H stretched frames, appended to sb. */
+  hop() {
+    const N = this.N, H = this.H, NB = this.NB, L = this.L;
+    const speed = Math.max(0.05, this.speed);
+    const pitch = Math.min(4, Math.max(0.25, this.pitch));
+    const ha = H * speed / pitch;           /* analysis hop */
+
+    this.wrap();
+    const c = Math.floor(this.apos + 0.5);
+    const r = this.hops & (RING - 1);
+    this.ringCentre[r] = this.apos;
+    this.ringRate[r] = ha / H;
+    this.ringPitch[r] = pitch;
+    this.ringSeg[r] = this.seg;
+
+    /* Both channels at c in one packed FFT, then split. */
+    const wr = this.wr, wi = this.wi;
+    const lr = this.lr, li = this.li, rr = this.rr, ri = this.ri;
+    this.loadFrame(c, 0, wr);
+    this.loadFrame(c, 1, wi);
+    this.fft(wr, wi);
+    const pw = this.pw, phaseIn = this.phaseIn;
+    for (let k = 0; k < NB; k++) {
+      const m = (N - k) & (N - 1);
+      lr[k] = 0.5 * (wr[k] + wr[m]);
+      li[k] = 0.5 * (wi[k] - wi[m]);
+      rr[k] = 0.5 * (wi[k] + wi[m]);
+      ri[k] = 0.5 * (wr[m] - wr[k]);
+      phaseIn[k] = Math.atan2(li[k] + ri[k], lr[k] + rr[k]);
+      pw[k] = lr[k] * lr[k] + li[k] * li[k] + rr[k] * rr[k] + ri[k] * ri[k];
+    }
+
+    /* Instantaneous frequencies come from the phase change over one
+       synthesis hop. Unless the analysis hop equals it (no stretch), that
+       takes the mono spectrum at c - H as well. */
+    if (this.first || c - H === this.prevC) this.integrate(null, null);
+    else {
+      this.loadFrame(c - H, 2, this.vr);
+      this.vi.fill(0);
+      this.fft(this.vr, this.vi);
+      /* Bins 0..N/2 of a real signal's transform are its half spectrum. */
+      this.integrate(this.vr, this.vi);
+    }
+    const rot = this.rot, phaseOut = this.phaseOut;
+    rot[0] = rot[NB - 1] = 0;               /* DC and Nyquist must stay real */
+
+    /* Rotate both channels by the same angles, so the stereo image holds,
+       remember the mono output phase, and pack the two real spectra into one
+       complex spectrum (conjugated) for an inverse transform via the forward
+       one. */
+    for (let k = 0; k < NB; k++) {
+      const cr = Math.cos(rot[k]), ci = Math.sin(rot[k]);
+      const l_r = lr[k] * cr - li[k] * ci, l_i = lr[k] * ci + li[k] * cr;
+      const r_r = rr[k] * cr - ri[k] * ci, r_i = rr[k] * ci + ri[k] * cr;
+      phaseOut[k] = princarg(phaseIn[k] + rot[k]);
+      wr[k] = l_r - r_i;
+      wi[k] = -(l_i + r_r);
+      if (k > 0 && k < NB - 1) {
+        wr[N - k] = l_r + r_i;
+        wi[N - k] = l_i - r_r;
+      }
+    }
+    this.fft(wr, wi);
+    /* The real part is left, minus the imaginary part right. Overlap-add the
+       window's span, centred in L. */
+    const g = this.olaGain / N, half = N >> 1, win = this.win, ola = this.ola;
+    for (let i = 0; i < L; i++) {
+      const n = i - (L >> 1) + half;
+      const j = (n + half) & (N - 1);
+      const w = win[n] * g;
+      ola[2 * i] += wr[j] * w;
+      ola[2 * i + 1] -= wi[j] * w;
+    }
+
+    /* Emit the first H frames into the stretched stream, keeping enough
+       history behind rpos for the resampler's kernel. */
+    if (this.sbLen + H > this.sbCap) {
+      const keepFrom = Math.floor(this.rpos) - (KW * 4 + 8);
+      let drop = keepFrom - this.sbBase;
+      if (drop > this.sbLen) drop = this.sbLen;
+      if (drop > 0) {
+        this.sb.copyWithin(0, drop * 2, this.sbLen * 2);
+        this.sbLen -= drop;
+        this.sbBase += drop;
+      }
+    }
+    this.sb.set(ola.subarray(0, 2 * H), this.sbLen * 2);
+    this.sbLen += H;
+    ola.copyWithin(0, 2 * H);
+    ola.fill(0, 2 * (L - H));
+
+    let t = this.pwPrev; this.pwPrev = this.pw; this.pw = t;
+    t = this.phasePrev; this.phasePrev = this.phaseIn; this.phaseIn = t;
+    this.prevC = c;
+    this.apos += ha;
+    this.hops++;
+    this.first = false;
+  }
+
+  /* The hop whose frame is centred on stretched position x: L/2 behind the
+     hop that emitted x. */
+  hopAt(x) {
+    return (Math.floor(x / this.H) - this.L / (2 * this.H)) & (RING - 1);
+  }
+
+  /* The input frame that stretched position x was made from. */
+  inputTime(x) {
+    const b = Math.floor(x / this.H), r = this.hopAt(x);
+    return this.ringCentre[r] + (x - b * this.H) * this.ringRate[r];
+  }
+
+  /* The cursor: the input frame of the frame centred under the read head. */
+  cursor() { return this.inputTime(this.rpos); }
+  cursorSeg() { return this.ringSeg[this.hopAt(this.rpos)]; }
+
+  /* Restart the pipeline so the first output frame is input frame "frame".
+     Output starts at the first hop every overlapping frame reaches, and that
+     shows the frame of the hop "lag" earlier, so the analysis starts that
+     many hops ahead of time. */
+  reset(frame) {
+    const H = this.H;
+    const pitch = Math.min(4, Math.max(0.25, this.pitch));
+    const ha = H * Math.max(0.05, this.speed) / pitch;
+    const prime = this.L / H - 1, lag = this.L / (2 * H);
+    this.apos = frame - (prime - lag) * ha;
+    this.prevC = -Infinity;
+    this.hops = 0;
+    this.sbBase = 0;
+    this.sbLen = 0;
+    this.rpos = prime * H;
+    this.first = true;
+    this.ola.fill(0);
+    this.ringCentre.fill(frame);
+    this.ringRate.fill(0);
+    this.ringPitch.fill(1);
+    this.ringSeg.fill(this.seg);
+  }
+
+  /* Fill outL/outR (outR may be null) with up to n frames; returns how many
+     were written, fewer only at the end of the input when nothing loops. */
+  render(outL, outR, n) {
+    const H = this.H, ktab = this.ktab, sb = this.sb;
+    const looping = this.segs.length > 0;
+    const eof = this.frames;
+    let written = 0;
+    while (written < n) {
+      /* Synthesize until the kernel's reach ahead of rpos exists. The pitch,
+         the resampling step, is the one the frame under rpos was made for. */
+      let pitch = 1, fc = 1, reach = 0;
+      for (;;) {
+        const made = this.hops * H, at = Math.floor(this.rpos);
+        if (made > at + H) {
+          pitch = this.ringPitch[this.hopAt(this.rpos)];
+          /* Cut off at the new Nyquist when pitching up, so nothing aliases. */
+          fc = Math.abs(pitch - 1) < 1e-6 ? 1 : Math.min(1, 0.97 / pitch);
+          reach = Math.ceil(KW / fc) + 1;
+          if (made > at + reach) break;
+        }
+        this.hop();
+      }
+      if (!looping && this.inputTime(this.rpos) >= eof) break;
+
+      /* Windowed-sinc interpolation at rpos, gain normalized to 1. */
+      const i0 = Math.floor(this.rpos);
+      const frac = this.rpos - i0;
+      const scale = fc * KRES, lim = KW * KRES;
+      const base = (i0 - this.sbBase) * 2;
+      let a0 = 0, a1 = 0, ws = 0;
+      for (let j = 1 - reach; j <= reach; j++) {
+        const t = Math.abs(j - frac) * scale;
+        const ti = t | 0;
+        if (ti >= lim) continue;
+        const w = ktab[ti] + (ktab[ti + 1] - ktab[ti]) * (t - ti);
+        const s = base + 2 * j;
+        a0 += sb[s] * w;
+        a1 += sb[s + 1] * w;
+        ws += w;
+      }
+      outL[written] = a0 / ws;
+      if (outR) outR[written] = a1 / ws;
+      written++;
+      this.rpos += pitch;
+    }
+    return written;
+  }
+}
+`;
+
+const PROCESSOR_SRC = `
+registerProcessor("stretch", class extends AudioWorkletProcessor {
   constructor() {
     super();
-    this.pcm = null; this.frames = 0;
-    this.synth = null; this.stage = null;
-    this.pending = 0; this.offset = 0; this.first = true;
-    this.pos = 0; this.speed = 1;
-    this.segs = []; this.seg = 0;
+    this.st = new Stretch(sampleRate);
+    this.ready = false; this.ended = false; this.dead = false; this.tick = 0;
     this.port.onmessage = e => this.msg(e.data);
   }
 
   msg(m) {
+    const st = this.st;
     if (m.cmd === "pcm") {
-      this.pcm = m.channels;
-      this.frames = m.channels[0].length;
-      this.synth = m.channels.map(() => new Float32Array(FRAME));
-      this.stage = m.channels.map(() => new Float32Array(HOP));
-      this.hardSeek(0);
+      st.setPcm(m.channels[0], m.channels[1]);
+      this.ready = true;
+      this.ended = false;
+      this.report();
     } else if (m.cmd === "segs") {
-      this.segs = m.segs;
-      if (!this.segs.length) return;
+      st.segs = m.segs;
+      if (!st.segs.length) { st.seg = 0; return; }
       /* Keep going if the head is still inside some segment — editing the
          programme should not restart the bar — otherwise fall to the start
-         of the nearest surviving entry, tail preserved so the jump is a
-         crossfade like any other. */
-      const i = this.segs.findIndex(g => this.pos >= g.s && this.pos < g.e);
-      if (i >= 0) this.seg = i;
+         of the nearest surviving entry, phases restarted, so the jump is a
+         crossfade like any wrap. */
+      const i = st.segs.findIndex(g => st.apos >= g.s && st.apos < g.e);
+      if (i >= 0) st.seg = i;
       else {
-        this.seg = Math.min(this.seg, this.segs.length - 1);
-        this.pos = this.segs[this.seg].s;
+        st.seg = Math.min(st.seg, st.segs.length - 1);
+        st.apos = st.segs[st.seg].s;
+        st.first = true;
       }
     } else if (m.cmd === "seek") {
-      this.seg = m.seg;
-      this.hardSeek(m.frame);
+      st.seg = Math.max(0, m.seg);
+      st.reset(m.frame);
+      this.ended = false;
+      this.report();
     } else if (m.cmd === "speed") {
-      this.speed = m.v;
+      st.speed = m.v;
+    } else if (m.cmd === "pitch") {
+      st.pitch = m.v;
+    } else if (m.cmd === "drop") {
+      /* A node that keeps returning true stays alive disconnected, PCM and
+         all, so a replaced engine has to be told to let go. */
+      this.dead = true;
+      st.left = st.right = null;
     }
   }
 
-  hardSeek(frame) {
-    this.pos = frame;
-    this.pending = this.offset = 0;
-    this.first = true;               /* nothing laid down to align against */
-    if (this.synth) this.synth.forEach(b => b.fill(0));
-    this.report();
-  }
+  report() { this.port.postMessage({ f: this.st.cursor(), seg: this.st.cursorSeg() }); }
 
-  report() { this.port.postMessage({ f: this.pos, seg: this.seg }); }
-
-  /* Where the read head goes when it crosses the end of its segment: into
-     the next entry of the programme, overshoot and all, so the groove keeps
-     its phase across the seam. */
-  advance() {
-    if (!this.segs.length) return this.pos < this.frames;
-    let g = this.segs[this.seg], guard = 0;
-    while (this.pos >= g.e && guard++ < 64) {
-      const over = this.pos - g.e;
-      this.seg = (this.seg + 1) % this.segs.length;
-      g = this.segs[this.seg];
-      this.pos = g.s + over;
-    }
-    return true;
-  }
-
-  /* One synthesis hop: find the analysis frame near the nominal read head
-     whose opening best matches the overlap tail already laid, window it in,
-     ship the first HOP frames, keep the tail. src/wsola.cpp, step for step. */
-  step() {
-    const ch = this.pcm.length;
-    const base = Math.floor(this.pos);
-
-    let best = 0;
-    if (!this.first && this.frames >= HOP) {
-      let bc = -Infinity;
-      for (let d = -SEARCH; d <= SEARCH; d++) {
-        const cand = base + d;
-        if (cand < 0 || cand + HOP > this.frames) continue;
-        let corr = 0;
-        for (let c = 0; c < ch; c++) {
-          const src = this.pcm[c], ref = this.synth[c];
-          for (let i = 0; i < HOP; i++) corr += ref[i] * src[cand + i];
-        }
-        if (corr > bc) { bc = corr; best = d; }
-      }
-    }
-
-    let read = base + best;
-    if (read < 0) read = 0;
-    if (this.frames >= FRAME) read = Math.min(read, this.frames - FRAME);
-    else read = 0;
-
-    for (let c = 0; c < ch; c++) {
-      const src = this.pcm[c], syn = this.synth[c];
-      const n = Math.min(FRAME, this.frames - read);
-      for (let i = 0; i < n; i++) syn[i] += src[read + i] * HANN[i];
-      this.stage[c].set(syn.subarray(0, HOP));
-      syn.copyWithin(0, HOP);
-      syn.fill(0, FRAME - HOP);
-    }
-
-    this.pos += HOP * this.speed;
-    this.pending = HOP;
-    this.offset = 0;
-    this.first = false;
-    this.report();
-  }
-
+  /* Cursor reports go out every fourth block, ~86 times a second. */
   process(_, outputs) {
+    if (this.dead) return false;
     const out = outputs[0];
-    if (!this.pcm || !out.length) return true;
+    if (!this.ready || this.ended || !out.length) return true;
     const n = out[0].length;
-    let written = 0;
-    while (written < n) {
-      if (this.offset >= this.pending) {
-        if (!this.advance()) break;
-        this.step();
-      }
-      const take = Math.min(this.pending - this.offset, n - written);
-      for (let c = 0; c < out.length; c++) {
-        const src = this.stage[Math.min(c, this.stage.length - 1)];
-        out[c].set(src.subarray(this.offset, this.offset + take), written);
-      }
-      written += take;
-      this.offset += take;
+    const got = this.st.render(out[0], out[1] || null, n);
+    if (got < n) {
+      this.ended = true;
+      this.report();
+      this.port.postMessage({ end: true });
+    } else if (++this.tick >= 4) {
+      this.tick = 0;
+      this.report();
     }
     return true;
   }
@@ -4178,12 +4684,14 @@ registerProcessor("wsola", class extends AudioWorkletProcessor {
 `;
 
 function buildEngine() {
+  const gen = ++looper.gen;
   looper.decoding = true;
   renderLoopBuf();
   return (async () => {
     const ctx = looper.ctx || (looper.ctx = new AudioContext());
     if (!looper.moduleReady) {
-      const url = URL.createObjectURL(new Blob([WSOLA_SRC], { type: "application/javascript" }));
+      const url = URL.createObjectURL(new Blob([STRETCH_SRC + PROCESSOR_SRC],
+                                               { type: "application/javascript" }));
       try { await ctx.audioWorklet.addModule(url); } finally { URL.revokeObjectURL(url); }
       looper.moduleReady = true;
     }
@@ -4194,39 +4702,75 @@ function buildEngine() {
     else if (looper.srcUrl) bytes = await (await fetch(looper.srcUrl)).arrayBuffer();
     else throw new Error("no media to decode");
     const decoded = await ctx.decodeAudioData(bytes);
+    /* Another track, or a reload, started its own build while this one was
+       decoding: that one is the engine now. */
+    if (gen !== looper.gen) return looper.pending;
 
-    if (looper.node) looper.node.disconnect();
-    const node = looper.node = new AudioWorkletNode(ctx, "wsola",
+    const node = looper.node = new AudioWorkletNode(ctx, "stretch",
       { numberOfInputs: 0, outputChannelCount: [2] });
     node.connect(ctx.destination);
     node.port.onmessage = e => {
+      if (node !== looper.node) return;
+      if (e.data.end) return engineEnded();
       looper.lastF = e.data.f;
       looper.lastAt = performance.now();
-      if (e.data.seg !== looper.seg) { looper.seg = e.data.seg; drawLoopStrips(); }
+      if (progLooping() && e.data.seg !== looper.seg) { looper.seg = e.data.seg; drawLoopStrips(); }
     };
 
     const chs = [];
     for (let c = 0; c < Math.min(2, decoded.numberOfChannels); c++)
       chs.push(new Float32Array(decoded.getChannelData(c)));
     node.port.postMessage({ cmd: "pcm", channels: chs }, chs.map(a => a.buffer));
-    node.port.postMessage({ cmd: "speed", v: rate() });
     looper.sampleRate = decoded.sampleRate;
+    if (!player.duration) player.duration = decoded.duration;
+    engineSync();
     return looper;
   })().catch(e => {
-    noteProblem("Seamless looping unavailable — falling back to plain seeks", e);
+    if (gen !== looper.gen) return looper.pending;
+    noteProblem("Speed, pitch and seamless looping unavailable — playing through the browser's own player", e);
     looper.mode = "fallback";
     looper.pending = null;
+    /* Whatever was asked of the engine while it failed is asked of the
+       element instead, from where the engine would have started. */
+    if (audio) {
+      audio.currentTime = clamp(player.time, 0, player.duration || 0);
+      if (looper.want) audio.play().catch(() => {});
+    }
+    looper.want = false;
     return null;
-  }).finally(() => { looper.decoding = false; renderLoopBuf(); });
+  }).finally(() => {
+    if (gen === looper.gen) { looper.decoding = false; renderLoopBuf(); }
+  });
 }
 
 function ensureEngine() {
   if (looper.mode !== "engine") return Promise.resolve(null);
   if (!looper.pending || looper.forTrack !== track.id) {
     looper.forTrack = track.id;
+    retireNode();
     looper.pending = buildEngine();
   }
   return looper.pending;
+}
+
+function retireNode() {
+  if (!looper.node) return;
+  looper.node.port.postMessage({ cmd: "drop" });
+  looper.node.disconnect();
+  looper.node = null;
+}
+
+/* A fresh engine starts where the page already is: at the speed and pitch
+   as set, with the programme if one is going round, at the playhead, and
+   playing if play was pressed while it decoded. Speed and pitch go first,
+   because the seek primes the pipeline at the rate it will play. */
+function engineSync() {
+  const port = looper.node.port;
+  port.postMessage({ cmd: "speed", v: rate() });
+  port.postMessage({ cmd: "pitch", v: pitchRatio() });
+  port.postMessage({ cmd: "segs", segs: progLooping() ? segFrames() : [] });
+  engineSeek(player.time);
+  if (looper.want) enginePlay();
 }
 
 const segFrames = () => looper.buf.map(l => ({
@@ -4235,38 +4779,59 @@ const segFrames = () => looper.buf.map(l => ({
 }));
 
 function engineSeek(t) {
-  let i = looper.buf.findIndex(l => t >= l.from && t < l.to);
-  if (i < 0) {
-    /* Outside the programme — a nudge or a timeline drag past its edges —
-       lands on the nearest entry rather than being ignored. */
-    let bd = Infinity;
-    looper.buf.forEach((l, k) => {
-      const d = Math.min(Math.abs(t - l.from), Math.abs(t - l.to));
-      if (d < bd) { bd = d; i = k; }
-    });
-    t = clamp(t, looper.buf[i].from, looper.buf[i].to - .001);
+  let i = 0;
+  if (progLooping()) {
+    i = looper.buf.findIndex(l => t >= l.from && t < l.to);
+    if (i < 0) {
+      /* Outside the programme — a nudge or a timeline drag past its edges —
+         lands on the nearest entry rather than being ignored. */
+      let bd = Infinity;
+      looper.buf.forEach((l, k) => {
+        const d = Math.min(Math.abs(t - l.from), Math.abs(t - l.to));
+        if (d < bd) { bd = d; i = k; }
+      });
+      t = clamp(t, looper.buf[i].from, looper.buf[i].to - .001);
+    }
+    looper.seg = i;
   }
-  looper.seg = i;
   looper.lastF = t * looper.sampleRate;
   looper.lastAt = performance.now();
   looper.clockT = null;                  /* a seek snaps the display clock */
+  looper.ended = false;
   looper.node.port.postMessage({ cmd: "seek",
     frame: Math.round(t * looper.sampleRate), seg: i });
-  drawLoopStrips();
+  if (progLooping()) drawLoopStrips();
 }
 
 function enginePlay() {
-  if (!looper.ctx) return;
+  looper.want = true;
+  /* Resumed inside the click, for autoplay's blessing, even when the decode
+     is still running: by the time it lands the gesture may be spent. */
+  if (!looper.ctx) {
+    try { looper.ctx = new AudioContext(); } catch (e) {}
+  }
+  if (looper.ctx) looper.ctx.resume().catch(() => {});
+  if (!looper.node) { ensureEngine(); return; }      /* engineSync plays it */
+  /* Like the element: play at the end of the record starts it again. */
+  if (looper.ended && !progLooping()) engineSeek(0);
   looper.playing = true;
   looper.lastAt = performance.now();
-  looper.ctx.resume().catch(() => {});
   transport(true);
 }
 
 function engineHold() {
+  /* Freeze the clock where the sound is, not where the last report was. */
+  if (looper.playing && looper.sampleRate) looper.lastF = looperTime() * looper.sampleRate;
+  looper.want = false;
   looper.playing = false;
   if (looper.ctx) looper.ctx.suspend().catch(() => {});
   transport(false);
+}
+
+/* The record ran out with nothing to go round: stop, as the element would. */
+function engineEnded() {
+  looper.ended = true;
+  engineHold();
 }
 
 /* ── programme time ───────────────────────────────────────────────────────
@@ -4337,18 +4902,24 @@ function drawTicks() {
    only moves forward within a pass, leaning gently toward the reports; a
    genuine jump — the wrap, a seek — snaps. */
 function looperTime() {
-  if (!looper.sampleRate) return player.time;
+  if (!looper.sampleRate || !looper.node) return player.time;
   const now = performance.now();
   let raw = looper.lastF / looper.sampleRate;
-  if (looper.playing) raw += (now - looper.lastAt) / 1000 * rate();
+  /* A report says what the engine was rendering, and that is heard one
+     output latency later — the element used to take care of this itself. */
+  const lat = looper.ctx ? (looper.ctx.outputLatency || looper.ctx.baseLatency || 0) : 0;
+  /* And only a running context is making sound: one the browser has refused
+     to start must not walk the playhead through a silent track. */
+  const going = looper.playing && looper.ctx && looper.ctx.state === "running";
+  if (going) raw += ((now - looper.lastAt) / 1000 - lat) * rate();
 
   const t0 = looper.clockT;
   if (t0 == null || Math.abs(raw - t0) > .25) {
     looper.clockT = raw;
   } else {
-    const ideal = t0 + (looper.playing ? (now - looper.clockAt) / 1000 * rate() : 0);
+    const ideal = t0 + (going ? (now - looper.clockAt) / 1000 * rate() : 0);
     let t = ideal + (raw - ideal) * .1;
-    if (looper.playing && t < t0) t = t0;
+    if (going && t < t0) t = t0;
     looper.clockT = t;
   }
   looper.clockAt = now;
@@ -4380,10 +4951,12 @@ function loopApply(seekTo) {
     const eng = await ensureEngine();
     if (!looper.on || !looper.buf.length) return;    /* cleared while decoding */
     if (eng) {
+      /* A rebuild overtook this one (a reload mid-decode); it syncs itself. */
+      if (!looper.node) return;
       eng.node.port.postMessage({ cmd: "segs", segs: segFrames() });
       if (engaging || seekTo != null) engineSeek(seekTo != null ? seekTo : looper.buf[0].from);
       if (engaging) enginePlay();
-    } else if (audio) {
+    } else if (audio && looper.mode === "fallback") {
       /* Fallback: the element stays the clock and frame() hops the seams. */
       looper.seg = Math.min(looper.seg, looper.buf.length - 1);
       if (engaging || seekTo != null) seek(seekTo != null ? seekTo : looper.buf[0].from);
@@ -4397,19 +4970,13 @@ function loopApply(seekTo) {
 
 function loopOff() {
   if (!looper.on) return drawLoopStrips();
-  const t = player.time;
-  const was = looper.mode === "engine" ? looper.playing : player.playing;
   looper.on = false;
   looper.seg = 0;
-  if (looper.mode === "engine") {
-    /* Hand the clock back to the element where the engine left off. */
-    looper.playing = false;
-    if (looper.ctx) looper.ctx.suspend().catch(() => {});
-    if (audio) {
-      audio.currentTime = clamp(t, 0, player.duration || 0);
-      if (was) audio.play().catch(() => {});
-    }
-  }
+  /* The engine plays the record as well, so leaving the loop is only taking
+     the programme away: it plays on from wherever it is, at the same speed
+     and pitch, with nothing handed over and nothing to hear. */
+  if (looper.mode === "engine" && looper.node)
+    looper.node.port.postMessage({ cmd: "segs", segs: [] });
   drawLoopStrips();
   refreshGhost();
 }
@@ -4670,7 +5237,7 @@ function chipHandlers(el, index) {
 
 /* ── the frame ──────────────────────────────────────────────────────────── */
 function frame() {
-  if (looper.on && looper.mode === "engine") player.time = looperTime();
+  if (looper.mode === "engine") player.time = looperTime();
   else if (audio) player.time = audio.currentTime;
 
   /* The fallback loop: the element seeks — audibly — where the engine would
@@ -4724,9 +5291,10 @@ const spent = s => (!s || s < 60 ? "" : Math.round(s / 60) + "m");
 function command(msg) {
   const { cmd } = msg;
   if (cmd === "set") return set(msg.name, msg.value);
-  if (cmd === "play") return looper.on && looper.mode === "engine"
-    ? enginePlay() : audio && audio.play().catch(() => {});
-  if (cmd === "stop") return looper.on && looper.mode === "engine"
+  /* The element is still what says a track is loaded, engine or not. */
+  if (cmd === "play") return looper.mode === "engine"
+    ? audio && enginePlay() : audio && audio.play().catch(() => {});
+  if (cmd === "stop") return looper.mode === "engine"
     ? engineHold() : audio && audio.pause();
   if (cmd === "seek") return seek(Number(msg.time) || 0);
   if (cmd === "nudge") return progLooping()
@@ -5111,7 +5679,7 @@ function openBgPanel(open) {
   if (!open && !bgPanel.hidden && !bgKept) applyBackground();   /* undo the preview */
   bgPanel.hidden = !open;
   if (!open) return;
-  openMenu(false); openTrackPanel(false);
+  openMenu(false); openTrackPanel(false); openTunePanel(false);
   bgPick = -1;
   bgKept = false;
   sync("backgroundLevel");
@@ -5310,6 +5878,7 @@ async function openTrack(entry, opts = {}) {
 
   /* Name the track before clearing, because clearing repaints the title and
      the title it should paint is this one, not the one on its way out. */
+  const lastMapA4 = track.mapA4;
   track = { id: entry.id, title: entry.title };
   clearProblems();
 
@@ -5384,6 +5953,8 @@ async function openTrack(entry, opts = {}) {
     looper.trade = 0;
     looper.on = false;
     looper.playing = false;
+    looper.want = false;
+    looper.ended = false;
     looper.seg = 0;
     looper.pending = null;
     looper.forTrack = null;
@@ -5430,14 +6001,30 @@ async function openTrack(entry, opts = {}) {
 
   titleTags.innerHTML = "";
 
-  /* A new track starts at the record's own speed. Half time belongs to the
-     passage you were working on, not to the library, and inheriting last
-     night's 0.6× is the kind of thing you only notice a verse in. A reload is
-     the same track mid-practice, so it keeps the speed you set. */
-  if (!opts.reload) command({ cmd: "set", name: "speed", value: DEF.speed.def });
+  /* A new track starts at the record's own speed and pitch. Half time belongs
+     to the passage you were working on, not to the library, and inheriting
+     last night's 0.6× is the kind of thing you only notice a verse in — a
+     transposition from the last singer more so. A reload is the same track
+     mid-practice, so it keeps the speed and pitch you set. */
+  if (!opts.reload)
+    for (const name of ["speed", "transpose", "fineTune"])
+      command({ cmd: "set", name, value: DEF[name].def });
+
+  /* The recording's A4 is the map's to say. A new track takes it; a reload
+     takes it only if the map's answer changed — the beatmapper writing a new
+     tuning is news, while a nudge made here is a session's override and
+     survives re-reading a map that still says what it said. */
+  track.mapA4 = parsed.tuning;      /* first: the tuning window reads it on the set */
+  if (!opts.reload || parsed.tuning !== lastMapA4)
+    command({ cmd: "set", name: "a4", value: parsed.tuning });
 
   lastLine = -2;
   attachAudio(url);
+  /* The engine decodes as the track arrives, so play has it ready. A reload
+     decodes again, because the audio may be what changed on disk. */
+  looper.pending = null;
+  if (url) ensureEngine();
+  else retireNode();
   renderResults(searchBox.value);
   layout();
   return ok;
@@ -5543,6 +6130,7 @@ function sync(name) {
   if (head) head.box.checked = head.on(v);
   const dots = headDots[name];                   /* and its row of colour rings */
   if (dots) [...dots.children].forEach(b => b.classList.toggle("on", b.dataset.v === v));
+  if (name === "transpose" || name === "fineTune" || name === "a4") syncTune();
   if (name === "backgroundLevel") {              /* the picker's copy of the slider */
     if (document.activeElement !== bgLevel) bgLevel.value = v;
     bgLevelOut.value = v + "%";
@@ -5566,6 +6154,8 @@ function sync(name) {
 
   const out = el.closest(".setting")?.querySelector("output");
   if (out) out.value = def.format ? def.format(v) : v + (def.suffix || def.unit || "");
+  const act = el.closest(".setting")?.querySelector(".act");
+  if (act) act.disabled = !def.action.enabled(v);
 }
 
 /* ── the panel, built from the registry ─────────────────────────────────── */
@@ -5611,6 +6201,16 @@ function rowFor(def) {
       r.textContent = "reset";
       r.onclick = () => command({ cmd: "set", name: def.name, value: def.reset });
       val.append(r);
+    }
+    /* A row can carry one action of its own beside the reset, enabled while
+       its value says the action means something. */
+    if (def.action) {
+      const a = document.createElement("button");
+      a.className = "reset act";
+      a.textContent = def.action.label;
+      a.title = def.action.title || "";
+      a.onclick = () => def.action.run();
+      val.append(a);
     }
     row.append(slider, val);
     controls[def.name] = slider;
@@ -6168,12 +6768,107 @@ function takeFiles(list) {
 $("pickDir").onchange = e => takeFiles(e.target.files);
 $("pickFiles").onchange = e => takeFiles(e.target.files);
 
+/* ── the tuning window ──────────────────────────────────────────────────── */
+/* The beatmapper's tuning popup, in this app's dress: the same three settings
+   the playback menu carries (transpose, fine tune, the record's A4), as
+   steppers rather than sliders, with the retune and a reset beside them. A
+   second view of the same settings -- sync() keeps it honest, as it does the
+   background picker's copy of its slider. */
+const signed = (v, unit) => (v > 0 ? "+" : v < 0 ? "−" : "±") + Math.abs(v) + unit;
+
+function buildTunePanel() {
+  tunePanel.innerHTML = `
+    <div class="tune-head">Pitch</div>
+    <div class="tune-row"><label>Transpose</label>
+      <button class="step" data-n="transpose" data-d="-1" title="Down a semitone ([)">−</button>
+      <output id="tuneSt"></output>
+      <button class="step" data-n="transpose" data-d="1" title="Up a semitone (])">+</button></div>
+    <div class="tune-row"><label>Fine tune</label>
+      <button class="step" data-n="fineTune" data-d="-1" title="Down a cent (;)">−</button>
+      <output id="tuneCt"></output>
+      <button class="step" data-n="fineTune" data-d="1" title="Up a cent (')">+</button></div>
+    <button class="tune-act" id="tuneReset" title="Back to the record's pitch (P)">Reset pitch</button>
+    <div class="tune-head">Record tuned to</div>
+    <div class="tune-row"><label>A4</label>
+      <button class="step" data-n="a4" data-d="-1" title="Down 1 Hz (,)">−</button>
+      <input id="tuneA4" type="text" inputmode="decimal" spellcheck="false" autocomplete="off"
+             title="Type a frequency (432, A432) and press Enter">
+      <button class="step" data-n="a4" data-d="1" title="Up 1 Hz (.)">+</button></div>
+    <span class="note" id="tuneNote"></span>
+    <button class="tune-act" id="tuneFix" title="Shift by the cents that put the record's A on 440 (U)"></button>`;
+
+  /* Whole hertz per press, from wherever a typed 432.5 left it, as the
+     beatmapper does; the other two are whole steps already. */
+  tunePanel.querySelectorAll(".step").forEach(b => b.onclick = () => {
+    const name = b.dataset.n, d = +b.dataset.d;
+    const v = name === "a4" ? (d < 0 ? Math.ceil(state.a4) - 1 : Math.floor(state.a4) + 1)
+                            : state[name] + d;
+    command({ cmd: "set", name, value: v });
+  });
+  $("tuneReset").onclick = () =>
+    ["transpose", "fineTune"].forEach(name => command({ cmd: "set", name, value: DEF[name].reset }));
+  $("tuneFix").onclick = () => retune();
+
+  /* Typed in the map's own spelling or as a bare number; something it cannot
+     read puts the old value back rather than guessing. */
+  const a4 = $("tuneA4");
+  const take = () => {
+    const hz = parseTuning(a4.value.replace(/hz\s*$/i, ""));
+    if (hz === hz) command({ cmd: "set", name: "a4", value: Math.round(hz * 10) / 10 });
+    syncTune();
+  };
+  a4.onchange = take;
+  a4.onkeydown = e => {
+    if (e.key === "Enter") { take(); a4.blur(); }
+    else if (e.key === "Escape") { syncTune(); a4.blur(); e.stopPropagation(); }
+  };
+  a4.onfocus = () => { a4.value = +state.a4.toFixed(1); a4.select(); };
+  a4.onblur = () => syncTune();
+  syncTune();
+}
+
+function syncTune() {
+  const st = state.transpose, ct = state.fineTune, hz = state.a4;
+  /* The settings arrive one at a time at start-up; wait for all three. */
+  if (!$("tuneSt") || st === undefined || ct === undefined || hz === undefined) return;
+  $("tuneSt").value = signed(st, " st");
+  $("tuneCt").value = signed(ct, "¢");
+  $("tuneReset").disabled = !st && !ct;
+  const a4 = $("tuneA4");
+  if (document.activeElement !== a4) a4.value = +hz.toFixed(1) + " Hz";
+
+  /* Where the A4 came from: the map, or a change made here that the map file
+     will never hear about. */
+  const mapHz = track.mapA4 ?? A4_DEF;
+  $("tuneNote").textContent = hz !== mapHz
+    ? `changed here · the map says A${+mapHz.toFixed(1)}`
+    : track.mapA4 != null && track.mapA4 !== A4_DEF ? "from the map" : "";
+
+  const fix = retuneCents(), fixBtn = $("tuneFix");
+  fixBtn.textContent = hz === A4_DEF ? "At concert pitch"
+                     : ct === fix ? `Playing at A440 (${signed(fix, "¢")})`
+                     : `Retune to A440 (${signed(fix, "¢")})`;
+  fixBtn.disabled = hz === A4_DEF || ct === fix;
+
+  /* The button is lit while the sound is off the record's pitch, the way the
+     beatmapper's is: a transposition you have forgotten does not announce
+     itself. */
+  tuneBtn.classList.toggle("active", !!(st || ct));
+}
+
+function openTunePanel(open) {
+  tunePanel.hidden = !open;
+  tuneBtn.setAttribute("aria-expanded", open);
+  if (open) { openMenu(false); openTrackPanel(false); openBgPanel(false); syncTune(); }
+  peekBare(open);
+}
+
 /* ── menus and transport bar ────────────────────────────────────────────── */
 function openMenu(open) {
   panel.hidden = !open;
   menuBtn.setAttribute("aria-expanded", open);
   menuBtn.classList.toggle("active", open);
-  if (open) { openTrackPanel(false); openBgPanel(false); }
+  if (open) { openTrackPanel(false); openBgPanel(false); openTunePanel(false); }
   peekBare(open);
 }
 
@@ -6181,7 +6876,7 @@ function openTrackPanel(open) {
   trackPanel.hidden = !open;
   titleBtn.setAttribute("aria-expanded", open);
   /* Selected, so typing replaces the last query rather than appending to it. */
-  if (open) { pickId = null; renderResults(searchBox.value); openMenu(false); openBgPanel(false); searchBox.focus(); searchBox.select(); }
+  if (open) { pickId = null; renderResults(searchBox.value); openMenu(false); openBgPanel(false); openTunePanel(false); searchBox.focus(); searchBox.select(); }
   peekBare(open);
 }
 
@@ -6193,7 +6888,7 @@ let bareResume = false;
 function peekBare(open) {
   const bare = document.body.classList.contains("bare");
   if (open && bare) { toggleBare(); bareResume = true; }
-  else if (!open && bareResume && panel.hidden && trackPanel.hidden) toggleBare();
+  else if (!open && bareResume && panel.hidden && trackPanel.hidden && tunePanel.hidden) toggleBare();
 }
 
 function toggleBare() { /* hide or show the header; the stage takes the room */
@@ -6229,11 +6924,14 @@ play.onclick = () => command({ cmd: "play" });
 stop.onclick = () => command({ cmd: "stop" });
 menuBtn.onclick = () => openMenu(panel.hidden);
 titleBtn.onclick = () => openTrackPanel(trackPanel.hidden);
+tuneBtn.onclick = () => openTunePanel(tunePanel.hidden);
+buildTunePanel();
 $("fsBtn").onclick = toggleFullscreen;
 
 addEventListener("pointerdown", e => {
   if (!panel.hidden && !e.target.closest(".menu")) openMenu(false);
   if (!trackPanel.hidden && !e.target.closest(".track")) openTrackPanel(false);
+  if (!tunePanel.hidden && !e.target.closest(".tune")) openTunePanel(false);
   if (!bgPanel.hidden && !e.target.closest("#bgPanel")) openBgPanel(false);
 });
 addEventListener("resize", layout);
@@ -6266,6 +6964,7 @@ addEventListener("keydown", e => {
   else if (e.key.toLowerCase() === "z") cycleZoom();
   else if (e.key.toLowerCase() === "l") openTrackPanel(trackPanel.hidden);
   else if (e.key.toLowerCase() === "b") openBgPanel(bgPanel.hidden);
+  else if (e.key.toLowerCase() === "k") openTunePanel(tunePanel.hidden);
   else if (e.key.toLowerCase() === "c")
     command({ cmd: "set", name: "chordPanel", value: !state.chordPanel });
   else if (e.key.toLowerCase() === "s") togglePane();
@@ -6279,9 +6978,20 @@ addEventListener("keydown", e => {
   else if (e.key === "-" || e.key === "_") nudgeSpeed(-1);
   else if (e.key === "=" || e.key === "+") nudgeSpeed(1);
   else if (e.key === "\\") command({ cmd: "set", name: "speed", value: DEF.speed.reset });
+  /* Pitch on the keys to the right of speed's, by the same rules: a slider
+     step a press, shifted faces included, and one key back to the record. */
+  else if (e.key === "[" || e.key === "{") nudgeSetting("transpose", -1);
+  else if (e.key === "]" || e.key === "}") nudgeSetting("transpose", 1);
+  else if (e.key === ";" || e.key === ":") nudgeSetting("fineTune", -1);
+  else if (e.key === "'" || e.key === '"') nudgeSetting("fineTune", 1);
+  else if (e.key === "," || e.key === "<") nudgeSetting("a4", -1);
+  else if (e.key === "." || e.key === ">") nudgeSetting("a4", 1);
+  else if (e.key.toLowerCase() === "p")
+    ["transpose", "fineTune"].forEach(name => command({ cmd: "set", name, value: DEF[name].reset }));
+  else if (e.key.toLowerCase() === "u") { if (state.a4 !== A4_DEF) retune(); }
   else if (e.key === "Escape") {
-    const dialog = !panel.hidden || !trackPanel.hidden || !bgPanel.hidden;
-    openMenu(false); openTrackPanel(false); openBgPanel(false);
+    const dialog = !panel.hidden || !trackPanel.hidden || !bgPanel.hidden || !tunePanel.hidden;
+    openMenu(false); openTrackPanel(false); openBgPanel(false); openTunePanel(false);
     /* With no dialog to close, Escape is the way back when the controls are gone. */
     if (!dialog && document.body.classList.contains("bare")) toggleBare();
   }
@@ -6300,8 +7010,9 @@ function cycleZoom() {
 
 /* Speed moves in the slider's own step, so the keys and the slider can never
    land on values the other cannot reach. set() clamps to the range. */
-const nudgeSpeed = dir =>
-  command({ cmd: "set", name: "speed", value: state.speed + dir * DEF.speed.step });
+const nudgeSetting = (name, dir) =>
+  command({ cmd: "set", name, value: state[name] + dir * DEF[name].step });
+const nudgeSpeed = dir => nudgeSetting("speed", dir);
 
 /* The pane is a choice, not a switch, so toggling it has to remember which
    kind of pane you had. */
