@@ -256,7 +256,11 @@ static bool stem_sum(const std::map<std::string, std::string>& stems, const std:
             for (auto& kv : stems) fprintf(stderr, " %s", kv.first.c_str());
             fprintf(stderr, ")\n"); free(sum); return false; }
         float* pcm = nullptr; uint64_t fr = 0;
-        if (!audio_decode_stereo_at(it->second.c_str(), sr, &pcm, &fr)) {
+        // the app's background compressor may have swapped .wav for .mp3
+        std::string alt = it->second;
+        if (alt.size() > 4) alt.replace(alt.size() - 4, 4, alt.compare(alt.size() - 4, 4, ".wav") ? ".wav" : ".mp3");
+        if (!audio_decode_stereo_at(it->second.c_str(), sr, &pcm, &fr) &&
+            !audio_decode_stereo_at(alt.c_str(), sr, &pcm, &fr)) {
             fprintf(stderr, "cannot decode stem %s\n", it->second.c_str()); free(sum); return false; }
         uint64_t m = fr < nf ? fr : nf;
         for (uint64_t k = 0; k < m; k++) sum[k] += 0.5f * (pcm[k * 2] + pcm[k * 2 + 1]);

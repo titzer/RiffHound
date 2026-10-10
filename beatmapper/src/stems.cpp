@@ -76,6 +76,32 @@ static void set_msg(const char* m) {
     s_msg = m;
 }
 
+// A cached stem is <name>.wav until the background compressor (spawned by
+// spawn_compressor) swaps it for <name>.mp3, renaming the mp3 into place
+// before removing the wav.  A path read earlier may name the wav that has
+// since gone, so a failed decode retries with the other extension.
+static std::string stem_alt_path(const char* path) {
+    std::string p = path;
+    size_t dot = p.rfind('.');
+    if (dot == std::string::npos) return "";
+    std::string ext = p.substr(dot);
+    if (ext == ".wav") return p.substr(0, dot) + ".mp3";
+    if (ext == ".mp3") return p.substr(0, dot) + ".wav";
+    return "";
+}
+
+static bool decode_stem_at(const char* path, uint32_t sr, float** pcm, uint64_t* frames) {
+    if (audio_decode_stereo_at(path, sr, pcm, frames)) return true;
+    std::string alt = stem_alt_path(path);
+    return !alt.empty() && audio_decode_stereo_at(alt.c_str(), sr, pcm, frames);
+}
+
+static bool decode_stem_mono(const char* path, float** pcm, uint64_t* frames, uint32_t* sr) {
+    if (audio_decode_pcm(path, pcm, frames, sr)) return true;
+    std::string alt = stem_alt_path(path);
+    return !alt.empty() && audio_decode_pcm(alt.c_str(), pcm, frames, sr);
+}
+
 void stems_tint(const char* name, float* rgb) {
     struct { const char* n; float r, g, b; } T[] = {
         { "vocals", 1.00f, 0.30f, 0.60f }, { "drums",  0.30f, 0.80f, 1.00f },
@@ -123,6 +149,43 @@ static bool resolve_tool(std::string* python, std::string* script) {
 bool stems_available() {
     std::string py, sc;
     return resolve_tool(&py, &sc);
+}
+
+// --- background compression ------------------------------------------------
+
+// Demucs writes the cache as 16-bit wav (~10 MB/min per stem); once the stems
+// are loaded, scripts/stems_compress.py re-encodes them as CBR mp3 at the
+// source's bit rate.  It runs detached in its own session at low priority,
+// outlives a track change or quit, and locks the directory itself, so a
+// second request while one runs is harmless.  A reaper thread collects it.
+static void spawn_compressor(const std::string& python, const std::string& script,
+                             const std::string& stem_dir, const std::string& audio,
+                             const std::string& log) {
+    std::string sc = script.substr(0, script.rfind('/') + 1) + "stems_compress.py";
+    if (access(sc.c_str(), R_OK) != 0) return;
+    std::vector<std::string> args = { python, sc, stem_dir, audio };
+    std::vector<char*> argv;
+    for (std::string& a : args) argv.push_back(&a[0]);
+    argv.push_back(nullptr);
+
+    posix_spawn_file_actions_t fa;
+    posix_spawn_file_actions_init(&fa);
+    posix_spawn_file_actions_addopen(&fa, STDIN_FILENO, "/dev/null", O_RDONLY, 0);
+    posix_spawn_file_actions_addopen(&fa, STDOUT_FILENO, "/dev/null", O_WRONLY, 0);
+    posix_spawn_file_actions_addopen(&fa, STDERR_FILENO, log.c_str(),
+                                     O_WRONLY | O_CREAT | O_APPEND, 0644);
+    posix_spawnattr_t at;
+    posix_spawnattr_init(&at);
+#ifdef POSIX_SPAWN_SETSID
+    posix_spawnattr_setflags(&at, POSIX_SPAWN_SETSID);
+#endif
+    pid_t pid = 0;
+    int rc = posix_spawn(&pid, argv[0], &fa, &at, argv.data(), environ);
+    posix_spawnattr_destroy(&at);
+    posix_spawn_file_actions_destroy(&fa);
+    if (rc != 0) { fprintf(stderr, "[stems] could not start %s\n", sc.c_str()); return; }
+    printf("[stems] compressing %s in the background (pid %d)\n", stem_dir.c_str(), (int)pid);
+    std::thread([pid] { int st; waitpid(pid, &st, 0); }).detach();
 }
 
 // --- separation worker -------------------------------------------------------
@@ -246,9 +309,19 @@ static void worker_main(std::string audio, bool cached_only, int gen) {
         float*   pcm = nullptr;
         uint64_t nfr = 0;
         uint32_t sr  = 0;
-        if (audio_decode_pcm(found[i].path.c_str(), &pcm, &nfr, &sr)) {
+        if (decode_stem_mono(found[i].path.c_str(), &pcm, &nfr, &sr)) {
             found[i].ok = spectrogram_compute_pixels(&found[i].px, pcm, nfr, sr);
             audio_free_pcm(pcm);
+        }
+    }
+    // Loaded: any stems still in wav get compressed off the critical path.
+    if (!sc.empty() && s_gen.load() == gen) {
+        for (const WorkStem& w : found) {
+            size_t n = w.path.size();
+            if (n > 4 && w.path.compare(n - 4, 4, ".wav") == 0) {
+                spawn_compressor(py, sc, w.path.substr(0, w.path.rfind('/')), audio, log);
+                break;
+            }
         }
     }
     s_work = std::move(found);
@@ -342,7 +415,7 @@ static void sel_worker_main(uint32_t mask, uint32_t sample_rate, int gen) {
         if (!((mask >> i) & 1u)) continue;
         if (s_gen.load() != gen) break;
         float* pcm = nullptr; uint64_t fr = 0;
-        if (!audio_decode_stereo_at(s_stems[i].path, sample_rate, &pcm, &fr)) continue;
+        if (!decode_stem_at(s_stems[i].path, sample_rate, &pcm, &fr)) continue;
         if (!sum) { sum = pcm; sum_frames = fr; continue; }
         uint64_t n = fr < sum_frames ? fr : sum_frames;
         for (uint64_t k = 0; k < n * 2; k++) sum[k] += pcm[k];
@@ -649,7 +722,7 @@ const float* stems_source_audio(uint32_t mask, uint64_t* frames,
     for (int i = 0; i < s_count; i++) {
         if (!((mask >> i) & 1u)) continue;
         float* pcm = nullptr; uint64_t fr = 0;
-        if (!audio_decode_stereo_at(s_stems[i].path, sr, &pcm, &fr)) continue;
+        if (!decode_stem_at(s_stems[i].path, sr, &pcm, &fr)) continue;
         uint64_t n = fr < mix_frames ? fr : mix_frames;
         for (uint64_t k = 0; k < n; k++) sum[k] += 0.5f * (pcm[k * 2] + pcm[k * 2 + 1]);
         free(pcm);
