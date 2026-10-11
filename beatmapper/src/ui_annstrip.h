@@ -43,7 +43,12 @@ PanelId  annstrip_panel(AnnStripId id);
 // the lane's top edge up; the value lives in EditorState so it survives a
 // track change and is one of the things the Settings popup can reach.
 float annstrip_height(const EditorState* e, AnnStripId id);
-int   annstrip_rows  (float height);        // rows that fit in that height
+int   annstrip_rows  (float height, float row_h);   // rows of row_h that fit in that height
+
+// The font a lane's annotation text is drawn in (the chord lane gets a
+// large one); nullptr for the UI font.
+struct ImFont;
+void  annstrip_set_font(AnnStripId id, ImFont* font);
 
 // Geometry and row layout for this frame.  Call before hit-testing: which
 // annotation a click lands on depends on which row it was drawn in.

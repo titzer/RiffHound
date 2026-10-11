@@ -2,6 +2,8 @@
 
 #include "audio.h"
 #include "lyricmap.h"
+#include "lyrics_find.h"
+#include <vector>
 
 // Lyric auto-insert mode: with the track's stems separated, the unplaced
 // lyrics are aligned to the vocal stem (lyric_align.h) and each gets a
@@ -46,6 +48,9 @@ void ui_lyric_auto_set_hover(int i);
 int  ui_lyric_auto_cursor();
 void ui_lyric_auto_advance();       // to the next suggestion in time (wraps)
 void ui_lyric_auto_set_cursor(int i);
+// A lyric was just placed ending at t: once the suggestions are recomputed,
+// select the first one starting from there.
+void ui_lyric_auto_continue_after(double t);
 // True once after the cursor moved (L, or an accept carried it on): the
 // Lyric Index then selects its span as the region and brings it into view.
 bool ui_lyric_auto_take_cursor_moved();
@@ -65,5 +70,17 @@ int  ui_lyric_auto_apply(LyricMap* lyricmap, int idx);
 // Returns how many moved.
 int  ui_lyric_auto_apply_all(LyricMap* lyricmap);
 
-// New track: drop everything (the mode stays on).
+// Redo: the lyrics placed by accepting suggestions (this track, this
+// session) that are still where they were put go back to being unplaced,
+// in their places in the sheet, and get aligned again.  Lyrics placed or
+// adjusted by hand stay as anchors.  The caller pushes undo.
+int  ui_lyric_auto_redo_count(const LyricMap* lyricmap);
+int  ui_lyric_auto_redo(LyricMap* lyricmap, double dur);
+
+// Timed lyrics (from a lyrics lookup) for this track: they guide the
+// alignment, and stand in for it until the vocal stem exists.
+void ui_lyric_auto_set_hints(const std::vector<LyricTimedLine>& lines);
+bool ui_lyric_auto_has_hints();
+
+// New track: drop everything, hints included (the mode stays on).
 void ui_lyric_auto_reset();

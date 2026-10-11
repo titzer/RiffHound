@@ -25,6 +25,8 @@
 #include "ui_beat_detector.h"
 #include "ui_complete.h"
 #include "ui_lyric_auto.h"
+#include "ui_lyric_find.h"
+#include "lyrics_find.h"
 #include "ui_help.h"
 #include "panels.h"
 #include "platform.h"
@@ -178,20 +180,57 @@ int main(int argc, char** argv) {
     style.ScrollbarRounding = 3.0f;
     style.Colors[ImGuiCol_WindowBg] = ImVec4(0.10f, 0.10f, 0.14f, 1.0f);
 
-    // Load the default font at several sizes for lyric display.
+    // Lyric and chord fonts: a system TrueType face (ImGui's built-in font is
+    // a 13 px bitmap face that blurs when scaled), rasterized at the
+    // display's pixel density so it is sharp on a Retina screen.  The lyric
+    // strip uses LYRIC_FONT_SIZES and the Lyric Index's text fields
+    // LYRIC_PANE_FONT_SIZES, stepped together (Ctrl+= / Ctrl+-); the chord
+    // lane a 3x face.
     // Must be done after CreateContext() and before the first NewFrame().
-    static const float  LYRIC_FONT_SIZES[] = { 13.0f, 16.0f, 20.0f, 24.0f, 28.0f };
-    static const int    N_LYRIC_FONTS = 5;
+    static const float  LYRIC_FONT_SIZES[]      = { 13.0f, 16.0f, 20.0f, 24.0f };
+    static const float  LYRIC_PANE_FONT_SIZES[] = { 13.0f, 16.0f, 24.0f, 32.0f };
+    static const int    N_LYRIC_FONTS = 4;
     static ImFont*      s_lyric_fonts[N_LYRIC_FONTS];
+    static ImFont*      s_lyric_pane_fonts[N_LYRIC_FONTS];
     {
         ImGuiIO& fio = ImGui::GetIO();
-        for (int i = 0; i < N_LYRIC_FONTS; i++) {
+        float sx = 1.0f, sy = 1.0f;
+        glfwGetWindowContentScale(window, &sx, &sy);
+        float density = sx > 1.0f ? sx : 1.0f;
+        static const char* FACES[] = {
+            "/System/Library/Fonts/Helvetica.ttc",
+            "/System/Library/Fonts/Supplemental/Arial.ttf",
+            "/Library/Fonts/Arial Unicode.ttf",
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+            "/usr/share/fonts/TTF/DejaVuSans.ttf",
+        };
+        const char* face = nullptr;
+        for (const char* f : FACES) if (access(f, R_OK) == 0) { face = f; break; }
+        // Latin, Latin Extended-A, and the punctuation lyrics sites use
+        // (curly quotes, dashes, ellipsis) -- else those show as '?'.
+        static const ImWchar RANGES[] = {
+            0x0020, 0x00FF, 0x0100, 0x017F, 0x2010, 0x2027, 0x2030, 0x203A, 0x266A, 0x266B, 0,
+        };
+        auto load = [&](float px) -> ImFont* {
             ImFontConfig cfg;
-            cfg.SizePixels = LYRIC_FONT_SIZES[i];
-            s_lyric_fonts[i] = fio.Fonts->AddFontDefault(&cfg);
+            cfg.SizePixels        = px;
+            cfg.RasterizerDensity = density;
+            if (face) {
+                ImFont* f = fio.Fonts->AddFontFromFileTTF(face, px, &cfg, RANGES);
+                if (f) return f;
+            }
+            return fio.Fonts->AddFontDefault(&cfg);
+        };
+        // The UI font stays first: ImGui uses the first font added.
+        fio.Fonts->AddFontDefault();
+        for (int i = 0; i < N_LYRIC_FONTS; i++) {
+            s_lyric_fonts[i]      = load(LYRIC_FONT_SIZES[i]);
+            s_lyric_pane_fonts[i] = load(LYRIC_PANE_FONT_SIZES[i]);
         }
-        // Default lyric font: 16px (index 1)
-        ui_timeline_set_lyric_fonts(s_lyric_fonts, N_LYRIC_FONTS, 1);
+        // Default: the second step (16 px on the strip and in the pane)
+        ui_timeline_set_lyric_fonts(s_lyric_fonts, s_lyric_pane_fonts, N_LYRIC_FONTS, 1);
+        annstrip_set_font(ANN_CHORDS, load(13.0f * 3.0f));
+        printf("[fonts] %s at density %.1f\n", face ? face : "built-in", density);
     }
 
     ImGui_ImplGlfw_InitForOpenGL(window, true);
@@ -214,7 +253,6 @@ int main(int argc, char** argv) {
     audio_init(&audio);
     spectrogram_init(&spectro);
     stems_init(&audio);
-    ui_stems_set_mix(&spectro);
     editor_init(&editor);
     beatmap_init(&beatmap);
     sectionmap_init(&sectionmap);
@@ -264,6 +302,8 @@ int main(int argc, char** argv) {
                 region_b = atof(argv[++i]);
             } else if (strcmp(argv[i], "--play") == 0) {
                 autoplay = true;
+            } else if (strcmp(argv[i], "--find-lyrics") == 0) {
+                ui_lyric_find_request();          // search online at launch
             } else if (strcmp(argv[i], "--lyric-auto") == 0) {
                 ui_lyric_auto_set_active(true);   // Lyric Index auto-insert mode
             } else if (strcmp(argv[i], "--stems") == 0 && i + 1 < argc) {
@@ -351,6 +391,7 @@ int main(int argc, char** argv) {
 
         // Land a finished stem separation (uploads its spectrograms).
         stems_update();
+        ui_lyric_find_frame(&audio);
 
         // "--tool": open it once the stem cache has answered, so a tool that
         // analyzes on opening sees the stems.
@@ -394,6 +435,7 @@ int main(int argc, char** argv) {
             ui_lyric_auto_reset();
             stems_reset();
             stems_request(audio.filename, true);
+            ui_lyric_find_track_loaded(&audio);   // cached lookup results, if any
             // Always update these so we don't retry endlessly on decode failure.
             spectro.duration  = audio.duration;
             editor.duration   = audio.duration;
@@ -436,17 +478,9 @@ int main(int argc, char** argv) {
                 audio_seek(&audio, audio_get_position(&audio) - 5.0);
             if (ImGui::IsKeyPressed(ImGuiKey_RightArrow, true))
                 audio_seek(&audio, audio_get_position(&audio) + 5.0);
-            if (ImGui::IsKeyPressed(ImGuiKey_L)) {
-                // 'L' places the next unplaced lyric at the region (Lyric Index
-                // open) or steps to the next auto-insert suggestion (stopped),
-                // or records one while held during playback; otherwise it
-                // toggles looping.  Both handled in ui_timeline_render.
-                bool places  = editor.lyric_index_open &&
-                               (editor.has_region || ui_lyric_auto_wants_l(&audio));
-                bool records = ui_timeline_lyric_hold_armed(&editor, &audio, &lyricmap);
-                if (!places && !records)
-                    audio.loop = !audio.loop;
-            }
+            // 'L' is lyric insertion only (ui_timeline): placing at the
+            // region, stepping auto-insert suggestions, hold-to-record.  It
+            // no longer toggles looping (the toolbar button does).
 
             // H → toggle the keyboard shortcut window
             if (ImGui::IsKeyPressed(ImGuiKey_H))
@@ -713,6 +747,7 @@ int main(int argc, char** argv) {
     // Cleanup.  ui_complete_reset first: it joins a still-running analysis
     // worker before the audio buffers it reads are freed.
     ui_complete_reset();
+    lyrics_find_reset();
     undo_shutdown(&undo);
     miscmap_shutdown(&miscmap);
     miscmap_shutdown(&chordmap);

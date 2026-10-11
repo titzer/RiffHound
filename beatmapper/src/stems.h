@@ -35,6 +35,12 @@ void stems_shutdown();
 // Forget the current stems and stop any run (the track changed).
 void stems_reset();
 
+// Drop the loaded stems and delete their cache directory, so the track is
+// separated afresh next time.  Returns the number of files deleted, -1 when
+// there were no stems or their directory is not where the cache lives.
+// Anything still reading stem audio on a worker must be stopped first.
+int  stems_delete_cache();
+
 // Start a separation of `audio_path` in the background.  With cached_only
 // the script answers only from its cache (used on track load so stems
 // separated earlier come back without a click).  No-op while one runs.

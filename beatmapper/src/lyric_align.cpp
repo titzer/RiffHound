@@ -3,6 +3,7 @@
 #include <string.h>
 #include <ctype.h>
 #include <algorithm>
+#include <string>
 
 void lyric_align_defaults(LyricAlignParams* p) { *p = LyricAlignParams(); }
 
@@ -206,6 +207,7 @@ struct Ctx {
     std::vector<int>    nuc;       // prefix: nuclei of units < k
     const std::vector<int>* syl;
     const LyricAlignParams* p;
+    const std::vector<double>* hint = nullptr;
 };
 
 double line_cost(const Ctx& c, int i, int j, int k, double rate) {
@@ -220,6 +222,10 @@ double line_cost(const Ctx& c, int i, int j, int k, double rate) {
     cost += p.w_nuc * nr * nr;
     cost += p.w_inner * (c.inner[k] - c.inner[j + 1]);
     if (j > 0) cost += p.w_break * std::max(0.0, p.break_ok - c.bs[j]);
+    if (c.hint && !std::isnan((*c.hint)[i])) {
+        double d = std::max(0.0, fabs(u[j].t0 - (*c.hint)[i]) - p.hint_slack) / p.hint_tol;
+        cost += p.w_hint * std::min(1.0, d * d);
+    }
     return cost;
 }
 
@@ -324,10 +330,90 @@ static void carve_anchors(const LyricActivity& act, const std::vector<LyricUnit>
     }
 }
 
+namespace {
+
+// Units of one stretch of the track, carved around the anchors, with the
+// DP's precomputed sums.
+struct Pass {
+    std::vector<LyricUnit> units;
+    std::vector<char>      barrier;
+    Ctx                    c;
+};
+
+void build_pass(const LyricActivity& act, double t0, double t1,
+                const std::vector<LyricAnchor>& anchors, const LyricAlignParams& p,
+                const std::vector<int>* syl, const std::vector<double>* hint, Pass* ps)
+{
+    std::vector<LyricUnit> raw;
+    lyric_units(act, t0, t1, p, &raw);
+    carve_anchors(act, raw, anchors, p, &ps->units, &ps->barrier);
+    const int m = (int)ps->units.size();
+    Ctx& c = ps->c;
+    c.u = &ps->units; c.syl = syl; c.p = &p; c.hint = hint;
+    c.bs.assign(m, 0.0);
+    c.inner.assign(m + 1, 0.0);
+    c.nuc.assign(m + 1, 0);
+    c.next_bar.assign(m + 1, m);
+    for (int k = 0; k < m; k++) {
+        c.bs[k] = ps->units[k].gap_before + ps->units[k].dip_before / 40.0;
+        double pen = k > 0 ? std::max(0.0, c.bs[k] - p.inner_ok) : 0.0;
+        c.inner[k + 1] = c.inner[k] + pen;
+        c.nuc[k + 1]   = c.nuc[k] + ps->units[k].nuclei;
+    }
+    // inner[k] - inner[j+1] sums the boundaries before units j+1 .. k-1.
+    for (int k = m - 1; k >= 0; k--)
+        c.next_bar[k] = (k + 1 < m && ps->barrier[k + 1]) ? k + 1 : c.next_bar[k + 1];
+}
+
+// Lines [i_lo, i_hi) on the pass's units, a window at a time.  The rate is
+// fitted on the first window of the whole alignment (*fit) and kept.
+// Returns the first line not placed; *t_end gets the end of the last placed.
+int run_windows(const Pass& ps, int i_lo, int i_hi, const LyricAlignParams& p,
+                const std::vector<double>& rates, double* rate, bool* fit,
+                double* t_end, std::vector<LyricAlignOut>* out)
+{
+    const int m = (int)ps.units.size();
+    const int H = p.horizon > 0 ? p.horizon : (i_hi - i_lo);
+    int i0 = i_lo, u0 = 0;
+    while (i0 < i_hi && u0 < m) {
+        int len = std::min(H, i_hi - i0);
+        bool last = (i0 + len == i_hi);
+        Solve best; best.total = 1e30;
+        for (double r : (*fit ? rates : std::vector<double>{ *rate })) {
+            Solve s = solve(ps.c, i0, len, u0, m, r, !last);
+            if (s.total < best.total) { best = std::move(s); *rate = r; }
+        }
+        *fit = false;
+        int keep = last ? len : std::max(1, len / 2);
+        int next_u = -1, placed_upto = i0;
+        for (int i = 0; i < keep; i++) {
+            if (best.first[i] < 0) continue;
+            LyricAlignOut& o = (*out)[i0 + i];
+            o.placed = true;
+            o.t0 = ps.units[best.first[i]].t0;
+            o.t1 = ps.units[best.last[i]].t1;
+            o.score = (float)exp(-best.cost[i]);
+            next_u = best.last[i] + 1;
+            placed_upto = i0 + i + 1;
+            *t_end = o.t1;
+        }
+        if (next_u < 0) break;            // nothing fit: out of singing
+        // A window leaves lines unplaced only at its end (the units ran
+        // out): they start the next window, or are the leftovers.
+        i0 = placed_upto;
+        if (last) break;
+        u0 = next_u;
+    }
+    return i0;
+}
+
+}  // namespace
+
 double lyric_align(const LyricActivity& act, double t0, double t1,
                    const std::vector<const char*>& lines,
                    const std::vector<LyricAnchor>& anchors_in,
-                   const LyricAlignParams& p, std::vector<LyricAlignOut>* out)
+                   const LyricAlignParams& p, std::vector<LyricAlignOut>* out,
+                   const std::vector<double>* hint)
 {
     const int n = (int)lines.size();
     out->assign(n, LyricAlignOut());
@@ -335,32 +421,10 @@ double lyric_align(const LyricActivity& act, double t0, double t1,
     std::vector<LyricAnchor> anchors = anchors_in;
     std::sort(anchors.begin(), anchors.end(),
               [](const LyricAnchor& a, const LyricAnchor& b) { return a.t0 < b.t0; });
-
-    std::vector<LyricUnit> raw, units;
-    std::vector<char> barrier;
-    lyric_units(act, t0, t1, p, &raw);
-    carve_anchors(act, raw, anchors, p, &units, &barrier);
-    const int m = (int)units.size();
-    if (m == 0) return 0.0;
+    if (hint && (int)hint->size() != n) hint = nullptr;
 
     std::vector<int> syl(n);
     for (int i = 0; i < n; i++) syl[i] = std::max(1, lyric_syllables(lines[i]));
-
-    Ctx c;
-    c.u = &units; c.syl = &syl; c.p = &p;
-    c.bs.resize(m);
-    c.inner.assign(m + 1, 0.0);
-    c.nuc.assign(m + 1, 0);
-    c.next_bar.assign(m + 1, m);
-    for (int k = 0; k < m; k++) {
-        c.bs[k] = units[k].gap_before + units[k].dip_before / 40.0;
-        double pen = k > 0 ? std::max(0.0, c.bs[k] - p.inner_ok) : 0.0;
-        c.inner[k + 1] = c.inner[k] + pen;
-        c.nuc[k + 1]   = c.nuc[k] + units[k].nuclei;
-    }
-    // inner[k] - inner[j+1] sums the boundaries before units j+1 .. k-1.
-    for (int k = m - 1; k >= 0; k--)
-        c.next_bar[k] = (k + 1 < m && barrier[k + 1]) ? k + 1 : c.next_bar[k + 1];
 
     // Singing rate: from the placed lines when there are enough, else searched.
     std::vector<double> rates;
@@ -382,50 +446,205 @@ double lyric_align(const LyricActivity& act, double t0, double t1,
     // Gaps between anchors whose place in the sheet is known: each gets
     // exactly the lines that fall between them.  (Anchors out of order with
     // the ones before them are treated as unknown.)
-    struct Gap { int i_lo, i_hi, u_lo, u_hi; };
+    struct Gap { int i_lo, i_hi; double ta, tb; };
     std::vector<Gap> gaps;
     {
-        int i_prev = 0, u_prev = 0;
+        int i_prev = 0; double t_prev = t0;
         for (const LyricAnchor& a : anchors) {
             if (a.seq < i_prev || a.seq > n) continue;
             double mid = 0.5 * (a.t0 + a.t1);
-            int b = u_prev;
-            while (b < m && units[b].t0 < mid) b++;
-            gaps.push_back({ i_prev, a.seq, u_prev, b });
-            i_prev = a.seq; u_prev = b;
+            gaps.push_back({ i_prev, a.seq, t_prev, mid });
+            i_prev = a.seq; t_prev = mid;
         }
-        gaps.push_back({ i_prev, n, u_prev, m });
+        gaps.push_back({ i_prev, n, t_prev, t1 });
     }
 
-    // Each gap a window at a time; the rate is fitted on the first window.
-    const int H = p.horizon > 0 ? p.horizon : n;
+    // Each gap on its own.  Lines left over -- the singing ran out first,
+    // typically a quiet or fading last chorus under the loudness threshold
+    // -- get the rest of the gap again with lower thresholds.
+    static const float RELAX[] = { 0.0f, 20.0f, 30.0f };
     double rate = rates[0];
-    bool first = true;
+    bool fit = true;
     for (const Gap& g : gaps) {
-        int i0 = g.i_lo, u0 = g.u_lo;
-        while (i0 < g.i_hi && u0 < g.u_hi) {
-            int len = std::min(H, g.i_hi - i0);
-            bool last = (i0 + len == g.i_hi);
-            Solve best; best.total = 1e30;
-            for (double r : (first ? rates : std::vector<double>{ rate })) {
-                Solve s = solve(c, i0, len, u0, g.u_hi, r, !last);
-                if (s.total < best.total) { best = std::move(s); rate = r; }
+        int i0 = g.i_lo;
+        double ta = g.ta;
+        for (float relax : RELAX) {
+            if (i0 >= g.i_hi || ta >= g.tb) break;
+            LyricAlignParams pr = p;
+            if (relax > 0.0f) {
+                if (relax <= p.max_below) continue;
+                pr.max_below = relax;
             }
-            first = false;
-            int keep = last ? len : std::max(1, len / 2);
-            int next_u = -1;
-            for (int i = 0; i < keep; i++) {
-                if (best.first[i] < 0) continue;
-                LyricAlignOut& o = (*out)[i0 + i];
-                o.placed = true;
-                o.t0 = units[best.first[i]].t0;
-                o.t1 = units[best.last[i]].t1;
-                o.score = (float)exp(-best.cost[i]);
-                next_u = best.last[i] + 1;
-            }
-            if (next_u < 0) break;           // nothing fit: out of singing
-            i0 += keep; u0 = next_u;
+            Pass ps;
+            build_pass(act, ta, g.tb, anchors, pr, &syl, hint, &ps);
+            if (ps.units.empty()) continue;
+            double t_end = ta;
+            i0 = run_windows(ps, i0, g.i_hi, pr, rates, &rate, &fit, &t_end, out);
+            ta = t_end;
+        }
+        // Still left over: one after another at the singing rate, as far as
+        // the gap goes, with a fit score that says it is a guess.
+        double t = ta + 0.3;
+        for (; i0 < g.i_hi; i0++) {
+            double len = std::max(1.0, syl[i0] * rate);
+            if (t + len > g.tb) break;
+            LyricAlignOut& o = (*out)[i0];
+            o.placed = true;
+            o.t0 = t; o.t1 = t + len;
+            o.score = 0.05f;
+            t += len + 0.3;
         }
     }
     return rate;
+}
+
+// ---------------------------------------------------------------------------
+// Timed-lyrics hints
+// ---------------------------------------------------------------------------
+
+// Lowercase letters and digits, single spaces; apostrophes dropped
+// ("Don't" == "dont").
+static std::string norm_text(const char* t) {
+    std::string o;
+    bool sp = false;
+    for (const unsigned char* p = (const unsigned char*)t; *p; p++) {
+        if (*p == '\'' || *p == 0x60) continue;
+        if (*p >= 0x80 || isalnum(*p)) {
+            if (sp && !o.empty()) o += ' ';
+            sp = false;
+            o += (char)tolower(*p);
+        } else sp = true;
+    }
+    return o;
+}
+
+double lyric_match_hints(const std::vector<const char*>& lines,
+                         const std::vector<LyricAnchor>& anchors_in,
+                         const std::vector<LyricHintLine>& hints,
+                         std::vector<double>* start)
+{
+    start->assign(lines.size(), NAN);
+    if (hints.empty() || lines.empty()) return 0.0;
+
+    // The sheet: lines with the known-position anchors slotted in.
+    struct Entry { std::string norm; int line; const LyricAnchor* anchor; };
+    std::vector<const LyricAnchor*> anchors;
+    for (const LyricAnchor& a : anchors_in) if (a.seq >= 0) anchors.push_back(&a);
+    std::stable_sort(anchors.begin(), anchors.end(),
+                     [](const LyricAnchor* x, const LyricAnchor* y) { return x->seq < y->seq; });
+    std::vector<Entry> sheet;
+    size_t ai = 0;
+    for (size_t i = 0; i <= lines.size(); i++) {
+        while (ai < anchors.size() && anchors[ai]->seq <= (int)i) {
+            sheet.push_back({ norm_text(anchors[ai]->text ? anchors[ai]->text : ""), -1, anchors[ai] });
+            ai++;
+        }
+        if (i < lines.size()) sheet.push_back({ norm_text(lines[i]), (int)i, nullptr });
+    }
+    std::vector<std::string> hn(hints.size());
+    for (size_t h = 0; h < hints.size(); h++) hn[h] = norm_text(hints[h].text);
+
+    // How entry e matches hint h: 0 none, 1 equal, 2 entry is the start of
+    // the hint, 3 entry is the end of it.
+    auto kind = [&](const std::string& e, const std::string& t) -> int {
+        if (e.empty()) return 0;
+        if (e == t) return 1;
+        if (t.size() > e.size() + 1) {
+            if (t.compare(0, e.size(), e) == 0 && t[e.size()] == ' ') return 2;
+            if (t.compare(t.size() - e.size(), e.size(), e) == 0 &&
+                t[t.size() - e.size() - 1] == ' ') return 3;
+        }
+        return 0;
+    };
+    auto gain = [&](const Entry& e, size_t h, int k) -> double {
+        if (k == 0) return -1.0;
+        double g = k == 1 ? 1.0 : 0.6;
+        if (e.anchor) {
+            double d = fabs(e.anchor->t0 - hints[h].t0);
+            if (d > 20.0) return -1.0;               // not this chorus
+            g += 1.0 - d / 20.0;
+        }
+        return g;
+    };
+
+    // F[e][h]: best total over the first e entries and first h hints.
+    // Moves: skip an entry, skip a hint, match (both advance), or a "start"
+    // match that leaves the hint for the line's next piece.
+    const size_t E = sheet.size(), Hn = hints.size();
+    std::vector<double> F((E + 1) * (Hn + 1), 0.0);
+    std::vector<char>   how((E + 1) * (Hn + 1), 0);
+    auto at = [Hn](size_t e, size_t h) { return e * (Hn + 1) + h; };
+    for (size_t e = 0; e <= E; e++)
+        for (size_t h = 0; h <= Hn; h++) {
+            if (e == 0 && h == 0) continue;
+            double best = -1e30; char b = 0;
+            if (e > 0 && F[at(e - 1, h)] > best) { best = F[at(e - 1, h)]; b = 1; }   // skip entry
+            if (h > 0 && F[at(e, h - 1)] > best) { best = F[at(e, h - 1)]; b = 2; }   // skip hint
+            if (e > 0 && h > 0) {
+                int k = kind(sheet[e - 1].norm, hn[h - 1]);
+                if (k == 1 || k == 3) {
+                    double g = gain(sheet[e - 1], h - 1, k);
+                    if (g > 0 && F[at(e - 1, h - 1)] + g > best) { best = F[at(e - 1, h - 1)] + g; b = 3; }
+                }
+            }
+            if (e > 0 && h < Hn) {        // start piece: hint h stays available
+                int k = kind(sheet[e - 1].norm, hn[h]);
+                if (k == 2 && sheet[e - 1].line >= 0) {
+                    double g = gain(sheet[e - 1], h, k);
+                    if (g > 0 && F[at(e - 1, h)] + g > best) { best = F[at(e - 1, h)] + g; b = 4; }
+                }
+            }
+            F[at(e, h)] = best; how[at(e, h)] = b;
+        }
+
+    std::vector<int> match(E, -1);
+    std::vector<int> mkind(E, 0);
+    for (size_t e = E, h = Hn; e > 0 || h > 0;) {
+        char b = how[at(e, h)];
+        if (b == 1)      { e--; }
+        else if (b == 2) { h--; }
+        else if (b == 3) { match[e - 1] = (int)h - 1; mkind[e - 1] = kind(sheet[e - 1].norm, hn[h - 1]); e--; h--; }
+        else if (b == 4) { match[e - 1] = (int)h;     mkind[e - 1] = 2; e--; }
+        else break;
+    }
+
+    // Offsets measured at the matched anchors, in sheet order.  A line
+    // takes the median of the (up to) three nearest before it -- recordings
+    // drift, a live take more than a remaster -- or after it when none
+    // precede; the global median goes back to the caller.
+    std::vector<std::pair<size_t, double>> meas;
+    for (size_t e = 0; e < E; e++)
+        if (sheet[e].anchor && match[e] >= 0)
+            meas.push_back({ e, sheet[e].anchor->t0 - hints[match[e]].t0 });
+    auto median = [](std::vector<double> v) {
+        if (v.empty()) return 0.0;
+        std::sort(v.begin(), v.end());
+        return v[v.size() / 2];
+    };
+    std::vector<double> all;
+    for (auto& m : meas) all.push_back(m.second);
+    double offset = median(all);
+    auto local_offset = [&](size_t e) {
+        if (meas.empty()) return 0.0;
+        size_t k = 0;
+        while (k < meas.size() && meas[k].first < e) k++;   // meas[k-1] precedes e
+        std::vector<double> v;
+        if (k > 0) for (size_t j = k; j > 0 && v.size() < 3; j--) v.push_back(meas[j - 1].second);
+        else       for (size_t j = 0; j < meas.size() && v.size() < 3; j++) v.push_back(meas[j].second);
+        return median(v);
+    };
+
+    for (size_t e = 0; e < E; e++) {
+        if (sheet[e].line < 0 || match[e] < 0) continue;
+        size_t h = (size_t)match[e];
+        double t = hints[h].t0;
+        if (mkind[e] == 3) {            // last piece: as far in as the text it skips
+            double end = hints[h].t1 >= 0 ? hints[h].t1
+                       : h + 1 < Hn ? hints[h + 1].t0 : hints[h].t0 + 3.0;
+            double frac = (double)(hn[h].size() - sheet[e].norm.size()) / hn[h].size();
+            t += frac * (end - hints[h].t0);
+        }
+        (*start)[sheet[e].line] = t + local_offset(e);
+    }
+    return offset;
 }

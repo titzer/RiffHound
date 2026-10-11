@@ -215,15 +215,19 @@ static double slot_phase(const LyricMap* lm, double dur) {
     return d[d.size() / 2];
 }
 
-void lyricmap_sheet_order(const LyricMap* lm, double dur, int* seq) {
+// seq as lyricmap_sheet_order; slot: the parking slot each placed lyric
+// came from (-1 unknown).
+static void sheet_core(const LyricMap* lm, double dur, int* seq, long* slot) {
     std::vector<int> placed;               // indices, in time order
     std::vector<int> holes;                // each hole: unplaced lines before it
+    std::vector<long> hole_slot;           // ...and its slot number
     int n_unplaced = 0;
     long prev_slot = -1;                   // slots start at 0 (t = dur)
     const double phase = slot_phase(lm, dur);
     for (int i = 0; i < lm->count; i++) {
         const Lyric& ly = lm->lyrics[i];
         seq[i] = -1;
+        slot[i] = -1;
         if (ly.t_start < dur - 1e-9) { placed.push_back(i); continue; }
         if (ly.t_start >= dur) {
             // Holes before the first slot come before everything unplaced,
@@ -231,15 +235,19 @@ void lyricmap_sheet_order(const LyricMap* lm, double dur, int* seq) {
             // the last placed lyric, so they follow it in the sheet.
             long s = slot_of(ly.t_start, dur, phase);
             int before = prev_slot < 0 ? 0 : n_unplaced;
-            for (long h = prev_slot + 1; h < s; h++) holes.push_back(before);
+            for (long h = prev_slot + 1; h < s; h++) { holes.push_back(before); hole_slot.push_back(h); }
             if (s > prev_slot) prev_slot = s;
         }
         n_unplaced++;
     }
     const int m = (int)placed.size(), r = (int)holes.size();
     if (m == 0) return;
+    if (n_unplaced == 0) {                 // everything placed: the sheet is time order
+        for (int k = 0; k < m; k++) { seq[placed[k]] = 0; slot[placed[k]] = k; }
+        return;
+    }
     if (r == m) {                          // the usual case: paste, then place
-        for (int k = 0; k < m; k++) seq[placed[k]] = holes[k];
+        for (int k = 0; k < m; k++) { seq[placed[k]] = holes[k]; slot[placed[k]] = hole_slot[k]; }
         return;
     }
     // Lyrics placed from the end of the list leave no visible hole (nothing
@@ -249,6 +257,7 @@ void lyricmap_sheet_order(const LyricMap* lm, double dur, int* seq) {
     // closest; unmatched placed lyrics stay unknown.  A hole past the last
     // parked slot stands for everything placed from the end.
     holes.push_back(n_unplaced);
+    hole_slot.push_back(-1);               // past the last slot: numbered below
     const int R = (int)holes.size();
     const double N = n_unplaced + m;
     std::vector<double> want(m), have(R);
@@ -280,10 +289,51 @@ void lyricmap_sheet_order(const LyricMap* lm, double dur, int* seq) {
     if (f[at(m, R - 1)] < f[at(m, R)]) j = R - 1;
     while (k > 0 || j > 0) {
         char h = how[at(k, j)];
-        if (h == 1)      { seq[placed[k - 1]] = holes[j - 1]; k--; j--; }
+        if (h == 1)      { seq[placed[k - 1]] = holes[j - 1]; slot[placed[k - 1]] = hole_slot[j - 1]; k--; j--; }
         else if (h == 4) { seq[placed[k - 1]] = holes[j];     k--; }
         else if (h == 2) { k--; }
         else if (h == 3) { j--; }
         else break;
     }
+    // Lyrics placed from past the last parked slot: the slots after it, in
+    // time order.
+    long next = prev_slot + 1;
+    for (int k : placed)
+        if (seq[k] == n_unplaced && slot[k] < 0) slot[k] = next++;
+}
+
+void lyricmap_sheet_order(const LyricMap* lm, double dur, int* seq) {
+    std::vector<long> slot(lm->count > 0 ? lm->count : 1);
+    sheet_core(lm, dur, seq, slot.data());
+}
+
+void lyricmap_unplace(LyricMap* lm, const std::vector<int>& idxs, double dur) {
+    if (idxs.empty()) return;
+    std::vector<int>  seq(lm->count);
+    std::vector<long> slot(lm->count);
+    sheet_core(lm, dur, seq.data(), slot.data());
+    // Remember what goes where, then re-add (indices shift as we go).
+    struct Move { double t; char text[128]; };
+    std::vector<Move> moves;
+    std::vector<int> sorted = idxs;
+    std::sort(sorted.begin(), sorted.end());
+    sorted.erase(std::unique(sorted.begin(), sorted.end()), sorted.end());
+    double tail = lyricmap_next_slot(lm, dur);
+    for (int i = 0; i < lm->count; i++)          // past any slot handed out too
+        if (slot[i] >= 0 && dur + (slot[i] + 1) * LYRIC_SLOT > tail)
+            tail = dur + (slot[i] + 1) * LYRIC_SLOT;
+    for (int i : sorted) {
+        if (i < 0 || i >= lm->count || lm->lyrics[i].t_start >= dur - 1e-9) continue;
+        Move mv;
+        if (slot[i] >= 0) mv.t = dur + slot[i] * LYRIC_SLOT;
+        else            { mv.t = tail; tail += LYRIC_SLOT; }   // order unknown: at the end
+        strncpy(mv.text, lm->lyrics[i].text, sizeof(mv.text) - 1);
+        mv.text[sizeof(mv.text) - 1] = 0;
+        moves.push_back(mv);
+    }
+    for (int k = (int)sorted.size() - 1; k >= 0; k--) {
+        int i = sorted[k];
+        if (i >= 0 && i < lm->count && lm->lyrics[i].t_start < dur - 1e-9) lyricmap_remove(lm, i);
+    }
+    for (const Move& mv : moves) lyricmap_add(lm, mv.t, mv.t + 1e-6, mv.text);
 }

@@ -62,6 +62,9 @@ struct LyricAlignParams {
     float  c_skip       = 0.15f;  // per skipped unit
     float  c_unplaced   = 4.0f;   // per line left over at the end
     int    horizon      = 4;      // lines aligned at once (0: all); see lyric_align
+    float  w_hint       = 2.0f;   // timed-lyrics hint: cost at hint_tol and beyond (saturates)
+    double hint_tol     = 1.0;    // seconds past the slack where its cost saturates
+    double hint_slack   = 0.0;    // seconds off the hint that cost nothing (LRC timing is rough)
 };
 void lyric_align_defaults(LyricAlignParams* p);
 
@@ -88,7 +91,34 @@ struct LyricAlignOut {
     float  score = 0;         // 0..1, how well the line fits its phrase
 };
 
+// Timed lyrics from a lyrics database (LRC): where each line starts in some
+// recording of the song.  Only a hint: the recording may differ (intro
+// length, an extra chorus), so a line pays for straying from its hint only
+// up to a point.
+struct LyricHintLine {
+    double      t0;
+    double      t1;      // < 0 when unknown
+    const char* text;
+};
+
+// Match the lyric sheet to the hint lines: `lines` (in order) with the
+// anchors whose sheet position is known (seq >= 0) between them, aligned
+// in order to `hints` (an LCS on normalised text: case, punctuation and
+// apostrophes ignored).  A line may also be the start or the end of a hint
+// line (the user split it).  Placed lyrics only match hint lines within
+// 20 s of themselves, which picks the right one among repeated choruses,
+// and their median distance to their matches is the offset between the
+// hints and this recording (0 with none).  *start gets each line's hinted
+// start in this recording (offset applied), NAN where nothing matched.
+// Returns the offset.
+double lyric_match_hints(const std::vector<const char*>& lines,
+                         const std::vector<LyricAnchor>& anchors,
+                         const std::vector<LyricHintLine>& hints,
+                         std::vector<double>* start);
+
 // Align `lines` (in order) to the singing in [t0, t1) around the anchors.
+// `hint` (optional, per line, NAN = none, already offset) pulls each line
+// toward a start time.
 // Returns the singing rate used (seconds per syllable).
 //
 // With a horizon, the lines are aligned a window at a time: the next
@@ -100,4 +130,5 @@ struct LyricAlignOut {
 double lyric_align(const LyricActivity& act, double t0, double t1,
                    const std::vector<const char*>& lines,
                    const std::vector<LyricAnchor>& anchors,
-                   const LyricAlignParams& p, std::vector<LyricAlignOut>* out);
+                   const LyricAlignParams& p, std::vector<LyricAlignOut>* out,
+                   const std::vector<double>* hint = nullptr);

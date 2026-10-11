@@ -6,6 +6,8 @@
 #include <string.h>
 #include <vector>
 #include <algorithm>
+#include <string>
+#include <cmath>
 
 static bool  s_active = false;
 static int   s_hover  = -1;
@@ -20,6 +22,10 @@ static int           s_act_gen = -1;
 
 static uint64_t s_sig = 0;   // inputs the suggestions were computed from
 static int      s_sep_requested = -1;   // load_count we started a separation for
+static std::vector<LyricTimedLine> s_hints;   // timed lyrics of the chosen lookup result
+// Lyrics placed by accepting suggestions (start, text): what Redo takes back.
+static std::vector<std::pair<double, std::string>> s_accepted;
+static int      s_hints_gen = 0;
 
 // Cursor, by identity (suggestions are rebuilt whenever the lyrics change).
 static bool   s_cur_set = false;
@@ -61,6 +67,7 @@ void ui_lyric_auto_advance() {
 }
 
 void ui_lyric_auto_set_cursor(int i) { cursor_to(i); }
+void ui_lyric_auto_continue_after(double t) { s_cur_set = false; s_cur_after = t; }
 
 bool ui_lyric_auto_take_cursor_moved() {
     bool m = s_cur_moved;
@@ -86,6 +93,9 @@ void ui_lyric_auto_set_active(bool on) {
 }
 
 void ui_lyric_auto_reset() {
+    s_accepted.clear();
+    s_hints.clear();
+    s_hints_gen++;
     s_cur_set = false;
     s_cur_after = -1.0;
     s_sugg.clear();
@@ -137,8 +147,8 @@ void ui_lyric_auto_update(const AudioState* audio, const LyricMap* lm) {
     }
     StemsStatus st = stems_status();
     int vi = vocals_index();
+    char stem_note[128] = "";
     if (vi < 0) {
-        s_sugg.clear(); s_sig = 0;
         // Suggestions need the vocal stem: separate the track once the
         // cache check on load has come back empty.  Once per track, so a
         // failure is reported rather than retried every frame.
@@ -148,24 +158,30 @@ void ui_lyric_auto_update(const AudioState* audio, const LyricMap* lm) {
             st = stems_status();
         }
         if (st == STEMS_RUNNING)
-            snprintf(s_status, sizeof(s_status),
+            snprintf(stem_note, sizeof(stem_note),
                      "Separating stems for the vocal track\xe2\x80\xa6 %d%%",
                      (int)(stems_progress() * 100.0f));
         else if (st == STEMS_CHECKING)
-            snprintf(s_status, sizeof(s_status), "Looking for separated stems\xe2\x80\xa6");
+            snprintf(stem_note, sizeof(stem_note), "Looking for separated stems\xe2\x80\xa6");
         else if (st == STEMS_FAILED)
-            snprintf(s_status, sizeof(s_status), "No vocal stem: %s", stems_message());
+            snprintf(stem_note, sizeof(stem_note), "No vocal stem: %s", stems_message());
         else if (st == STEMS_READY)
-            snprintf(s_status, sizeof(s_status), "The stems have no vocal track.");
+            snprintf(stem_note, sizeof(stem_note), "The stems have no vocal track.");
         else
-            snprintf(s_status, sizeof(s_status), "Waiting for the stems\xe2\x80\xa6");
-        return;
+            snprintf(stem_note, sizeof(stem_note), "Waiting for the stems\xe2\x80\xa6");
+        if (s_hints.empty()) {
+            s_sugg.clear(); s_sig = 0;
+            snprintf(s_status, sizeof(s_status), "%s", stem_note);
+            return;
+        }
     }
 
     const double dur = audio->duration;
     uint64_t h = 1469598103934665603ull;
     int gen = stems_generation();
     hash_bytes(&h, &gen, sizeof(gen));
+    hash_bytes(&h, &vi, sizeof(vi));
+    hash_bytes(&h, &s_hints_gen, sizeof(s_hints_gen));
     hash_bytes(&h, &dur, sizeof(dur));
     hash_bytes(&h, &audio->load_count, sizeof(audio->load_count));
     for (int i = 0; i < lm->count; i++) {
@@ -175,22 +191,30 @@ void ui_lyric_auto_update(const AudioState* audio, const LyricMap* lm) {
         hash_bytes(&h, ly.text, strlen(ly.text));
     }
     for (double k : s_dismissed) hash_bytes(&h, &k, sizeof(k));
-    if (h == s_sig) return;
+    if (h == s_sig) {
+        if (vi < 0) {   // keep the separation progress in the status line
+            snprintf(s_status, sizeof(s_status), "%d from the synced lyrics \xc2\xb7 %s",
+                     (int)s_sugg.size(), stem_note);
+        }
+        return;
+    }
     s_sig = h;
     s_sugg.clear();
     s_hover = -1;
 
     // Vocal stem envelope (the first use decodes the stem: a one-time stall).
-    uint64_t frames = 0; uint32_t ch = 0, sr = 0;
-    const float* pcm = stems_source_audio(1u << vi, &frames, &ch, &sr);
-    if (!pcm || ch != 1 || sr == 0) {
-        snprintf(s_status, sizeof(s_status), "Could not decode the vocal stem.");
-        return;
-    }
-    if (pcm != s_act_pcm || gen != s_act_gen) {
-        lyric_activity(pcm, frames, sr, &s_act);
-        s_act_pcm = pcm;
-        s_act_gen = gen;
+    if (vi >= 0) {
+        uint64_t frames = 0; uint32_t ch = 0, sr = 0;
+        const float* pcm = stems_source_audio(1u << vi, &frames, &ch, &sr);
+        if (!pcm || ch != 1 || sr == 0) {
+            snprintf(s_status, sizeof(s_status), "Could not decode the vocal stem.");
+            return;
+        }
+        if (pcm != s_act_pcm || gen != s_act_gen) {
+            lyric_activity(pcm, frames, sr, &s_act);
+            s_act_pcm = pcm;
+            s_act_gen = gen;
+        }
     }
 
     // Placed lyrics are anchors: their spans are taken out of the singing
@@ -228,10 +252,46 @@ void ui_lyric_auto_update(const AudioState* audio, const LyricMap* lm) {
                                                          : "Every lyric is placed.");
         return;
     }
+
+    // Timed lyrics: each line's start in the database's recording, shifted
+    // by what the placed lyrics say about this one.
+    std::vector<double> hint;
+    int n_hinted = 0;
+    double offset = 0.0;
+    if (!s_hints.empty()) {
+        std::vector<LyricHintLine> hl;
+        for (const LyricTimedLine& t : s_hints) hl.push_back({ t.t0, t.t1, t.text.c_str() });
+        offset = lyric_match_hints(lines, anchors, hl, &hint);
+        for (double v : hint) if (!std::isnan(v)) n_hinted++;
+    }
+
     LyricAlignParams p;
     lyric_align_defaults(&p);
     std::vector<LyricAlignOut> out;
-    double rate = lyric_align(s_act, 0.0, dur, lines, anchors, p, &out);
+    double rate = 0.0;
+    if (vi >= 0) {
+        rate = lyric_align(s_act, 0.0, dur, lines, anchors, p, &out, hint.empty() ? nullptr : &hint);
+    } else {
+        // No vocal stem yet: the hints themselves, each line up to the next
+        // hinted one, kept off the placed lyrics.
+        out.assign(lines.size(), LyricAlignOut());
+        for (size_t k = 0; k < lines.size(); k++) {
+            if (std::isnan(hint[k]) || hint[k] < 0.0 || hint[k] >= dur) continue;
+            double t1 = hint[k] + 3.0;
+            for (size_t j = k + 1; j < lines.size(); j++)
+                if (!std::isnan(hint[j])) {
+                    if (hint[j] > hint[k]) t1 = std::min(hint[j] - 0.05, hint[k] + 8.0);
+                    break;
+                }
+            bool clash = false;
+            for (const LyricAnchor& a : anchors) if (a.t0 < t1 && a.t1 > hint[k]) clash = true;
+            if (clash) continue;
+            out[k].placed = true;
+            out[k].t0 = hint[k];
+            out[k].t1 = std::min(t1, dur);
+            out[k].score = 0.5f;
+        }
+    }
     for (size_t k = 0; k < lines.size(); k++) {
         if (!out[k].placed) continue;
         const Lyric& ly = lm->lyrics[line_idx[k]];
@@ -254,7 +314,8 @@ void ui_lyric_auto_update(const AudioState* audio, const LyricMap* lm) {
     }
     int left = (int)lines.size() - (int)s_sugg.size();
     printf("[lyrics] auto: %d of %d unplaced suggested around %d placed (%d in known sheet order), "
-           "%.3f s/syllable", (int)s_sugg.size(), (int)lines.size(), (int)anchors.size(), n_known, rate);
+           "%d hinted (offset %+.2f s), %s", (int)s_sugg.size(), (int)lines.size(),
+           (int)anchors.size(), n_known, n_hinted, offset, vi >= 0 ? "vocal stem" : "hints only");
     if (!s_sugg.empty())
         printf("; next \"%s\" at %.2f-%.2f (fit %.2f)", s_sugg[0].text, s_sugg[0].t0,
                s_sugg[0].t1, s_sugg[0].score);
@@ -262,13 +323,24 @@ void ui_lyric_auto_update(const AudioState* audio, const LyricMap* lm) {
     if (getenv("BM_LYRICS_DEBUG"))
         for (const LyricSuggestion& sg : s_sugg)
             printf("[lyrics]   %7.2f-%7.2f  fit %.2f  %s\n", sg.t0, sg.t1, sg.score, sg.text);
-    if (s_sugg.empty())
+    if (vi < 0)
+        snprintf(s_status, sizeof(s_status), "%d from the synced lyrics \xc2\xb7 %s",
+                 (int)s_sugg.size(), stem_note);
+    else if (s_sugg.empty())
         snprintf(s_status, sizeof(s_status), "No singing found outside the placed lyrics.");
     else
-        snprintf(s_status, sizeof(s_status), "%d suggested%s%s \xc2\xb7 %.2f s/syllable",
+        snprintf(s_status, sizeof(s_status), "%d suggested%s%s%s \xc2\xb7 %.2f s/syllable",
                  (int)s_sugg.size(), left > 0 ? ", rest past the singing" : "",
-                 n_dismissed ? ", some dismissed" : "", rate);
+                 n_dismissed ? ", some dismissed" : "",
+                 n_hinted ? ", guided by synced lyrics" : "", rate);
 }
+
+void ui_lyric_auto_set_hints(const std::vector<LyricTimedLine>& lines) {
+    s_hints = lines;
+    s_hints_gen++;
+    s_sig = 0;
+}
+bool ui_lyric_auto_has_hints() { return !s_hints.empty(); }
 
 const LyricSuggestion* ui_lyric_auto_for(const LyricMap* lm, int idx) {
     if (!s_active || idx < 0 || idx >= lm->count) return nullptr;
@@ -290,6 +362,7 @@ int ui_lyric_auto_apply(LyricMap* lm, int idx) {
     text[sizeof(text) - 1] = 0;
     lyricmap_remove(lm, idx);
     int ni = lyricmap_add(lm, t0, t1, text);
+    s_accepted.push_back({ t0, text });
     // The rest are recomputed against the new anchor next frame.
     s_sugg.clear();
     s_sig = 0;
@@ -309,6 +382,7 @@ int ui_lyric_auto_apply_all(LyricMap* lm) {
             text[sizeof(text) - 1] = 0;
             lyricmap_remove(lm, i);
             lyricmap_add(lm, s.t0, s.t1, text);
+            s_accepted.push_back({ s.t0, text });
             n++;
             break;
         }
@@ -318,4 +392,31 @@ int ui_lyric_auto_apply_all(LyricMap* lm) {
     s_hover = -1;
     s_cur_set = false;
     return n;
+}
+
+// Accepted lyrics still where they were put (moved or edited ones are the
+// user's now and stay).
+static std::vector<int> accepted_in_place(const LyricMap* lm) {
+    std::vector<int> idx;
+    for (int i = 0; i < lm->count; i++)
+        for (const auto& a : s_accepted)
+            if (lm->lyrics[i].t_start == a.first && a.second == lm->lyrics[i].text) {
+                idx.push_back(i);
+                break;
+            }
+    return idx;
+}
+
+int ui_lyric_auto_redo_count(const LyricMap* lm) { return (int)accepted_in_place(lm).size(); }
+
+int ui_lyric_auto_redo(LyricMap* lm, double dur) {
+    std::vector<int> idx = accepted_in_place(lm);
+    lyricmap_unplace(lm, idx, dur);
+    s_accepted.clear();
+    s_sugg.clear();
+    s_sig = 0;
+    s_hover = -1;
+    s_cur_set = false;
+    printf("[lyrics] redo: %d accepted lyrics unplaced\n", (int)idx.size());
+    return (int)idx.size();
 }

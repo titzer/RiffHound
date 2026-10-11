@@ -1,7 +1,7 @@
 // lyrbench: score the lyric aligner against hand-placed lyrics.
 //
-//   lyrbench [--keep K | --step | --sparse N] [--seq] [--set name=value ...]
-//            MAP VOCALS [MAP VOCALS ...]
+//   lyrbench [--keep K | --step | --sparse N] [--seq] [--hints [--hint-only]]
+//            [--set name=value ...] MAP VOCALS [MAP VOCALS ...]
 //
 // For each track, the first K placed lyrics stay placed (anchors), the rest
 // are unplaced and aligned to the vocal stem after the last anchor.  Reports
@@ -13,6 +13,9 @@
 // them: lyrics placed by hand in the middle.  --seq tells the aligner where
 // each placed line sits among the others (as the app infers from the paste
 // order); without it the alignment decides.
+// --hints: arguments are MAP VOCALS TIMED triples, TIMED a lyrics_find.py
+// timed-lyrics TSV ("-" for none) used as alignment hints; --hint-only
+// skips the audio and places each line at its (offset) hint.
 // scripts/lyric-bench.sh finds the maps and cached vocal stems.
 
 #include "lyric_align.h"
@@ -25,8 +28,45 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#include <cmath>
 #include <algorithm>
 #include <string>
+
+struct TimedFile {
+    std::vector<std::string>   text;
+    std::vector<LyricHintLine> lines;
+};
+static void read_timed(const char* path, TimedFile* tf) {
+    tf->text.clear(); tf->lines.clear();
+    if (!path || !strcmp(path, "-")) return;
+    FILE* f = fopen(path, "r");
+    if (!f) return;
+    char buf[1024];
+    std::vector<double> t0, t1;
+    while (fgets(buf, sizeof(buf), f)) {
+        char* a = buf; char* b = strchr(a, '\t'); if (!b) continue; *b++ = 0;
+        char* c = strchr(b, '\t'); if (!c) continue; *c++ = 0;
+        size_t n = strlen(c); while (n && (c[n - 1] == '\n' || c[n - 1] == '\r')) c[--n] = 0;
+        t0.push_back(atof(a)); t1.push_back(*b ? atof(b) : -1.0); tf->text.push_back(c);
+    }
+    fclose(f);
+    for (size_t i = 0; i < t0.size(); i++) tf->lines.push_back({ t0[i], t1[i], tf->text[i].c_str() });
+}
+
+// Hints for `lines` given the anchors (offset from those that match).
+static std::vector<double> hints_for(const TimedFile& tf, const std::vector<const char*>& lines,
+                                     const std::vector<LyricAnchor>& anchors) {
+    std::vector<double> h;
+    lyric_match_hints(lines, anchors, tf.lines, &h);
+    return h;
+}
+
+// Hint-only placement: each line at its hint (as the app does without stems).
+static void hint_only(const std::vector<double>& h, std::vector<LyricAlignOut>* out) {
+    out->assign(h.size(), LyricAlignOut());
+    for (size_t i = 0; i < h.size(); i++)
+        if (!std::isnan(h[i])) { (*out)[i].placed = true; (*out)[i].t0 = h[i]; (*out)[i].t1 = h[i] + 1; }
+}
 
 static bool set_param(LyricAlignParams* p, const char* kv) {
     const char* eq = strchr(kv, '=');
@@ -36,7 +76,7 @@ static bool set_param(LyricAlignParams* p, const char* kv) {
 #define F(name) if (k == #name) { p->name = (decltype(p->name))v; return true; }
     F(on_frac) F(max_below) F(bridge_gap) F(min_unit) F(split_len) F(split_dip)
     F(rate_lo) F(rate_hi) F(max_run) F(w_dur) F(w_nuc) F(w_inner) F(inner_ok)
-    F(w_break) F(break_ok) F(w_skip) F(c_skip) F(c_unplaced) F(horizon)
+    F(w_break) F(break_ok) F(w_skip) F(c_skip) F(c_unplaced) F(horizon) F(w_hint) F(hint_tol) F(hint_slack)
 #undef F
     return false;
 }
@@ -45,7 +85,8 @@ int main(int argc, char** argv) {
     LyricAlignParams p;
     lyric_align_defaults(&p);
     int keep = 0;
-    bool verbose = false, step = false, seq = false;
+    bool verbose = false, step = false, seq = false, use_hints = false, only_hints = false;
+    int n_hinted = 0, n_hint_lines = 0;
     int sparse = 0;
     int st_n = 0, st_next = 0, st_next3 = 0;
     int ai = 1;
@@ -58,14 +99,19 @@ int main(int argc, char** argv) {
         else if (!strcmp(argv[ai], "-v")) { verbose = true; ai++; }
         else if (!strcmp(argv[ai], "--step")) { step = true; ai++; }
         else if (!strcmp(argv[ai], "--seq")) { seq = true; ai++; }
+        else if (!strcmp(argv[ai], "--hints")) { use_hints = true; ai++; }
+        else if (!strcmp(argv[ai], "--hint-only")) { only_hints = true; ai++; }
         else if (!strcmp(argv[ai], "--sparse") && ai + 1 < argc) { sparse = atoi(argv[ai + 1]); ai += 2; }
         else { fprintf(stderr, "unknown flag %s\n", argv[ai]); return 2; }
     }
     int tot = 0, tot03 = 0, tot1 = 0, tot_placed = 0;
     double score_hit = 0, score_miss = 0; int n_hit = 0, n_miss = 0;
-    for (; ai + 1 < argc; ai += 2) {
+    const int stride = use_hints ? 3 : 2;
+    for (; ai + stride - 1 < argc; ai += stride) {
         const char* map = argv[ai];
         const char* voc = argv[ai + 1];
+        TimedFile tf;
+        if (use_hints) read_timed(argv[ai + 2], &tf);
         BeatMap bm; SectionMap sm; LyricMap lm; MiscMap mm, cm;
         beatmap_init(&bm); sectionmap_init(&sm); lyricmap_init(&lm);
         miscmap_init(&mm); miscmap_init(&cm, "chord");
@@ -88,7 +134,10 @@ int main(int argc, char** argv) {
                 std::vector<const char*> rest;
                 for (size_t a = k; a < all.size(); a++) rest.push_back(all[a]->text);
                 std::vector<LyricAlignOut> out;
-                lyric_align(act, 0.0, dur, rest, anc, p, &out);
+                std::vector<double> h;
+                if (use_hints) h = hints_for(tf, rest, anc);
+                if (only_hints) hint_only(h, &out);
+                else lyric_align(act, 0.0, dur, rest, anc, p, &out, use_hints ? &h : nullptr);
                 bool ok = true; int good = 0;
                 for (size_t a = 0; a < 3 && a < rest.size(); a++) {
                     bool hit = out[a].placed && fabs(out[a].t0 - all[k + a]->t_start) <= 0.5;
@@ -130,7 +179,15 @@ int main(int argc, char** argv) {
         }
         std::vector<LyricAlignOut> out;
         (void)t0;
-        double rate = lyric_align(act, 0.0, dur, lines, anchors, p, &out);
+        std::vector<double> h;
+        if (use_hints) {
+            h = hints_for(tf, lines, anchors);
+            for (double v : h) if (!std::isnan(v)) n_hinted++;
+            n_hint_lines += (int)lines.size();
+        }
+        double rate = 0.0;
+        if (only_hints) hint_only(h, &out);
+        else rate = lyric_align(act, 0.0, dur, lines, anchors, p, &out, use_hints ? &h : nullptr);
         int n03 = 0, n1 = 0, placed = 0;
         std::vector<double> errs;
         for (size_t i = 0; i < lines.size(); i++) {
@@ -160,6 +217,7 @@ int main(int argc, char** argv) {
                st_n ? 100.0 * st_next / st_n : 0.0, st_next3, st_n ? 100.0 * st_next3 / st_n : 0.0);
         return 0;
     }
+    if (use_hints) printf("hinted %d of %d lines\n", n_hinted, n_hint_lines);
     printf("TOTAL lines %d placed %d  <=0.3s %d (%.1f%%)  <=1s %d (%.1f%%)  score hit %.2f miss %.2f\n",
            tot, tot_placed, tot03, tot ? 100.0 * tot03 / tot : 0.0, tot1, tot ? 100.0 * tot1 / tot : 0.0,
            n_hit ? score_hit / n_hit : 0.0, n_miss ? score_miss / n_miss : 0.0);

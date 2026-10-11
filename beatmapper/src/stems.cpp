@@ -1,4 +1,6 @@
 #include "stems.h"
+#include <limits.h>
+#include <dirent.h>
 #include "audio.h"
 #include "platform.h"
 
@@ -764,3 +766,40 @@ SpectrogramState* stems_composite() {
     return (s_sel_mask && s_composite.computed) ? &s_composite : nullptr;
 }
 bool stems_rebuilding() { return s_sel_running.load(); }
+
+// --- clearing ----------------------------------------------------------------------
+
+int stems_delete_cache() {
+    if (s_count == 0) return -1;
+    std::string dir = s_stems[0].path;
+    size_t sl = dir.rfind('/');
+    if (sl == std::string::npos) return -1;
+    dir.resize(sl);
+    // Only ever a direct child of ~/.cache/beatmapper/stems: this deletes files.
+    const char* home = getenv("HOME");
+    if (!home) return -1;
+    char root_real[PATH_MAX], dir_real[PATH_MAX];
+    std::string root = std::string(home) + "/.cache/beatmapper/stems";
+    if (!realpath(root.c_str(), root_real) || !realpath(dir.c_str(), dir_real)) return -1;
+    size_t rl = strlen(root_real);
+    if (strncmp(dir_real, root_real, rl) != 0 || dir_real[rl] != '/' ||
+            strchr(dir_real + rl + 1, '/') != nullptr)
+        return -1;
+
+    stems_reset();                      // nothing reads the files after this
+    int removed = 0;
+    if (DIR* d = opendir(dir_real)) {
+        while (struct dirent* e = readdir(d)) {
+            if (strcmp(e->d_name, ".") == 0 || strcmp(e->d_name, "..") == 0) continue;
+            std::string f = std::string(dir_real) + "/" + e->d_name;
+            struct stat st;
+            if (lstat(f.c_str(), &st) == 0 && S_ISREG(st.st_mode) && unlink(f.c_str()) == 0)
+                removed++;
+        }
+        closedir(d);
+    }
+    rmdir(dir_real);
+    set_msg("Stems deleted");
+    printf("[stems] deleted %d files from %s\n", removed, dir_real);
+    return removed;
+}

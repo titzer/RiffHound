@@ -11,7 +11,6 @@ static const HelpRow s_rows[] = {
     { nullptr, "Playback" },
     { "Space",            "Play / stop (stop returns to where playback started)" },
     { "Left / Right",     "Seek 5 seconds back / forward" },
-    { "L",                "Toggle loop playback" },
     { "- / =",            "Playback speed down / up by 0.05x" },
 
     { nullptr, "Beats" },
@@ -39,7 +38,7 @@ static const HelpRow s_rows[] = {
     { "Escape",           "Close a dialog / leave an inline text edit" },
     { "Shift+Enter",      "Split a lyric at the cursor (Lyric Index text field)" },
     { "L",                "Place the next unplaced lyric at the selected region" },
-    { "L (stopped)",      "With Auto on: step to the next suggestion (selects its span and lyric)" },
+    { "L (stopped)",      "With Auto on: place the selected suggestion's lyric at the region, then select the next (no region: select the next)" },
     { "Tab",              "Accept the selected (else the next) auto-insert suggestion" },
 
     { nullptr, "View" },

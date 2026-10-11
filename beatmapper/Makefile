@@ -40,6 +40,8 @@ SOURCES := \
     $(SRC_DIR)/ui_complete.cpp \
     $(SRC_DIR)/lyric_align.cpp \
     $(SRC_DIR)/ui_lyric_auto.cpp \
+    $(SRC_DIR)/lyrics_find.cpp \
+    $(SRC_DIR)/ui_lyric_find.cpp \
     $(SRC_DIR)/ui_rhythm.cpp \
     $(SRC_DIR)/chroma_goertzel.cpp \
     $(SRC_DIR)/chroma_hps.cpp \
@@ -135,7 +137,7 @@ $(TARGET): $(OBJECTS)
 $(SRC_DIR)/platform_macos.o: $(SRC_DIR)/platform_macos.mm
 	$(CXX) $(CXXFLAGS) $(DEPFLAGS) $(INCLUDES) -x objective-c++ -c $< -o $@
 
--include $(DEPS)
+-include $(DEPS) $(BENCH_OBJS:.o=.d) $(LYRBENCH_OBJS:.o=.d)
 
 clean:
 	rm -f $(TARGET) $(OBJECTS) $(DEPS) $(BENCH) $(BENCH_OBJS) $(BENCH_OBJS:.o=.d) $(LYRBENCH) $(LYRBENCH_OBJS)

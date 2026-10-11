@@ -58,7 +58,7 @@ void ui_toolbar_render(EditorState* editor, AudioState* audio, BeatMap* beatmap,
     if (loop_active)
         ImGui::PopStyleColor(3);
     if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Toggle loop playback (L)");
+        ImGui::SetTooltip("Toggle loop playback");
 
     ImGui::SameLine();
 

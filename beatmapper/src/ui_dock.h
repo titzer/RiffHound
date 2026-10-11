@@ -16,7 +16,6 @@ enum DockTool {
     DOCK_LYRICS,       // Lyric Index
     DOCK_COMPLETE,     // Complete Track
     DOCK_RHYTHM,       // Rhythm Map: onset timbre shapes
-    DOCK_STEMS,        // Stem Layers: separated stems as 3D spectrogram planes
     DOCK_TOOL_COUNT
 };
 

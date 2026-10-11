@@ -1,5 +1,7 @@
 #pragma once
 
+#include <vector>
+
 // Unplaced lyrics are parked past the end of the audio (t_start >= the
 // track's duration), one slot apart in lyric-sheet order.  Placing one
 // leaves a hole in the slot numbering, which is how lyricmap_sheet_order
@@ -52,3 +54,8 @@ void lyricmap_remove_parked(LyricMap* lm, int idx, double dur);
 // lyric sheet, inferred from the holes in the parking slots; -1 when that
 // can't be told.  seq has lm->count entries (unplaced ones get -1).
 void lyricmap_sheet_order(const LyricMap* lm, double dur, int* seq);
+
+// Put placed lyrics back among the unplaced ones, each into the parking slot
+// it came from (by lyricmap_sheet_order's reckoning), or after the last
+// when that can't be told.
+void lyricmap_unplace(LyricMap* lm, const std::vector<int>& idxs, double dur);

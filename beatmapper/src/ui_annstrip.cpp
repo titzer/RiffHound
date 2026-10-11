@@ -4,6 +4,9 @@
 #include "undo.h"
 #include "imgui.h"
 #include <math.h>
+#include <float.h>
+#include <vector>
+#include <algorithm>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -11,15 +14,15 @@
 // --- geometry constants ---------------------------------------------------
 
 const float ANN_PAD      = 4.0f;   // strip edge to the first row
-const float ANN_ROW_H    = 20.0f;  // one annotation row
+const float ANN_ROW_H    = 20.0f;  // one annotation row (the chord lane's are 3x)
 const float ANN_ROW_GAP  = 2.0f;
 const float ANN_GRIP_H   = 4.0f;   // top band that resizes the lane -- the
                                    // padding itself, so it never covers a row
 #define ANN_MAX_ROWS 8
 
-int annstrip_rows(float height) {
+int annstrip_rows(float height, float row_h) {
     float room = height - ANN_PAD * 2 + ANN_ROW_GAP;
-    int   n    = (int)(room / (ANN_ROW_H + ANN_ROW_GAP));
+    int   n    = (int)(room / (row_h + ANN_ROW_GAP));
     if (n < 1) n = 1;
     if (n > ANN_MAX_ROWS) n = ANN_MAX_ROWS;
     return n;
@@ -28,17 +31,17 @@ int annstrip_rows(float height) {
 // The height that holds exactly n rows.  Lanes are sized in whole rows: a
 // height between two row counts only adds blank padding, and dragging that
 // padding in and out is fiddly for no gain.
-static float height_for_rows(int n) {
+static float height_for_rows(int n, float row_h) {
     if (n < 1) n = 1;
     if (n > ANN_MAX_ROWS) n = ANN_MAX_ROWS;
-    return ANN_PAD * 2 + ANN_ROW_H * n + ANN_ROW_GAP * (n - 1);
+    return ANN_PAD * 2 + row_h * n + ANN_ROW_GAP * (n - 1);
 }
 
 // The row count nearest a height, for the drag: the lane steps to the next
 // row once the cursor has travelled half a row towards it.
-static int rows_nearest(float height) {
+static int rows_nearest(float height, float row_h) {
     float room = height - ANN_PAD * 2 + ANN_ROW_GAP;
-    int   n    = (int)(room / (ANN_ROW_H + ANN_ROW_GAP) + 0.5f);
+    int   n    = (int)(room / (row_h + ANN_ROW_GAP) + 0.5f);
     if (n < 1) n = 1;
     if (n > ANN_MAX_ROWS) n = ANN_MAX_ROWS;
     return n;
@@ -51,6 +54,7 @@ struct AnnStrip {
     const char* label;
     PanelId     panel;
     float EditorState::* height;   // where this lane's height is stored
+    float       row_h;             // one annotation row, pixels
 
     // Colours: the lane is told apart by hue, not by reading its label.
     ImU32 fill, fill_sel, edge, edge_sel, text, hdr, preview, band;
@@ -104,6 +108,7 @@ void annstrip_init(MiscMap* chords, MiscMap* misc) {
     c.hdr      = IM_COL32( 90, 150, 135, 160);
     c.preview  = IM_COL32( 60, 170, 140,  60);
     c.band     = IM_COL32(110, 220, 190,  40);
+    c.row_h  = ANN_ROW_H * 3.0f;     // chord names are read from a distance
     c.focus = c.focus_sync = c.editing = -1;
     c.hdrag_idx = -1;
 
@@ -113,6 +118,7 @@ void annstrip_init(MiscMap* chords, MiscMap* misc) {
     m.label  = "Misc";
     m.panel  = PANEL_MISC;
     m.height = &EditorState::misc_strip_h;
+    m.row_h  = ANN_ROW_H;
     m.fill     = IM_COL32( 65,  40,  95, 140);
     m.fill_sel = IM_COL32( 90,  55, 130, 180);
     m.edge     = IM_COL32(  0,   0,   0, 100);
@@ -129,7 +135,8 @@ MiscMap* annstrip_map  (AnnStripId id) { return s_ann[id].map; }
 PanelId  annstrip_panel(AnnStripId id) { return s_ann[id].panel; }
 
 float annstrip_height(const EditorState* e, AnnStripId id) {
-    return height_for_rows(annstrip_rows(e->*(s_ann[id].height)));
+    const AnnStrip& s = s_ann[id];
+    return height_for_rows(annstrip_rows(e->*(s.height), s.row_h), s.row_h);
 }
 
 // --- helpers --------------------------------------------------------------
@@ -184,7 +191,7 @@ static void push_undo(const AnnStrip& s, UndoStack* undo) {
 }
 
 static float row_y(const AnnStrip& s, int row) {
-    return s.y + ANN_PAD + row * (ANN_ROW_H + ANN_ROW_GAP);
+    return s.y + ANN_PAD + row * (s.row_h + ANN_ROW_GAP);
 }
 
 // The delta the drawing uses for an entry: a body drag is virtual until
@@ -230,7 +237,7 @@ static void layout_rows(AnnStrip& s, const EditorState* e) {
         s.rows_cap = cap;
     }
 
-    int nrows = annstrip_rows(s.h);
+    int nrows = annstrip_rows(s.h, s.row_h);
     if (nrows > ANN_MAX_ROWS) nrows = ANN_MAX_ROWS;
     const float gap = 3.0f;
     float right[ANN_MAX_ROWS];
@@ -276,7 +283,7 @@ static int hit_test(const AnnStrip& s, const EditorState* e,
     MiscMap* mm = s.map;
     for (int i = 0; i < mm->count; i++) {
         float ry = row_y(s, row_of(s, i));
-        if (my < ry || my >= ry + ANN_ROW_H) continue;
+        if (my < ry || my >= ry + s.row_h) continue;
         double d  = draw_delta(s, mm->entries[i]);
         float  x0 = time_to_x(mm->entries[i].t_start + d, e, s.x, s.w);
         float  x1 = time_to_x(mm->entries[i].t_end   + d, e, s.x, s.w);
@@ -400,7 +407,7 @@ void annstrip_drag(AnnStripId id, const AnnStripCtx& c) {
     if (s.grip) {
         if (dragging) {
             float h = s.grip_h0 + (s.grip_my0 - io.MousePos.y);
-            e->*(s.height) = height_for_rows(rows_nearest(h));
+            e->*(s.height) = height_for_rows(rows_nearest(h, s.row_h), s.row_h);
         }
         if (released) s.grip = false;
     }
@@ -578,11 +585,58 @@ void annstrip_keys(const AnnStripCtx& c) {
 
 // --- drawing --------------------------------------------------------------
 
+// Lane fonts, kept apart from AnnStrip (annstrip_init clears that, and the
+// fonts are loaded before it runs).
+static ImFont* s_font[ANN_COUNT] = {};
+
+// Text size for a lane's annotations.  The chord lane scales with the room
+// a measure gets on screen: the UI font's size when measures are narrow
+// (zoomed out, chords packed tight), up to 3x when there is plenty of room.
+// Drawn from its large font scaled down, so every size stays sharp.
+static float text_size(AnnStripId id, const AnnStripCtx& c) {
+    const float base = ImGui::GetFontSize();
+    if (id != ANN_CHORDS || !s_font[id]) return base;
+    const AnnStrip& s = s_ann[id];
+    const EditorState* e = c.editor;
+    double span = e->view_end - e->view_start;
+    if (span <= 0.0 || s.w <= 0.0f) return base;
+    // Median beat spacing among the beats in view (else the whole map).
+    std::vector<double> iv;
+    const BeatMap* bm = c.beatmap;
+    for (int pass = 0; pass < 2 && iv.size() < 2; pass++) {
+        iv.clear();
+        for (int i = 1; bm && i < bm->count; i++) {
+            double t0 = bm->beats[i - 1].time, t1 = bm->beats[i].time;
+            if (pass == 0 && (t1 < e->view_start || t0 > e->view_end)) continue;
+            if (t1 - t0 > 0.05 && t1 - t0 < 3.0) iv.push_back(t1 - t0);
+        }
+    }
+    if (iv.size() < 2) return base * 2.0f;          // no beats: middling
+    std::nth_element(iv.begin(), iv.begin() + iv.size() / 2, iv.end());
+    const int per_bar = 4;   // the strip doesn't see sections' meters; 4/4 is close enough
+    double measure_px = iv[iv.size() / 2] * per_bar * s.w / span;
+    const double LO = 100.0, HI = 300.0;               // px per measure for 1x .. 3x
+    double t = (measure_px - LO) / (HI - LO);
+    if (t < 0.0) t = 0.0;
+    if (t > 1.0) t = 1.0;
+    float fs = base * (float)(1.0 + 2.0 * t);
+    float cap = s.row_h - 4.0f;                         // and always inside the row
+    if (fs > cap) fs = cap;
+    static float logged = -1.0f;
+    if (fabsf(fs - logged) > 1.0f && getenv("BM_CHORDS_DEBUG")) {
+        printf("[chords] text %.1f px (font %.0f px) at %.0f px per measure\n",
+               fs, s_font[id]->FontSize, measure_px);
+        logged = fs;
+    }
+    return fs;
+}
+
 void annstrip_draw(AnnStripId id, const AnnStripCtx& c, ImDrawList* dl,
                    float label_x) {
     AnnStrip& s = s_ann[id];
     if (!s.show) return;
     EditorState* e = c.editor;
+    const float lane_fs = text_size(id, c);
 
     dl->AddRectFilled(ImVec2(s.x, s.y), ImVec2(s.x + s.w, s.y + s.h),
                       IM_COL32(20, 18, 28, 255));
@@ -613,7 +667,7 @@ void annstrip_draw(AnnStripId id, const AnnStripCtx& c, ImDrawList* dl,
         if (x1 <= s.x || x0 >= s.x + s.w) continue;
 
         float y0 = row_y(s, row_of(s, i));
-        float y1 = y0 + ANN_ROW_H;
+        float y1 = y0 + s.row_h;
         if (y1 > s.y + s.h - 1.0f) continue;   // does not fit the lane as sized
 
         bool sel   = ma.selected || (i == s.focus);
@@ -623,13 +677,15 @@ void annstrip_draw(AnnStripId id, const AnnStripCtx& c, ImDrawList* dl,
                     0.0f, 0, sel ? 2.0f : 1.0f);
 
         if (ma.text[0] && x1 - x0 > 8.0f) {
-            float ty = y0 + (ANN_ROW_H - ImGui::GetTextLineHeight()) * 0.5f;
-            ImVec2 ts = ImGui::CalcTextSize(ma.text);
+            ImFont* f  = s_font[id] ? s_font[id] : ImGui::GetFont();
+            float   fs = lane_fs;
+            float   ty = y0 + (s.row_h - fs) * 0.5f;
+            ImVec2  ts = f->CalcTextSizeA(fs, FLT_MAX, 0.0f, ma.text);
             if (x0 + 4.0f + ts.x < x1 - 2.0f) {
-                dl->AddText(ImVec2(x0 + 4.0f, ty), s.text, ma.text);
+                dl->AddText(f, fs, ImVec2(x0 + 4.0f, ty), s.text, ma.text);
             } else {
                 dl->PushClipRect(ImVec2(x0, y0), ImVec2(x1 - 2.0f, y1), true);
-                dl->AddText(ImVec2(x0 + 4.0f, ty), s.text, ma.text);
+                dl->AddText(f, fs, ImVec2(x0 + 4.0f, ty), s.text, ma.text);
                 dl->PopClipRect();
             }
         }
@@ -659,9 +715,9 @@ void annstrip_draw(AnnStripId id, const AnnStripCtx& c, ImDrawList* dl,
         float  x0 = time_to_x(t0, e, s.x, s.w), x1 = time_to_x(t1, e, s.x, s.w);
         if (x1 > x0) {
             dl->AddRectFilled(ImVec2(x0, row_y(s, 0)),
-                              ImVec2(x1, row_y(s, 0) + ANN_ROW_H), s.preview);
+                              ImVec2(x1, row_y(s, 0) + s.row_h), s.preview);
             dl->AddRect(ImVec2(x0, row_y(s, 0)),
-                        ImVec2(x1, row_y(s, 0) + ANN_ROW_H), s.edge_sel, 0.0f, 0, 1.5f);
+                        ImVec2(x1, row_y(s, 0) + s.row_h), s.edge_sel, 0.0f, 0, 1.5f);
         }
     }
 
@@ -709,7 +765,14 @@ void annstrip_edit(AnnStripId id, const AnnStripCtx& c) {
 
     ImGui::SetCursorScreenPos(ImVec2(x0, y0));
     ImGui::SetNextItemWidth(iw);
-    float pad_y = (ANN_ROW_H - ImGui::GetTextLineHeight()) * 0.5f;
+    // The editor in the size the lane's text is shown at
+    ImFont* ef = s_font[id];
+    float   ef_scale = ef ? ef->Scale : 1.0f;
+    if (ef) {
+        ef->Scale = text_size(id, c) / ef->FontSize;
+        ImGui::PushFont(ef);
+    }
+    float pad_y = (s.row_h - ImGui::GetTextLineHeight()) * 0.5f;
     if (pad_y < 1.0f) pad_y = 1.0f;
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(3.0f, pad_y));
     ImGui::PushStyleColor(ImGuiCol_FrameBg, s.fill_sel);
@@ -720,6 +783,7 @@ void annstrip_edit(AnnStripId id, const AnnStripCtx& c) {
     ImGui::PopID();
     ImGui::PopStyleColor();
     ImGui::PopStyleVar();
+    if (ef) { ImGui::PopFont(); ef->Scale = ef_scale; }
 
     bool active = ImGui::IsItemActive();
     if (submitted || ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
@@ -731,3 +795,5 @@ void annstrip_edit(AnnStripId id, const AnnStripCtx& c) {
     }
     was_active[id] = active;
 }
+
+void annstrip_set_font(AnnStripId id, ImFont* font) { s_font[id] = font; }
