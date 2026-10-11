@@ -1200,7 +1200,7 @@
     letter-spacing: .14em;
     color: var(--dim);
   }
-  .tune-head + .tune-row { border-top: 1px solid var(--dim); padding-top: 8px; }
+  .tune-head + .tune-row, .tune-head + .setting { border-top: 1px solid var(--dim); padding-top: 8px; }
   .tune-row { display: flex; align-items: center; gap: 6px; font-size: 12px; }
   .tune-row > label { flex: 1; }
   .tune-row .step { flex: none; width: 30px; padding: 3px 0; }
@@ -2223,7 +2223,17 @@ const SETTINGS = [
     get reset() { return track.mapA4 ?? A4_DEF; },
     format: v => +v.toFixed(1) + " Hz",
     action: { label: "to A440", title: "Retune to A440 with the cents (U)",
-              run: () => retune(), enabled: v => v !== A4_DEF } }
+              run: () => retune(), enabled: v => v !== A4_DEF } },
+  /* Which engine does the stretching: the beatmapper's own phase vocoder,
+     or Signalsmith Stretch, which smears a voice less when it is taken down
+     and can keep its formants where they were. A preference of the player's
+     rather than of the track, so it is remembered. */
+  { name: "engine", scope: "display", group: "playback", label: "Stretch with",
+    type: "choice", def: "pv",
+    options: [{ v: "pv", label: "Phase vocoder" }, { v: "signalsmith", label: "Signalsmith" }],
+    apply: () => switchEngine() },
+  { name: "formants", scope: "display", group: "playback", label: "Preserve formants (experimental)",
+    type: "toggle", def: false, apply: () => applyFormants() }
 ];
 
 const DEF = Object.fromEntries(SETTINGS.map(d => [d.name, d]));
@@ -4067,6 +4077,25 @@ function applyPitch() {
   if (looper.node) looper.node.port.postMessage({ cmd: "pitch", v: pitchRatio() });
 }
 
+/* Only Signalsmith has formants to keep; the vocoder ignores the command. */
+function applyFormants() {
+  if (looper.node) looper.node.port.postMessage({ cmd: "formants", v: state.formants });
+}
+
+/* A different engine is a rebuild — decode and all, since the old engine
+   holds the only copy of the PCM — started from where the sound is now, and
+   playing again if it was: the playhead stands still while the new one
+   decodes, and engineSync puts it back at the position, speed, pitch and
+   programme the page already has. Nothing to do before a track has an
+   engine, or once the element has taken over: the setting is read when the
+   next engine is built. */
+function switchEngine() {
+  if (looper.mode !== "engine" || !looper.pending || looper.asked === state.engine) return;
+  if (looper.node) player.time = looperTime();
+  looper.forTrack = null;
+  ensureEngine();
+}
+
 /* The retune: enough cents to put the recording's A on 440, rounded to the
    cent, with the semitones left where they are — a song taken down a tone and
    retuned is still down a tone. */
@@ -4160,6 +4189,7 @@ const looper = {
   ended: false,      /* the record ran out with no programme to go round */
   ctx: null, node: null, pending: null, forTrack: null, moduleReady: false,
   gen: 0,            /* which build is current: a slower, older decode must not win */
+  asked: null,       /* the engine setting the current build was made for */
   sampleRate: 0,
   srcBytes: null, srcUrl: null,  /* where the PCM can be had, set per track */
   lastF: 0, lastAt: 0,           /* last cursor report + arrival stamp */
@@ -4683,8 +4713,208 @@ registerProcessor("stretch", class extends AudioWorkletProcessor {
 });
 `;
 
+/* ── the other engine: Signalsmith Stretch ────────────────────────────────
+   The phase vocoder above is ours and works everywhere a worklet does; the
+   alternative is Signalsmith Stretch (MIT, vendored under vendor/), compiled
+   to WASM. It is quicker, and on a voice taken down it smears less, and it
+   can hold the formants still while the pitch moves — which keeps a singer
+   from turning into a cartoon, though on big shifts it can also make the
+   voice rough, hence "experimental". It is chosen in the tuning window and
+   is never the default: the vocoder needs nothing fetched, so it is also
+   what plays whenever this one cannot be had.
+
+   It is fetched only when asked for, as a plain script beside the page —
+   which works from file:// and from the server alike — and it makes its own
+   worklet module from a Blob, the same trick the vocoder uses. */
+const SIGNALSMITH_SRC = "vendor/signalsmith-stretch/SignalsmithStretch.js";
+let signalsmithLoad = null;
+
+function loadSignalsmith() {
+  if (typeof SignalsmithStretch === "function") return Promise.resolve(SignalsmithStretch);
+  return signalsmithLoad || (signalsmithLoad = new Promise((ok, no) => {
+    const s = document.createElement("script");
+    s.src = SIGNALSMITH_SRC;
+    s.onload = () => typeof SignalsmithStretch === "function"
+      ? ok(SignalsmithStretch) : no(new Error(SIGNALSMITH_SRC + " did not define SignalsmithStretch"));
+    /* Forgotten on failure, so the next track (or the next switch) tries again. */
+    s.onerror = () => { signalsmithLoad = null; s.remove(); no(new Error("could not load " + SIGNALSMITH_SRC)); };
+    document.head.append(s);
+  }));
+}
+
+/* The adapter. The rest of the page talks to an engine through a port —
+   pcm, segs, seek, speed, pitch, drop in; cursor reports and the end out —
+   and this speaks that protocol on Signalsmith's behalf, so nothing outside
+   buildEngine knows which engine is running.
+
+   Signalsmith does not take commands; it takes a timetable. Each entry says
+   "from this output time, read the input from here, at this rate and pitch",
+   and the node interpolates from the latest entry that has come due. So the
+   adapter keeps one anchor — an output time, the input position heard then,
+   and which part of the programme that is — and does the same arithmetic the
+   node does, which is how it knows the cursor without being told: the input
+   heard at the context's current time is the anchor's position plus the
+   elapsed time at the rate. Every change re-anchors at "now" and hands the
+   node a fresh entry.
+
+   The programme maps onto the timetable in two ways. A single part is the
+   node's own loop range, wrapped inside the worklet. Several parts are
+   jumps: the moment the current part runs out is known from the rate, so
+   the jump to the next part's start is booked for that output time, and
+   when it has passed, the one after it is booked. Only one jump is ever in
+   the book, because booking an entry throws away every entry not yet due —
+   the node's rule, not ours — and the timetable is otherwise all in the
+   past. The node crossfades a jump on its own; nothing here has to.
+
+   Anchors sit a couple of milliseconds in the past for that same rule: an
+   entry exactly at the node's current time would be thrown away by the
+   jump booked straight after it, and the node's clock does not move at all
+   while the context is suspended, which is whenever the page is paused. */
+async function signalsmithEngine(ctx) {
+  const make = await loadSignalsmith();
+  /* One input, unconnected: the node then reads its buffers. With none, its
+     idle path indexes an input list that is not there and the worklet dies. */
+  const node = await make(ctx, { numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [2] });
+  const sr = ctx.sampleRate;
+  const SLACK = .002;
+  const past = () => ctx.currentTime - SLACK;
+
+  let dur = 0, speed = 1, semis = 0, formants = false;
+  let segs = [];                        /* the programme, in input seconds */
+  let at = { t: past(), x: 0, seg: 0 }; /* the anchor */
+  let jumpAt = Infinity;                /* output time of the booked jump */
+  let ended = false, dead = false;
+
+  const adapter = {
+    port: { onmessage: null, postMessage: m => command(m) },
+    connect: dest => node.connect(dest),
+    disconnect: () => node.disconnect()
+  };
+  /* Delivered a turn later, as a real port would: the page posts a seek and
+     then sets its own clock, and a report arriving in between would be
+     overwritten by a value it did not mean. */
+  const emit = data => queueMicrotask(() => { if (!dead) adapter.port.onmessage?.({ data }); });
+
+  const len = g => g.e - g.s;
+
+  /* Where the input is at output time T, by the anchor: walked across the
+     parts' ends for a programme, wrapped for a single loop. */
+  function where(T) {
+    let x = at.x + Math.max(0, T - at.t) * speed, seg = at.seg;
+    if (segs.length === 1) {
+      const g = segs[0];
+      if (len(g) > 0 && x >= g.e) x = g.s + (x - g.e) % len(g);
+    } else if (segs.length > 1) {
+      const cycle = segs.reduce((a, g) => a + len(g), 0);
+      if (cycle > 0 && x >= segs[seg].e) {
+        let over = (x - segs[seg].e) % cycle;
+        seg = (seg + 1) % segs.length;
+        while (over >= len(segs[seg])) { over -= len(segs[seg]); seg = (seg + 1) % segs.length; }
+        x = segs[seg].s + over;
+      }
+    }
+    return { x, seg };
+  }
+
+  const reanchor = () => { const T = past(); at = { t: T, ...where(T) }; };
+
+  const entry = (output, input) => ({
+    active: true, output, input, rate: speed, semitones: semis,
+    formantCompensation: formants,
+    loopStart: segs.length === 1 ? segs[0].s : 0,
+    loopEnd: segs.length === 1 ? segs[0].e : 0
+  });
+
+  /* Book the jump out of the anchor's part, if a programme is going round. */
+  function bookJump() {
+    jumpAt = Infinity;
+    if (segs.length < 2) return;
+    const g = segs[at.seg];
+    jumpAt = at.t + Math.max(0, g.e - at.x) / speed;
+    node.schedule(entry(jumpAt, segs[(at.seg + 1) % segs.length].s));
+  }
+
+  function plan() {
+    if (!dur || dead) return;
+    node.schedule(entry(at.t, at.x));
+    bookJump();
+  }
+
+  /* The booked jump has sounded: it becomes the anchor, and the next is
+     booked. If the page was too slow to see more than one go by — a part
+     shorter than a report interval — the node has wandered off the
+     programme, so start it again from where the arithmetic says it is. */
+  function advance() {
+    if (!(ctx.currentTime > jumpAt)) return;
+    const next = (at.seg + 1) % segs.length;
+    at = { t: jumpAt, x: segs[next].s, seg: next };
+    if (at.t + len(segs[next]) / speed < ctx.currentTime) { reanchor(); plan(); }
+    else bookJump();
+  }
+
+  function report() {
+    const w = where(ctx.currentTime);
+    /* Held at the end, as the vocoder's cursor is: past it is only silence. */
+    emit({ f: (segs.length ? w.x : Math.min(w.x, dur)) * sr, seg: segs.length ? w.seg : 0 });
+    /* The record ran out with nothing to go round. The node plays silence
+       past the end of its buffer, so this is ours to notice. */
+    if (!segs.length && dur && w.x >= dur && !ended) { ended = true; emit({ end: true }); }
+  }
+
+  function command(m) {
+    if (dead) return;
+    if (m.cmd === "pcm") {
+      /* Measured first: handing the buffers over detaches them. */
+      dur = m.channels[0].length / sr;
+      node.dropBuffers();
+      node.addBuffers(m.channels, m.channels.map(a => a.buffer));
+      ended = false;
+      at = { t: past(), x: at.x, seg: at.seg };
+      plan();
+      report();
+    } else if (m.cmd === "segs") {
+      /* As the vocoder does it: keep going if the head is inside some part
+         of the new programme, else go to the start of the nearest survivor. */
+      reanchor();
+      segs = m.segs.map(g => ({ s: g.s / sr, e: g.e / sr }));
+      if (!segs.length) at.seg = 0;
+      else {
+        const i = segs.findIndex(g => at.x >= g.s && at.x < g.e);
+        if (i >= 0) at.seg = i;
+        else { at.seg = Math.min(at.seg, segs.length - 1); at.x = segs[at.seg].s; }
+      }
+      plan();
+    } else if (m.cmd === "seek") {
+      at = { t: past(), x: m.frame / sr, seg: Math.max(0, m.seg) };
+      ended = false;
+      plan();
+      report();
+    } else if (m.cmd === "speed" || m.cmd === "pitch" || m.cmd === "formants") {
+      reanchor();
+      if (m.cmd === "speed") speed = m.v;
+      else if (m.cmd === "pitch") semis = 12 * Math.log2(m.v);
+      else formants = !!m.v;
+      plan();
+    } else if (m.cmd === "drop") {
+      dead = true;
+      node.setUpdateInterval(1, null);
+      node.stop();
+      node.dropBuffers();
+    }
+  }
+
+  /* The node says where it is every so often, and only while it is playing;
+     that is the heartbeat. Its own figure leads what is heard by the block
+     it is filling, so the cursor comes from the anchor instead — the
+     heartbeat is only when to report, and when to book the next jump. At
+     four blocks it matches the vocoder's ~86 reports a second. */
+  node.setUpdateInterval(512 / sr, () => { if (!dead) { advance(); report(); } });
+  return adapter;
+}
+
 function buildEngine() {
   const gen = ++looper.gen;
+  looper.asked = state.engine;       /* what this build was asked for, whatever it gets */
   looper.decoding = true;
   renderLoopBuf();
   return (async () => {
@@ -4695,18 +4925,37 @@ function buildEngine() {
       try { await ctx.audioWorklet.addModule(url); } finally { URL.revokeObjectURL(url); }
       looper.moduleReady = true;
     }
+    /* Signalsmith, if chosen, is fetched and compiled while the track
+       decodes; if it cannot be had, the vocoder plays and the page says why. */
+    const wanted = state.engine === "signalsmith"
+      ? signalsmithEngine(ctx).catch(e => {
+          if (gen === looper.gen)
+            noteProblem("Signalsmith Stretch unavailable — playing through the phase vocoder", e);
+          return null;
+        })
+      : null;
     /* decodeAudioData eats its buffer, so it gets a copy and the original
        stays good for the next track load or a retry. */
-    let bytes;
-    if (looper.srcBytes) bytes = looper.srcBytes.slice(0);
-    else if (looper.srcUrl) bytes = await (await fetch(looper.srcUrl)).arrayBuffer();
-    else throw new Error("no media to decode");
-    const decoded = await ctx.decodeAudioData(bytes);
+    let decoded;
+    try {
+      let bytes;
+      if (looper.srcBytes) bytes = looper.srcBytes.slice(0);
+      else if (looper.srcUrl) bytes = await (await fetch(looper.srcUrl)).arrayBuffer();
+      else throw new Error("no media to decode");
+      decoded = await ctx.decodeAudioData(bytes);
+    } catch (e) {
+      wanted?.then(alt => alt?.port.postMessage({ cmd: "drop" }));
+      throw e;
+    }
+    const alt = await wanted;
     /* Another track, or a reload, started its own build while this one was
        decoding: that one is the engine now. */
-    if (gen !== looper.gen) return looper.pending;
+    if (gen !== looper.gen) {
+      if (alt) alt.port.postMessage({ cmd: "drop" });
+      return looper.pending;
+    }
 
-    const node = looper.node = new AudioWorkletNode(ctx, "stretch",
+    const node = looper.node = alt || new AudioWorkletNode(ctx, "stretch",
       { numberOfInputs: 0, outputChannelCount: [2] });
     node.connect(ctx.destination);
     node.port.onmessage = e => {
@@ -4768,6 +5017,7 @@ function engineSync() {
   const port = looper.node.port;
   port.postMessage({ cmd: "speed", v: rate() });
   port.postMessage({ cmd: "pitch", v: pitchRatio() });
+  port.postMessage({ cmd: "formants", v: state.formants });
   port.postMessage({ cmd: "segs", segs: progLooping() ? segFrames() : [] });
   engineSeek(player.time);
   if (looper.want) enginePlay();
@@ -6131,6 +6381,8 @@ function sync(name) {
   const dots = headDots[name];                   /* and its row of colour rings */
   if (dots) [...dots.children].forEach(b => b.classList.toggle("on", b.dataset.v === v));
   if (name === "speed" || name === "transpose" || name === "fineTune" || name === "a4") syncTune();
+  /* The formant switch belongs to one engine, and says so by going grey. */
+  if (name === "engine" && controls.formants) controls.formants.disabled = v !== "signalsmith";
   if (name === "backgroundLevel") {              /* the picker's copy of the slider */
     if (document.activeElement !== bgLevel) bgLevel.value = v;
     bgLevelOut.value = v + "%";
@@ -6801,7 +7053,11 @@ function buildTunePanel() {
              title="Type a frequency (432, A432) and press Enter">
       <button class="step" data-n="a4" data-d="1" title="Up 1 Hz (.)">+</button></div>
     <span class="note" id="tuneNote"></span>
-    <button class="tune-act" id="tuneFix" title="Shift by the cents that put the record's A on 440 (U)"></button>`;
+    <button class="tune-act" id="tuneFix" title="Shift by the cents that put the record's A on 440 (U)"></button>
+    <div class="tune-head">Engine</div>`;
+  /* The engine rows are the registry's own, as in the settings menu, so the
+     choice and the switch are kept honest by sync() like any other. */
+  tunePanel.append(rowFor(DEF.engine), rowFor(DEF.formants));
 
   /* Whole hertz per press, from wherever a typed 432.5 left it, as the
      beatmapper does; the other two are whole steps already. */

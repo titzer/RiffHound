@@ -64,7 +64,8 @@ INCLUDES := \
     -I$(SRC_DIR) \
     -I$(IMGUI_DIR) \
     -I$(IMGUI_DIR)/backends \
-    -I$(VENDOR_DIR)/miniaudio
+    -I$(VENDOR_DIR)/miniaudio \
+    -I$(VENDOR_DIR)
 
 # -MMD -MP emits .d files so edits to a header rebuild every .cpp that includes
 # it (without this, stale objects link against an old struct layout).
@@ -72,11 +73,11 @@ DEPFLAGS := -MMD -MP
 
 ifeq ($(UNAME), Darwin)
     CXX      := clang++
-    CXXFLAGS := -std=c++17 -O2 -Wall -DGL_SILENCE_DEPRECATION
+    CXXFLAGS := -std=c++17 -O2 -Wall -DGL_SILENCE_DEPRECATION -DSIGNALSMITH_USE_ACCELERATE
     # GLFW installed via homebrew
     GLFW_INC := -I/opt/homebrew/include
     GLFW_LIB := -L/opt/homebrew/lib -lglfw
-    LDFLAGS  := $(GLFW_LIB) -framework OpenGL -framework Cocoa -framework IOKit -framework CoreVideo -framework UniformTypeIdentifiers -framework CoreAudio -framework AudioToolbox
+    LDFLAGS  := $(GLFW_LIB) -framework OpenGL -framework Cocoa -framework IOKit -framework CoreVideo -framework UniformTypeIdentifiers -framework CoreAudio -framework AudioToolbox -framework Accelerate
     INCLUDES += $(GLFW_INC)
     # macOS platform file (Objective-C++)
     PLATFORM_OBJ := $(SRC_DIR)/platform_macos.o
@@ -107,7 +108,7 @@ BENCH_SRCS := $(SRC_DIR)/bench.cpp $(SRC_DIR)/audio.cpp $(SRC_DIR)/stretch.cpp \
     $(SRC_DIR)/subprocess.cpp
 BENCH_OBJS := $(BENCH_SRCS:.cpp=.o)
 ifeq ($(UNAME), Darwin)
-    BENCH_LD := -framework CoreAudio -framework AudioToolbox -framework CoreFoundation
+    BENCH_LD := -framework CoreAudio -framework AudioToolbox -framework CoreFoundation -framework Accelerate
 else
     BENCH_LD := -ldl -lpthread -lm
 endif

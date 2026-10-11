@@ -47,6 +47,10 @@ struct EditorState {
     float  speed;         // playback speed [0.25, 2.0], default 1.0
     int    semitones;     // pitch shift in semitones [-12, 12]
     int    cents;         // pitch fine-tune in cents  [-100, 100]
+    // Playback engine (STRETCH_ENGINE_* in stretch.h) and Signalsmith's
+    // formant preservation; these persist across file loads.
+    int    stretch_engine;
+    bool   preserve_formants;
 
     // Chroma Analyzer
     bool   show_chroma_panel;   // true while the Chroma Analyzer panel is visible

@@ -27,6 +27,8 @@ void editor_init(EditorState* e) {
     e->tempo_min_bpm      = 50.0f;
     e->tempo_max_bpm      = 150.0f;
     e->tempo_avg_window   = 8;
+    e->stretch_engine     = 0;       // the phase vocoder
+    e->preserve_formants  = false;
     e->show_bpm_labels    = false;
     e->speed        = 1.0f;
     e->semitones    = 0;

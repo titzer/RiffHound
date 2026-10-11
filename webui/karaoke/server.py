@@ -27,6 +27,7 @@ GET /media/<id>              the audio, with Range and ETag
 GET /chart/<id>              the beatmap .txt, with ETag
 GET /api/backgrounds         { backgrounds: [name, ...] } -- what is in backgrounds/
 GET /backgrounds/<name>      one of those, with ETag
+GET /vendor/<path>           third-party code the page loads on demand, with ETag
 
 A list is a file named list-<Name>.txt anywhere under a root: one track per
 line, by name, and the lines are the order.  A setlist for Friday, the hymns
@@ -304,6 +305,21 @@ class Library:
             return None
 
 
+def vendored(folder):
+    """The files under vendor/, by path relative to it.
+
+    Third-party code beside the page that it fetches only when asked to -- the
+    Signalsmith Stretch build, today.  Like the backgrounds, a request is
+    matched against this listing rather than joined onto the folder, so there
+    is nothing for a "../" to mean."""
+    try:
+        return {p.relative_to(folder).as_posix() for p in folder.rglob("*")
+                if p.is_file() and not any(part.startswith(".")
+                                           for part in p.relative_to(folder).parts)}
+    except OSError:
+        return set()
+
+
 def backgrounds(folder):
     """The animations in a folder, by file name.  No folder is no backgrounds."""
     try:
@@ -419,6 +435,7 @@ class Handler(BaseHTTPRequestHandler):
     library = None
     page = None
     backgrounds = None      # the folder, beside the page
+    vendor = None           # likewise
     quiet = False
     touch = staticmethod(lambda: None)
 
@@ -558,6 +575,12 @@ class Handler(BaseHTTPRequestHandler):
                     return self.fail(404, "no such background")
                 return self.send_file(self.backgrounds / name)
 
+            if path.startswith("/vendor/"):
+                name = path[len("/vendor/"):]
+                if name not in vendored(self.vendor):
+                    return self.fail(404, "no such file")
+                return self.send_file(self.vendor / name)
+
             for prefix, find in (("/media/", lib.media_path), ("/chart/", lib.chart_path)):
                 if path.startswith(prefix):
                     got = find(path[len(prefix):])
@@ -612,6 +635,7 @@ def main():
     Handler.library = Library(args.roots, args.exclude)
     Handler.page = page
     Handler.backgrounds = page.resolve().parent / "backgrounds"
+    Handler.vendor = page.resolve().parent / "vendor"
     Handler.quiet = args.quiet
     Handler.touch = staticmethod(lambda: last.__setitem__(0, time.time()))
 

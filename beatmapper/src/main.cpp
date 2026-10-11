@@ -26,6 +26,7 @@
 #include "ui_complete.h"
 #include "ui_lyric_auto.h"
 #include "ui_lyric_find.h"
+#include "stretch.h"
 #include "lyrics_find.h"
 #include "ui_help.h"
 #include "panels.h"
@@ -302,6 +303,11 @@ int main(int argc, char** argv) {
                 region_b = atof(argv[++i]);
             } else if (strcmp(argv[i], "--play") == 0) {
                 autoplay = true;
+            } else if (strcmp(argv[i], "--engine") == 0 && i + 1 < argc) {
+                // playback engine: "pv" or "signalsmith"
+                const char* en = argv[++i];
+                editor.stretch_engine = (strncmp(en, "signal", 6) == 0) ? STRETCH_ENGINE_SIGNALSMITH
+                                                                       : STRETCH_ENGINE_PV;
             } else if (strcmp(argv[i], "--find-lyrics") == 0) {
                 ui_lyric_find_request();          // search online at launch
             } else if (strcmp(argv[i], "--lyric-auto") == 0) {

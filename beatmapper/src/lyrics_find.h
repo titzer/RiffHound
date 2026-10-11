@@ -36,8 +36,19 @@ enum LyricsFindStatus {
 
 bool             lyrics_find_available();   // python3 + the script found
 // Search for `audio_path`'s lyrics.  cached_only: answer from the cache
-// without the network (used on track load).  No-op while one runs.
-void             lyrics_find_start(const char* audio_path, bool cached_only);
+// without the network (used on track load).  title / artist (optional,
+// "" = not given) replace what the script would read from tags and the file
+// name.  No-op while one runs.
+void             lyrics_find_start(const char* audio_path, bool cached_only,
+                                   const char* title = nullptr, const char* artist = nullptr);
+// What the last search looked for (the script's `query` line).
+const std::string& lyrics_find_query_title();
+const std::string& lyrics_find_query_artist();
+// A title / artist the user typed for a track, remembered so its later
+// cache checks ask for the same thing.  Empty strings when none.
+void lyrics_find_save_query(const char* audio_path, const std::string& title,
+                            const std::string& artist);
+void lyrics_find_load_query(const char* audio_path, std::string* title, std::string* artist);
 // Once per frame on the main thread: land a finished search.  Returns true
 // on the frame results landed.
 bool             lyrics_find_poll();

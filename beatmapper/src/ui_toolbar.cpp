@@ -1,4 +1,5 @@
 #include "ui_toolbar.h"
+#include "stretch.h"
 #include "undo.h"
 #include "recent.h"
 #include "panels.h"
@@ -233,6 +234,37 @@ void ui_toolbar_render(EditorState* editor, AudioState* audio, BeatMap* beatmap,
             if (ImGui::Button(lbl, ImVec2(row_w, 0)))
                 audio_set_pitch(editor, editor->semitones, fix);
             if (!can_fix) ImGui::EndDisabled();
+
+            // Playback engine: how speed and pitch are applied
+            ImGui::Spacing();
+            ImGui::TextDisabled("Engine");
+            ImGui::Separator();
+            {
+                int eng = editor->stretch_engine;
+                if (ImGui::RadioButton("Phase vocoder", eng == STRETCH_ENGINE_PV))
+                    audio_set_engine(editor, STRETCH_ENGINE_PV);
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("The built-in engine: time-stretches, then resamples\n"
+                                      "to change pitch.  Exactly transparent at 1x and 0 cents.");
+                ImGui::SameLine();
+                if (ImGui::RadioButton("Signalsmith", eng == STRETCH_ENGINE_SIGNALSMITH))
+                    audio_set_engine(editor, STRETCH_ENGINE_SIGNALSMITH);
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("Signalsmith Stretch (MIT): moves partials in frequency\n"
+                                      "instead of resampling.  Cleaner voices when pitching\n"
+                                      "down, and about 3x cheaper.");
+                bool ss = (eng == STRETCH_ENGINE_SIGNALSMITH);
+                if (!ss) ImGui::BeginDisabled();
+                bool pf = editor->preserve_formants;
+                if (ImGui::Checkbox("Preserve formants (experimental)", &pf))
+                    audio_set_formants(editor, pf);
+                if (!ss) ImGui::EndDisabled();
+                if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+                    ImGui::SetTooltip("Keep a voice's resonances where they were, so a\n"
+                                      "shifted voice keeps its character instead of sounding\n"
+                                      "bigger (down) or smaller (up).  Signalsmith only; on\n"
+                                      "big shifts it can make voices rough.");
+            }
 
             ImGui::EndPopup();
         }

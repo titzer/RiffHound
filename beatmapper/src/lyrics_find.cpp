@@ -9,6 +9,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <limits.h>
 #include <unistd.h>
 
 // --- state --------------------------------------------------------------------
@@ -26,6 +27,8 @@ static int                      s_wexit = 0;
 static std::mutex               s_msg_mu;
 static std::string              s_msg;
 static std::string              s_msg_main;    // copy the main thread hands out
+static std::string              s_wq_title, s_wq_artist;   // worker: the query line
+static std::string              s_q_title, s_q_artist;     // main thread copies
 
 static void set_msg(const std::string& m) {
     std::lock_guard<std::mutex> g(s_msg_mu);
@@ -111,6 +114,10 @@ static void worker_main(std::vector<std::string> argv) {
         std::vector<std::string> f = split_tabs(line);
         if (f.empty()) continue;
         if (f[0] == "status" && f.size() >= 2) set_msg(f[1]);
+        else if (f[0] == "query" && f.size() >= 4 && s_wq_title.empty()) {
+            s_wq_artist = f[2];
+            s_wq_title  = f[3];
+        }
         else if (f[0] == "warn" && f.size() >= 2) last_warn = f[1];
         else if (f[0] == "cand" && f.size() >= 12) {
             LyricsCand c;
@@ -140,7 +147,8 @@ static void worker_main(std::vector<std::string> argv) {
 
 // --- public ---------------------------------------------------------------------
 
-void lyrics_find_start(const char* audio_path, bool cached_only) {
+void lyrics_find_start(const char* audio_path, bool cached_only,
+                       const char* title, const char* artist) {
     if (s_running.load() || !audio_path || !audio_path[0]) return;
     if (s_worker.joinable()) s_worker.join();
     std::vector<std::string> argv;
@@ -152,7 +160,10 @@ void lyrics_find_start(const char* audio_path, bool cached_only) {
     if (argv.size() == 1) argv = subprocess_shell_argv(argv[0].c_str(), audio_path);
     else                  argv.push_back(audio_path);
     if (cached_only) argv.push_back("--check");
+    if (title && title[0])   { argv.push_back("--title");  argv.push_back(title); }
+    if (artist && artist[0]) { argv.push_back("--artist"); argv.push_back(artist); }
     s_wresults.clear();
+    s_wq_title.clear(); s_wq_artist.clear();
     s_wexit = 0;
     s_cached_only = cached_only;
     s_cancel.store(false);
@@ -174,6 +185,7 @@ bool lyrics_find_poll() {
     if (s_cancel.load()) { s_status = LF_IDLE; return false; }
     s_results.swap(s_wresults);
     s_wresults.clear();
+    s_q_title = s_wq_title; s_q_artist = s_wq_artist;
     s_status = (s_wexit == 0 || s_wexit == 2 || s_wexit == 3) ? LF_DONE : LF_FAILED;
     if (s_wexit == 3) s_status = LF_IDLE;          // nothing cached: as if never searched
     printf("[lyrics] search%s: exit %d, %d candidates\n", s_cached_only ? " (cache)" : "",
@@ -182,6 +194,8 @@ bool lyrics_find_poll() {
 }
 
 LyricsFindStatus lyrics_find_status()          { return s_status; }
+const std::string& lyrics_find_query_title()  { return s_q_title; }
+const std::string& lyrics_find_query_artist() { return s_q_artist; }
 bool             lyrics_find_was_cached_only() { return s_cached_only; }
 const char*      lyrics_find_message()         { return s_msg_main.c_str(); }
 const std::vector<LyricsCand>& lyrics_find_results() { return s_results; }
@@ -197,6 +211,7 @@ void lyrics_find_reset() {
     s_done.store(false);
     s_results.clear();
     s_wresults.clear();
+    s_q_title.clear(); s_q_artist.clear();
     s_status = LF_IDLE;
     set_msg("");
 }
@@ -257,4 +272,49 @@ std::string lyrics_find_remembered_choice() {
     std::vector<std::string> l;
     if (!lyrics_read_lines(dir_of(s_results[0].txt_path) + "/chosen", &l) || l.empty()) return "";
     return l[0];
+}
+
+// --- typed queries ----------------------------------------------------------------
+
+// ~/.cache/beatmapper/lyrics/queries/<FNV-1a of the track's real path>
+static std::string query_path(const char* audio_path) {
+    const char* home = getenv("HOME");
+    if (!home || !audio_path) return "";
+    char real[PATH_MAX];
+    const char* key = realpath(audio_path, real) ? real : audio_path;
+    uint64_t h = 1469598103934665603ull;
+    for (const unsigned char* p = (const unsigned char*)key; *p; p++) { h ^= *p; h *= 1099511628211ull; }
+    std::string dir = std::string(home) + "/.cache/beatmapper/lyrics/queries";
+    mkdir(dir.c_str(), 0755);
+    char name[32];
+    snprintf(name, sizeof(name), "/%016llx", (unsigned long long)h);
+    return dir + name;
+}
+
+void lyrics_find_save_query(const char* audio_path, const std::string& title,
+                            const std::string& artist) {
+    std::string p = query_path(audio_path);
+    if (p.empty()) return;
+    if (title.empty() && artist.empty()) { unlink(p.c_str()); return; }
+    std::string tmp = p + ".tmp";
+    FILE* f = fopen(tmp.c_str(), "w");
+    if (!f) return;
+    fprintf(f, "%s\n%s\n", title.c_str(), artist.c_str());
+    fclose(f);
+    rename(tmp.c_str(), p.c_str());
+}
+
+void lyrics_find_load_query(const char* audio_path, std::string* title, std::string* artist) {
+    title->clear(); artist->clear();
+    std::string p = query_path(audio_path);
+    if (p.empty()) return;
+    FILE* f = fopen(p.c_str(), "r");
+    if (!f) return;
+    char line[1024];
+    for (int k = 0; k < 2 && fgets(line, sizeof(line), f); k++) {
+        size_t n = strlen(line);
+        while (n > 0 && (line[n - 1] == '\n' || line[n - 1] == '\r')) line[--n] = 0;
+        (k == 0 ? title : artist)->assign(line);
+    }
+    fclose(f);
 }

@@ -15,6 +15,21 @@ static int  s_sel           = 0;       // highlighted result in the dialog
 static int  s_preview_for   = -1;
 static std::vector<std::string> s_preview;
 static std::string s_used_id;          // source_id the lyrics came from (marked in the dialog)
+// The query: what the user typed for this track (remembered per track by
+// lyrics_find_save_query; empty = let the script read tags / file name),
+// and the dialog's edit fields, filled from what the last search used.
+static std::string s_user_title, s_user_artist;
+static char s_edit_title[128], s_edit_artist[128];
+
+static void fill_edit_fields() {
+    snprintf(s_edit_title,  sizeof(s_edit_title),  "%s", lyrics_find_query_title().c_str());
+    snprintf(s_edit_artist, sizeof(s_edit_artist), "%s", lyrics_find_query_artist().c_str());
+}
+
+// An online search with the track's query (typed, or else from the file).
+static void search(const AudioState* audio) {
+    lyrics_find_start(audio->filename, false, s_user_title.c_str(), s_user_artist.c_str());
+}
 
 int lyric_add_unplaced(LyricMap* lm, double dur, const std::vector<std::string>& lines) {
     double base = lyricmap_next_slot(lm, dur);
@@ -49,9 +64,13 @@ void ui_lyric_find_track_loaded(const AudioState* audio) {
     s_open_dialog = s_fresh = false;
     s_preview_for = -1;
     s_used_id.clear();
-    // A cache check, unless a search was asked for at launch
+    s_edit_title[0] = s_edit_artist[0] = 0;
+    lyrics_find_load_query(audio->filename, &s_user_title, &s_user_artist);
+    // A cache check, unless a search was asked for at launch; with the
+    // title / artist typed for this track before, if any
     if (audio->loaded && lyrics_find_available())
-        lyrics_find_start(audio->filename, !s_want_search);
+        lyrics_find_start(audio->filename, !s_want_search,
+                          s_user_title.c_str(), s_user_artist.c_str());
     s_want_search = false;
 }
 
@@ -60,6 +79,7 @@ void ui_lyric_find_request() { s_want_search = true; }
 void ui_lyric_find_frame(const AudioState* audio) {
     (void)audio;
     if (!lyrics_find_poll()) return;
+    fill_edit_fields();
     const std::vector<LyricsCand>& r = lyrics_find_results();
     if (lyrics_find_was_cached_only()) {
         // Searched before: bring back the picked result's timings.
@@ -111,7 +131,61 @@ static void results_dialog(AudioState* audio, BeatMap* beatmap, UndoStack* undo,
     bool open = true;
     if (!ImGui::BeginPopupModal("Lyrics found", &open)) return;
     const std::vector<LyricsCand>& r = lyrics_find_results();
-    if (r.empty()) { ImGui::CloseCurrentPopup(); ImGui::EndPopup(); return; }
+    bool busy = lyrics_find_status() == LF_RUNNING;
+
+    // Search row: the title and artist the results are for, editable --
+    // the file's tags or name can be wrong or missing.
+    {
+        float sp = ImGui::GetStyle().ItemSpacing.x;
+        float bw = ImGui::CalcTextSize("Search").x + ImGui::GetStyle().FramePadding.x * 2 + 8.0f;
+        float avail = ImGui::GetContentRegionAvail().x - bw - sp * 2;
+        bool go = false;
+        if (busy) ImGui::BeginDisabled();
+        ImGui::SetNextItemWidth(avail * 0.58f);
+        go |= ImGui::InputTextWithHint("##lftitle", "Title", s_edit_title, sizeof(s_edit_title),
+                                       ImGuiInputTextFlags_EnterReturnsTrue);
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(avail * 0.42f);
+        go |= ImGui::InputTextWithHint("##lfartist", "Artist (optional)", s_edit_artist,
+                                       sizeof(s_edit_artist), ImGuiInputTextFlags_EnterReturnsTrue);
+        ImGui::SameLine();
+        go |= ImGui::Button("Search", ImVec2(bw, 0));
+        if (busy) ImGui::EndDisabled();
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+            ImGui::SetTooltip("Search again for this title and artist (Enter in a field does too).\n"
+                              "Remembered for this track.");
+        if (go && s_edit_title[0]) {
+            s_user_title  = s_edit_title;
+            s_user_artist = s_edit_artist;
+            lyrics_find_save_query(audio->filename, s_user_title, s_user_artist);
+            search(audio);
+            s_sel = 0;
+            s_preview_for = -1;
+        }
+    }
+    ImGui::Separator();
+    if (busy) {
+        ImGui::TextDisabled("Searching\xe2\x80\xa6 %s", lyrics_find_message());
+        ImGui::Spacing();
+        if (ImGui::Button("Close") || !open) ImGui::CloseCurrentPopup();
+        ImGui::EndPopup();
+        return;
+    }
+    if (r.empty()) {
+        const std::string& qt = lyrics_find_query_title();
+        const std::string& qa = lyrics_find_query_artist();
+        if (lyrics_find_status() == LF_FAILED)
+            ImGui::TextWrapped("%s", lyrics_find_message());
+        else if (!qa.empty())
+            ImGui::TextWrapped("No lyrics found for \"%s\" by %s.", qt.c_str(), qa.c_str());
+        else
+            ImGui::TextWrapped("No lyrics found for \"%s\".", qt.c_str());
+        ImGui::TextDisabled("Correct the title (and artist) above and search again.");
+        ImGui::Spacing();
+        if (ImGui::Button("Close") || !open) ImGui::CloseCurrentPopup();
+        ImGui::EndPopup();
+        return;
+    }
     if (s_sel >= (int)r.size()) s_sel = 0;
 
     ImGui::TextDisabled("Pick the right song; synced lyrics also help auto-insert place the lines.");
@@ -209,11 +283,6 @@ static void results_dialog(AudioState* audio, BeatMap* beatmap, UndoStack* undo,
                               "to guide auto-insert");
     }
     ImGui::SameLine();
-    if (ImGui::Button("Search again")) {
-        lyrics_find_start(audio->filename, false);
-        ImGui::CloseCurrentPopup();
-    }
-    ImGui::SameLine();
     if (ImGui::Button("Close") || !open) ImGui::CloseCurrentPopup();
     if (add || repl) {
         use_result(cur, repl, audio, beatmap, undo, lm);
@@ -231,10 +300,15 @@ void ui_lyric_find_button(EditorState* editor, AudioState* audio, BeatMap* beatm
 
     // A search the user asked for just finished: one result goes straight
     // in when there are no lyrics yet; otherwise show the choices.
+    // (and when the dialog is up, it shows them there; no results opens it
+    // too, saying what was searched for, so the title can be corrected)
     if (s_fresh) {
         s_fresh = false;
-        if (r.size() == 1 && lm->count == 0) use_result(r[0], false, audio, beatmap, undo, lm);
-        else if (!r.empty())                 s_open_dialog = true;
+        bool in_dialog = ImGui::IsPopupOpen("Lyrics found");
+        if (r.size() == 1 && lm->count == 0 && !in_dialog)
+            use_result(r[0], false, audio, beatmap, undo, lm);
+        else
+            s_open_dialog = true;
     }
 
     if (searching) {
@@ -248,24 +322,34 @@ void ui_lyric_find_button(EditorState* editor, AudioState* audio, BeatMap* beatm
         snprintf(lbl, sizeof(lbl), "Results (%d)", (int)r.size());
         if (ImGui::SmallButton(lbl)) s_open_dialog = true;
         if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Lyrics found online for this track: pick one\n"
-                              "(right-click to search again)");
+            ImGui::SetTooltip("Lyrics found online for this track: pick one, or\n"
+                              "search with another title (right-click: search again)");
         if (ImGui::BeginPopupContextItem("##lfctx")) {
-            if (ImGui::MenuItem("Search again")) lyrics_find_start(audio->filename, false);
+            if (ImGui::MenuItem("Search again")) search(audio);
             ImGui::EndPopup();
         }
     } else {
         bool can = audio->loaded && lyrics_find_available() && st != LF_RUNNING;
         if (!can) ImGui::BeginDisabled();
-        if (ImGui::SmallButton("Find")) lyrics_find_start(audio->filename, false);
+        // After a search that found nothing, Find opens the dialog to fix
+        // the title instead of repeating the same search.
+        if (ImGui::SmallButton("Find")) {
+            if (st == LF_DONE || st == LF_FAILED) {
+                if (!s_edit_title[0]) fill_edit_fields();
+                s_open_dialog = true;
+            } else {
+                search(audio);
+            }
+        }
         if (!can) ImGui::EndDisabled();
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
             if (!lyrics_find_available())
                 ImGui::SetTooltip("scripts/lyrics_find.py not found");
             else if (st == LF_DONE)
-                ImGui::SetTooltip("No lyrics found for this track.  Click to search again.");
+                ImGui::SetTooltip("No lyrics found for this track.  Click to search\n"
+                                  "with a different title or artist.");
             else if (st == LF_FAILED)
-                ImGui::SetTooltip("%s\nClick to try again.", lyrics_find_message());
+                ImGui::SetTooltip("%s\nClick to search again.", lyrics_find_message());
             else
                 ImGui::SetTooltip("Look this track's lyrics up online (LRCLIB, NetEase),\n"
                                   "by its tags or file name and length");

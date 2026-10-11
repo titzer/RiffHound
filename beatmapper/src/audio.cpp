@@ -213,6 +213,8 @@ bool audio_load(AudioState* a, EditorState* e, const char* path) {
     e->cents     = 0;
     stretch_set_speed(&s_stretch, 1.0f);
     stretch_set_pitch(&s_stretch, 1.0f);
+    stretch_set_engine(&s_stretch, e->stretch_engine);
+    stretch_set_formants(&s_stretch, e->preserve_formants);
     s_stretch_ok = true;
 
     // Initialise miniaudio sound backed by the stretch source.
@@ -286,6 +288,16 @@ void audio_set_pitch(EditorState* e, int semitones, int cents) {
     e->cents     = cents;
     float ratio = powf(2.0f, (float)(semitones * 100 + cents) / 1200.0f);
     if (s_stretch_ok) stretch_set_pitch(&s_stretch, ratio);
+}
+
+void audio_set_engine(EditorState* e, int engine) {
+    e->stretch_engine = engine;
+    if (s_stretch_ok) stretch_set_engine(&s_stretch, engine);
+}
+
+void audio_set_formants(EditorState* e, bool preserve) {
+    e->preserve_formants = preserve;
+    if (s_stretch_ok) stretch_set_formants(&s_stretch, preserve);
 }
 
 void audio_set_loop(AudioState* a, bool enabled, double loop_start, double loop_end) {

@@ -1,0 +1,4 @@
+Copied (MIT, see LICENSE.txt files) from upstream on 2026-10-11:
+  signalsmith-stretch  https://github.com/Signalsmith-Audio/signalsmith-stretch  a670068d9aeb64913331d5cc29337b19a457a7df (2026-09-25)  -- signalsmith-stretch.h, v1.3.2
+  signalsmith-linear   https://github.com/Signalsmith-Audio/linear               146b26f91b48835d665fa0498d64d9617818d27a (2026-10-04)  -- *.h, platform/*.h
+Unmodified.  beatmapper builds it with SIGNALSMITH_USE_ACCELERATE on macOS.

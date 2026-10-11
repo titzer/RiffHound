@@ -59,8 +59,28 @@ struct StretchSource {
     std::atomic<uint64_t> loop_start_frames;
     std::atomic<uint64_t> loop_end_frames;
 
+    // Engine (STRETCH_ENGINE_*) and formant preservation (Signalsmith only),
+    // set from the main thread; the audio thread switches at a read
+    // callback, carrying on from where the other engine had got to.
+    std::atomic<int>      engine;
+    std::atomic<bool>     formants;
+
     StretchState* st;
+    struct SsState* ss_st;     // Signalsmith Stretch engine (stretch.cpp)
 };
+
+// Two engines behind the one data source:
+//   STRETCH_ENGINE_PV           the phase vocoder + resampler described above
+//                               (bit-transparent at speed = pitch = 1)
+//   STRETCH_ENGINE_SIGNALSMITH  Signalsmith Stretch (vendor/, MIT): moves
+//                               partials in frequency instead of resampling,
+//                               so pitching down adds less smear; can keep
+//                               the voice's formants where they were; ~3x
+//                               cheaper.  Loops by feeding it the looped input.
+enum { STRETCH_ENGINE_PV = 0, STRETCH_ENGINE_SIGNALSMITH = 1 };
+void  stretch_set_engine(StretchSource* ss, int engine);
+int   stretch_get_engine(const StretchSource* ss);
+void  stretch_set_formants(StretchSource* ss, bool preserve);
 
 // Initialize with caller-owned (or borrowed) PCM data.
 // If owns_pcm==true, stretch_uninit() frees the buffer with free().

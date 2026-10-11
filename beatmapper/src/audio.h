@@ -32,6 +32,12 @@ void   audio_set_speed(EditorState* e, float speed);
 // Pitch ratio = 2^((semitones*100 + cents) / 1200). Stores result in e->semitones/cents.
 void   audio_set_pitch(EditorState* e, int semitones, int cents);
 
+// Playback engine (STRETCH_ENGINE_* in stretch.h) and formant preservation
+// (Signalsmith engine only).  Stored in e and kept across file loads; a
+// switch takes effect at the current position.
+void   audio_set_engine(EditorState* e, int engine);
+void   audio_set_formants(EditorState* e, bool preserve);
+
 // Set loop mode and region. When enabled, playback wraps from loop_end back to
 // loop_start seamlessly. Pass loop_start=0, loop_end=duration to loop the whole track.
 void   audio_set_loop(AudioState* a, bool enabled, double loop_start, double loop_end);

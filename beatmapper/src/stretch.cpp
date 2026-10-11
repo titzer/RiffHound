@@ -1,4 +1,6 @@
 #include "stretch.h"
+#include "signalsmith-stretch/signalsmith-stretch.h"
+#include <vector>
 #include <stdio.h>
 #include <math.h>
 #include <string.h>
@@ -494,6 +496,160 @@ static void st_reset(StretchSource* ss, uint64_t frame)
     ss->cursor_frames.store(frame, std::memory_order_relaxed);
 }
 
+// ---- Signalsmith engine ------------------------------------------------------
+//
+// Signalsmith Stretch takes input and output blocks of any lengths and
+// stretches by their ratio, so the speed is just how much input each output
+// block gets.  It runs `inputLatency` input frames ahead of what it is
+// processing and returns output `outputLatency` frames behind that; the
+// cursor accounts for both.  A seek uses its outputSeek, which primes it so
+// the next output starts exactly at the frame asked for.  Loops are the
+// input itself wrapping, which it hears as one continuous signal.
+
+struct SsState {
+    signalsmith::stretch::SignalsmithStretch<float> s;
+    int      active = -1;        // engine the last read used
+    bool     need_seek = true;
+    uint64_t seek_frame = 0;
+    double   in_pos = 0.0;       // input frame of the next input sample (wrapped into a loop)
+    float    cur_pitch = 0.0f;   // applied settings (0: none yet)
+    int      cur_form = -1;
+    int      in_lat = 0, out_lat = 0;
+    std::vector<float> in[2], out[2];
+};
+
+static const int SS_BLOCK = 256;               // output frames per process call
+
+static void ss_alloc(StretchSource* ss)
+{
+    SsState* e = new SsState();
+    e->s.presetDefault(2, (float)ss->sample_rate);
+    e->in_lat  = e->s.inputLatency();
+    e->out_lat = e->s.outputLatency();
+    // Room for the largest seek (speed up to 4) and the largest block.
+    size_t cap = (size_t)(e->in_lat + 4 * e->out_lat + 4 * SS_BLOCK + 64);
+    for (int c = 0; c < 2; c++) { e->in[c].assign(cap, 0.0f); e->out[c].assign(SS_BLOCK, 0.0f); }
+    ss->ss_st = e;
+}
+
+// Input frame k with the loop applied; 0 outside the track.
+static inline void ss_frame(const StretchSource* ss, const float* pcm, int64_t k,
+                            float* l, float* r)
+{
+    if (k < 0 || (uint64_t)k >= ss->frame_count) { *l = *r = 0.0f; return; }
+    const float* p = pcm + k * ss->channels;
+    *l = p[0];
+    *r = ss->channels > 1 ? p[1] : p[0];
+}
+
+// Gather n input frames starting at frame k (wrapping at the loop end) into
+// the input buffers; returns the frame after the last one taken.
+static int64_t ss_gather(StretchSource* ss, const float* pcm, int64_t k, int n)
+{
+    SsState* e = ss->ss_st;
+    bool     loop_en = ss->loop_enabled.load(std::memory_order_relaxed);
+    uint64_t ls = ss->loop_start_frames.load(std::memory_order_relaxed);
+    uint64_t le = ss->loop_end_frames.load(std::memory_order_relaxed);
+    bool looping = loop_en && le > ls;
+    for (int i = 0; i < n; i++, k++) {
+        if (looping && k >= (int64_t)le) k = (int64_t)ls + (k - (int64_t)ls) % (int64_t)(le - ls);
+        ss_frame(ss, pcm, k, &e->in[0][i], &e->in[1][i]);
+    }
+    if (looping && k >= (int64_t)le) k = (int64_t)ls + (k - (int64_t)ls) % (int64_t)(le - ls);
+    return k;
+}
+
+static void ss_apply_settings(StretchSource* ss, float pitch)
+{
+    SsState* e = ss->ss_st;
+    if (pitch != e->cur_pitch) {
+        // Tonality limit 8 kHz, as the library's web build defaults to.
+        e->s.setTransposeFactor(pitch, 8000.0f / (float)ss->sample_rate);
+        e->cur_pitch = pitch;
+    }
+    int form = ss->formants.load(std::memory_order_relaxed) ? 1 : 0;
+    if (form != e->cur_form) {
+        e->s.setFormantFactor(1.0f, form != 0);
+        e->cur_form = form;
+    }
+}
+
+// Where the output now leaving is, in input frames.
+static double ss_cursor(const StretchSource* ss, float speed)
+{
+    const SsState* e = ss->ss_st;
+    double cur = e->in_pos - e->in_lat - e->out_lat * (double)speed;
+    bool     loop_en = ss->loop_enabled.load(std::memory_order_relaxed);
+    uint64_t ls = ss->loop_start_frames.load(std::memory_order_relaxed);
+    uint64_t le = ss->loop_end_frames.load(std::memory_order_relaxed);
+    if (loop_en && le > ls && e->in_pos >= (double)ls && cur < (double)ls)
+        cur += (double)(le - ls);           // just wrapped: still playing the loop's tail
+    return cur;
+}
+
+static void ss_seek(StretchSource* ss, const float* pcm, uint64_t frame, float speed, float pitch)
+{
+    SsState* e = ss->ss_st;
+    ss_apply_settings(ss, pitch);
+    int n = e->s.outputSeekLength(speed);
+    if (n > (int)e->in[0].size()) n = (int)e->in[0].size();
+    e->in_pos = (double)ss_gather(ss, pcm, (int64_t)frame, n);
+    float* ins[2] = { e->in[0].data(), e->in[1].data() };
+    e->s.outputSeek(ins, n);
+    e->need_seek = false;
+}
+
+static ma_uint64 ss_read(StretchSource* ss, const float* pcm, float* out, ma_uint64 frameCount,
+                         bool* at_end)
+{
+    SsState* e = ss->ss_st;
+    const uint32_t ch = ss->channels;
+    float speed = ss->speed.load(std::memory_order_relaxed);
+    float pitch = ss->pitch.load(std::memory_order_relaxed);
+    if (pitch < 0.25f) pitch = 0.25f;
+    if (pitch > 4.0f)  pitch = 4.0f;
+    if (speed < 0.05f) speed = 0.05f;
+    if (e->need_seek) ss_seek(ss, pcm, e->seek_frame, speed, pitch);
+    ss_apply_settings(ss, pitch);
+
+    const bool looping = ss->loop_enabled.load(std::memory_order_relaxed) &&
+                         ss->loop_end_frames.load(std::memory_order_relaxed) >
+                         ss->loop_start_frames.load(std::memory_order_relaxed);
+    ma_uint64 written = 0;
+    *at_end = false;
+    while (written < frameCount) {
+        if (!looping && ss_cursor(ss, speed) >= (double)ss->frame_count) { *at_end = true; break; }
+        int n = (int)std::min<ma_uint64>(SS_BLOCK, frameCount - written);
+        // This block's share of input: n * speed frames, the fraction carried
+        double whole = floor(e->in_pos);
+        double next  = (e->in_pos - whole) + n * (double)speed;
+        int    nin   = (int)floor(next);
+        int64_t k = ss_gather(ss, pcm, (int64_t)whole, nin);
+        e->in_pos = (double)k + (next - nin);
+        float* ins[2]  = { e->in[0].data(), e->in[1].data() };
+        float* outs[2] = { e->out[0].data(), e->out[1].data() };
+        e->s.process(ins, nin, outs, n);
+        for (int i = 0; i < n; i++) {
+            out[(written + i) * ch] = e->out[0][i];
+            if (ch > 1) out[(written + i) * ch + 1] = e->out[1][i];
+        }
+        written += n;
+    }
+    double cur = ss_cursor(ss, speed);
+    ss->cursor_frames.store(cur > 0.0 ? (uint64_t)cur : 0, std::memory_order_relaxed);
+    return written;
+}
+
+void stretch_set_engine(StretchSource* ss, int engine) {
+    ss->engine.store(engine == STRETCH_ENGINE_SIGNALSMITH ? STRETCH_ENGINE_SIGNALSMITH
+                                                          : STRETCH_ENGINE_PV,
+                     std::memory_order_relaxed);
+}
+int  stretch_get_engine(const StretchSource* ss) { return ss->engine.load(std::memory_order_relaxed); }
+void stretch_set_formants(StretchSource* ss, bool preserve) {
+    ss->formants.store(preserve, std::memory_order_relaxed);
+}
+
 // ---- vtable callbacks -------------------------------------------------------
 
 static ma_result stretch_on_read(ma_data_source* pDS, void* pFramesOut,
@@ -533,6 +689,26 @@ static ma_result stretch_on_read(ma_data_source* pDS, void* pFramesOut,
             ss->override_retired.store(ss->override_active, std::memory_order_release);
             ss->override_active = (p == &s_override_none) ? nullptr : p;
         }
+    }
+
+    // Engine switch: the new one picks up where the cursor is.
+    const int engine = ss->engine.load(std::memory_order_relaxed);
+    if (engine != ss->ss_st->active) {
+        uint64_t at = ss->cursor_frames.load(std::memory_order_relaxed);
+        if (engine == STRETCH_ENGINE_SIGNALSMITH) {
+            ss->ss_st->need_seek  = true;
+            ss->ss_st->seek_frame = at;
+        } else if (ss->ss_st->active >= 0) {
+            st_reset(ss, at);
+        }
+        ss->ss_st->active = engine;
+    }
+    if (engine == STRETCH_ENGINE_SIGNALSMITH) {
+        bool at_end = false;
+        const float* src = ss->override_active ? ss->override_active : ss->pcm;
+        ma_uint64 n = ss_read(ss, src, out, frameCount, &at_end);
+        if (pFramesRead) *pFramesRead = n;
+        return (n < frameCount) ? MA_AT_END : MA_SUCCESS;
     }
 
     const bool looping = ss->loop_enabled.load(std::memory_order_relaxed) &&
@@ -589,7 +765,10 @@ static ma_result stretch_on_read(ma_data_source* pDS, void* pFramesOut,
 
 static ma_result stretch_on_seek(ma_data_source* pDS, ma_uint64 frameIndex)
 {
-    st_reset((StretchSource*)pDS, frameIndex);
+    StretchSource* ss = (StretchSource*)pDS;
+    st_reset(ss, frameIndex);
+    ss->ss_st->need_seek  = true;
+    ss->ss_st->seek_frame = frameIndex;
     return MA_SUCCESS;
 }
 
@@ -642,6 +821,9 @@ bool stretch_init(StretchSource* ss, float* pcm, uint64_t frames,
     ss->loop_enabled.store(false, std::memory_order_relaxed);
     ss->loop_start_frames.store(0, std::memory_order_relaxed);
     ss->loop_end_frames.store(0, std::memory_order_relaxed);
+    ss->engine.store(STRETCH_ENGINE_PV, std::memory_order_relaxed);
+    ss->formants.store(false, std::memory_order_relaxed);
+    ss->ss_st = nullptr;
     ss->st = st_alloc(sample_rate);
     if (!ss->st) return false;
 
@@ -657,6 +839,7 @@ bool stretch_init(StretchSource* ss, float* pcm, uint64_t frames,
     ss->channels    = (channels > STRETCH_MAX_CH) ? STRETCH_MAX_CH : channels;
     ss->sample_rate = sample_rate;
     ss->owns_pcm    = owns_pcm;
+    ss_alloc(ss);
     st_reset(ss, 0);
     return true;
 }
@@ -674,6 +857,7 @@ void stretch_uninit(StretchSource* ss)
     free(ss->override_active); ss->override_active = nullptr;
     free(ss->override_retired.exchange(nullptr));
     st_free(ss->st); ss->st = nullptr;
+    delete ss->ss_st; ss->ss_st = nullptr;
 }
 
 void stretch_set_override(StretchSource* ss, float* pcm)
