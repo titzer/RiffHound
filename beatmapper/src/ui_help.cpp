@@ -39,6 +39,8 @@ static const HelpRow s_rows[] = {
     { "Escape",           "Close a dialog / leave an inline text edit" },
     { "Shift+Enter",      "Split a lyric at the cursor (Lyric Index text field)" },
     { "L",                "Place the next unplaced lyric at the selected region" },
+    { "L (stopped)",      "With Auto on: step to the next suggestion (selects its span and lyric)" },
+    { "Tab",              "Accept the selected (else the next) auto-insert suggestion" },
 
     { nullptr, "View" },
     { "H",                "Show / hide this window" },

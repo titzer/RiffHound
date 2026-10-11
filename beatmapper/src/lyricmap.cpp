@@ -1,6 +1,9 @@
 #include "lyricmap.h"
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
+#include <vector>
+#include <algorithm>
 
 void lyricmap_init(LyricMap* lm) {
     lm->lyrics       = nullptr;
@@ -68,19 +71,26 @@ void lyricmap_remove(LyricMap* lm, int idx) {
     else if (lm->selected_idx > idx) lm->selected_idx--;
 }
 
-// A split at a comma ("we were young,| and free" or "young|, and free")
-// breaks the line there: the comma and the spaces around it go, and the next
-// line starts with a capital ("we were young" / "And free").
-static void split_at_comma(char* a, char* b) {
-    int la = (int)strlen(a);
+// A split at a comma, semicolon or period ("we were young,| and free" or
+// "young|; and free") breaks the line there: the punctuation (a whole run of
+// it, so "..." goes too) and the spaces around it go, and the next line
+// starts with a capital ("we were young" / "And free").  A split at a space
+// ("we were young| and free") does the same minus the punctuation; a split
+// inside a word is left alone.
+static bool is_line_break_punct(char c) { return c == ',' || c == ';' || c == '.'; }
+
+static void tidy_split(char* a, char* b) {
+    int la0 = (int)strlen(a);
+    int la = la0;
     while (la > 0 && a[la - 1] == ' ') la--;
     const char* rb = b;
     while (*rb == ' ') rb++;
-    bool comma_a = la > 0 && a[la - 1] == ',';
-    bool comma_b = *rb == ',';
-    if (!comma_a && !comma_b) return;
-    if (comma_a) la--;
-    else         rb++;
+    bool punct_a = la > 0 && is_line_break_punct(a[la - 1]);
+    bool punct_b = is_line_break_punct(*rb);
+    bool space   = la < la0 || rb > b;
+    if (!punct_a && !punct_b && !space) return;
+    if (punct_a)      while (la > 0 && is_line_break_punct(a[la - 1])) la--;
+    else if (punct_b) while (is_line_break_punct(*rb)) rb++;
     while (la > 0 && a[la - 1] == ' ') la--;
     a[la] = 0;
     while (*rb == ' ') rb++;
@@ -109,7 +119,7 @@ void lyricmap_split(LyricMap* lm, int idx, int cursor_pos, int* new_sel,
     int lb = len - cursor_pos < 127 ? len - cursor_pos : 127;
     if (la > 0) strncpy(text_a, saved,              la);
     if (lb > 0) strncpy(text_b, saved + cursor_pos, lb);
-    split_at_comma(text_a, text_b);
+    tidy_split(text_a, text_b);
 
     // Placed lyrics start before audio_dur; unplaced ones are parked at or
     // beyond it.  The lyric is the last placed one when nothing placed
@@ -137,14 +147,143 @@ void lyricmap_split(LyricMap* lm, int idx, int cursor_pos, int* new_sel,
         ta0 = t0;    ta1 = t_mid;
         tb0 = t_mid; tb1 = t1;
     } else {
-        // Zero/tiny range (unplaced lyrics): give each half a 1 ms slot so
-        // insertion order is preserved.
-        ta0 = t0;          ta1 = t0 + 0.001;
-        tb0 = t0 + 0.001;  tb1 = t0 + 0.002;
+        // Zero/tiny range (unplaced lyrics): the second half goes halfway to
+        // the next slot, so it sorts right after the first and the slot
+        // numbering (lyricmap_sheet_order) sees no hole or collision.
+        double next = t0 + LYRIC_SLOT;
+        if (idx + 1 < lm->count && lm->lyrics[idx + 1].t_start > t0 &&
+                lm->lyrics[idx + 1].t_start < next)
+            next = lm->lyrics[idx + 1].t_start;
+        ta0 = t0;                    ta1 = t0 + 1e-6;
+        tb0 = t0 + (next - t0) * 0.5; tb1 = tb0 + 1e-6;
     }
 
     lyricmap_remove(lm, idx);
     lyricmap_add(lm, ta0, ta1, text_a);
     int ib = lyricmap_add(lm, tb0, tb1, text_b);
     if (new_sel) *new_sel = ib;
+}
+
+// --- parking slots ------------------------------------------------------------
+
+double lyricmap_next_slot(const LyricMap* lm, double dur) {
+    double t = dur;
+    for (int i = 0; i < lm->count; i++)
+        if (lm->lyrics[i].t_start >= dur && lm->lyrics[i].t_start + LYRIC_SLOT > t)
+            t = lm->lyrics[i].t_start + LYRIC_SLOT;
+    // Back onto the whole-slot grid (a split half sits between slots).
+    return dur + ceil((t - dur) / LYRIC_SLOT - 1e-3) * LYRIC_SLOT;
+}
+
+void lyricmap_remove_parked(LyricMap* lm, int idx, double dur) {
+    if (idx < 0 || idx >= lm->count) return;
+    double t = lm->lyrics[idx].t_start;
+    // The next parked lyric takes over this one's slot and everything after
+    // moves down with it, so the deletion leaves no hole that would read as a
+    // placed lyric.  Split halves (closer than a slot) shift by less.
+    double shift = 0.0;
+    if (t >= dur && idx + 1 < lm->count) {
+        double gap = lm->lyrics[idx + 1].t_start - t;
+        shift = gap < LYRIC_SLOT ? gap : LYRIC_SLOT;
+    }
+    lyricmap_remove(lm, idx);
+    if (shift > 0.0)
+        for (int i = idx; i < lm->count; i++) {
+            lm->lyrics[i].t_start -= shift;
+            lm->lyrics[i].t_end   -= shift;
+        }
+}
+
+// Whole-slot number of a parked lyric (split halves share their origin's).
+// `phase` is how far the whole slots sit off the grid, in slots: the
+// duration can come out a few samples different from when the lyrics were
+// parked (another decoder, a re-encoded file).
+static long slot_of(double t, double dur, double phase) {
+    return (long)floor((t - dur) / LYRIC_SLOT - phase + 1e-3);
+}
+
+static double slot_phase(const LyricMap* lm, double dur) {
+    std::vector<double> d;
+    for (int i = 0; i < lm->count; i++) {
+        double x = (lm->lyrics[i].t_start - dur) / LYRIC_SLOT;
+        if (x < -0.5) continue;
+        double off = x - floor(x + 0.5);
+        if (fabs(off) < 0.3) d.push_back(off);     // split halves sit near +-0.5
+    }
+    if (d.empty()) return 0.0;
+    std::sort(d.begin(), d.end());
+    return d[d.size() / 2];
+}
+
+void lyricmap_sheet_order(const LyricMap* lm, double dur, int* seq) {
+    std::vector<int> placed;               // indices, in time order
+    std::vector<int> holes;                // each hole: unplaced lines before it
+    int n_unplaced = 0;
+    long prev_slot = -1;                   // slots start at 0 (t = dur)
+    const double phase = slot_phase(lm, dur);
+    for (int i = 0; i < lm->count; i++) {
+        const Lyric& ly = lm->lyrics[i];
+        seq[i] = -1;
+        if (ly.t_start < dur - 1e-9) { placed.push_back(i); continue; }
+        if (ly.t_start >= dur) {
+            // Holes before the first slot come before everything unplaced,
+            // including lines parked just below dur: those were split off
+            // the last placed lyric, so they follow it in the sheet.
+            long s = slot_of(ly.t_start, dur, phase);
+            int before = prev_slot < 0 ? 0 : n_unplaced;
+            for (long h = prev_slot + 1; h < s; h++) holes.push_back(before);
+            if (s > prev_slot) prev_slot = s;
+        }
+        n_unplaced++;
+    }
+    const int m = (int)placed.size(), r = (int)holes.size();
+    if (m == 0) return;
+    if (r == m) {                          // the usual case: paste, then place
+        for (int k = 0; k < m; k++) seq[placed[k]] = holes[k];
+        return;
+    }
+    // Lyrics placed from the end of the list leave no visible hole (nothing
+    // parked after them), drawn-in lyrics never had a slot, and old files
+    // may predate slot bookkeeping.  Match placed lyrics to holes in order,
+    // pairing those whose position in the sheet, guessed from time, is
+    // closest; unmatched placed lyrics stay unknown.  A hole past the last
+    // parked slot stands for everything placed from the end.
+    holes.push_back(n_unplaced);
+    const int R = (int)holes.size();
+    const double N = n_unplaced + m;
+    std::vector<double> want(m), have(R);
+    for (int k = 0; k < m; k++) {
+        const Lyric& ly = lm->lyrics[placed[k]];
+        want[k] = 0.5 * (ly.t_start + ly.t_end) / dur;
+    }
+    for (int j = 0; j < R; j++) have[j] = (holes[j] + (j < r ? j : m - 1)) / N;
+    const double SKIP = 0.25, INF = 1e30;
+    // f[k][j]: first k placed lyrics against first j holes.  The trailing
+    // hole may take any number of lyrics.
+    std::vector<double> f((size_t)(m + 1) * (R + 1), INF);
+    std::vector<char>   how((size_t)(m + 1) * (R + 1), 0);
+    auto at = [R](int k, int j) { return (size_t)k * (R + 1) + j; };
+    f[at(0, 0)] = 0.0;
+    for (int k = 0; k <= m; k++)
+        for (int j = 0; j <= R; j++) {
+            double v = f[at(k, j)];
+            if (v >= INF) continue;
+            if (k < m && j < R) {                         // match k with hole j
+                double c = v + fabs(want[k] - have[j]);
+                int nj = (j == R - 1) ? j : j + 1;         // the end hole stays open
+                if (c < f[at(k + 1, nj)]) { f[at(k + 1, nj)] = c; how[at(k + 1, nj)] = (nj == j) ? 4 : 1; }
+            }
+            if (k < m && v + SKIP < f[at(k + 1, j)]) { f[at(k + 1, j)] = v + SKIP; how[at(k + 1, j)] = 2; }
+            if (j < R && v + SKIP < f[at(k, j + 1)]) { f[at(k, j + 1)] = v + SKIP; how[at(k, j + 1)] = 3; }
+        }
+    int k = m, j = R;
+    if (f[at(m, R - 1)] < f[at(m, R)]) j = R - 1;
+    while (k > 0 || j > 0) {
+        char h = how[at(k, j)];
+        if (h == 1)      { seq[placed[k - 1]] = holes[j - 1]; k--; j--; }
+        else if (h == 4) { seq[placed[k - 1]] = holes[j];     k--; }
+        else if (h == 2) { k--; }
+        else if (h == 3) { j--; }
+        else break;
+    }
 }

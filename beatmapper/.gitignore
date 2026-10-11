@@ -9,3 +9,4 @@ bench/*.log
 external/
 Beatmapper.app/
 Beatmapper.iconset/
+lyrbench

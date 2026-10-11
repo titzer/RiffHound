@@ -24,6 +24,7 @@
 #include "ui_dock.h"
 #include "ui_beat_detector.h"
 #include "ui_complete.h"
+#include "ui_lyric_auto.h"
 #include "ui_help.h"
 #include "panels.h"
 #include "platform.h"
@@ -263,6 +264,8 @@ int main(int argc, char** argv) {
                 region_b = atof(argv[++i]);
             } else if (strcmp(argv[i], "--play") == 0) {
                 autoplay = true;
+            } else if (strcmp(argv[i], "--lyric-auto") == 0) {
+                ui_lyric_auto_set_active(true);   // Lyric Index auto-insert mode
             } else if (strcmp(argv[i], "--stems") == 0 && i + 1 < argc) {
                 stems_select_names(argv[++i]);   // e.g. vocals,drums
             } else if (strcmp(argv[i], "--tool") == 0 && i + 1 < argc) {
@@ -388,6 +391,7 @@ int main(int argc, char** argv) {
             // New track: drop the old stems (after any Complete Track worker
             // that may still read their audio) and ask the cache for this one's.
             ui_complete_reset();
+            ui_lyric_auto_reset();
             stems_reset();
             stems_request(audio.filename, true);
             // Always update these so we don't retry endlessly on decode failure.
@@ -434,9 +438,11 @@ int main(int argc, char** argv) {
                 audio_seek(&audio, audio_get_position(&audio) + 5.0);
             if (ImGui::IsKeyPressed(ImGuiKey_L)) {
                 // 'L' places the next unplaced lyric at the region (Lyric Index
-                // open), or records one while held during playback; otherwise
-                // it toggles looping.  Both handled in ui_timeline_render.
-                bool places  = editor.lyric_index_open && editor.has_region;
+                // open) or steps to the next auto-insert suggestion (stopped),
+                // or records one while held during playback; otherwise it
+                // toggles looping.  Both handled in ui_timeline_render.
+                bool places  = editor.lyric_index_open &&
+                               (editor.has_region || ui_lyric_auto_wants_l(&audio));
                 bool records = ui_timeline_lyric_hold_armed(&editor, &audio, &lyricmap);
                 if (!places && !records)
                     audio.loop = !audio.loop;

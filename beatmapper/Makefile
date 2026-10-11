@@ -38,6 +38,8 @@ SOURCES := \
     $(SRC_DIR)/complete_algo.cpp \
     $(SRC_DIR)/subprocess.cpp \
     $(SRC_DIR)/ui_complete.cpp \
+    $(SRC_DIR)/lyric_align.cpp \
+    $(SRC_DIR)/ui_lyric_auto.cpp \
     $(SRC_DIR)/ui_rhythm.cpp \
     $(SRC_DIR)/chroma_goertzel.cpp \
     $(SRC_DIR)/chroma_hps.cpp \
@@ -110,6 +112,16 @@ endif
 
 bench: $(BENCH)
 
+# Lyric aligner regression (scripts/lyric-bench.sh runs it on the bench tracks).
+LYRBENCH      := lyrbench
+LYRBENCH_SRCS := $(SRC_DIR)/lyric_bench.cpp $(SRC_DIR)/lyric_align.cpp $(SRC_DIR)/audio.cpp \
+    $(SRC_DIR)/stretch.cpp $(SRC_DIR)/beatmap.cpp $(SRC_DIR)/sectionmap.cpp \
+    $(SRC_DIR)/lyricmap.cpp $(SRC_DIR)/miscmap.cpp
+LYRBENCH_OBJS := $(LYRBENCH_SRCS:.cpp=.o)
+
+$(LYRBENCH): $(LYRBENCH_OBJS)
+	$(CXX) $(CXXFLAGS) $^ -o $@ $(BENCH_LD)
+
 $(BENCH): $(BENCH_OBJS)
 	$(CXX) $(CXXFLAGS) $^ -o $@ $(BENCH_LD)
 
@@ -126,7 +138,7 @@ $(SRC_DIR)/platform_macos.o: $(SRC_DIR)/platform_macos.mm
 -include $(DEPS)
 
 clean:
-	rm -f $(TARGET) $(OBJECTS) $(DEPS) $(BENCH) $(BENCH_OBJS) $(BENCH_OBJS:.o=.d)
+	rm -f $(TARGET) $(OBJECTS) $(DEPS) $(BENCH) $(BENCH_OBJS) $(BENCH_OBJS:.o=.d) $(LYRBENCH) $(LYRBENCH_OBJS)
 	rm -rf $(APP) $(ICONSET)
 
 # Regenerate the embedded icon from icon.png (needs python3 + Pillow).

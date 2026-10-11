@@ -1,5 +1,11 @@
 #pragma once
 
+// Unplaced lyrics are parked past the end of the audio (t_start >= the
+// track's duration), one slot apart in lyric-sheet order.  Placing one
+// leaves a hole in the slot numbering, which is how lyricmap_sheet_order
+// knows where placed lyrics sit in the sheet.
+#define LYRIC_SLOT 0.001
+
 struct Lyric {
     double t_start;
     double t_end;
@@ -34,3 +40,15 @@ void lyricmap_remove(LyricMap* lm, int idx);
 // half (pass 0 to disable that rule).
 void lyricmap_split(LyricMap* lm, int idx, int cursor_pos, int* new_sel,
                     double audio_dur);
+
+// Where the next pasted line parks: one slot past the last parked lyric.
+double lyricmap_next_slot(const LyricMap* lm, double dur);
+
+// Delete a parked lyric, moving the ones after it down a slot so the gap
+// does not read as a placed lyric.  (Placed lyrics: same as lyricmap_remove.)
+void lyricmap_remove_parked(LyricMap* lm, int idx, double dur);
+
+// For each placed lyric, how many unplaced lyrics come before it in the
+// lyric sheet, inferred from the holes in the parking slots; -1 when that
+// can't be told.  seq has lm->count entries (unplaced ones get -1).
+void lyricmap_sheet_order(const LyricMap* lm, double dur, int* seq);

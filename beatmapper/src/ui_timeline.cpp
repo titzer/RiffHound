@@ -9,6 +9,7 @@
 #include "ui_beat_detector.h"
 #include "ui_smoothing.h"
 #include "ui_complete.h"
+#include "ui_lyric_auto.h"
 #include "onset_shape.h"
 #include "ui_rhythm.h"
 #include "panels.h"
@@ -3395,6 +3396,40 @@ void ui_timeline_render(EditorState* editor, AudioState* audio,
                               ImVec2(lx1 + 3.0f, hmy + 8.0f), IM_COL32(90, 180, 220, 230));
         }
     }
+    // Auto-insert suggestions: ghost boxes where the unplaced lyrics would
+    // go.  The next one (Tab) is drawn solid, the rest faint, the one under
+    // the mouse in the Lyric Index brightest.
+    if (ui_lyric_auto_active()) {
+        ImFont* lf = s_lyric_font();
+        for (int k = 0; k < ui_lyric_auto_count(); k++) {
+            const LyricSuggestion* sg = ui_lyric_auto_get(k);
+            float gx0 = time_to_x(sg->t0, editor->view_start, editor->view_end, la_x, la_w);
+            float gx1 = time_to_x(sg->t1, editor->view_start, editor->view_end, la_x, la_w);
+            if (gx1 <= la_x || gx0 >= la_x + la_w) continue;
+            int   cur = ui_lyric_auto_cursor();
+            bool  hov = (k == ui_lyric_auto_hover()) || k == cur;
+            int   a   = hov ? 255 : k == (cur >= 0 ? cur : 0) ? 200 : 90;
+            float y0  = la_y + 3.0f, y1 = la_y + la_h - 3.0f;
+            dl->AddRectFilled(ImVec2(gx0, y0), ImVec2(gx1, y1),
+                              hov ? IM_COL32(255, 200, 90, 70) : IM_COL32(240, 180, 60, a / 5));
+            // Dashed outline
+            ImU32 oc = IM_COL32(255, 200, 90, a);
+            for (float x = gx0; x < gx1; x += 8.0f) {
+                float xe = x + 4.0f < gx1 ? x + 4.0f : gx1;
+                dl->AddLine(ImVec2(x, y0), ImVec2(xe, y0), oc, 1.5f);
+                dl->AddLine(ImVec2(x, y1), ImVec2(xe, y1), oc, 1.5f);
+            }
+            dl->AddLine(ImVec2(gx0, y0), ImVec2(gx0, y1), oc, 1.5f);
+            dl->AddLine(ImVec2(gx1, y0), ImVec2(gx1, y1), oc, 1.5f);
+            if (gx1 - gx0 > 10.0f) {
+                float lbl_y = y0 + (y1 - y0 - lf->FontSize) * 0.5f;
+                dl->PushClipRect(ImVec2(gx0, y0), ImVec2(gx1 - 2.0f, y1), true);
+                dl->AddText(lf, lf->FontSize, ImVec2(gx0 + 4.0f, lbl_y),
+                            IM_COL32(255, 220, 150, a), sg->text);
+                dl->PopClipRect();
+            }
+        }
+    }
     // Drag-to-create preview
     if (s_lyr_drag) {
         double dt0 = (s_lyr_drag_t0 < s_lyr_drag_t1) ? s_lyr_drag_t0 : s_lyr_drag_t1;
@@ -3699,12 +3734,8 @@ void ui_timeline_lyric_index_content(EditorState* editor, AudioState* audio,
         const char* clip = ImGui::GetClipboardText();
         if (clip && clip[0]) {
             undo_push(undo, beatmap, lyricmap);
-            // Find next available unplaced slot index to avoid t_start collisions
-            double base_t = has_audio ? dur : 0.0;
-            int n_unplaced = 0;
-            for (int k = 0; k < lyricmap->count; k++)
-                if (lyricmap->lyrics[k].t_start >= base_t - 1e-9)
-                    n_unplaced++;
+            // Park after the last parked lyric, one slot apart, in paste order
+            double base_t = lyricmap_next_slot(lyricmap, has_audio ? dur : 0.0);
 
             const char* p = clip;
             int added = 0;
@@ -3720,9 +3751,8 @@ void ui_timeline_lyric_index_content(EditorState* editor, AudioState* audio,
                     int  len = (int)(te - ts);
                     if (len > 127) len = 127;
                     strncpy(buf, ts, (size_t)len);
-                    // Place after dur, 1 ms apart, to preserve paste order
-                    double t = base_t + (n_unplaced + added) * 0.001;
-                    lyricmap_add(lyricmap, t, t + 0.001, buf);
+                    double t = base_t + added * LYRIC_SLOT;
+                    lyricmap_add(lyricmap, t, t + 1e-6, buf);
                     added++;
                 }
                 p = le;
@@ -3736,7 +3766,62 @@ void ui_timeline_lyric_index_content(EditorState* editor, AudioState* audio,
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Add each clipboard line as a new unplaced lyric");
     ImGui::SameLine();
+    // Auto-insert mode toggle: suggestions from the vocal stem
+    {
+        bool on = ui_lyric_auto_active();
+        if (on) {
+            ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.55f,0.40f,0.08f,0.90f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.68f,0.50f,0.12f,0.95f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonActive,  ImVec4(0.80f,0.60f,0.16f,1.00f));
+        }
+        if (ImGui::SmallButton("Auto"))
+            ui_lyric_auto_set_active(!on);
+        if (on) ImGui::PopStyleColor(3);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip(on ? "Auto-insert is on: unplaced lyrics get suggested places\n"
+                                   "from the vocal stem.  Click to turn it off."
+                                 : "Auto-insert: suggest where the unplaced lyrics are sung,\n"
+                                   "from the vocal stem (separates the stems first if needed).\n"
+                                   "Accept suggestions one at a time (Tab) or all at once.");
+    }
+    ImGui::SameLine();
     ImGui::TextDisabled("(%d)", lyricmap->count);
+
+    // ---- Auto-insert suggestions ----
+    int pending_accept = -1;     // lyric index to move to its suggestion
+    bool pending_accept_all = false;
+    if (ui_lyric_auto_active()) {
+        ui_lyric_auto_update(audio, lyricmap);
+        ImGui::PushTextWrapPos(0.0f);
+        ImGui::TextDisabled("%s", ui_lyric_auto_status());
+        ImGui::PopTextWrapPos();
+        int n_sugg = ui_lyric_auto_count();
+        if (n_sugg > 0) {
+            // Tab takes the cursor's suggestion (L steps it), else the first:
+            // the one the alignment is surest of, given what is placed.
+            int cur = ui_lyric_auto_cursor();
+            const LyricSuggestion* want = ui_lyric_auto_get(cur >= 0 ? cur : 0);
+            int next_idx = -1;
+            for (int k = 0; k < lyricmap->count && next_idx < 0; k++)
+                if (ui_lyric_auto_for(lyricmap, k) == want) next_idx = k;
+            if (ImGui::SmallButton(cur >= 0 ? "Accept selected (Tab)" : "Accept next (Tab)") &&
+                    next_idx >= 0)
+                pending_accept = next_idx;
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Place the lyric at its suggestion; the rest re-align around it.\n"
+                                  "L (while stopped) steps through the suggestions.");
+            ImGui::SameLine();
+            char lbl[32];
+            snprintf(lbl, sizeof(lbl), "Accept all %d", n_sugg);
+            if (ImGui::SmallButton(lbl)) pending_accept_all = true;
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Place every suggested lyric (one Ctrl+Z undoes them all).\n"
+                                  "Later suggestions are less reliable than the next one.");
+            if (next_idx >= 0 && !ImGui::IsAnyItemActive() &&
+                    ImGui::IsKeyPressed(ImGuiKey_Tab, false))
+                pending_accept = next_idx;
+        }
+    }
 
     ImGui::Separator();
 
@@ -3758,11 +3843,38 @@ void ui_timeline_lyric_index_content(EditorState* editor, AudioState* audio,
     int pending_split_idx    = -1;
     int pending_split_cursor = 0;
     int active_lyr_idx       = -1;   // text field active this frame, for Ctrl+Z routing
+    double pending_dismiss_key = -1.0;
+    int hover_sugg           = -1;
 
-    // 'L' shortcut: place the first unplaced lyric at the current region
-    if (first_unplaced_idx >= 0 && editor->has_region &&
+    // 'L' shortcut: with auto-insert suggestions and playback stopped, step
+    // to the next suggestion; otherwise place the first unplaced lyric at
+    // the current region
+    if (ui_lyric_auto_wants_l(audio)) {
+        if (ImGui::IsKeyPressed(ImGuiKey_L, false) && !ImGui::IsAnyItemActive())
+            ui_lyric_auto_advance();
+    } else if (first_unplaced_idx >= 0 && editor->has_region &&
             ImGui::IsKeyPressed(ImGuiKey_L) && !ImGui::IsAnyItemActive())
         pending_region_place = first_unplaced_idx;
+
+    // The suggestion cursor moved: select its span and its lyric, and bring
+    // both into view
+    int scroll_to_row = -1;
+    if (ui_lyric_auto_take_cursor_moved()) {
+        const LyricSuggestion* sg = ui_lyric_auto_get(ui_lyric_auto_cursor());
+        editor->has_region   = true;
+        editor->region_start = sg->t0;
+        editor->region_end   = sg->t1;
+        double span = editor->view_end - editor->view_start;
+        if (sg->t0 < editor->view_start || sg->t1 > editor->view_end) {
+            double need = (sg->t1 - sg->t0) * 1.5;
+            if (need > span) span = need;
+            editor->view_start = sg->t0 - span * 0.25;
+            editor->view_end   = editor->view_start + span;
+            editor_clamp_view(editor);
+        }
+        for (int k = 0; k < lyricmap->count; k++)
+            if (ui_lyric_auto_for(lyricmap, k) == sg) { s_lyr_selected = k; scroll_to_row = k; break; }
+    }
 
     ImGui::PushFont(s_lyric_font());
     // NoScrollWithMouse: the wheel is handled below with a gentler step than
@@ -3789,6 +3901,8 @@ void ui_timeline_lyric_index_content(EditorState* editor, AudioState* audio,
         bool selected = (i == s_lyr_selected);
 
         ImGui::PushID(i);
+
+        if (i == scroll_to_row) ImGui::SetScrollHereY(0.35f);
 
         // Highlight row for the currently selected lyric
         if (selected) {
@@ -3863,7 +3977,12 @@ void ui_timeline_lyric_index_content(EditorState* editor, AudioState* audio,
         // those from the strip, where the timing context is visible)
         ImGui::SameLine(0, 2.0f);
         const float del_btn_w = 20.0f;
-        ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x
+        // Auto-insert suggestion chip: time (click to preview), accept, dismiss
+        const LyricSuggestion* sg = placed ? nullptr : ui_lyric_auto_for(lyricmap, i);
+        const float chip_time_w = ImGui::CalcTextSize("00:00.0").x
+                                + 2.0f * ImGui::GetStyle().FramePadding.x;
+        const float chip_w = sg ? chip_time_w + 2.0f * (GW + 2.0f) + 2.0f : 0.0f;
+        ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - chip_w
                                 - (placed ? 0.0f : del_btn_w + 2.0f));
         // Dim unplaced lyrics so placed ones stand out
         if (!placed)
@@ -3894,6 +4013,66 @@ void ui_timeline_lyric_index_content(EditorState* editor, AudioState* audio,
             pending_split_cursor = s_lyr_split_state.cursor;
         }
 
+        if (sg) {
+            int  si   = (int)(sg - ui_lyric_auto_get(0));
+            int  cur  = ui_lyric_auto_cursor();
+            bool next = cur >= 0 ? si == cur : si == 0;   // what Tab takes
+            bool hov  = false;
+            ImGui::SameLine(0, 2.0f);
+            // Colour by fit: green good, amber fair, red poor; the next one solid
+            ImVec4 c = sg->score >= 0.75f ? ImVec4(0.20f,0.50f,0.25f,1.0f)
+                     : sg->score >= 0.5f  ? ImVec4(0.55f,0.45f,0.12f,1.0f)
+                                          : ImVec4(0.55f,0.22f,0.18f,1.0f);
+            if (!next) c.w = 0.45f;
+            ImGui::PushStyleColor(ImGuiCol_Button,        c);
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(c.x + 0.12f, c.y + 0.12f, c.z + 0.12f, 1.0f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonActive,  ImVec4(c.x + 0.2f, c.y + 0.2f, c.z + 0.2f, 1.0f));
+            char tl[24];
+            int  mm = (int)(sg->t0 / 60.0);
+            snprintf(tl, sizeof(tl), "%d:%04.1f##sg", mm, sg->t0 - 60.0 * mm);
+            // Click: make it the cursor -- next frame selects its span
+            // (Space plays it) and Tab accepts it.
+            if (ImGui::Button(tl, ImVec2(chip_time_w, 0)))
+                ui_lyric_auto_set_cursor(si);
+            ImGui::PopStyleColor(3);
+            hov |= ImGui::IsItemHovered();
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Suggested %.2f \xe2\x80\x93 %.2f s (fit %.0f%%)%s\n"
+                                  "Click to select it on the timeline (Tab then accepts it)",
+                                  sg->t0, sg->t1, sg->score * 100.0f,
+                                  next ? "\nTab accepts it" : "");
+            // Accept: small green check
+            ImGui::SameLine(0, 2.0f);
+            ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0, 0, 0, 0));
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.16f,0.47f,0.24f,0.80f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonActive,  ImVec4(0.20f,0.59f,0.29f,1.00f));
+            if (ImGui::Button("##sga", ImVec2(GW, 0))) pending_accept = i;
+            ImGui::PopStyleColor(3);
+            {
+                ImVec2 mn = ImGui::GetItemRectMin(), mx = ImGui::GetItemRectMax();
+                float ccx = (mn.x + mx.x) * 0.5f, ccy = (mn.y + mx.y) * 0.5f;
+                ImU32 col = IM_COL32(110, 220, 130, next ? 240 : 150);
+                ImDrawList* rdl = ImGui::GetWindowDrawList();
+                rdl->AddLine(ImVec2(ccx - 4.5f, ccy), ImVec2(ccx - 1.5f, ccy + 3.5f), col, 2.0f);
+                rdl->AddLine(ImVec2(ccx - 1.5f, ccy + 3.5f), ImVec2(ccx + 4.5f, ccy - 3.5f), col, 2.0f);
+            }
+            hov |= ImGui::IsItemHovered();
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Place the lyric at the suggestion");
+            // Dismiss
+            ImGui::SameLine(0, 2.0f);
+            ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0, 0, 0, 0));
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.45f,0.30f,0.30f,0.80f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonActive,  ImVec4(0.60f,0.35f,0.35f,1.00f));
+            ImGui::PushStyleColor(ImGuiCol_Text,          ImVec4(0.75f,0.55f,0.55f,0.90f));
+            if (ImGui::Button("-##sgd", ImVec2(GW, 0))) pending_dismiss_key = sg->key;
+            ImGui::PopStyleColor(4);
+            hov |= ImGui::IsItemHovered();
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Dismiss: leave this line out of the alignment\n"
+                                  "(e.g. it is not sung here); the rest re-align");
+            if (hov) hover_sugg = si;
+        }
+
         // X button to delete this lyric -- only while it is not inserted yet
         if (!placed) {
             ImGui::SameLine(0, 2.0f);
@@ -3916,6 +4095,32 @@ void ui_timeline_lyric_index_content(EditorState* editor, AudioState* audio,
     ImGui::PopFont();
 
     s_lyr_edit_idx = active_lyr_idx;
+    ui_lyric_auto_set_hover(hover_sugg);
+
+    // ---- Auto-insert deferred actions ----
+    if (pending_dismiss_key >= 0.0) ui_lyric_auto_dismiss(pending_dismiss_key);
+    if (pending_accept_all) {
+        undo_push(undo, beatmap, lyricmap);
+        if (ui_lyric_auto_apply_all(lyricmap) == 0) undo_drop_last(undo);
+        s_lyr_selected = -1;
+    } else if (pending_accept >= 0 && pending_accept < lyricmap->count) {
+        undo_push(undo, beatmap, lyricmap);
+        int ni = ui_lyric_auto_apply(lyricmap, pending_accept);
+        if (ni < 0) {
+            undo_drop_last(undo);
+        } else {
+            s_lyr_selected         = ni;
+            lyricmap->selected_idx = ni;
+            // Follow the accepted lyric on the timeline
+            const Lyric& ly = lyricmap->lyrics[ni];
+            if (ly.t_start < editor->view_start || ly.t_end > editor->view_end) {
+                double span = editor->view_end - editor->view_start;
+                editor->view_start = ly.t_start - span * 0.25;
+                editor->view_end   = editor->view_start + span;
+                editor_clamp_view(editor);
+            }
+        }
+    }
 
     // ---- Split deferred action ----
     if (pending_split_idx >= 0 && pending_split_idx < lyricmap->count) {
@@ -3927,7 +4132,7 @@ void ui_timeline_lyric_index_content(EditorState* editor, AudioState* audio,
     // ---- Delete deferred action ----
     if (pending_delete >= 0 && pending_delete < lyricmap->count) {
         undo_push(undo, beatmap, lyricmap);
-        lyricmap_remove(lyricmap, pending_delete);
+        lyricmap_remove_parked(lyricmap, pending_delete, dur);
         if (s_lyr_selected == pending_delete)     s_lyr_selected = -1;
         else if (s_lyr_selected > pending_delete) s_lyr_selected--;
     }
