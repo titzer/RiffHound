@@ -157,6 +157,13 @@ struct CompleteInputs {
     double            region_start, region_end;
 };
 
+// Stop a running external chord model (SIGTERM to its process), so a caller
+// about to join the analysis worker -- a track change, quit -- is not held
+// for the model's whole run.  The interrupted result is not cached.
+// complete_rearm_external() clears the cancel before a new analysis starts.
+void complete_cancel_external();
+void complete_rearm_external();
+
 // Run the enabled stages.  `cache` holds beat-synchronous chroma for the beats
 // in the map and is kept current (invalidated per beat as beats move).
 void complete_run(const CompleteInputs& in, const CompleteParams& p,

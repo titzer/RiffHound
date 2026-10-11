@@ -11,6 +11,7 @@ struct AudioState {
     bool   playing;
     bool   loop;        // loop mode on/off
     double duration;    // seconds; set on load
+    int    load_count;  // bumps on every successful load (new-track detection)
     double position;    // seconds; updated each frame by audio_update
     double play_start;  // position at which the last play was initiated
     char   filename[512];

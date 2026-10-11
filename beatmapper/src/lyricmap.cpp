@@ -68,6 +68,26 @@ void lyricmap_remove(LyricMap* lm, int idx) {
     else if (lm->selected_idx > idx) lm->selected_idx--;
 }
 
+// A split at a comma ("we were young,| and free" or "young|, and free")
+// breaks the line there: the comma and the spaces around it go, and the next
+// line starts with a capital ("we were young" / "And free").
+static void split_at_comma(char* a, char* b) {
+    int la = (int)strlen(a);
+    while (la > 0 && a[la - 1] == ' ') la--;
+    const char* rb = b;
+    while (*rb == ' ') rb++;
+    bool comma_a = la > 0 && a[la - 1] == ',';
+    bool comma_b = *rb == ',';
+    if (!comma_a && !comma_b) return;
+    if (comma_a) la--;
+    else         rb++;
+    while (la > 0 && a[la - 1] == ' ') la--;
+    a[la] = 0;
+    while (*rb == ' ') rb++;
+    memmove(b, rb, strlen(rb) + 1);
+    if (b[0] >= 'a' && b[0] <= 'z') b[0] = (char)(b[0] - 'a' + 'A');
+}
+
 void lyricmap_split(LyricMap* lm, int idx, int cursor_pos, int* new_sel,
                     double audio_dur) {
     if (idx < 0 || idx >= lm->count) return;
@@ -89,6 +109,7 @@ void lyricmap_split(LyricMap* lm, int idx, int cursor_pos, int* new_sel,
     int lb = len - cursor_pos < 127 ? len - cursor_pos : 127;
     if (la > 0) strncpy(text_a, saved,              la);
     if (lb > 0) strncpy(text_b, saved + cursor_pos, lb);
+    split_at_comma(text_a, text_b);
 
     // Placed lyrics start before audio_dur; unplaced ones are parked at or
     // beyond it.  The lyric is the last placed one when nothing placed

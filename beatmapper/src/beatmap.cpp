@@ -292,6 +292,12 @@ void beatmap_path_for_audio(const char* audio_path, char* out, int out_size) {
         strcat(out, ".txt");
 }
 
+bool beatmap_any_dirty(const BeatMap* bm, const SectionMap* sm, const LyricMap* lm,
+                       const MiscMap* mm, const MiscMap* cm) {
+    return (bm && bm->dirty) || (sm && sm->dirty) || (lm && lm->dirty) ||
+           (mm && mm->dirty) || (cm && cm->dirty);
+}
+
 void beatmap_commit(BeatMap* bm) {
     for (int i = 0; i < bm->count; i++)
         bm->beats[i].interp = false;

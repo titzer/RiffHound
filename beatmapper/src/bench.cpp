@@ -27,6 +27,7 @@
 #include "lyricmap.h"
 #include "miscmap.h"
 #include "audio.h"
+#include "subprocess.h"
 #include "beat_algo.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -215,27 +216,27 @@ static std::string g_stems_chords, g_stems_beats;
 static std::map<std::string, std::string> separate_track(const char* audio, const char* argv0) {
     std::map<std::string, std::string> out;
     const char* env = getenv("BM_STEMS_CMD");
-    char cmd[2400];
+    std::vector<std::string> argv;
     if (env && env[0]) {
-        snprintf(cmd, sizeof(cmd), "%s \"%s\" 2>/dev/null", env, audio);
+        argv = subprocess_shell_argv(env, audio);
     } else {
         // CWD first, then next to the binary (the repo when run as ./bmbench)
         std::string base;
         if (access("external/venv-stems/bin/python", X_OK) != 0 && argv0 && strchr(argv0, '/')) {
             base = argv0; base.resize(base.rfind('/') + 1);
         }
-        snprintf(cmd, sizeof(cmd), "\"%sexternal/venv-stems/bin/python\" \"%sscripts/stems_demucs.py\" \"%s\" 2>/dev/null",
-                 base.c_str(), base.c_str(), audio);
+        argv = { base + "external/venv-stems/bin/python", base + "scripts/stems_demucs.py", audio };
     }
-    FILE* f = popen(cmd, "r");
-    if (!f) return out;
+    Subprocess sp;
+    if (!subprocess_open(&sp, argv)) return out;
+    FILE* f = sp.out;
     char line[1200];
-    while (fgets(line, sizeof(line), f)) {
+    while (f && fgets(line, sizeof(line), f)) {
         char kind[32], name[64], path[1024];
         if (sscanf(line, "%31s\t%63s\t%1023[^\n]", kind, name, path) == 3 && !strcmp(kind, "stem"))
             out[name] = path;
     }
-    pclose(f);
+    subprocess_close(&sp);
     return out;
 }
 

@@ -12,12 +12,14 @@ on those four at twice the cost.)
 Prints to stdout, one per line, tab separated:
     progress<TAB>0.42            while separating (fraction done)
     status<TAB>text              phase changes (loading model, writing ...)
-    stem<TAB>name<TAB>/path.wav  one per stem, when finished
+    stem<TAB>name<TAB>/path      one per stem (.mp3 or .wav), when finished
 Exit codes: 0 done, 3 (--check only) not cached, 1 failure.
 
 --check answers from the cache without importing torch (fast): the stems are
 written to ~/.cache/beatmapper/stems/<hash>/<stem>.wav keyed on the audio
 file's path, size, mtime and the model, so each track is separated once.
+beatmapper later compresses them in the background to <stem>.mp3
+(stems_compress.py); a cache entry may hold either, mid-compression both.
 
 Run with beatmapper/external/venv-stems/bin/python (scripts/setup-stems.sh).
 """
@@ -28,6 +30,7 @@ import sys
 import time
 
 STEM_ORDER = ["vocals", "drums", "bass", "guitar", "piano", "other"]
+CACHE_ROOT = os.path.expanduser("~/.cache/beatmapper/stems")
 
 
 def cache_dir(audio, model):
@@ -35,9 +38,7 @@ def cache_dir(audio, model):
     # realpath: the same track reached through a symlink shares the cache
     key = f"{os.path.realpath(audio)}|{st.st_size}|{int(st.st_mtime)}|demucs-{model}"
     h = hashlib.sha1(key.encode()).hexdigest()[:24]
-    d = os.path.expanduser("~/.cache/beatmapper/stems")
-    os.makedirs(d, exist_ok=True)
-    return os.path.join(d, h)
+    return os.path.join(CACHE_ROOT, h)
 
 
 def emit(*fields):
@@ -53,10 +54,14 @@ def cached_stems(d):
     names = [ln.strip() for ln in open(done) if ln.strip()]
     out = []
     for n in names:
-        p = os.path.join(d, n + ".wav")
-        if not os.path.exists(p):
+        # the mp3 is renamed into place before the wav goes, so prefer it
+        for ext in (".mp3", ".wav"):
+            p = os.path.join(d, n + ext)
+            if os.path.exists(p):
+                out.append((n, p))
+                break
+        else:
             return None
-        out.append((n, p))
     return out
 
 
@@ -118,6 +123,8 @@ def separate(audio, model_name, device, out_dir):
     for n in names:
         save_audio(parts[n], os.path.join(out_dir, n + ".wav"), samplerate=sep.samplerate,
                    clip="clamp", bits_per_sample=16)
+    with open(os.path.join(out_dir, "source"), "w") as f:
+        f.write(os.path.realpath(audio) + "\n")   # bit rate for stems_compress.py
     with open(os.path.join(out_dir, "done"), "w") as f:
         f.write("\n".join(names) + "\n")
     return [(n, os.path.join(out_dir, n + ".wav")) for n in names]

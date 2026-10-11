@@ -244,7 +244,7 @@ void ui_toolbar_render(EditorState* editor, AudioState* audio, BeatMap* beatmap,
         const char* name  = slash ? slash + 1 : audio->filename;
         ImGui::TextDisabled("%s", name);
     }
-    if (beatmap->dirty) {
+    if (beatmap_any_dirty(beatmap, sectionmap, lyricmap, miscmap, chordmap)) {
         ImGui::SameLine();
         ImGui::TextColored(ImVec4(1.0f, 0.65f, 0.1f, 1.0f), "*");
     }
@@ -304,10 +304,12 @@ void ui_toolbar_render(EditorState* editor, AudioState* audio, BeatMap* beatmap,
     }
     ImGui::SetNextWindowSize(ImVec2(640, 520), ImGuiCond_Appearing);
     if (ImGui::BeginPopupModal("Open Audio File", nullptr, ImGuiWindowFlags_NoResize)) {
-        if (ImGui::IsKeyPressed(ImGuiKey_Escape)) ImGui::CloseCurrentPopup();
+        if (ImGui::IsKeyPressed(ImGuiKey_Escape) && !ImGui::IsPopupOpen("Discard Changes?")) ImGui::CloseCurrentPopup();
 
-        auto do_load = [&](const char* path) {
-            if (!path || !path[0]) return;
+        // Opening another track replaces every layer, so unsaved edits ask first.
+        static char s_pending[512] = "";
+        bool confirm = false;     // opened below at the popup's own ID scope
+        auto load_now = [&](const char* path) {
             strncpy(s_file_buf, path, sizeof(s_file_buf) - 1);
             undo_clear(undo);
             // Before the old PCM buffer is freed: waits out a Complete Track
@@ -336,6 +338,15 @@ void ui_toolbar_render(EditorState* editor, AudioState* audio, BeatMap* beatmap,
             if (slash && slash != dir) { *slash = 0; library_add_dir(library, dir); }
             library_touch(library, s_file_buf);
             ImGui::CloseCurrentPopup();
+        };
+        auto do_load = [&](const char* path) {
+            if (!path || !path[0]) return;
+            if (!beatmap_any_dirty(beatmap, sectionmap, lyricmap, miscmap, chordmap)) {
+                load_now(path);
+                return;
+            }
+            strncpy(s_pending, path, sizeof(s_pending) - 1); s_pending[sizeof(s_pending) - 1] = 0;
+            confirm = true;
         };
 
         // Search
@@ -480,6 +491,27 @@ void ui_toolbar_render(EditorState* editor, AudioState* audio, BeatMap* beatmap,
         if (ImGui::Button("Rescan", ImVec2(80, 0))) library_rescan(library);
         ImGui::SameLine();
         if (ImGui::Button("Cancel", ImVec2(80, 0))) ImGui::CloseCurrentPopup();
+
+        bool load_pending = false;
+        if (confirm) ImGui::OpenPopup("Discard Changes?");
+        if (ImGui::BeginPopupModal("Discard Changes?", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+            ImGui::Text("The current track has unsaved changes.");
+            ImGui::TextDisabled("Opening another track discards them (Cancel, then Ctrl+S to keep them).");
+            ImGui::Spacing();
+            if (ImGui::Button("Discard and Open", ImVec2(150, 0))) {
+                load_pending = true;
+                ImGui::CloseCurrentPopup();
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Cancel", ImVec2(80, 0)) || ImGui::IsKeyPressed(ImGuiKey_Escape)) {
+                s_pending[0] = 0;
+                ImGui::CloseCurrentPopup();
+            }
+            ImGui::EndPopup();
+        }
+        // After the inner popup closed, so load_now's CloseCurrentPopup
+        // closes the library modal itself.
+        if (load_pending && s_pending[0]) { load_now(s_pending); s_pending[0] = 0; }
         ImGui::EndPopup();
     }
 }

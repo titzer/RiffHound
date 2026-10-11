@@ -10,6 +10,7 @@
 #include <fcntl.h>
 #include <signal.h>
 #include <spawn.h>
+#include <sys/stat.h>
 #include <sys/wait.h>
 #include <thread>
 #include <atomic>
@@ -220,9 +221,11 @@ static void worker_main(std::string audio, bool cached_only, int gen) {
     argv.push_back(nullptr);
 
     // stderr goes to a log the user can be pointed at
-    std::string log = std::string(getenv("HOME") ? getenv("HOME") : ".") + "/.cache/beatmapper/stems";
-    std::string mk = "mkdir -p \"" + log + "\"";
-    if (system(mk.c_str()) != 0) {}
+    std::string log = std::string(getenv("HOME") ? getenv("HOME") : ".");
+    for (const char* part : { "/.cache", "/beatmapper", "/stems" }) {
+        log += part;
+        mkdir(log.c_str(), 0755);          // EEXIST is fine
+    }
     log += "/log.txt";
 
     int fds[2];
@@ -300,7 +303,7 @@ static void worker_main(std::string audio, bool cached_only, int gen) {
 
     // Decode each stem and build its spectrogram pixels here, off the GL thread.
     for (size_t i = 0; i < found.size(); i++) {
-        if (s_gen.load() != gen) break;
+        if (s_gen.load() != gen) break;   // reset or shutdown: leave the globals alone
         char m[128];
         snprintf(m, sizeof(m), "Building spectrogram %d/%d (%s)", (int)i + 1, (int)found.size(),
                  found[i].name.c_str());
@@ -314,8 +317,13 @@ static void worker_main(std::string audio, bool cached_only, int gen) {
             audio_free_pcm(pcm);
         }
     }
+    if (s_gen.load() != gen) {            // stale (see stems_shutdown): just leave
+        for (WorkStem& w : found) spectrogram_pixels_free(&w.px);
+        s_done.store(true);
+        return;
+    }
     // Loaded: any stems still in wav get compressed off the critical path.
-    if (!sc.empty() && s_gen.load() == gen) {
+    if (!sc.empty()) {
         for (const WorkStem& w : found) {
             size_t n = w.path.size();
             if (n > 4 && w.path.compare(n - 4, 4, ".wav") == 0) {
@@ -495,11 +503,15 @@ static void drop_stems() {
 void stems_shutdown() {
     s_gen.fetch_add(1);
     if (s_worker.joinable()) {
-        // Never block the exit on the model: kill the child, let the thread
-        // notice and leave.  Its pixel buffers die with the process.
+        // Never block the exit on the model: kill the child and give the
+        // thread a moment to notice the stale generation and leave (it checks
+        // between stems and then touches only atomics).  A thread still busy
+        // after that is detached; the process exit takes it.
         pid_t pid = s_child.load();
         if (pid > 0) kill(pid, SIGTERM);
-        s_worker.detach();
+        for (int i = 0; i < 100 && !s_done.load(); i++) usleep(20000);
+        if (s_done.load()) s_worker.join();
+        else               s_worker.detach();
     }
     if (s_sel_worker.joinable()) s_sel_worker.join();
     sel_free_results();

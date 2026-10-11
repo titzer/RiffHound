@@ -85,7 +85,10 @@ bool ui_complete_analysis_running() { return s_running.load(std::memory_order_re
 // Wait for the worker (used before anything the worker reads goes away, e.g.
 // the PCM buffer on a track load) and drop whatever it produced.
 static void worker_sync_discard() {
-    if (s_worker.joinable()) s_worker.join();
+    if (s_worker.joinable()) {
+        complete_cancel_external();       // don't wait out a chord model's run
+        s_worker.join();
+    }
     s_running.store(false);
     s_done.store(false);
     snap_free();
@@ -202,6 +205,7 @@ static void run_analysis(EditorState* editor, AudioState* audio, BeatMap* beatma
     editor->show_beat_group   = true;   // the ghosts land in these strips
     s_done.store(false);
     s_running.store(true);
+    complete_rearm_external();
     s_worker = std::thread([] {
         complete_run(s_win, s_wp, &s_cache, &s_wprop);
         s_done.store(true);

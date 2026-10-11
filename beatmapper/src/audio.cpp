@@ -233,6 +233,7 @@ bool audio_load(AudioState* a, EditorState* e, const char* path) {
     a->position = 0.0;
     a->playing  = false;
     a->loaded   = true;
+    a->load_count++;
 
     printf("[audio] loaded '%s'  duration=%.2fs  ch=2  sr=%u\n",
            path, a->duration, sr);

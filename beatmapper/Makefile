@@ -36,6 +36,7 @@ SOURCES := \
     $(SRC_DIR)/beat_chroma.cpp \
     $(SRC_DIR)/onset_shape.cpp \
     $(SRC_DIR)/complete_algo.cpp \
+    $(SRC_DIR)/subprocess.cpp \
     $(SRC_DIR)/ui_complete.cpp \
     $(SRC_DIR)/ui_rhythm.cpp \
     $(SRC_DIR)/chroma_goertzel.cpp \
@@ -98,7 +99,8 @@ BENCH_SRCS := $(SRC_DIR)/bench.cpp $(SRC_DIR)/audio.cpp $(SRC_DIR)/stretch.cpp \
     $(SRC_DIR)/beat_algo.cpp $(SRC_DIR)/beat_spectral_flux.cpp \
     $(SRC_DIR)/chroma_goertzel.cpp $(SRC_DIR)/chroma_hps.cpp $(SRC_DIR)/chroma_nnls.cpp \
     $(SRC_DIR)/chroma_peaks.cpp $(SRC_DIR)/chroma_resonate.cpp $(SRC_DIR)/chroma_whitened.cpp \
-    $(SRC_DIR)/beat_chroma.cpp $(SRC_DIR)/onset_shape.cpp $(SRC_DIR)/complete_algo.cpp
+    $(SRC_DIR)/beat_chroma.cpp $(SRC_DIR)/onset_shape.cpp $(SRC_DIR)/complete_algo.cpp \
+    $(SRC_DIR)/subprocess.cpp
 BENCH_OBJS := $(BENCH_SRCS:.cpp=.o)
 ifeq ($(UNAME), Darwin)
     BENCH_LD := -framework CoreAudio -framework AudioToolbox -framework CoreFoundation

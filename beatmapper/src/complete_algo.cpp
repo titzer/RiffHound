@@ -2,6 +2,7 @@
 #include "beat_algo.h"
 #include "onset_shape.h"
 #include "chord_model.h"
+#include "subprocess.h"
 #include <math.h>
 #include <string.h>
 #include <stdio.h>
@@ -10,6 +11,9 @@
 #include <map>
 #include <string>
 #include <unistd.h>
+#include <limits.h>
+#include <signal.h>
+#include <atomic>
 #ifdef __APPLE__
 #include <mach-o/dyld.h>
 #endif
@@ -2794,6 +2798,17 @@ static const ExtTool EXT_TOOLS[] = {
     { "external/venv-btc/bin/python", "scripts/chords_btc.py" },
 };
 
+static std::atomic<pid_t> s_ext_child{0};
+static std::atomic<bool>  s_ext_cancel{false};
+
+void complete_cancel_external() {
+    s_ext_cancel.store(true);
+    pid_t pid = s_ext_child.load();
+    if (pid > 0) kill(pid, SIGTERM);
+}
+
+void complete_rearm_external() { s_ext_cancel.store(false); }
+
 static const std::vector<ExtChord>& external_chords_for(const char* path, int tool = 0) {
     static std::map<std::string, std::vector<ExtChord>> cache;
     if (tool < 0 || tool >= (int)(sizeof(EXT_TOOLS) / sizeof(EXT_TOOLS[0]))) tool = 0;
@@ -2802,31 +2817,34 @@ static const std::vector<ExtChord>& external_chords_for(const char* path, int to
     if (it != cache.end()) return it->second;
     std::vector<ExtChord>& res = cache[key];
     const char* cmd_env = getenv("BM_CHORD_CMD");
-    char cmd[1200];
+    std::vector<std::string> argv;
     if (cmd_env) {
-        snprintf(cmd, sizeof(cmd), "%s \"%s\" 2>/dev/null", cmd_env, path);
+        argv = subprocess_shell_argv(cmd_env, path);
     } else {
         // Default: the madmom wrapper next to the source tree.  The app is
         // not always launched with the repo as its working directory, so
-        // fall back to resolving relative to the executable.
-        const char* base = "";
-        static char exedir[1024];
+        // fall back to resolving relative to the executable -- its real
+        // path, since it is often reached through a symlink (~/bin/beatmapper).
+        std::string base;
         if (access("external/venv/bin/python", X_OK) != 0) {
 #ifdef __APPLE__
-            uint32_t sz = sizeof(exedir);
-            if (_NSGetExecutablePath(exedir, &sz) == 0) {
-                char* slash = strrchr(exedir, '/');
-                if (slash) slash[1] = 0;
-                base = exedir;
+            char exe[4096], real[PATH_MAX];
+            uint32_t sz = sizeof(exe);
+            if (_NSGetExecutablePath(exe, &sz) == 0 && realpath(exe, real)) {
+                char* slash = strrchr(real, '/');
+                if (slash) { slash[1] = 0; base = real; }
             }
 #endif
         }
         const ExtTool& t = EXT_TOOLS[tool];
         bool abs_py = t.python[0] == '/' || !strchr(t.python, '/');   // a bare name is on PATH
-        snprintf(cmd, sizeof(cmd), "\"%s%s\" \"%s%s\" \"%s\" 2>/dev/null",
-                 abs_py ? "" : base, t.python, base, t.script, path);
+        argv = { (abs_py ? std::string() : base) + t.python, base + t.script, path };
     }
-    FILE* f = popen(cmd, "r");
+    if (s_ext_cancel.load()) { static const std::vector<ExtChord> none; return none; }
+    Subprocess sp;
+    FILE* f = subprocess_open(&sp, argv) ? sp.out : nullptr;
+    s_ext_child.store(sp.pid);
+    if (s_ext_cancel.load() && sp.pid > 0) kill(sp.pid, SIGTERM);   // cancelled while starting
     if (f) {
         char line[256];
         while (fgets(line, sizeof(line), f)) {
@@ -2838,7 +2856,14 @@ static const std::vector<ExtChord>& external_chords_for(const char* path, int to
                 res.push_back(e);
             }
         }
-        pclose(f);
+    }
+    int code = subprocess_close(&sp);
+    s_ext_child.store(0);
+    if (s_ext_cancel.load() && code != 0) {
+        // killed: forget the partial answer so the next run asks again
+        static const std::vector<ExtChord> none;
+        cache.erase(key);
+        return none;
     }
     if (getenv("COMPLETE_DEBUG"))
         fprintf(stderr, "[external chords] %d chords from model for %s\n", (int)res.size(), path);

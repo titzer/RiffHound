@@ -39,6 +39,12 @@ bool beatmap_save(BeatMap* bm, SectionMap* sm, LyricMap* lm, MiscMap* mm,
 bool beatmap_load(BeatMap* bm, SectionMap* sm, LyricMap* lm, MiscMap* mm,
                   MiscMap* cm, const char* path);
 
+// True when any of the layers has unsaved edits (nullptr layers are skipped).
+// The one test for "unsaved": the quit guard, title, toolbar and open-track
+// confirmation all use it.
+bool beatmap_any_dirty(const BeatMap* bm, const SectionMap* sm, const LyricMap* lm,
+                       const MiscMap* mm, const MiscMap* cm);
+
 // Mark all beats as fixed (clear all interp flags).
 // Called automatically by beatmap_save on success.
 void beatmap_commit(BeatMap* bm);

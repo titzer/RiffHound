@@ -199,6 +199,7 @@ int main(int argc, char** argv) {
     // Application state
     AudioState       audio;
     SpectrogramState spectro;
+    int spectro_load = 0;   // audio.load_count the spectrogram was built for
     EditorState      editor;
     BeatMap          beatmap;
     SectionMap       sectionmap;
@@ -337,8 +338,7 @@ int main(int argc, char** argv) {
 
         // Intercept window-close when there are unsaved changes.
         if (glfwWindowShouldClose(window) &&
-            (beatmap.dirty || sectionmap.dirty || lyricmap.dirty || miscmap.dirty ||
-             chordmap.dirty)) {
+            beatmap_any_dirty(&beatmap, &sectionmap, &lyricmap, &miscmap, &chordmap)) {
             glfwSetWindowShouldClose(window, 0);
             show_quit_modal = true;
         }
@@ -351,7 +351,7 @@ int main(int argc, char** argv) {
 
         // "--tool": open it once the stem cache has answered, so a tool that
         // analyzes on opening sees the stems.
-        if (open_tool >= 0 && audio.loaded && spectro.duration == audio.duration &&
+        if (open_tool >= 0 && audio.loaded && spectro_load == audio.load_count &&
             stems_status() != STEMS_CHECKING) {
             ui_dock_icon_click((DockTool)open_tool);
             open_tool = -1;
@@ -374,10 +374,10 @@ int main(int argc, char** argv) {
             audio_pause(&audio);
         }
 
-        // Recompute spectrogram whenever a new file is loaded.
-        // Detected by comparing the duration the spectrogram was last built for
-        // against the current audio duration.
-        if (audio.loaded && spectro.duration != audio.duration) {
+        // Recompute spectrogram whenever a new file is loaded (detected by
+        // the load counter, so a track of the same length as the last counts).
+        if (audio.loaded && spectro_load != audio.load_count) {
+            spectro_load = audio.load_count;
             float*   pcm     = nullptr;
             uint64_t nframes = 0;
             uint32_t sr      = 0;
@@ -408,6 +408,13 @@ int main(int argc, char** argv) {
         if (ui_timeline_take_undo_request())
             undo_pop(&undo, &beatmap, &lyricmap, &sectionmap, &miscmap, &chordmap,
                      ui_timeline_tapmap());
+
+        // Ctrl/Cmd+S → Save Beatmap (silent overwrite if a path is already known).
+        // Works inside a text field too: lyric fields write straight into the
+        // map, so what has been typed is saved.
+        if ((ImGui::GetIO().KeyCtrl || ImGui::GetIO().KeySuper) &&
+            ImGui::IsKeyPressed(ImGuiKey_S, false))
+            save_chart();
 
         // Global shortcuts — checked after NewFrame, blocked only when a text input is active.
         if (!ImGui::IsAnyItemActive()) {
@@ -502,10 +509,6 @@ int main(int argc, char** argv) {
                 ui_timeline_lyric_font_larger();
             if (ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_Minus))
                 ui_timeline_lyric_font_smaller();
-
-            // Ctrl+S → Save Beatmap (silent overwrite if a path is already known)
-            if (ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_S))
-                save_chart();
         }
 
         // Full-screen dockable main window
@@ -625,7 +628,7 @@ int main(int argc, char** argv) {
 
         // Update window title: "Beatmap Editor — filename [*]"
         {
-            bool any_dirty = beatmap.dirty || sectionmap.dirty || lyricmap.dirty;
+            bool any_dirty = beatmap_any_dirty(&beatmap, &sectionmap, &lyricmap, &miscmap, &chordmap);
             char title[600];
             if (audio.loaded) {
                 const char* slash = strrchr(audio.filename, '/');
