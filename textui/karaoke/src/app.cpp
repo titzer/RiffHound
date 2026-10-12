@@ -27,6 +27,15 @@ static double clamp01(double x) { return x < 0 ? 0 : x > 1 ? 1 : x; }
 static double arc(double p) { return 4 * p * (1 - p); }  // one hop, 0 at both ends
 
 // A string cut to n display columns, with an ellipsis if it was longer.
+// 432, 432.5: an A4 as a tuning line would write it.
+static std::string fmt_hz(double hz) {
+    char buf[16];
+    snprintf(buf, sizeof buf, "%.1f", hz);
+    std::string r = buf;
+    if (r.size() > 2 && r.compare(r.size() - 2, 2, ".0") == 0) r.resize(r.size() - 2);
+    return r;
+}
+
 static std::string fit(const std::string& s, int n) {
     if (n <= 0) return "";
     if (utf8_len(s) <= n) return s;
@@ -167,8 +176,8 @@ void App::draw_header(Screen& s) {
     s.text(1, 2, info, ST_DIM);
 
     char tune[96];
-    snprintf(tune, sizeof tune, "speed %.2f×  key %+d st %+d¢  A%.0f",
-             player.speed, player.semitones, player.cents, chart.tuning);
+    snprintf(tune, sizeof tune, "speed %.2f×  key %+d st %+d¢  A%s",
+             player.speed, player.semitones, player.cents, fmt_hz(chart.tuning).c_str());
     bool tuned = player.speed != 1.0f || player.semitones || player.cents;
     s.text(s.w - 1 - utf8_len(tune), 2, tune, tuned ? ST_ACCENT : ST_DIM);
 }
@@ -447,7 +456,7 @@ void App::draw_footer(Screen& s) {
     struct { const char* k; const char* what; } keys[] = {
         {"space", "play/stop"}, {"←→", "5s"}, {"l", "load"}, {"1-9", "loop"},
         {"o", "clear loops"}, {"⌫", "drop loop"}, {"home", "start"},
-        {"-=", "speed"}, {"[]", "key"}, {";'", "cents"}, {"q", "quit"},
+        {"-=", "speed"}, {"[]", "key"}, {";'", "cents"}, {"u", "A440"}, {"q", "quit"},
     };
     int x = 1;
     for (auto& k : keys) {
@@ -704,14 +713,23 @@ void App::play_key(int k) {
         if (player.looping()) { player.clear_loops(); say("loops cleared"); }
         break;
     case K_BACKSPACE: case K_DEL: player.remove_last_loop(); break;
-    case '-': case '_': player.set_speed(player.speed - 0.05f); say("speed: not wired to the engine yet"); break;
-    case '=': case '+': player.set_speed(player.speed + 0.05f); say("speed: not wired to the engine yet"); break;
+    case '-': case '_': player.set_speed(player.speed - 0.05f); break;
+    case '=': case '+': player.set_speed(player.speed + 0.05f); break;
     case '\\': player.set_speed(1.0f); break;
-    case '[': player.transpose(-1, 0); say("transpose: not wired to the engine yet"); break;
-    case ']': player.transpose(1, 0); say("transpose: not wired to the engine yet"); break;
-    case ';': player.transpose(0, -1); say("fine tune: not wired to the engine yet"); break;
-    case '\'': player.transpose(0, 1); say("fine tune: not wired to the engine yet"); break;
+    case '[': player.transpose(-1, 0); break;
+    case ']': player.transpose(1, 0); break;
+    case ';': player.transpose(0, -1); break;
+    case '\'': player.transpose(0, 1); break;
     case 'p': case 'P': player.reset_tuning(); break;
+    case 'u': case 'U':
+        // The record's A back on 440 with the cents; the semitones stay.
+        if (chart.tuning != 440.0) {
+            player.transpose(0, Player::retune_cents(chart.tuning) - player.cents);
+            say("retuned A" + fmt_hz(chart.tuning) + " to A440");
+        } else {
+            say("this record is at A440");
+        }
+        break;
     default:
         if (k >= '1' && k <= '9') {
             size_t i = k - '1';

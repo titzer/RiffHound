@@ -16,8 +16,12 @@ bool Player::load(const std::string& path) {
     current = 0;
     ready = audio_load(&audio, &editor, path.c_str());
     audio_set_loop(&audio, false, 0, 0);
-    speed = 1.0f;
-    semitones = cents = 0;
+    // The engine resets speed and pitch on every load.  Speed and transpose
+    // are the player's and carry on to the next song, as in the web client;
+    // the cents are dropped, since they are usually a retune of the record
+    // just played and mean nothing for the next one.
+    cents = 0;
+    apply_tuning();
     last_pos = 0;
     return ready;
 }
@@ -104,14 +108,20 @@ void Player::update() {
     last_pos = pos;
 }
 
-// --- tuning (stub) ---------------------------------------------------------
+// --- speed and pitch --------------------------------------------------------
 //
-// The controls exist and keep their values so the screen and keys are final;
-// apply_tuning is where they will reach the engine:
-//     audio_set_speed(&editor, speed);
-//     audio_set_pitch(&editor, semitones, cents);
+// Both go to the stretch engine, which holds the key while it changes the
+// speed and the time while it changes the key.  Positions stay in the
+// record's seconds, so the chart, loops and seeks need nothing.
 
-void Player::apply_tuning() {}
+void Player::apply_tuning() {
+    audio_set_speed(&editor, speed);
+    audio_set_pitch(&editor, semitones, cents);
+}
+
+int Player::retune_cents(double a4) {
+    return (int)lround(1200 * log2(440.0 / a4));
+}
 
 void Player::set_speed(float s) {
     s = roundf(s * 20) / 20;

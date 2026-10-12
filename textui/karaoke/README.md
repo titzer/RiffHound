@@ -15,8 +15,8 @@ audio engine's chatter goes to `~/.config/riffhound/karaoke.log`.
 
 Audio is beatmapper's engine (`beatmapper/src/audio.cpp`, `stretch.cpp`),
 compiled from its sources into `build/`. That is miniaudio output,
-CoreAudio decoding for .m4a, and the stretch engine that will do speed and
-pitch.
+CoreAudio decoding for .m4a, and the stretch engine (the phase vocoder)
+that does speed and pitch: speed keeps the key, transpose keeps the time.
 
 ## Keys
 
@@ -29,10 +29,14 @@ pitch.
 | 1–9 | add that chart loop to the loop programme (the first one starts it) |
 | ⌫ | drop the last loop from the programme |
 | o | clear the programme |
-| - = \\ | speed down / up / reset (*stub*) |
-| [ ] | transpose ±1 semitone (*stub*) |
-| ; ' | fine tune ±1 cent (*stub*) |
-| p | reset transpose and fine tune (*stub*) |
+| - = \\ | speed down / up 0.05×, 0.50–1.50× / back to 1.00× |
+| [ ] | transpose ±1 semitone (±12) |
+| ; ' | fine tune ±1 cent (±100) |
+| u | retune: the cents that put the record's A (`tuning:` line) on 440 |
+| p | reset transpose and fine tune |
+
+Speed and transpose carry on to the next song; the cents are reset on each
+load, since they are usually a retune of the record just played.
 | q, ^C | quit |
 
 Load dialog: type to search (subsequence match, ranked by alignment, then
@@ -63,8 +67,6 @@ the following block in small text underneath.
   follows `server.py`'s rules (extensions and preference order, `.riffignore`,
   hidden files, `list-<Name>.txt` resolution), so switching sources should not
   change what the dialog shows.
-- **Speed and pitch.** The keys and readouts are final. `Player::apply_tuning`
-  is the one place that will call `audio_set_speed` / `audio_set_pitch`.
 - **Gapless loop programmes.** One loop wraps gaplessly in the engine. Moving
   between entries of a programme is a seek after the wrap is seen, which can
   hiccup for up to a frame. A "jump to" in the stretch source would fix it.

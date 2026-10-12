@@ -1,7 +1,7 @@
 #pragma once
-// Transport, loops and (stubbed) tuning, over beatmapper's audio engine
+// Transport, loops, speed and pitch, over beatmapper's audio engine
 // (beatmapper/src/audio.cpp: miniaudio output, CoreAudio/miniaudio decoding,
-// and the stretch engine that will do speed and pitch).
+// and the stretch engine that does speed and pitch).
 
 #include <string>
 #include <vector>
@@ -24,7 +24,7 @@ struct Player {
     std::vector<LoopEntry> programme;
     int  current = 0;       // the entry playing
 
-    // Tuning and speed: kept and shown, not yet applied (see apply_tuning).
+    // Speed and pitch, applied through the stretch engine.
     float  speed = 1.0f;    // 0.50 .. 1.50
     int    semitones = 0;   // -12 .. 12
     int    cents = 0;       // -100 .. 100
@@ -50,6 +50,8 @@ struct Player {
     void   set_speed(float s);
     void   transpose(int semis, int cents);
     void   reset_tuning();
+    // The cents that put a record tuned to a4 back on A440.
+    static int retune_cents(double a4);
 
 private:
     double last_pos = 0;
