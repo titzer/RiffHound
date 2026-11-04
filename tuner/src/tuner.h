@@ -25,7 +25,11 @@ struct Tuner {
     YinResult raw;
     float     level_db     = -120.0f;
     float     freq         = 0.0f;   // smoothed display frequency, 0 = none
-    float     last_freq    = 0.0f;   // most recent non-zero freq, shown dimmed
+    int       note         = -1;     // active note (NoteTracker), -1 = none
+    // Last live reading, shown dimmed once the note goes away.
+    int       last_note    = -1;
+    float     last_freq    = 0.0f;
+    float     last_cents   = 0.0f;
     std::deque<HistPoint> history;
 
     // Reference tone / input

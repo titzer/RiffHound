@@ -46,6 +46,31 @@ private:
     float  last_freq_     = 0.0f;
 };
 
+// Decides which note is "active" (named in the readout, lit on the piano,
+// and the reference for the cents reading).  The continuous pitch can flick
+// across a semitone boundary or carry a one-frame octave error; the active
+// note changes only when a different note has been heard with high
+// confidence for settle_ms, and the current note is kept until the pitch is
+// more than 50 + hysteresis cents away from it.
+struct NoteParams {
+    float confidence   = 0.80f;   // per-frame YIN confidence needed to (re)activate a note
+    float settle_ms    = 60.0f;
+    float hysteresis   = 15.0f;   // cents beyond the semitone midpoint
+};
+
+class NoteTracker {
+public:
+    // midi: continuous pitch (0 = none); confidence: this frame's raw YIN
+    // confidence.  Returns the active note, -1 = none.
+    int  update(float midi, float confidence, double now_s, const NoteParams& p);
+    void reset() { note_ = cand_ = -1; }
+    int  note() const { return note_; }
+private:
+    int    note_ = -1;
+    int    cand_ = -1;
+    double cand_t_ = 0.0;
+};
+
 // Note naming / conversion.
 float       midi_to_freq(float midi, float a4);
 float       freq_to_midi(float freq, float a4);

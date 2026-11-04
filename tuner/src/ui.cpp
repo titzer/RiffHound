@@ -116,8 +116,6 @@ void ui_apply_style() {
 // ---------------------------------------------------------------------------
 // Geometry helpers
 
-static float cents_of(float midi) { return (midi - roundf(midi)) * 100.0f; }
-
 static ImU32 cents_color(const Settings& s, float c) {
     float a = fabsf(c);
     return a <= s.in_tune_cents ? COL_GOOD : a <= s.close_cents ? COL_WARN : COL_BAD;
@@ -208,21 +206,33 @@ void ui_set_tone(Tuner& t) {
     tone_set(note >= 0 ? midi_to_freq((float)note, t.s.a4) : 0.0f, t.s.tone_wave, t.s.tone_volume);
 }
 
-// Current detected pitch (continuous MIDI) or 0.
-static float current_midi(const Tuner& t, bool* live) {
-    *live = t.freq > 0;
-    float f = t.freq > 0 ? t.freq : t.last_freq;
-    return f > 0 ? freq_to_midi(f, t.s.a4) : 0.0f;
+// What the readout, meter and piano show: the gated active note and the
+// pitch relative to it, or the last such reading (dimmed) when there is none.
+struct Reading {
+    int   note  = -1;      // -1 = nothing to show
+    float cents = 0.0f;
+    float freq  = 0.0f;
+    bool  live  = false;
+};
+static Reading reading(const Tuner& t) {
+    Reading r;
+    if (t.note >= 0 && t.freq > 0) {
+        r.note = t.note; r.freq = t.freq; r.live = true;
+        r.cents = (freq_to_midi(t.freq, t.s.a4) - t.note) * 100.0f;
+    } else if (t.last_note >= 0) {
+        r.note = t.last_note; r.freq = t.last_freq; r.cents = t.last_cents;
+    }
+    return r;
 }
 
 // ---------------------------------------------------------------------------
 // Readout: note name, cents, frequency
 
 static void draw_readout(Tuner& t, ImDrawList* dl, float x, float y, float w, float h, float sc) {
-    bool live;
-    float midi = current_midi(t, &live);
-    int   note = midi > 0 ? (int)lroundf(midi) : -1;
-    float cents = midi > 0 ? cents_of(midi) : 0.0f;
+    Reading rd = reading(t);
+    bool  live = rd.live;
+    int   note = rd.note;
+    float cents = rd.cents;
 
     float px = h * 1.12f;                    // note-name size; caps fill ~80% of the box
     float oct_px = px * 0.40f, c_px = px * 0.40f, hz_px = px * 0.21f;
@@ -230,7 +240,7 @@ static void draw_readout(Tuner& t, ImDrawList* dl, float x, float y, float w, fl
     auto slots = [&](float p, float* nw, float* ow, float* cw) {
         *nw = text_size(p, "G#").x;
         *ow = text_size(p * 0.40f, "8").x;
-        *cw = std::max(text_size(p * 0.40f, "+00.0\xC2\xA2").x, text_size(p * 0.21f, "0000.0 Hz").x);
+        *cw = std::max(text_size(p * 0.40f, "+00\xC2\xA2").x, text_size(p * 0.21f, "0000.0 Hz").x);
     };
     float nw, ow, cw;
     slots(px, &nw, &ow, &cw);
@@ -267,11 +277,11 @@ static void draw_readout(Tuner& t, ImDrawList* dl, float x, float y, float w, fl
 
     float cx = x0 + nw + ow + gap;
     // Cents on the cap line, Hz under it, both inside the note's cap band.
-    if (note >= 0) snprintf(buf, sizeof(buf), "%+.1f\xC2\xA2", cents);
+    if (note >= 0) snprintf(buf, sizeof(buf), "%+d\xC2\xA2", (int)lroundf(cents));
     else           snprintf(buf, sizeof(buf), "--\xC2\xA2");
     text_at(dl, c_px, ImVec2(cx, top + cap_top * (px - c_px)), c_col, buf);
 
-    float f = live ? t.freq : t.last_freq;
+    float f = rd.freq;
     if (f > 0) snprintf(buf, sizeof(buf), "%.1f Hz", f);
     else       snprintf(buf, sizeof(buf), "-- Hz");
     float hz_y = base - cap_bot * hz_px - px * 0.02f;
@@ -322,10 +332,10 @@ static void draw_meter(Tuner& t, ImDrawList* dl, float x, float y, float w, floa
         }
     }
 
-    bool live;
-    float midi = current_midi(t, &live);
-    if (midi > 0) {
-        float c = cents_of(midi);
+    Reading rd = reading(t);
+    bool live = rd.live;
+    if (rd.note >= 0) {
+        float c = rd.cents;
         float cl = std::max(-50.0f, std::min(50.0f, c));
         float X = cx(cl);
         ImU32 col = live ? cents_color(t.s, c) : COL_DIM;
@@ -390,9 +400,8 @@ static void draw_history(Tuner& t, ImDrawList* dl, const PianoGeom& g, float y, 
     flush();
 
     // Pitch off the keyboard: an arrow at the edge it went off.
-    bool live;
-    float midi = current_midi(t, &live);
-    if (live && midi > 0 && !in_range(midi)) {
+    float midi = t.freq > 0 ? freq_to_midi(t.freq, t.s.a4) : 0.0f;
+    if (midi > 0 && !in_range(midi)) {
         float s = 7.0f * sc, yy = y + h - 12.0f * sc;
         if (midi < lo) dl->AddTriangleFilled(ImVec2(x + 4 * sc, yy), ImVec2(x + 4 * sc + s, yy - s), ImVec2(x + 4 * sc + s, yy + s), COL_WARN);
         else           dl->AddTriangleFilled(ImVec2(x + w - 4 * sc, yy), ImVec2(x + w - 4 * sc - s, yy - s), ImVec2(x + w - 4 * sc - s, yy + s), COL_WARN);
@@ -404,9 +413,7 @@ static void draw_history(Tuner& t, ImDrawList* dl, const PianoGeom& g, float y, 
 // Piano
 
 static void draw_piano(Tuner& t, ImDrawList* dl, const PianoGeom& g) {
-    bool live;
-    float midi = current_midi(t, &live);
-    int voice = (live && midi > 0) ? (int)lroundf(midi) : -1;
+    int voice = t.freq > 0 ? t.note : -1;
     int pressed = t.tone_note;
     float X = g.x, Y = g.y, H = g.h;
 
@@ -604,6 +611,9 @@ static void draw_settings(Tuner& t) {
     sliderf("Max frequency", &s.max_freq, 200.0f, 4000.0f, "%.0f Hz", "Highest pitch searched for.");
     sliderf("YIN threshold", &s.yin_threshold, 0.05f, 0.40f, "%.2f", "Lower is stricter about periodicity; raise it if breathy notes drop out.");
     sliderf("Min confidence", &s.min_confidence, 0.0f, 0.95f, "%.2f", "Estimates below this are ignored.");
+    sliderf("Note confidence", &s.note_confidence, 0.0f, 0.99f, "%.2f", "Confidence needed before the displayed note changes. Higher means fewer spurious notes.");
+    sliderf("Note settle", &s.note_settle_ms, 0.0f, 300.0f, "%.0f ms", "How long a new note must be heard before it is shown.");
+    sliderf("Note hysteresis", &s.note_hysteresis, 0.0f, 40.0f, "%.0f cents", "How far past the halfway point between notes the pitch must go before the note changes.");
     sliderf("Smoothing", &s.smoothing, 0.0f, 0.95f, "%.2f", "Steadies the reading; higher is calmer but slower.");
     sliderf("Hold", &s.hold_ms, 0.0f, 1000.0f, "%.0f ms", "Keep showing the last pitch through brief dropouts.");
     {

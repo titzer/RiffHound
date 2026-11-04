@@ -28,10 +28,12 @@ static void usage() {
 }
 
 // One analysis step: newest window of input -> YIN -> tracker -> history.
-static void analyze(Tuner& t, Yin& yin, PitchTracker& tracker, std::vector<float>& buf, double now) {
+static void analyze(Tuner& t, Yin& yin, PitchTracker& tracker, NoteTracker& notes,
+                    std::vector<float>& buf, double now) {
     if (t.restart_capture) {
         t.restart_capture = false;
         tracker.reset();
+        notes.reset();
         if (t.mic_on) {
             if (!capture_start(t.s.input_device)) t.mic_on = false;
         } else {
@@ -58,8 +60,19 @@ static void analyze(Tuner& t, Yin& yin, PitchTracker& tracker, std::vector<float
     tp.smoothing      = t.s.smoothing;
     tp.hold_ms        = t.s.hold_ms;
     t.freq = t.mic_on ? tracker.update(r, now, tp) : 0.0f;
-    if (t.freq > 0) t.last_freq = t.freq;
-    if (!t.mic_on) t.last_freq = 0.0f;
+
+    NoteParams np;
+    np.confidence = t.s.note_confidence;
+    np.settle_ms  = t.s.note_settle_ms;
+    np.hysteresis = t.s.note_hysteresis;
+    float midi = t.freq > 0 ? freq_to_midi(t.freq, t.s.a4) : 0.0f;
+    t.note = notes.update(midi, r.confidence, now, np);
+    if (t.note >= 0 && t.freq > 0) {
+        t.last_note  = t.note;
+        t.last_freq  = t.freq;
+        t.last_cents = (midi - t.note) * 100.0f;
+    }
+    if (!t.mic_on) { t.last_note = -1; t.last_freq = 0.0f; }
 
     HistPoint p;
     p.t = now;
@@ -162,6 +175,7 @@ int main(int argc, char** argv) {
 
     Yin yin;
     PitchTracker tracker;
+    NoteTracker notes;
     std::vector<float> buf;
     bool floating_applied = t.s.always_on_top;
     bool was_fullscreen = false;
@@ -181,7 +195,7 @@ int main(int argc, char** argv) {
             floating_applied = want_floating;
         }
 
-        analyze(t, yin, tracker, buf, now);
+        analyze(t, yin, tracker, notes, buf, now);
 
         ImGui_ImplOpenGL3_NewFrame();
         ImGui_ImplGlfw_NewFrame();

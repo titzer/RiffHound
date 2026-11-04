@@ -24,6 +24,9 @@ void settings_clamp(Settings* s) {
     if (s->window_size != 2048 && s->window_size != 4096 && s->window_size != 8192) s->window_size = 4096;
     s->hold_ms        = clampv(s->hold_ms, 0.0f, 2000.0f);
     s->gate_db        = clampv(s->gate_db, -90.0f, -10.0f);
+    s->note_confidence = clampv(s->note_confidence, 0.0f, 0.99f);
+    s->note_settle_ms = clampv(s->note_settle_ms, 0.0f, 500.0f);
+    s->note_hysteresis = clampv(s->note_hysteresis, 0.0f, 40.0f);
     s->in_tune_cents  = clampv(s->in_tune_cents, 1.0f, 25.0f);
     s->close_cents    = clampv(s->close_cents, s->in_tune_cents, 50.0f);
     s->history_s      = clampv(s->history_s, 2.0f, 60.0f);
@@ -57,7 +60,7 @@ void settings_load(Settings* s) {
 #define B(name) else if (!strcmp(key, #name)) s->name = iv != 0;
         if (0) {}
         F(a4) F(yin_threshold) F(min_confidence) F(smoothing) F(min_freq) F(max_freq)
-        I(window_size) F(hold_ms) F(gate_db) F(in_tune_cents) F(close_cents) F(history_s)
+        I(window_size) F(hold_ms) F(gate_db) F(note_confidence) F(note_settle_ms) F(note_hysteresis) F(in_tune_cents) F(close_cents) F(history_s)
         B(show_history) B(show_key_labels) B(always_on_top) I(octave_shift)
         I(tone_wave) F(tone_volume) I(win_x) I(win_y) I(win_w) I(win_h)
         else if (!strcmp(key, "input_device")) s->input_device = val;
@@ -78,7 +81,7 @@ void settings_save(const Settings& s) {
 #define F(name) fprintf(f, "%s = %g\n", #name, (double)s.name);
 #define I(name) fprintf(f, "%s = %d\n", #name, (int)s.name);
     F(a4) F(yin_threshold) F(min_confidence) F(smoothing) F(min_freq) F(max_freq)
-    I(window_size) F(hold_ms) F(gate_db) F(in_tune_cents) F(close_cents) F(history_s)
+    I(window_size) F(hold_ms) F(gate_db) F(note_confidence) F(note_settle_ms) F(note_hysteresis) F(in_tune_cents) F(close_cents) F(history_s)
     I(show_history) I(show_key_labels) I(always_on_top) I(octave_shift)
     I(tone_wave) F(tone_volume) I(win_x) I(win_y) I(win_w) I(win_h)
 #undef F

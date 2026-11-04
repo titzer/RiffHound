@@ -139,6 +139,19 @@ float PitchTracker::update(const YinResult& r, double now, const TrackerParams& 
     return 0.0f;
 }
 
+int NoteTracker::update(float midi, float conf, double now, const NoteParams& p) {
+    if (midi <= 0) { note_ = cand_ = -1; return note_; }
+    if (note_ >= 0 && fabsf(midi - note_) <= 0.5f + p.hysteresis / 100.0f) {
+        cand_ = -1;                       // still within the current note's band
+        return note_;
+    }
+    if (conf < p.confidence) { cand_ = -1; return note_; }   // not sure enough to change
+    int n = (int)lroundf(midi);
+    if (n != cand_) { cand_ = n; cand_t_ = now; }
+    if ((now - cand_t_) * 1000.0 >= p.settle_ms) { note_ = n; cand_ = -1; }
+    return note_;
+}
+
 // ---------------------------------------------------------------------------
 // Self-test
 
@@ -194,6 +207,31 @@ int pitch_selftest() {
     YinResult r = yin.detect(quiet.data(), N, SR, 60.0f, 1000.0f, 0.15f, 0.001f);
     total++;
     if (r.freq != 0.0f) { fails++; printf("silence -> %.2f Hz FAIL\n", r.freq); }
+
+    // Note gate: vibrato straddling the C/C# boundary must not flicker, a
+    // one-frame octave error must not register, a real change must.
+    {
+        NoteTracker nt;
+        NoteParams np;
+        double tt = 0.0;
+        int changes = 0, prev = -1;
+        auto step = [&](float m, float c) {
+            int n = nt.update(m, c, tt, np);
+            if (n != prev) { changes++; prev = n; }
+            tt += 1.0 / 60.0;
+        };
+        for (int i = 0; i < 120; i++) step(60.3f, 0.95f);                       // settle on C4
+        for (int i = 0; i < 240; i++) step(60.5f + 0.12f * sinf(i * 0.4f), 0.9f);  // +/-12c around the boundary
+        step(72.3f, 0.9f);                                                       // single octave blip
+        for (int i = 0; i < 30; i++) step(60.4f, 0.9f);
+        for (int i = 0; i < 30; i++) step(62.4f, 0.5f);                          // low confidence: ignored
+        bool held = prev == 60;
+        for (int i = 0; i < 30; i++) step(62.1f, 0.9f);                          // real change to D4
+        total++;
+        bool ok = held && prev == 62 && changes == 2;
+        if (!ok) fails++;
+        printf("note gate: %d changes, held=%d, final=%d %s\n", changes, held, prev, ok ? "" : "FAIL");
+    }
 
     // Timing: what one analysis frame costs at the default settings.
     synth(buf, N, SR, 220.0f, 1, 0.01f, &seed);

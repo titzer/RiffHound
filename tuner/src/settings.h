@@ -13,6 +13,9 @@ struct Settings {
     int   window_size    = 4096;     // analysis window, samples
     float hold_ms        = 250.0f;
     float gate_db        = -60.0f;   // input below this RMS (dBFS) reads as silence
+    float note_confidence = 0.80f;   // stricter gate for changing the active note
+    float note_settle_ms = 60.0f;
+    float note_hysteresis = 15.0f;   // cents
 
     // Display
     float in_tune_cents  = 5.0f;     // green
